@@ -1,6 +1,7 @@
 //! Interface egui. Ne fait jamais d'entrée/sortie réseau : elle envoie des
 //! `Command` et applique les `Event` reçus à chaque image.
 
+mod customize;
 mod plan;
 mod sensors;
 mod thermometer;
@@ -119,6 +120,8 @@ pub struct MatterApp {
     plan: plan::PlanView,
     /// Appareil dont l'effacement d'historique attend confirmation.
     confirm_clear: Option<u64>,
+    /// Nom et icône en cours de modification sur la fiche.
+    device_edit: Option<customize::DeviceEdit>,
 }
 
 impl MatterApp {
@@ -137,6 +140,7 @@ impl MatterApp {
             log: VecDeque::new(),
             view: View::Devices,
             confirm_clear: None,
+            device_edit: None,
             plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
         }
     }
@@ -321,7 +325,7 @@ impl MatterApp {
                         ui.horizontal(|ui| {
                             let (color, text) = status_badge(&d.status);
                             ui.colored_label(color, "●");
-                            ui.label(RichText::new(&d.info.name).strong());
+                            ui.label(RichText::new(format!("{} {}", plan::glyph(plan::icon_of(d)), d.info.name)).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.small(text);
                             });
@@ -363,12 +367,14 @@ impl MatterApp {
             return;
         };
         let Some(device) = self.devices.get(&id) else { return };
+        let fresh_edit = customize::DeviceEdit::from_info(&device.info);
 
         let mut retry = false;
         let mut forget = false;
         let mut clear = false;
+        let mut customize = false;
         ui.horizontal(|ui| {
-            ui.heading(&device.info.name);
+            ui.heading(format!("{} {}", plan::glyph(plan::icon_of(device)), device.info.name));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 forget = ui
                     .button("Oublier")
@@ -392,6 +398,21 @@ impl MatterApp {
                 }
             });
         });
+        let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
+        if !editing && ui.small_button("✏ Personnaliser le nom et l'icône").clicked() {
+            customize = true;
+        }
+        if device.info.custom_name.is_some() {
+            ui.small(format!("Nom de l'appareil : {}", device.info.device_name));
+        }
+        let mut save = None;
+        if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
+            match customize::editor(ui, edit, &device.info.device_name) {
+                Some(customize::EditResult::Save) => save = Some(edit.clone()),
+                Some(customize::EditResult::Cancel) => self.device_edit = None,
+                None => {}
+            }
+        }
         let meta: Vec<String> = [device.info.vendor.clone(), device.info.product.clone()]
             .into_iter()
             .flatten()
@@ -446,6 +467,13 @@ impl MatterApp {
 
         if retry {
             self.send(Command::Retry(id));
+        }
+        if customize {
+            self.device_edit = Some(fresh_edit);
+        }
+        if let Some(edit) = save {
+            self.device_edit = None;
+            self.send(Command::Customize { node_id: id, name: Some(edit.name), icon: edit.icon });
         }
         if forget {
             self.send(Command::Forget(id));
@@ -543,10 +571,16 @@ impl eframe::App for MatterApp {
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Devices => self.details(ui),
             View::Plan => {
-                if let plan::PlanAction::OpenDevice(id) = self.plan.show(ui, &self.devices) {
-                    self.selected = Some(id);
-                    self.export_message = None;
-                    self.view = View::Devices;
+                match self.plan.show(ui, &self.devices) {
+                    plan::PlanAction::OpenDevice(id) => {
+                        self.selected = Some(id);
+                        self.export_message = None;
+                        self.view = View::Devices;
+                    }
+                    plan::PlanAction::Customize { node_id, name, icon } => {
+                        self.send(Command::Customize { node_id, name, icon });
+                    }
+                    plan::PlanAction::None => {}
                 }
             }
         });
@@ -601,6 +635,23 @@ mod tests {
 
         // Pile faible signalée.
         assert!(app.devices.values().any(|d| d.battery_low));
+
+        // Nom et icône choisis, puis retour à l'automatique.
+        let plug_id = plug.info.node_id;
+        app.send(Command::Customize {
+            node_id: plug_id,
+            name: Some("  Lampe du salon ".into()),
+            icon: Some(crate::home::Symbol::Light),
+        });
+        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.name == "Lampe du salon"));
+        let p = &app.devices[&plug_id];
+        assert_eq!(p.info.icon, Some(crate::home::Symbol::Light));
+        assert_eq!(p.info.device_name, "GRILLPLATS Plug");
+        assert_eq!(plan::icon_of(p), Some(crate::home::Symbol::Light));
+        app.send(Command::Customize { node_id: plug_id, name: Some("   ".into()), icon: None });
+        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.custom_name.is_none()));
+        assert_eq!(app.devices[&plug_id].info.name, "GRILLPLATS Plug");
+        assert_eq!(plan::icon_of(&app.devices[&plug_id]), Some(crate::home::Symbol::Plug));
 
         // Code invalide : message d'erreur clair.
         app.send(Command::Pair("12345".into()));

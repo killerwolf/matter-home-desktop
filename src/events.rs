@@ -2,6 +2,8 @@
 
 use std::sync::mpsc;
 
+use crate::home::Symbol;
+
 /// Commandes envoyées par l'interface.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -13,6 +15,12 @@ pub enum Command {
     Forget(u64),
     /// Effacer l'historique enregistré d'un nœud (sur disque).
     ClearHistory(u64),
+    /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
+    Customize {
+        node_id: u64,
+        name: Option<String>,
+        icon: Option<Symbol>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +92,12 @@ impl Capabilities {
 #[derive(Debug, Clone, Default)]
 pub struct NodeInfo {
     pub node_id: u64,
+    /// Nom affiché : celui choisi par l'utilisateur, sinon celui de l'appareil.
     pub name: String,
+    /// Nom annoncé par l'appareil (NodeLabel ou ProductName).
+    pub device_name: String,
+    pub custom_name: Option<String>,
+    pub icon: Option<Symbol>,
     pub vendor: Option<String>,
     pub product: Option<String>,
     pub device_types: Vec<String>,

@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::home::Symbol;
+
 pub const FILE_NAME: &str = "controller.json";
 
 /// Identité du contrôleur sur sa fabric (clés en clair, comme les fichiers PEM de matc).
@@ -61,6 +63,13 @@ pub struct StoredNode {
     /// La structure (endpoints, clusters) a été lue au moins une fois.
     #[serde(default)]
     pub interviewed: bool,
+    /// Nom choisi par l'utilisateur (« Porte d'entrée ») ; prioritaire sur `name`,
+    /// qui reste le nom annoncé par l'appareil et peut être relu.
+    #[serde(default)]
+    pub custom_name: Option<String>,
+    /// Icône choisie par l'utilisateur (ex. une prise qui alimente une lampe).
+    #[serde(default)]
+    pub icon: Option<Symbol>,
     /// Version de la lecture de structure ; une version plus ancienne que
     /// `INTERVIEW_VERSION` déclenche une nouvelle lecture (nouveaux clusters suivis).
     #[serde(default)]

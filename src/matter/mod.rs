@@ -88,7 +88,10 @@ impl Ctx {
 pub fn node_info(n: &StoredNode) -> NodeInfo {
     NodeInfo {
         node_id: n.node_id,
-        name: n.name.clone(),
+        name: n.custom_name.clone().unwrap_or_else(|| n.name.clone()),
+        device_name: n.name.clone(),
+        custom_name: n.custom_name.clone(),
+        icon: n.icon,
         vendor: n.vendor.clone(),
         product: n.product.clone(),
         device_types: n.device_types.clone(),
@@ -251,6 +254,16 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                         });
                     }
                     Command::ClearHistory(node_id) => ctx.history.remove(node_id),
+                    Command::Customize { node_id, name, icon } => {
+                        let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                        ctx.update_node(node_id, |n| {
+                            n.custom_name = name;
+                            n.icon = icon;
+                        });
+                        if let Some(n) = ctx.node(node_id) {
+                            events.send(Event::Node(node_info(&n)));
+                        }
+                    }
                     Command::Retry(node_id) => {
                         if let Some(h) = handles.get(&node_id) {
                             h.wake.notify_one();
@@ -402,4 +415,29 @@ fn explain_commission_error(err: &str) -> String {
         "Réessayez avec un nouveau code d'appairage."
     };
     format!("Échec de l'appairage : {hint}\nDétail technique : {err}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::home::Symbol;
+
+    #[test]
+    fn node_info_prefers_custom_name_and_icon() {
+        let mut n = StoredNode {
+            node_id: 1,
+            name: "GRILLPLATS Plug".into(),
+            power_endpoint: Some(2),
+            ..Default::default()
+        };
+        let info = node_info(&n);
+        assert_eq!((info.name.as_str(), info.icon), ("GRILLPLATS Plug", None));
+        assert!(info.caps.power);
+        n.custom_name = Some("Lampe du salon".into());
+        n.icon = Some(Symbol::Light);
+        let info = node_info(&n);
+        assert_eq!(info.name, "Lampe du salon");
+        assert_eq!(info.device_name, "GRILLPLATS Plug");
+        assert_eq!(info.icon, Some(Symbol::Light));
+    }
 }

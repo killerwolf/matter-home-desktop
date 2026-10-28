@@ -106,6 +106,21 @@ Pour un appareil « sleepy » (capteur sur pile), réveillez-le (appui sur son b
 d'activer le mode jumelage. L'app Maison affiche le code immédiatement, mais l'appareil n'ouvre
 sa fenêtre qu'à son réveil, puis la republie via le HomePod : l'application attend jusqu'à 2 min.
 
+## Nom et icône des appareils
+
+Sur la fiche d'un appareil, **« ✏ Personnaliser le nom et l'icône »** (ou dans l'inspecteur du
+plan en mode modification) :
+
+- **Nom** : « Porte d'entrée », « Fenêtre de la cuisine »… Laissé vide, l'application reprend
+  le nom annoncé par l'appareil, rappelé sous le titre de la fiche.
+- **Icône** : porte, fenêtre, lumière, prise, thermomètre, bouton, ou « Automatique »
+  (déduite de ce que mesure l'appareil). Utile pour une prise connectée qui alimente une
+  lampe : choisissez « Lumière » et le plan affiche une lumière.
+
+Le nom et l'icône s'appliquent partout (liste, fiche, plan) et sont sauvegardés dans
+`controller.json` (`custom_name`, `icon`) ; la relecture de la description de l'appareil ne
+les écrase pas. En mode démo, ils durent jusqu'à la fermeture.
+
 ## Fonctionnement
 
 ```
@@ -192,8 +207,9 @@ Onglet **« Plan de la maison »** en haut de la fenêtre.
     droite. Les objets posés dans une pièce se déplacent avec elle ;
   - colonne de droite : **glissez** les appareils pas encore placés, ou des objets non
     connectés (porte, fenêtre, lumière, prise, thermomètre, bouton), sur le plan ;
-  - un objet sélectionné peut changer de pictogramme (ex. un détecteur d'ouverture posé
-    sur une fenêtre) ou être retiré du plan ; la touche Suppr retire la sélection.
+  - un appareil sélectionné peut être renommé et changer d'icône directement depuis la
+    colonne de droite (voir « Nom et icône ») ; un objet non connecté a son propre libellé et
+    pictogramme. « Retirer du plan » ou la touche Suppr retire la sélection.
 - **Vue** : molette ou pincement pour zoomer, glisser dans le vide pour se déplacer,
   « Recentrer » pour tout voir.
 - **Sauvegarde** : automatique dans `maison.json` (même dossier que `controller.json`),

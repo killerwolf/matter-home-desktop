@@ -1,6 +1,7 @@
 //! Mode démo (`--demo`) : faux appareils et mesures simulées, pour tester
 //! l'interface sans réseau Thread. Mêmes canaux et événements que le vrai backend.
 
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::time::Duration;
 
@@ -59,6 +60,8 @@ fn sensor(node_id: u64, name: &str, has_humidity: bool) -> NodeInfo {
             battery: true,
             ..Default::default()
         },
+        device_name: "TIMMERFLOTTE temp/hmd sensor".into(),
+        ..Default::default()
     }
 }
 
@@ -83,24 +86,35 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
     let state = |node_id, kind, value, at| events.send(Event::State { node_id, kind, value, at });
     events.send(Event::Info("Mode démo : aucune communication réseau, données simulées.".into()));
 
-    events.send(Event::Node(sensor(LIVING, "Salon (démo)", true)));
-    events.send(Event::Node(sensor(BEDROOM, "Chambre — capteur endormi (démo)", false)));
-    events.send(Event::Node(NodeInfo {
-        node_id: DOOR,
-        name: "Porte d'entrée (démo)".into(),
-        vendor: Some("IKEA of Sweden (démo)".into()),
-        product: Some("MYGGBETT door/window sensor".into()),
-        device_types: vec!["Capteur d'ouverture".into()],
-        caps: Capabilities { contact: true, battery: true, ..Default::default() },
-    }));
-    events.send(Event::Node(NodeInfo {
-        node_id: PLUG,
-        name: "Prise du frigo (démo)".into(),
-        vendor: Some("IKEA of Sweden (démo)".into()),
-        product: Some("GRILLPLATS Plug".into()),
-        device_types: vec!["Prise".into(), "Electrical Sensor".into()],
-        caps: Capabilities { power: true, energy: true, on_off: true, ..Default::default() },
-    }));
+    // Nœuds de démo, gardés pour pouvoir appliquer les renommages (non sauvegardés).
+    let mut infos: HashMap<u64, NodeInfo> = HashMap::new();
+    for info in [
+        sensor(LIVING, "Salon (démo)", true),
+        sensor(BEDROOM, "Chambre — capteur endormi (démo)", false),
+        NodeInfo {
+            node_id: DOOR,
+            name: "Porte d'entrée (démo)".into(),
+            device_name: "MYGGBETT door/window sensor".into(),
+            vendor: Some("IKEA of Sweden (démo)".into()),
+            product: Some("MYGGBETT door/window sensor".into()),
+            device_types: vec!["Capteur d'ouverture".into()],
+            caps: Capabilities { contact: true, battery: true, ..Default::default() },
+            ..Default::default()
+        },
+        NodeInfo {
+            node_id: PLUG,
+            name: "Prise du frigo (démo)".into(),
+            device_name: "GRILLPLATS Plug".into(),
+            vendor: Some("IKEA of Sweden (démo)".into()),
+            product: Some("GRILLPLATS Plug".into()),
+            device_types: vec!["Prise".into(), "Electrical Sensor".into()],
+            caps: Capabilities { power: true, energy: true, on_off: true, ..Default::default() },
+            ..Default::default()
+        },
+    ] {
+        events.send(Event::Node(info.clone()));
+        infos.insert(info.node_id, info);
+    }
 
     // 90 minutes d'historique déjà « reçu », pour que les graphiques aient de quoi afficher.
     let now = now_unix();
@@ -210,13 +224,23 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                         let id = 0xD3_1000 + paired.len() as u64;
                         let name = format!("Capteur appairé n°{} (démo)", paired.len() + 1);
                         paired.push(id);
-                        events.send(Event::Node(sensor(id, &name, false)));
+                        let info = sensor(id, &name, false);
+                        events.send(Event::Node(info.clone()));
+                        infos.insert(id, info);
                         events.send(Event::Status { node_id: id, status: NodeStatus::Online });
                         events.send(Event::Mode { node_id: id, mode: ReportingMode::Subscription { max_interval_s: 30 } });
                         events.send(Event::PairingDone { node_id: id, name });
                     }
                     // Le mode démo n'enregistre rien sur disque : rien à effacer côté backend.
                     Command::ClearHistory(_) => {}
+                    Command::Customize { node_id, name, icon } => {
+                        if let Some(info) = infos.get_mut(&node_id) {
+                            info.custom_name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                            info.name = info.custom_name.clone().unwrap_or_else(|| info.device_name.clone());
+                            info.icon = icon;
+                            events.send(Event::Node(info.clone()));
+                        }
+                    }
                     Command::Retry(id) => {
                         events.send(Event::Status { node_id: id, status: NodeStatus::Connecting });
                     }

@@ -6,7 +6,7 @@ use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 use super::thermometer::local_time;
 use super::{ago, Device};
 use crate::events::now_unix;
-use crate::history::{compute_stats, TimeWindow};
+use crate::history::{compute_stats, Sample, TimeWindow};
 use crate::matter::convert::{format_energy, format_power};
 
 const OPEN_COLOR: Color32 = Color32::from_rgb(230, 140, 30);
@@ -72,6 +72,31 @@ pub fn door(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
         });
 }
 
+/// Tracé en escalier : la puissance garde sa valeur jusqu'au rapport suivant, puis
+/// jusqu'à maintenant. Aucun point n'est répété : deux points identiques à la suite
+/// (valeur inchangée) font dessiner à egui un triangle parasite.
+fn step_points<'a>(samples: impl Iterator<Item = &'a Sample>, now: f64) -> Vec<[f64; 2]> {
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    for s in samples {
+        if let Some(&[_, y]) = points.last() {
+            if s.value == y {
+                continue; // même valeur : le palier continue
+            }
+            let corner = [s.t, y];
+            if points.last() != Some(&corner) {
+                points.push(corner);
+            }
+        }
+        points.push([s.t, s.value]);
+    }
+    if let Some(&[x, y]) = points.last() {
+        if now > x {
+            points.push([now, y]);
+        }
+    }
+    points
+}
+
 /// Prise : état marche/arrêt, puissance instantanée, énergie cumulée et graphique.
 pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
     let now = now_unix();
@@ -130,17 +155,7 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
         }
     }
 
-    // La puissance ne change qu'à chaque rapport : tracé en escalier jusqu'à maintenant.
-    let mut points: Vec<[f64; 2]> = Vec::new();
-    for s in device.power.since(start) {
-        if let Some(last) = points.last().copied() {
-            points.push([s.t, last[1]]);
-        }
-        points.push([s.t, s.value]);
-    }
-    if let Some(last) = points.last().copied() {
-        points.push([now, last[1]]);
-    }
+    let points = step_points(device.power.since(start), now);
     let x_min = if *window == TimeWindow::Session {
         device.power.iter().next().map_or(now - 900.0, |s| s.t)
     } else {
@@ -165,6 +180,40 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
         .include_y(10.0)
         .allow_scroll(false)
         .show(ui, |plot_ui| {
-            plot_ui.line(Line::new("Puissance (W)", PlotPoints::from(points)).color(POWER_COLOR).width(2.0));
+            // `allow_band(false)` : sinon egui_plot remplace les marches verticales (deux points
+            // à la même abscisse) par une bande remplie qui déforme le tracé.
+            plot_ui.line(
+                Line::new("Puissance (W)", PlotPoints::from(points))
+                    .color(POWER_COLOR)
+                    .width(2.0)
+                    .allow_band(false),
+            );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(t: f64, value: f64) -> Sample {
+        Sample { t, value }
+    }
+
+    #[test]
+    fn step_points_without_duplicates() {
+        // Cas réel : 0 W, puis 7,1 W répété trois fois.
+        let data = [s(10.0, 0.0), s(20.0, 7.1), s(30.0, 7.1), s(30.0, 7.1), s(50.0, 7.1)];
+        let pts = step_points(data.iter(), 60.0);
+        assert_eq!(pts, vec![[10.0, 0.0], [20.0, 0.0], [20.0, 7.1], [60.0, 7.1]]);
+        assert!(pts.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn step_points_edge_cases() {
+        assert!(step_points([].iter(), 10.0).is_empty());
+        assert_eq!(step_points([s(10.0, 3.0)].iter(), 10.0), vec![[10.0, 3.0]]);
+        // Deux valeurs au même instant : coin non dupliqué.
+        let pts = step_points([s(10.0, 1.0), s(10.0, 2.0)].iter(), 20.0);
+        assert_eq!(pts, vec![[10.0, 1.0], [10.0, 2.0], [20.0, 2.0]]);
+    }
 }

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
+use super::customize::{editor, DeviceEdit, EditResult};
 use super::Device;
 use crate::events::NodeStatus;
 use crate::home::{
@@ -62,6 +63,12 @@ enum Drag {
 pub enum PlanAction {
     None,
     OpenDevice(u64),
+    /// Nom et icône modifiés depuis l'inspecteur du plan.
+    Customize {
+        node_id: u64,
+        name: Option<String>,
+        icon: Option<Symbol>,
+    },
 }
 
 pub struct PlanView {
@@ -79,6 +86,8 @@ pub struct PlanView {
     dirty: bool,
     save_error: Option<String>,
     confirm_delete_floor: bool,
+    /// Brouillon du nom et de l'icône de l'appareil sélectionné.
+    device_edit: Option<DeviceEdit>,
 }
 
 /// Ce que montre un appareil placé : pictogramme, couleur, lignes de texte.
@@ -121,6 +130,11 @@ fn temperature_color(c: f64) -> Color32 {
 }
 
 /// Pictogramme par défaut d'un appareil, d'après ce qu'il mesure.
+/// Icône d'un appareil : celle choisie par l'utilisateur, sinon déduite.
+pub(super) fn icon_of(d: &Device) -> Option<Symbol> {
+    d.info.icon.or_else(|| default_symbol(d))
+}
+
 fn default_symbol(d: &Device) -> Option<Symbol> {
     let caps = d.info.caps;
     let types = d.info.device_types.join(" ");
@@ -162,7 +176,8 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                     battery_low: false,
                 };
             };
-            let symbol = symbol.or_else(|| default_symbol(d));
+            // L'icône choisie pour l'appareil prime sur un ancien réglage propre au plan.
+            let symbol = d.info.icon.or(*symbol).or_else(|| default_symbol(d));
             let (mut fill, mut value) = (TEAL, None);
             if let Some(open) = d.open {
                 fill = if open { ORANGE } else { GREEN };
@@ -257,6 +272,7 @@ impl PlanView {
             dirty: false,
             save_error,
             confirm_delete_floor: false,
+            device_edit: None,
         }
     }
 
@@ -289,17 +305,23 @@ impl PlanView {
         }
         ui.separator();
 
+        let mut palette_action = None;
         if self.edit {
             egui::Panel::right("plan_palette")
                 .resizable(false)
                 .exact_size(250.0)
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.palette(ui, devices));
+                    palette_action = egui::ScrollArea::vertical()
+                        .show(ui, |ui| self.palette(ui, devices))
+                        .inner;
                 });
         }
         let action = self.canvas(ui, devices);
         self.save_if_needed(ui);
-        action
+        match (action, palette_action) {
+            (PlanAction::None, Some(a)) => a,
+            (a, _) => a,
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -390,7 +412,8 @@ impl PlanView {
         });
     }
 
-    fn palette(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) {
+    fn palette(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> Option<PlanAction> {
+        let mut action = None;
         // Inspecteur de la sélection.
         let floor = self.floor;
         match self.selection {
@@ -424,25 +447,33 @@ impl PlanView {
                     let item = &mut self.plan.floors[floor].items[idx];
                     let mut changed = false;
                     match &mut item.kind {
-                        ItemKind::Device { node_id, symbol } => {
-                            let name = devices.get(node_id).map_or_else(
-                                || format!("Nœud {node_id:016X}"),
-                                |d| d.info.name.clone(),
-                            );
-                            ui.label(name);
-                            let current = symbol.map_or("Automatique", Symbol::label);
-                            egui::ComboBox::from_label("Pictogramme")
-                                .selected_text(current)
-                                .show_ui(ui, |ui| {
-                                    changed |=
-                                        ui.selectable_value(symbol, None, "Automatique").changed();
-                                    for s in Symbol::ALL {
-                                        changed |= ui
-                                            .selectable_value(symbol, Some(s), s.label())
-                                            .changed();
+                        ItemKind::Device { node_id, symbol } => match devices.get(node_id) {
+                            Some(d) => {
+                                if self.device_edit.as_ref().map(|e| e.node_id) != Some(*node_id) {
+                                    self.device_edit = Some(DeviceEdit::from_info(&d.info));
+                                }
+                                ui.label(format!("{} {}", glyph(icon_of(d)), d.info.name));
+                                let edit = self.device_edit.as_mut().expect("brouillon");
+                                match editor(ui, edit, &d.info.device_name) {
+                                    Some(EditResult::Save) => {
+                                        // L'icône devient celle de l'appareil, partout.
+                                        if symbol.take().is_some() {
+                                            changed = true;
+                                        }
+                                        action = Some(PlanAction::Customize {
+                                            node_id: *node_id,
+                                            name: Some(edit.name.clone()),
+                                            icon: edit.icon,
+                                        });
                                     }
-                                });
-                        }
+                                    Some(EditResult::Cancel) => self.device_edit = Some(DeviceEdit::from_info(&d.info)),
+                                    None => {}
+                                }
+                            }
+                            None => {
+                                ui.label(format!("Nœud {node_id:016X} (inconnu)"));
+                            }
+                        },
                         ItemKind::Decor { symbol, label } => {
                             changed |= ui.text_edit_singleline(label).changed();
                             egui::ComboBox::from_label("Pictogramme")
@@ -506,6 +537,7 @@ impl PlanView {
              la suivent. Suppr retire la sélection. Molette ou pincement : zoom ; \
              glisser dans le vide : déplacer la vue.",
         );
+        action
     }
 
     fn fit(&mut self, rect: Rect) {
@@ -1024,6 +1056,16 @@ mod tests {
         };
         let lk = look(&item, &devices);
         assert_eq!((lk.fill, lk.value.as_deref()), (GRAY, Some("injoignable")));
+
+        // L'icône de l'appareil prime sur un ancien pictogramme propre au plan.
+        devices.get_mut(&1).unwrap().info.icon = Some(Symbol::Light);
+        let legacy = Item {
+            id: 7,
+            kind: ItemKind::Device { node_id: 1, symbol: Some(Symbol::Window) },
+            x: 0.0,
+            y: 0.0,
+        };
+        assert_eq!(look(&legacy, &devices).symbol, Some(Symbol::Light));
 
         // Pictogramme choisi par l'utilisateur, appareil inconnu.
         let window = Item {
