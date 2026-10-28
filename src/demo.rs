@@ -227,3 +227,43 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
         }
     }
 }
+
+/// Plan de démonstration : deux étages, appareils déjà placés.
+pub fn demo_plan() -> crate::home::HomePlan {
+    use crate::home::{Floor, HomePlan, Item, ItemKind, Room, Symbol};
+    let room = |id, name: &str, x, y, w, h| Room { id, name: name.into(), x, y, w, h };
+    let device = |id, node_id, symbol, x, y| Item { id, kind: ItemKind::Device { node_id, symbol }, x, y };
+    let decor = |id, symbol, label: &str, x, y| Item {
+        id,
+        kind: ItemKind::Decor { symbol, label: label.into() },
+        x,
+        y,
+    };
+    HomePlan {
+        version: 1,
+        floors: vec![
+            Floor {
+                id: 1,
+                name: "Rez-de-chaussée".into(),
+                rooms: vec![
+                    room(2, "Salon", 0.0, 0.0, 6.0, 4.5),
+                    room(3, "Cuisine", 6.0, 0.0, 4.0, 3.0),
+                    room(4, "Entrée", 6.0, 3.0, 4.0, 1.5),
+                ],
+                items: vec![
+                    device(10, LIVING, None, 2.5, 2.0),
+                    device(11, DOOR, None, 9.0, 4.25),
+                    device(12, PLUG, None, 8.5, 1.0),
+                    decor(13, Symbol::Window, "Baie vitrée", 3.0, 4.25),
+                    decor(14, Symbol::Light, "Suspension", 4.5, 1.0),
+                ],
+            },
+            Floor {
+                id: 20,
+                name: "Étage".into(),
+                rooms: vec![room(21, "Chambre", 0.0, 0.0, 4.0, 3.5), room(22, "Bureau", 4.0, 0.0, 3.0, 3.5)],
+                items: vec![device(23, BEDROOM, None, 2.0, 1.75), decor(24, Symbol::Window, "Velux", 5.5, 0.25)],
+            },
+        ],
+    }
+}

@@ -11,7 +11,9 @@ Application de bureau en Rust (egui) qui s'ajoute comme **contrôleur supplémen
    et chronologie des derniers changements ;
 5. pour une prise : puissance instantanée (W) avec graphique et statistiques, compteur d'énergie
    (kWh), énergie estimée sur la fenêtre, état allumée / éteinte (lecture seule) ;
-6. pour tout appareil sur pile : niveau de la pile et alerte de pile faible.
+6. pour tout appareil sur pile : niveau de la pile et alerte de pile faible ;
+7. un **plan de la maison** : étages, pièces nommées, appareils et objets placés, avec leur
+   état en direct (porte ouverte en orange, température, puissance, pile faible…).
 
 ## Option retenue : **A — tout en Rust, avec la crate [`matc`](https://crates.io/crates/matc) 0.1.3**
 
@@ -75,6 +77,7 @@ cargo build --release
 |---|---|
 | `matter-demo` | Mode normal, réseau réel |
 | `matter-demo --demo` | Appareils simulés (thermomètres, porte, prise du frigo), aucune communication réseau |
+| `matter-demo --plan` | Ouvre directement l'onglet « Plan de la maison » (combinable avec `--demo`) |
 | `matter-demo --discover` | Diagnostic : liste les nœuds Matter vus en mDNS par la pile de l'application, puis quitte |
 | `RUST_LOG=debug matter-demo` | Journaux détaillés (`RUST_LOG=debug,matc=debug` pour le protocole) |
 
@@ -151,6 +154,42 @@ sa fenêtre qu'à son réveil, puis la republie via le HomePod : l'application a
   (`matter-<nom>-<date>.csv`) avec les colonnes `timestamp_unix, datetime_local,
   temperature_c, humidity_pct`.
 
+## Plan de la maison
+
+Onglet **« Plan de la maison »** en haut de la fenêtre.
+
+- **Consultation** (par défaut) : les pièces affichent leur température moyenne et le nombre
+  d'ouvertures ; chaque appareil placé montre son état en direct :
+
+  | Couleur | Signification |
+  |---|---|
+  | vert / orange | porte ou fenêtre fermée / ouverte |
+  | bleu, vert, orange | température < 18 °C, 18–24 °C, > 24 °C |
+  | jaune / gris foncé | prise allumée / éteinte, avec sa puissance |
+  | gris | appareil injoignable ou pas encore connu |
+  | point rouge | pile faible |
+
+  Survolez un appareil pour un résumé ; cliquez pour ouvrir sa fiche détaillée.
+- **« ✏ Modifier le plan »** :
+  - « + Étage », renommer ou supprimer l'étage courant (avec confirmation) ;
+  - « + Pièce » : rectangle de 4 × 3 m sur une grille magnétique de 50 cm ; déplacez-le en le
+    faisant glisser, redimensionnez-le par son coin bas-droit, renommez-le dans la colonne de
+    droite. Les objets posés dans une pièce se déplacent avec elle ;
+  - colonne de droite : **glissez** les appareils pas encore placés, ou des objets non
+    connectés (porte, fenêtre, lumière, prise, thermomètre, bouton), sur le plan ;
+  - un objet sélectionné peut changer de pictogramme (ex. un détecteur d'ouverture posé
+    sur une fenêtre) ou être retiré du plan ; la touche Suppr retire la sélection.
+- **Vue** : molette ou pincement pour zoomer, glisser dans le vide pour se déplacer,
+  « Recentrer » pour tout voir.
+- **Sauvegarde** : automatique dans `maison.json` (même dossier que `controller.json`),
+  à la fin de chaque geste. Le mode démo utilise `maison-demo.json` et part d'un plan
+  d'exemple à deux étages. Écart volontaire avec la règle de départ « seuls les
+  identifiants sont sauvegardés » : un plan doit être conservé.
+- **Pièces d'Apple Maison** : elles ne sont pas récupérables. Matter ne transporte pas les
+  pièces, et la base HomeKit n'est accessible qu'à une application native Swift signée avec
+  l'autorisation HomeKit. Piste future : un petit exportateur HomeKit qui associerait les
+  appareils par numéro de série.
+
 ## Choix faits en autonomie (option la plus simple qui fonctionne)
 
 - **matc** plutôt que matter-controller : pas d'attestation, donc pas de racines CSA à gérer.
@@ -216,11 +255,13 @@ src/
   main.rs              arguments (--demo, --discover), lancement d'eframe
   events.rs            Command / Event échangés entre l'interface et le backend
   history.rs           tampon circulaire, fenêtres, statistiques, CSV (+ tests)
-  persistence.rs       fichier JSON de l'application (+ test)
+  persistence.rs       fichiers JSON de l'application (+ test)
+  home.rs              modèle du plan : étages, pièces, objets (+ tests)
   demo.rs              backend simulé pour --demo
   ui/mod.rs            fenêtre, appairage, liste des appareils, journal (+ test de bout en bout du mode démo)
   ui/thermometer.rs    vue thermomètre
   ui/sensors.rs        vues détecteur d'ouverture et prise (consommation)
+  ui/plan.rs           plan de la maison : dessin, édition, état en direct (+ tests)
   matter/mod.rs        démarrage du backend, appairage
   matter/node.rs       supervision d'un nœud (CASE, description, souscription, interrogation)
   matter/discovery.rs  cache mDNS commissionable / opérationnel

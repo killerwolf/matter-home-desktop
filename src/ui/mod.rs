@@ -1,6 +1,7 @@
 //! Interface egui. Ne fait jamais d'entrée/sortie réseau : elle envoie des
 //! `Command` et applique les `Event` reçus à chaque image.
 
+mod plan;
 mod sensors;
 mod thermometer;
 
@@ -81,6 +82,12 @@ impl Device {
 /// Nombre maximal de changements d'état de porte gardés en mémoire.
 const DOOR_EVENTS_CAPACITY: usize = 1000;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Devices,
+    Plan,
+}
+
 enum Pairing {
     Idle,
     InProgress(String),
@@ -100,6 +107,8 @@ pub struct MatterApp {
     export_message: Option<(bool, String)>,
     fatal: Option<String>,
     log: VecDeque<String>,
+    view: View,
+    plan: plan::PlanView,
 }
 
 impl MatterApp {
@@ -116,7 +125,14 @@ impl MatterApp {
             export_message: None,
             fatal: None,
             log: VecDeque::new(),
+            view: View::Devices,
+            plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
         }
+    }
+
+    /// Ouvre l'onglet « Plan de la maison ».
+    pub fn show_plan(&mut self) {
+        self.view = View::Plan;
     }
 
     fn send(&mut self, cmd: Command) {
@@ -150,6 +166,7 @@ impl MatterApp {
                 }
                 Event::NodeRemoved(id) => {
                     self.devices.remove(&id);
+                    self.plan.remove_device(id);
                     if self.selected == Some(id) {
                         self.selected = self.devices.keys().next().copied();
                     }
@@ -322,6 +339,7 @@ impl MatterApp {
         });
         if let Some(id) = clicked {
             self.selected = Some(id);
+            self.view = View::Devices;
             self.export_message = None;
         }
     }
@@ -427,8 +445,14 @@ pub fn ago(secs: f64) -> String {
 }
 
 impl eframe::App for MatterApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Appelé avant chaque `ui`, et aussi fenêtre masquée dès que le backend appelle
+    /// `request_repaint` : les événements sont donc appliqués même quand macOS ne
+    /// redessine pas la fenêtre (recouverte ou réduite).
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_events();
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Rafraîchit les « il y a X s » même sans événement.
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
 
@@ -443,6 +467,9 @@ impl eframe::App for MatterApp {
                             .background_color(Color32::from_rgb(250, 200, 60)),
                     );
                 }
+                ui.separator();
+                ui.selectable_value(&mut self.view, View::Devices, "Appareils");
+                ui.selectable_value(&mut self.view, View::Plan, "Plan de la maison");
             });
             if let Some(f) = &self.fatal {
                 ui.colored_label(Color32::from_rgb(210, 60, 50), format!("Erreur : {f}"));
@@ -478,7 +505,16 @@ impl eframe::App for MatterApp {
                 self.device_list(ui);
             });
 
-        egui::CentralPanel::default().show(ui, |ui| self.details(ui));
+        egui::CentralPanel::default().show(ui, |ui| match self.view {
+            View::Devices => self.details(ui),
+            View::Plan => {
+                if let plan::PlanAction::OpenDevice(id) = self.plan.show(ui, &self.devices) {
+                    self.selected = Some(id);
+                    self.export_message = None;
+                    self.view = View::Devices;
+                }
+            }
+        });
     }
 }
 
@@ -505,7 +541,10 @@ mod tests {
             false
         };
 
-        assert!(wait_for(&mut app, &|a| a.devices.len() == 4));
+        // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli.
+        assert!(wait_for(&mut app, &|a| {
+            a.devices.len() == 4 && a.devices.values().all(|d| d.status == NodeStatus::Online)
+        }));
         let living = app.devices.values().find(|d| d.info.caps.humidity).unwrap();
         assert!(living.temperature.len() > 150, "historique pré-rempli");
         assert!(!living.humidity.is_empty());

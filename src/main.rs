@@ -7,6 +7,7 @@
 mod demo;
 mod events;
 mod history;
+mod home;
 mod matter;
 mod persistence;
 mod ui;
@@ -23,6 +24,7 @@ Usage :
   matter-demo             lance l'application (réseau réel)
   matter-demo --demo      lance l'application avec des appareils simulés
   matter-demo --discover  liste les nœuds Matter vus en mDNS puis quitte
+  matter-demo --plan      ouvre directement le plan de la maison (combinable avec --demo)
   matter-demo --help      affiche cette aide
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
@@ -38,7 +40,7 @@ fn main() -> eframe::Result {
     }
     if let Some(unknown) = args
         .iter()
-        .find(|a| !matches!(a.as_str(), "--demo" | "--discover"))
+        .find(|a| !matches!(a.as_str(), "--demo" | "--discover" | "--plan"))
     {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
@@ -48,6 +50,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let demo = args.iter().any(|a| a == "--demo");
+    let open_plan = args.iter().any(|a| a == "--plan");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -63,7 +66,11 @@ fn main() -> eframe::Result {
             let (tx, rx) = mpsc::channel();
             let sink = events::EventSink::new(tx, cc.egui_ctx.clone());
             let commands = if demo { demo::spawn(sink) } else { matter::spawn(sink) };
-            Ok(Box::new(ui::MatterApp::new(commands, rx, demo)))
+            let mut app = ui::MatterApp::new(commands, rx, demo);
+            if open_plan {
+                app.show_plan();
+            }
+            Ok(Box::new(app))
         }),
     )
 }
