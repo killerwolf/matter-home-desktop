@@ -7,6 +7,7 @@
 mod demo;
 mod events;
 mod history;
+mod history_store;
 mod home;
 mod matter;
 mod persistence;

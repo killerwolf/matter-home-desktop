@@ -421,24 +421,19 @@ fn device_type_name(id: u32) -> Option<String> {
 
 /// Transforme la valeur d'un attribut suivi en événement pour l'interface.
 fn publish(ctx: &Ctx, node_id: u64, cluster: u32, attribute: u32, value: &Value, at: f64) {
+    // Chaque mesure part vers l'interface et vers l'historique sur disque.
+    let emit = |event: Event| {
+        ctx.history.record(&event);
+        ctx.events.send(event);
+    };
     let measure = |kind, v: Option<f64>| {
         if let Some(value) = v {
-            ctx.events.send(Event::Measurement {
-                node_id,
-                kind,
-                value,
-                at,
-            });
+            emit(Event::Measurement { node_id, kind, value, at });
         }
     };
     let state = |kind, v: Option<bool>| {
         if let Some(value) = v {
-            ctx.events.send(Event::State {
-                node_id,
-                kind,
-                value,
-                at,
-            });
+            emit(Event::State { node_id, kind, value, at });
         }
     };
     match (cluster, attribute) {

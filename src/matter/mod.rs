@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
 use crate::events::{Capabilities, Command, Event, EventSink, NodeInfo};
+use crate::history_store::{self, HistorySink, HistoryStore};
 use crate::persistence::{self, StoredNode, StoredState};
 use discovery::Discovery;
 
@@ -41,6 +42,7 @@ pub(crate) struct Ctx {
     /// Identifiant de fabric compressé (hex majuscules) pour les noms mDNS opérationnels.
     pub compressed_fabric: String,
     pub events: EventSink,
+    pub history: HistorySink,
     state: Mutex<StoredState>,
     state_path: PathBuf,
 }
@@ -175,6 +177,35 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
     )));
 
     let nodes = state.nodes.clone();
+    for n in &nodes {
+        events.send(Event::Node(node_info(n)));
+    }
+
+    // Historique sur disque : nettoyage (rétention, taille), puis relecture vers l'interface.
+    let mut store = HistoryStore::new(history_store::dir());
+    let now = crate::events::now_unix();
+    let pruned = store.prune(now);
+    let since = now - history_store::RETENTION.as_secs_f64();
+    let mut replayed = 0;
+    for n in &nodes {
+        for event in store.load(n.node_id, since).iter().filter_map(|r| r.to_event(n.node_id)) {
+            events.send(event);
+            replayed += 1;
+        }
+    }
+    // Historique d'appareils oubliés entre-temps : supprimé.
+    for orphan in store.nodes().into_iter().filter(|id| !nodes.iter().any(|n| n.node_id == *id)) {
+        let _ = store.remove(orphan);
+    }
+    let summary = format!(
+        "Historique : {replayed} mesures rechargées ({} jours max) ; {} anciennes retirées au nettoyage.",
+        history_store::RETENTION.as_secs() / 86_400,
+        pruned.removed_lines
+    );
+    log::info!("{summary}");
+    events.send(Event::Info(summary));
+    let history = history_store::start(store);
+
     let ctx = Arc::new(Ctx {
         controller,
         transport,
@@ -182,13 +213,13 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
         controller_node_id: state.identity.controller_node_id,
         compressed_fabric,
         events: events.clone(),
+        history,
         state: Mutex::new(state),
         state_path,
     });
 
     let mut handles: HashMap<u64, NodeHandle> = HashMap::new();
     for n in &nodes {
-        events.send(Event::Node(node_info(n)));
         handles.insert(n.node_id, spawn_node(&ctx, n.node_id, None));
     }
 
@@ -219,6 +250,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                             pairing.store(false, Ordering::SeqCst);
                         });
                     }
+                    Command::ClearHistory(node_id) => ctx.history.remove(node_id),
                     Command::Retry(node_id) => {
                         if let Some(h) = handles.get(&node_id) {
                             h.wake.notify_one();
@@ -228,6 +260,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                         if let Some(h) = handles.remove(&node_id) {
                             h.task.abort();
                         }
+                        ctx.history.remove(node_id);
                         if let Err(e) = ctx.remove_node(node_id) {
                             events.send(Event::Info(format!("Sauvegarde impossible : {e:#}")));
                         }

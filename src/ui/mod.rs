@@ -57,6 +57,14 @@ impl Device {
         }
     }
 
+    /// Oublie les mesures en mémoire (les dernières valeurs connues aussi).
+    fn clear_history(&mut self) {
+        self.temperature = RingBuffer::default();
+        self.humidity = RingBuffer::default();
+        self.power = RingBuffer::default();
+        self.door_events.clear();
+    }
+
     /// Résumé d'une ligne pour la liste : mesure principale et pile.
     fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -109,6 +117,8 @@ pub struct MatterApp {
     log: VecDeque<String>,
     view: View,
     plan: plan::PlanView,
+    /// Appareil dont l'effacement d'historique attend confirmation.
+    confirm_clear: Option<u64>,
 }
 
 impl MatterApp {
@@ -126,6 +136,7 @@ impl MatterApp {
             fatal: None,
             log: VecDeque::new(),
             view: View::Devices,
+            confirm_clear: None,
             plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
         }
     }
@@ -355,6 +366,7 @@ impl MatterApp {
 
         let mut retry = false;
         let mut forget = false;
+        let mut clear = false;
         ui.horizontal(|ui| {
             ui.heading(&device.info.name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -363,6 +375,21 @@ impl MatterApp {
                     .on_hover_text("Retire l'appareil de cette application (il reste dans Apple Home).")
                     .clicked();
                 retry = ui.button("Reconnecter").clicked();
+                if self.confirm_clear == Some(id) {
+                    if ui.button("Annuler").clicked() {
+                        self.confirm_clear = None;
+                    }
+                    clear = ui
+                        .button(RichText::new("Oui, effacer").color(Color32::from_rgb(210, 60, 50)))
+                        .clicked();
+                    ui.label("Effacer tout l'historique de cet appareil ?");
+                } else if ui
+                    .button("Effacer l'historique")
+                    .on_hover_text("Supprime les mesures enregistrées (mémoire et disque) de cet appareil.")
+                    .clicked()
+                {
+                    self.confirm_clear = Some(id);
+                }
             });
         });
         let meta: Vec<String> = [device.info.vendor.clone(), device.info.product.clone()]
@@ -422,6 +449,14 @@ impl MatterApp {
         }
         if forget {
             self.send(Command::Forget(id));
+        }
+        if clear {
+            self.confirm_clear = None;
+            if let Some(d) = self.devices.get_mut(&id) {
+                d.clear_history();
+            }
+            self.push_log("Historique effacé.".into());
+            self.send(Command::ClearHistory(id));
         }
     }
 }

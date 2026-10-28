@@ -215,6 +215,8 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                         events.send(Event::Mode { node_id: id, mode: ReportingMode::Subscription { max_interval_s: 30 } });
                         events.send(Event::PairingDone { node_id: id, name });
                     }
+                    // Le mode démo n'enregistre rien sur disque : rien à effacer côté backend.
+                    Command::ClearHistory(_) => {}
                     Command::Retry(id) => {
                         events.send(Event::Status { node_id: id, status: NodeStatus::Connecting });
                     }

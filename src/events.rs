@@ -11,6 +11,8 @@ pub enum Command {
     Retry(u64),
     /// Oublier un nœud localement (l'appareil garde notre fabric : voir README).
     Forget(u64),
+    /// Effacer l'historique enregistré d'un nœud (sur disque).
+    ClearHistory(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]

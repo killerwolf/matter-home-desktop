@@ -83,7 +83,7 @@ impl TimeWindow {
         match self {
             TimeWindow::Min15 => "15 min",
             TimeWindow::Hour1 => "1 h",
-            TimeWindow::Session => "Toute la session",
+            TimeWindow::Session => "Tout l'historique",
         }
     }
 

@@ -148,8 +148,23 @@ sa fenêtre qu'à son réveil, puis la republie via le HomePod : l'application a
   reconnexion, l'adresse connue est essayée d'abord, puis une redécouverte mDNS opérationnelle.
 - **Persistance** : `~/Library/Application Support/dev.matter-demo.MatterDemo/controller.json`
   (droits 0600). Il contient l'ID de fabric, les clés et certificats (racine et contrôleur)
-  et la liste des nœuds (nom, dernière adresse, endpoints des capteurs). L'historique des
-  mesures reste **en mémoire uniquement** et est perdu à la fermeture.
+  et la liste des nœuds (nom, dernière adresse, endpoints des capteurs).
+- **Historique des mesures sur disque** : `history/<nœud>.jsonl` dans le même dossier, une
+  ligne JSON par mesure ou changement d'état (`{"t":…,"k":"temperature","v":21.5}`),
+  ajoutée au fil de l'eau par un thread dédié et **relue au démarrage**. Garde-fous contre
+  le grossissement :
+  - **rétention de 7 jours** : les mesures plus anciennes sont retirées ;
+  - **5 Mo maximum par appareil** : au-delà, les plus anciennes lignes sont retirées ;
+  - nettoyage au démarrage puis toutes les 6 h (le journal indique le bilan) ;
+  - bouton **« Effacer l'historique »** sur la fiche d'un appareil (avec confirmation) ;
+  - « Oublier » un appareil efface aussi son historique ; les fichiers d'appareils
+    inconnus sont supprimés au démarrage.
+
+  Les limites sont des constantes de `src/history_store.rs` (`RETENTION`,
+  `MAX_BYTES_PER_NODE`). L'interface garde au plus 5000 points par grandeur : pour une
+  mesure très fréquente (puissance), seules les plus récentes sont affichées. Le mode démo
+  n'écrit rien sur disque. Fichiers en droits 0600 (les heures d'ouverture des portes
+  renseignent sur la présence dans la maison).
 - **Export CSV** : bouton « Exporter en CSV ». Le fichier part dans `~/Downloads`
   (`matter-<nom>-<date>.csv`) avec les colonnes `timestamp_unix, datetime_local,
   temperature_c, humidity_pct`.
@@ -204,7 +219,7 @@ Onglet **« Plan de la maison »** en haut de la fenêtre.
 - **Prise** : graphique de puissance en escalier (la valeur ne change qu'à chaque rapport).
   L'énergie « sur la fenêtre » est intégrée à partir des puissances reçues ; le compteur
   en kWh est celui de la prise. Pas de commande marche/arrêt (hors périmètre).
-- **Historique des ouvertures** : 1000 derniers changements en mémoire, perdus à la fermeture.
+- **Historique des ouvertures** : 1000 derniers changements affichés (relus du disque au démarrage).
 - **« Oublier »** retire l'appareil de l'application seulement. Il garde notre fabric : on peut
   la supprimer dans Maison → appareil → Réglages, section des services/applications
   connectés (le libellé dépend de la version d'iOS).
@@ -256,6 +271,7 @@ src/
   events.rs            Command / Event échangés entre l'interface et le backend
   history.rs           tampon circulaire, fenêtres, statistiques, CSV (+ tests)
   persistence.rs       fichiers JSON de l'application (+ test)
+  history_store.rs     historique sur disque : ajout, relecture, rétention, taille max (+ tests)
   home.rs              modèle du plan : étages, pièces, objets (+ tests)
   demo.rs              backend simulé pour --demo
   ui/mod.rs            fenêtre, appairage, liste des appareils, journal (+ test de bout en bout du mode démo)
