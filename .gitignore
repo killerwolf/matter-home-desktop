@@ -1,2 +1,8 @@
 target/
 *.csv
+# Données de l'application (plan, identifiants, mesures) : elles vivent dans
+# ~/Library/Application Support/dev.matter-demo.MatterDemo/, jamais dans le dépôt.
+controller.json
+maison.json
+maison-demo.json
+*.json.tmp
