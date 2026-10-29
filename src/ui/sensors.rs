@@ -1,17 +1,19 @@
-//! Vues « détecteur d'ouverture » et « prise / consommation électrique ».
+//! Vues « détecteur d'ouverture », « prise / consommation électrique » et « volet ».
 
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::thermometer::local_time;
 use super::{ago, Device};
-use crate::events::now_unix;
+use crate::automation::CoverCommand;
+use crate::events::{now_unix, CoverMotion};
 use crate::history::{compute_stats, Sample, TimeWindow};
-use crate::matter::convert::{format_energy, format_power};
+use crate::matter::convert::{format_energy, format_position, format_power};
 
 const OPEN_COLOR: Color32 = Color32::from_rgb(230, 140, 30);
 const CLOSED_COLOR: Color32 = Color32::from_rgb(40, 160, 70);
 const POWER_COLOR: Color32 = Color32::from_rgb(150, 100, 230);
+const COVER_COLOR: Color32 = Color32::from_rgb(60, 140, 220);
 
 fn window_selector(ui: &mut egui::Ui, window: &mut TimeWindow) {
     ui.horizontal(|ui| {
@@ -211,6 +213,152 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
                     .allow_band(false),
             );
         });
+}
+
+/// Volet ou store : position, mouvement, boutons ouvrir / stop / fermer, curseur de
+/// position (si le moteur la connaît) et historique d'ouverture. Retourne la commande
+/// demandée par l'utilisateur.
+pub fn cover(
+    ui: &mut egui::Ui,
+    device: &mut Device,
+    window: &mut TimeWindow,
+) -> Option<CoverCommand> {
+    let now = now_unix();
+    let position_aware = device.info.caps.cover_position;
+    let current = device.position.last().map(|s| s.value);
+    let mut command = None;
+
+    ui.heading("Volet");
+    ui.horizontal(|ui| {
+        match current {
+            Some(p) => {
+                let color = if p <= 0.0 { Color32::GRAY } else { COVER_COLOR };
+                ui.label(
+                    RichText::new(format_position(p))
+                        .size(48.0)
+                        .strong()
+                        .color(color),
+                );
+            }
+            None => {
+                ui.label(
+                    RichText::new("Position inconnue")
+                        .size(32.0)
+                        .color(Color32::GRAY),
+                );
+            }
+        }
+        ui.add_space(16.0);
+        let motion = match device.cover_motion {
+            Some(CoverMotion::Opening) => Some(("▲ Ouverture en cours", COVER_COLOR)),
+            Some(CoverMotion::Closing) => Some(("▼ Fermeture en cours", OPEN_COLOR)),
+            Some(CoverMotion::Stopped) => Some(("■ À l'arrêt", Color32::GRAY)),
+            None => None,
+        };
+        if let Some((text, color)) = motion {
+            ui.label(RichText::new(text).size(20.0).color(color));
+        }
+    });
+    if !position_aware {
+        ui.small("Moteur sans retour de position (radio à sens unique, type RTS) : seules les commandes sont possibles.");
+    }
+
+    ui.horizontal(|ui| {
+        if ui.button("▲ Ouvrir").clicked() {
+            command = Some(CoverCommand::Open);
+        }
+        if ui.button("■ Stop").clicked() {
+            command = Some(CoverCommand::Stop);
+        }
+        if ui.button("▼ Fermer").clicked() {
+            command = Some(CoverCommand::Close);
+        }
+    });
+    if position_aware {
+        ui.horizontal(|ui| {
+            ui.label("Ouverture :");
+            let mut value = device
+                .cover_slider
+                .unwrap_or_else(|| current.unwrap_or(100.0).round().clamp(0.0, 100.0) as u8);
+            if ui
+                .add(egui::Slider::new(&mut value, 0..=100).suffix(" %"))
+                .changed()
+            {
+                device.cover_slider = Some(value);
+            }
+            let pending = device.cover_slider.is_some();
+            if ui
+                .add_enabled(pending, egui::Button::new("Aller à cette position"))
+                .clicked()
+            {
+                command = Some(CoverCommand::Position(value));
+                device.cover_slider = None;
+            }
+        });
+        ui.small("0 % = fermé, 100 % = tout ouvert.");
+    }
+    if command.is_some() {
+        device.cover_slider = None;
+    }
+    if !position_aware {
+        return command;
+    }
+
+    window_selector(ui, window);
+    let start = window.start(now);
+    let openings = device
+        .position
+        .since(start)
+        .zip(device.position.since(start).skip(1))
+        .filter(|(a, b)| a.value <= 0.0 && b.value > 0.0)
+        .count();
+    ui.label(format!(
+        "Ouvertures depuis fermé sur la fenêtre : {openings}"
+    ));
+
+    // La position tient depuis son dernier changement : si celui-ci précède la fenêtre,
+    // le palier part du début de la fenêtre.
+    let carried = device
+        .position
+        .iter()
+        .take_while(|s| s.t < start)
+        .last()
+        .map(|s| Sample {
+            t: start,
+            value: s.value,
+        });
+    let points = step_points(carried.iter().chain(device.position.since(start)), now);
+    let x_min = if *window == TimeWindow::Session {
+        device.position.iter().next().map_or(now - 900.0, |s| s.t)
+    } else {
+        start
+    };
+    Plot::new(("cover_plot", device.info.node_id))
+        .legend(Legend::default())
+        .height(180.0)
+        .x_axis_formatter(|mark, _| local_time(mark.value, false))
+        .y_axis_formatter(|mark, _| format!("{:.0} %", mark.value))
+        .label_formatter(|pos| {
+            let p = match pos {
+                HoverPosition::NearDataPoint { position, .. } => position,
+                HoverPosition::Elsewhere { position } => position,
+            };
+            Some(format!("{}\n{:.0} % ouvert", local_time(p.x, true), p.y))
+        })
+        .include_x(x_min)
+        .include_x(now)
+        .include_y(0.0)
+        .include_y(100.0)
+        .allow_scroll(false)
+        .show(ui, |plot_ui| {
+            plot_ui.line(
+                Line::new("Ouverture (%)", PlotPoints::from(points))
+                    .color(COVER_COLOR)
+                    .width(2.0)
+                    .allow_band(false),
+            );
+        });
+    command
 }
 
 #[cfg(test)]

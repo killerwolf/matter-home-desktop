@@ -14,10 +14,11 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::events::{
-    now_unix, Command, Event, MeasureKind, NodeInfo, NodeStatus, ReportingMode, StateKind,
+    now_unix, Command, CoverMotion, Event, MeasureKind, NodeInfo, NodeStatus, ReportingMode,
+    StateKind,
 };
 use crate::history::{RingBuffer, Sample, TimeWindow};
-use crate::matter::convert::{format_power, format_temperature};
+use crate::matter::convert::{format_position, format_power, format_temperature};
 
 pub struct Device {
     pub info: NodeInfo,
@@ -37,6 +38,11 @@ pub struct Device {
     /// Changements d'état de la porte (instant, ouvert ?), du plus ancien au plus récent.
     pub door_events: VecDeque<(f64, bool)>,
     pub on_off: Option<bool>,
+    /// Ouverture d'un volet (%, 100 = ouvert) au fil du temps.
+    pub position: RingBuffer,
+    pub cover_motion: Option<CoverMotion>,
+    /// Position choisie sur le curseur de la fiche, pas encore envoyée.
+    pub cover_slider: Option<u8>,
 }
 
 impl Device {
@@ -56,6 +62,9 @@ impl Device {
             open_since: None,
             door_events: VecDeque::new(),
             on_off: None,
+            position: RingBuffer::default(),
+            cover_motion: None,
+            cover_slider: None,
         }
     }
 
@@ -64,6 +73,7 @@ impl Device {
         self.temperature = RingBuffer::default();
         self.humidity = RingBuffer::default();
         self.power = RingBuffer::default();
+        self.position = RingBuffer::default();
         self.door_events.clear();
     }
 
@@ -89,6 +99,22 @@ impl Device {
             } else {
                 "Éteint".into()
             });
+        }
+        if self.info.caps.cover {
+            let mut text = match self.position.last() {
+                Some(s) => format_position(s.value),
+                None if self.info.caps.cover_position => "Position inconnue".into(),
+                None => String::new(),
+            };
+            match self.cover_motion {
+                Some(CoverMotion::Opening) => text.push_str(" ▲ ouverture"),
+                Some(CoverMotion::Closing) => text.push_str(" ▼ fermeture"),
+                _ => {}
+            }
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                parts.push(text);
+            }
         }
         if let Some(b) = self.battery {
             parts.push(format!(
@@ -288,7 +314,13 @@ impl MatterApp {
                             MeasureKind::Power => d.power.push(sample),
                             MeasureKind::Energy => d.energy = Some(sample),
                             MeasureKind::Battery => d.battery = Some(value),
+                            MeasureKind::Position => d.position.push(sample),
                         }
+                    }
+                }
+                Event::CoverMotion { node_id, motion } => {
+                    if let Some(d) = self.devices.get_mut(&node_id) {
+                        d.cover_motion = Some(motion);
                     }
                 }
                 Event::State {
@@ -444,9 +476,18 @@ impl MatterApp {
                         if !summary.is_empty() {
                             ui.small(RichText::new(summary).strong());
                         }
+                        let origin = match d.info.bridge {
+                            Some(link) => format!(
+                                "Via le pont {}",
+                                self.devices.get(&link.node_id).map_or_else(
+                                    || format!("{:016X}", link.node_id),
+                                    |b| b.info.name.clone()
+                                )
+                            ),
+                            None => format!("Nœud {id:016X}"),
+                        };
                         ui.small(format!(
-                            "Nœud {:016X} · dernière communication : {}",
-                            id,
+                            "{origin} · dernière communication : {}",
                             d.last_seen.map_or("jamais".into(), |t| ago(now - t))
                         ));
                     })
@@ -470,7 +511,28 @@ impl MatterApp {
             });
             return;
         };
-        let Some(device) = self.devices.get(&id) else {
+        // Appareils exposés par ce nœud, s'il est un pont (calculé avant d'emprunter la fiche).
+        let children: Vec<(u64, String, String)> = self
+            .devices
+            .values()
+            .filter(|d| d.info.bridge.is_some_and(|b| b.node_id == id))
+            .map(|d| {
+                (
+                    d.info.node_id,
+                    format!("{} {}", plan::glyph(plan::icon_of(d)), d.info.name),
+                    d.summary(),
+                )
+            })
+            .collect();
+        let bridge_name = self.selected.and_then(|id| {
+            let link = self.devices.get(&id)?.info.bridge?;
+            Some(
+                self.devices
+                    .get(&link.node_id)
+                    .map_or_else(|| format!("{:016X}", link.node_id), |b| b.info.name.clone()),
+            )
+        });
+        let Some(device) = self.devices.get_mut(&id) else {
             return;
         };
         let fresh_edit = customize::DeviceEdit::from_info(&device.info);
@@ -479,6 +541,8 @@ impl MatterApp {
         let mut forget = false;
         let mut clear = false;
         let mut customize = false;
+        let mut open_device = None;
+        let mut cover_command = None;
         ui.horizontal(|ui| {
             ui.heading(format!(
                 "{} {}",
@@ -486,12 +550,14 @@ impl MatterApp {
                 device.info.name
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                forget = ui
-                    .button("Oublier")
-                    .on_hover_text(
-                        "Retire l'appareil de cette application (il reste dans Apple Home).",
-                    )
-                    .clicked();
+                if device.info.bridge.is_none() {
+                    forget = ui
+                        .button("Oublier")
+                        .on_hover_text(
+                            "Retire l'appareil de cette application (il reste dans Apple Home).",
+                        )
+                        .clicked();
+                }
                 retry = ui.button("Reconnecter").clicked();
                 if self.confirm_clear == Some(id) {
                     if ui.button("Annuler").clicked() {
@@ -522,6 +588,17 @@ impl MatterApp {
         }
         if device.info.custom_name.is_some() {
             ui.small(format!("Nom de l'appareil : {}", device.info.device_name));
+        }
+        if let (Some(link), Some(bridge_name)) = (device.info.bridge, &bridge_name) {
+            ui.horizontal(|ui| {
+                ui.small(format!(
+                    "Exposé par le pont « {bridge_name} » (endpoint {})",
+                    link.endpoint
+                ));
+                if ui.small_button("Voir le pont").clicked() {
+                    open_device = Some(link.node_id);
+                }
+            });
         }
         let mut save = None;
         if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
@@ -555,8 +632,10 @@ impl MatterApp {
         ui.horizontal(|ui| {
             ui.colored_label(color, format!("● {text}"));
             if let NodeStatus::Unreachable { error, retry_in_s } = &device.status {
-                ui.label(format!("— nouvel essai automatique sous {retry_in_s} s"))
-                    .on_hover_text(error);
+                if *retry_in_s > 0 {
+                    ui.label(format!("— nouvel essai automatique sous {retry_in_s} s"))
+                        .on_hover_text(error);
+                }
             }
         });
         if let NodeStatus::Unreachable { error, .. } = &device.status {
@@ -581,16 +660,47 @@ impl MatterApp {
                     sensors::power(ui, device, window);
                     ui.separator();
                 }
+                if caps.cover {
+                    cover_command = sensors::cover(ui, device, window);
+                    ui.separator();
+                }
+                if !children.is_empty() {
+                    ui.heading("Appareils exposés par ce pont");
+                    for (child_id, label, summary) in &children {
+                        ui.horizontal(|ui| {
+                            if ui.link(label).clicked() {
+                                open_device = Some(*child_id);
+                            }
+                            if !summary.is_empty() {
+                                ui.small(summary);
+                            }
+                        });
+                    }
+                    ui.separator();
+                }
             });
-        if !caps.any() && (!device.info.device_types.is_empty() || device.last_seen.is_some()) {
+        if !caps.any()
+            && children.is_empty()
+            && (!device.info.device_types.is_empty() || device.last_seen.is_some())
+        {
             ui.label("Cet appareil n'expose aucune mesure suivie par cette application.");
             ui.label("Une prise ou une lampe se commande depuis l'onglet « Automatisations ».");
-        } else if !caps.any() {
+        } else if !caps.any() && children.is_empty() {
             ui.label("Description de l'appareil pas encore lue (il est peut-être endormi).");
         }
 
         if retry {
             self.send(Command::Retry(id));
+        }
+        if let Some(command) = cover_command {
+            self.send(Command::SetCover {
+                node_id: id,
+                command,
+            });
+        }
+        if let Some(other) = open_device {
+            self.selected = Some(other);
+            self.export_message = None;
         }
         if customize {
             self.device_edit = Some(fresh_edit);
@@ -731,6 +841,7 @@ impl eframe::App for MatterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::CoverCommand;
 
     /// Mode démo de bout en bout, sans fenêtre : backend simulé → événements → état de l'interface.
     #[test]
@@ -740,8 +851,8 @@ mod tests {
         let commands = crate::demo::spawn(sink);
         let mut app = MatterApp::new(commands, rx, true);
 
-        let wait_for = |app: &mut MatterApp, cond: &dyn Fn(&MatterApp) -> bool| {
-            for _ in 0..100 {
+        let wait_up_to = |app: &mut MatterApp, cond: &dyn Fn(&MatterApp) -> bool, n: u32| {
+            for _ in 0..n {
                 app.apply_events();
                 if cond(app) {
                     return true;
@@ -750,10 +861,13 @@ mod tests {
             }
             false
         };
+        let wait_for =
+            |app: &mut MatterApp, cond: &dyn Fn(&MatterApp) -> bool| wait_up_to(app, cond, 100);
 
-        // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli.
+        // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli :
+        // 4 appareils, un pont et ses 3 volets.
         assert!(wait_for(&mut app, &|a| {
-            a.devices.len() == 4 && a.devices.values().all(|d| d.status == NodeStatus::Online)
+            a.devices.len() == 8 && a.devices.values().all(|d| d.status == NodeStatus::Online)
         }));
         let living = app.devices.values().find(|d| d.info.caps.humidity).unwrap();
         assert!(living.temperature.len() > 150, "historique pré-rempli");
@@ -777,12 +891,88 @@ mod tests {
         assert!(plug.energy.is_some_and(|e| e.value > 12.0));
         assert_eq!(plug.on_off, Some(true));
         assert!(plug.summary().contains(" W"));
+        let plug_id = plug.info.node_id;
 
         // Pile faible signalée.
         assert!(app.devices.values().any(|d| d.battery_low));
 
+        // Volets derrière le pont : position connue pour deux, inconnue pour le moteur RTS.
+        let bridge = app
+            .devices
+            .values()
+            .find(|d| d.info.device_types.iter().any(|t| t == "Passerelle"))
+            .unwrap();
+        let bridge_id = bridge.info.node_id;
+        let shutters: Vec<&Device> = app
+            .devices
+            .values()
+            .filter(|d| d.info.bridge.is_some_and(|b| b.node_id == bridge_id))
+            .collect();
+        assert_eq!(shutters.len(), 3);
+        assert!(shutters.iter().all(|d| d.info.caps.cover));
+        assert_eq!(
+            shutters
+                .iter()
+                .filter(|d| d.info.caps.cover_position)
+                .count(),
+            2
+        );
+        let open_shutter = shutters
+            .iter()
+            .find(|d| d.position.last().is_some_and(|p| p.value >= 100.0))
+            .expect("un volet tout ouvert");
+        assert!(open_shutter.summary().contains("Ouvert"));
+        let shutter_id = open_shutter.info.node_id;
+        let rts = shutters
+            .iter()
+            .find(|d| !d.info.caps.cover_position)
+            .unwrap();
+        assert!(rts.position.is_empty());
+        let rts_id = rts.info.node_id;
+
+        // Fermer un volet : il descend par paliers puis s'arrête fermé.
+        app.send(Command::SetCover {
+            node_id: shutter_id,
+            command: CoverCommand::Close,
+        });
+        assert!(wait_for(&mut app, &|a| a.devices[&shutter_id].cover_motion
+            == Some(CoverMotion::Closing)));
+        // 100 % → 0 % par pas de 25 % toutes les 2 s : une dizaine de secondes.
+        assert!(wait_up_to(
+            &mut app,
+            &|a| {
+                let d = &a.devices[&shutter_id];
+                d.cover_motion == Some(CoverMotion::Stopped)
+                    && d.position.last().is_some_and(|p| p.value <= 0.0)
+            },
+            300
+        ));
+        assert_eq!(app.devices[&shutter_id].summary(), "Fermé");
+        // Puis à mi-hauteur.
+        app.send(Command::SetCover {
+            node_id: shutter_id,
+            command: CoverCommand::Position(50),
+        });
+        assert!(wait_up_to(
+            &mut app,
+            &|a| {
+                a.devices[&shutter_id]
+                    .position
+                    .last()
+                    .is_some_and(|p| p.value == 50.0)
+            },
+            300
+        ));
+        // Le moteur RTS bouge sans jamais donner de position.
+        app.send(Command::SetCover {
+            node_id: rts_id,
+            command: CoverCommand::Open,
+        });
+        assert!(wait_for(&mut app, &|a| a.devices[&rts_id].cover_motion
+            == Some(CoverMotion::Opening)));
+        assert!(app.devices[&rts_id].position.is_empty());
+
         // Nom et icône choisis, puis retour à l'automatique.
-        let plug_id = plug.info.node_id;
         app.send(Command::Customize {
             node_id: plug_id,
             name: Some("  Lampe du salon ".into()),
@@ -822,12 +1012,12 @@ mod tests {
             a.pairing,
             Pairing::Success(_)
         )));
-        assert_eq!(app.devices.len(), 5);
+        assert_eq!(app.devices.len(), 9);
         let new_id = app.selected.unwrap();
 
         // Oublier.
         app.send(Command::Forget(new_id));
-        assert!(wait_for(&mut app, &|a| a.devices.len() == 4));
+        assert!(wait_for(&mut app, &|a| a.devices.len() == 8));
 
         // Export CSV du salon.
         let living = app.devices.values().find(|d| d.info.caps.humidity).unwrap();

@@ -12,7 +12,7 @@ use crate::events::NodeStatus;
 use crate::home::{
     self, snap, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MIN_ROOM_SIZE, ROOM_SNAP,
 };
-use crate::matter::convert::{format_power, format_temperature};
+use crate::matter::convert::{format_position, format_power, format_temperature};
 use crate::persistence;
 
 const ITEM_RADIUS: f32 = 15.0;
@@ -103,6 +103,7 @@ pub fn glyph(symbol: Option<Symbol>) -> &'static str {
     match symbol {
         Some(Symbol::Door) => "🚪",
         Some(Symbol::Window) => "▦",
+        Some(Symbol::Shutter) => "▤",
         Some(Symbol::Light) => "💡",
         Some(Symbol::Plug) => "🔌",
         Some(Symbol::Thermometer) => "🌡",
@@ -140,6 +141,8 @@ fn default_symbol(d: &Device) -> Option<Symbol> {
     let types = d.info.device_types.join(" ");
     if caps.contact {
         Some(Symbol::Door)
+    } else if caps.cover {
+        Some(Symbol::Shutter)
     } else if caps.temperature {
         Some(Symbol::Thermometer)
     } else if caps.power || caps.on_off && types.contains("Prise") {
@@ -189,6 +192,25 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                     v.push_str(&format!(" · {:.0} %", h.value));
                 }
                 value = Some(v);
+            } else if d.info.caps.cover {
+                let mut text = match d.position.last() {
+                    Some(p) => {
+                        fill = if p.value <= 0.0 {
+                            Color32::from_gray(80)
+                        } else {
+                            BLUE
+                        };
+                        format_position(p.value)
+                    }
+                    None => String::new(),
+                };
+                match d.cover_motion {
+                    Some(crate::events::CoverMotion::Opening) => text.push_str(" ▲"),
+                    Some(crate::events::CoverMotion::Closing) => text.push_str(" ▼"),
+                    _ => {}
+                }
+                let text = text.trim().to_string();
+                value = (!text.is_empty()).then_some(text);
             } else if d.info.caps.power || d.info.caps.on_off {
                 fill = if d.on_off == Some(true) {
                     YELLOW
@@ -1023,6 +1045,51 @@ mod tests {
                 ..Default::default()
             })),
             Some(Symbol::Plug)
+        );
+        assert_eq!(
+            default_symbol(&device(Capabilities {
+                cover: true,
+                ..Default::default()
+            })),
+            Some(Symbol::Shutter)
+        );
+    }
+
+    #[test]
+    fn cover_look_shows_position_and_motion() {
+        let mut devices = BTreeMap::new();
+        let mut shutter = device(Capabilities {
+            cover: true,
+            cover_position: true,
+            ..Default::default()
+        });
+        shutter.status = NodeStatus::Online;
+        shutter.position.push(Sample { t: 0.0, value: 0.0 });
+        devices.insert(1, shutter);
+        let item = Item {
+            id: 5,
+            kind: ItemKind::Device {
+                node_id: 1,
+                symbol: None,
+            },
+            x: 0.0,
+            y: 0.0,
+        };
+        let lk = look(&item, &devices);
+        assert_eq!(
+            (lk.symbol, lk.value.as_deref()),
+            (Some(Symbol::Shutter), Some("Fermé"))
+        );
+        let d = devices.get_mut(&1).unwrap();
+        d.position.push(Sample {
+            t: 1.0,
+            value: 65.0,
+        });
+        d.cover_motion = Some(crate::events::CoverMotion::Opening);
+        let lk = look(&item, &devices);
+        assert_eq!(
+            (lk.fill, lk.value.as_deref()),
+            (BLUE, Some("Ouvert à 65 % ▲"))
         );
     }
 

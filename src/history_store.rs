@@ -83,6 +83,7 @@ impl Record {
             "power" => measure(MeasureKind::Power),
             "energy" => measure(MeasureKind::Energy),
             "battery" => measure(MeasureKind::Battery),
+            "position" => measure(MeasureKind::Position),
             "open" => state(StateKind::Open),
             "on_off" => state(StateKind::OnOff),
             "battery_low" => state(StateKind::BatteryLow),
@@ -98,6 +99,7 @@ fn measure_key(kind: MeasureKind) -> &'static str {
         MeasureKind::Power => "power",
         MeasureKind::Energy => "energy",
         MeasureKind::Battery => "battery",
+        MeasureKind::Position => "position",
     }
 }
 

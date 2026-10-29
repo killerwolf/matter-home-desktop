@@ -10,6 +10,18 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **Volets et stores** (cluster Window Covering) : fiche avec ouverture, mouvement en cours,
+  boutons ouvrir / stop / fermer, curseur de position, historique ; icône « Volet » ; état
+  sur le plan ; action « Ouvrir / fermer un volet » et mesure « ouverture du volet » dans
+  les automatisations.
+- **Ponts Matter** (Somfy TaHoma…) : chaque appareil exposé par un pont devient un appareil
+  à part entière, avec son nom, sa fiche, sa place sur le plan et ses règles ; la fiche du
+  pont liste ses appareils ; un appareil déclaré injoignable par le pont est signalé.
+  Écrit d'après la spécification, à valider avec une TaHoma réelle.
+- Mode démo : une TaHoma et trois volets, dont un moteur RTS sans retour de position.
+
 ### Modifié
 
 - **Fenêtre d'installation du DMG** : taille fixe, fond avec la consigne et une flèche vers

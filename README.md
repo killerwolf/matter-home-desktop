@@ -43,13 +43,19 @@ automatisations. Elle s'ajoute comme un contrôleur de plus ; tout reste en loca
 - **Thermomètres** : température et humidité en direct, graphique, min / max / moyenne, export CSV.
 - **Détecteurs d'ouverture** : ouvert / fermé, depuis quand, chronologie.
 - **Prises** : puissance en watts, énergie consommée, état allumée / éteinte.
+- **Volets et stores** : ouvrir, fermer, arrêter, aller à une position, historique
+  d'ouverture ; y compris derrière un **pont Matter** (Somfy TaHoma…), chaque volet étant un
+  appareil à part entière.
 - **Piles** : niveau et alerte de pile faible.
 - **Plan de la maison** : étages, pièces, appareils placés avec leur état en direct.
 - **Automatisations** : « quand la porte s'ouvre la nuit, envoyer une notification », « éteindre
-  la prise à 23 h »… Notifications macOS, marche / arrêt des prises et lampes, webhooks.
+  la prise à 23 h », « fermer les volets à 21 h 30 »… Notifications macOS, marche / arrêt des
+  prises et lampes, commandes de volets, webhooks.
 
 Testé avec des appareils IKEA (TIMMERFLOTTE, MYGGBETT, GRILLPLATS, BILRESA, KAJPLATS) et
-des routeurs de bordure Thread HomePod.
+des routeurs de bordure Thread HomePod. La prise en charge des ponts et des volets suit la
+spécification Matter (Window Covering, Bridged Device Basic Information) ; elle n'a pas
+encore été vérifiée avec une TaHoma réelle : les retours sont bienvenus.
 
 ## Télécharger
 

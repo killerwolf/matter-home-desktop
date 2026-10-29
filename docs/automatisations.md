@@ -9,9 +9,9 @@ de la règle sélectionnée et le journal des dernières exécutions.
 
 | | Possibilités |
 |---|---|
-| **Quand** | une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
+| **Quand** | une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
 | **Si** (toutes les conditions) | plage horaire (elle peut passer minuit : 22:00 → 07:00) ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
-| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; appeler une URL (webhook) ; attendre N secondes |
+| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes |
 
 **« ▶ Tester »** exécute les actions tout de suite, sans vérifier « Quand » ni « Si ».
 
@@ -24,6 +24,8 @@ de la règle sélectionnée et le journal des dernières exécutions.
 - **Frigo en surconsommation** — Quand : la puissance de la prise du frigo dépasse 150 W
   pendant 15 min. Alors : notifier.
 - **Capteur muet** — Quand : le thermomètre reste injoignable 60 min. Alors : notifier.
+- **Volets du soir** — Quand : à 21:30. Alors : fermer le volet du salon, ouvrir à 20 % celui
+  de la cuisine. L'ouverture d'un volet ne sert de seuil que si le moteur connaît sa position.
 
 ## Textes et variables
 
@@ -50,8 +52,8 @@ acceptées ; délai maximal de 10 s. Pratique pour IFTTT, ntfy, Slack, Home Assi
   déclenche à la première mesure reçue.
 - **Changements uniquement** : au démarrage ou à la reconnexion, la première valeur connue
   d'un appareil ne déclenche rien, pas plus que les mesures relues de l'historique.
-- **Commandes** : une prise ou lampe ne peut être commandée que si elle est connectée à ce
-  moment-là ; sinon l'action échoue et le journal l'indique.
+- **Commandes** : une prise, une lampe ou un volet ne peut être commandé que si l'appareil
+  (ou son pont) est connecté à ce moment-là ; sinon l'action échoue et le journal l'indique.
 
 ## Limites
 

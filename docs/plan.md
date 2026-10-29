@@ -14,6 +14,7 @@ chaque appareil placé montre son état en direct :
 | vert / orange | porte ou fenêtre fermée / ouverte |
 | bleu, vert, orange | température < 18 °C, 18–24 °C, > 24 °C |
 | jaune / gris foncé | prise allumée / éteinte, avec sa puissance |
+| bleu / gris foncé | volet ouvert (avec son ouverture en %) / fermé ; ▲ ▼ pendant un mouvement |
 | gris | appareil injoignable ou pas encore connu |
 | point rouge | pile faible |
 
@@ -29,8 +30,8 @@ Cliquez sur **« ✏ Modifier le plan »** :
   Déplacez-le en le faisant glisser, redimensionnez-le par son coin bas-droit, renommez-le
   dans la colonne de droite. Les objets posés dans une pièce se déplacent avec elle.
 - **Colonne de droite** : glissez sur le plan les appareils pas encore placés, ou des objets
-  non connectés (porte, fenêtre, lumière, prise, thermomètre, bouton) pour rendre le plan
-  lisible.
+  non connectés (porte, fenêtre, volet, lumière, prise, thermomètre, bouton) pour rendre le
+  plan lisible.
 - **Objet sélectionné** : un appareil peut être renommé et changer d'icône ; un objet non
   connecté a son propre libellé et pictogramme. « Retirer du plan » ou la touche Suppr
   retire la sélection.

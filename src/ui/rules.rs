@@ -7,18 +7,21 @@ use eframe::egui::{self, Color32, RichText};
 
 use super::plan::{glyph, icon_of};
 use super::{ago, Device};
-use crate::automation::{self, Action, Condition, OnOffCommand, Rule, RuleSet, Trigger};
+use crate::automation::{
+    self, Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger,
+};
 use crate::events::{now_unix, MeasureKind};
 use crate::persistence;
 
 const RED: Color32 = Color32::from_rgb(210, 60, 50);
 const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
 const DAYS: [&str; 7] = ["L", "M", "M", "J", "V", "S", "D"];
-const MEASURES: [MeasureKind; 4] = [
+const MEASURES: [MeasureKind; 5] = [
     MeasureKind::Temperature,
     MeasureKind::Humidity,
     MeasureKind::Power,
     MeasureKind::Battery,
+    MeasureKind::Position,
 ];
 
 pub struct RunEntry {
@@ -49,6 +52,7 @@ pub struct RulesView {
 enum Need {
     Contact,
     Switch,
+    Cover,
     Measure(MeasureKind),
     Any,
 }
@@ -60,6 +64,7 @@ fn measure_label(m: MeasureKind) -> &'static str {
         MeasureKind::Power => "puissance (W)",
         MeasureKind::Energy => "énergie (kWh)",
         MeasureKind::Battery => "pile (%)",
+        MeasureKind::Position => "ouverture du volet (%)",
     }
 }
 
@@ -68,11 +73,13 @@ fn suits(d: &Device, need: Need) -> bool {
     match need {
         Need::Contact => c.contact,
         Need::Switch => c.on_off,
+        Need::Cover => c.cover,
         Need::Measure(MeasureKind::Temperature) => c.temperature,
         Need::Measure(MeasureKind::Humidity) => c.humidity,
         Need::Measure(MeasureKind::Power) => c.power,
         Need::Measure(MeasureKind::Energy) => c.energy,
         Need::Measure(MeasureKind::Battery) => c.battery,
+        Need::Measure(MeasureKind::Position) => c.cover_position,
         Need::Any => true,
     }
 }
@@ -276,6 +283,9 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
         .map(|a| match a {
             Action::Notify { .. } => "notifier".to_string(),
             Action::SetOnOff { node_id, command } => {
+                format!("{} {}", command.label().to_lowercase(), name(*node_id))
+            }
+            Action::SetCover { node_id, command } => {
                 format!("{} {}", command.label().to_lowercase(), name(*node_id))
             }
             Action::Webhook { .. } => "webhook".to_string(),
@@ -719,6 +729,33 @@ impl RulesView {
                                 devices,
                             );
                         }
+                        Action::SetCover { node_id, command } => {
+                            egui::ComboBox::from_id_salt(("a_cover", rid, i))
+                                .selected_text(command.kind_label())
+                                .show_ui(ui, |ui| {
+                                    for c in CoverCommand::KINDS {
+                                        if ui
+                                            .selectable_label(command.same_kind(c), c.kind_label())
+                                            .clicked()
+                                            && !command.same_kind(c)
+                                        {
+                                            *command = c;
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                            if let CoverCommand::Position(percent) = command {
+                                changed |= ui
+                                    .add(
+                                        egui::DragValue::new(percent)
+                                            .range(0..=100)
+                                            .suffix(" % d'ouverture"),
+                                    )
+                                    .changed();
+                            }
+                            changed |=
+                                device_picker(ui, ("a_dev", rid, i), node_id, Need::Cover, devices);
+                        }
                         Action::Webhook { url, body } => {
                             ui.label("Appeler :");
                             changed |= ui
@@ -780,6 +817,14 @@ impl RulesView {
                 rule.actions.push(Action::SetOnOff {
                     node_id: first_device(devices, Need::Switch),
                     command: OnOffCommand::On,
+                });
+                changed = true;
+                ui.close();
+            }
+            if ui.button("Ouvrir / fermer un volet").clicked() {
+                rule.actions.push(Action::SetCover {
+                    node_id: first_device(devices, Need::Cover),
+                    command: CoverCommand::Close,
                 });
                 changed = true;
                 ui.close();
@@ -858,6 +903,18 @@ mod tests {
                 ..Default::default()
             }),
         );
+        devices.insert(
+            9,
+            Device::new(NodeInfo {
+                node_id: 9,
+                name: "Volet".into(),
+                caps: Capabilities {
+                    cover: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
         let mut r = Rule::new(1);
         r.trigger = Trigger::Contact {
             node_id: 7,
@@ -869,12 +926,21 @@ mod tests {
                 command: OnOffCommand::On,
             },
             Action::Delay { seconds: 30 },
+            Action::SetCover {
+                node_id: 9,
+                command: CoverCommand::Position(30),
+            },
         ];
         assert_eq!(
             summary(&r, &devices),
-            "Quand Porte s'ouvre → allumer Lampe, attendre 30 s"
+            "Quand Porte s'ouvre → allumer Lampe, attendre 30 s, ouvrir à 30 % Volet"
         );
         assert_eq!(first_device(&devices, Need::Switch), 8);
+        assert_eq!(first_device(&devices, Need::Cover), 9);
+        assert_eq!(
+            first_device(&devices, Need::Measure(MeasureKind::Position)),
+            0
+        );
         assert_eq!(first_device(&devices, Need::Measure(MeasureKind::Power)), 0);
         assert!(matches!(
             default_trigger(0, &devices),

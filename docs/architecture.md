@@ -82,6 +82,8 @@ attributs qu'elle sait afficher :
 | Electrical Power Measurement `0x0090` | ActivePower `0x0008` | int64 en mW → W |
 | Electrical Energy Measurement `0x0091` | CumulativeEnergyImported `0x0001` | structure, champ 0 en mWh → kWh |
 | On/Off `0x0006` | OnOff `0x0000` | booléen ; commandes Off `0x00`, On `0x01`, Toggle `0x02` |
+| Window Covering `0x0102` | CurrentPositionLiftPercent100ths `0x000E`, OperationalStatus `0x000A` | centièmes de % fermés (0 = ouvert) → % d'ouverture ; bits 0-1 / 2-3 : arrêt, ouverture, fermeture. Commandes UpOrOpen `0x00`, DownOrClose `0x01`, StopMotion `0x02`, GoToLiftPercentage `0x05` (champ 0 : uint16). La position n'est suivie que si la FeatureMap annonce « PositionAwareLift » |
+| Bridged Device Basic Information `0x0039` | Reachable `0x0011` | `false` → l'appareil ponté passe « Injoignable » sans nouvel essai de notre part |
 
 - Intervalle demandé : 10 s minimum, 300 s maximum ; un appareil sur pile peut imposer plus.
   Si la souscription échoue, l'application interroge l'appareil toutes les 30 s.
@@ -90,6 +92,22 @@ attributs qu'elle sait afficher :
   essayée d'abord, puis une redécouverte mDNS.
 - Quand l'application apprend à suivre de nouveaux clusters, la description des nœuds déjà
   appairés est relue (`INTERVIEW_VERSION` dans `persistence.rs`).
+
+### Ponts (Aggregator)
+
+Un nœud dont un endpoint a le type Aggregator `0x000E` est un pont : chaque endpoint portant
+Bridged Device Basic Information `0x0039` est un appareil ponté, nommé par son NodeLabel
+(sinon ProductName), dont les clusters sont cherchés sur lui-même et sur les sous-endpoints
+de sa PartsList (appareil composé). Chaque appareil ponté reçoit un **identifiant propre**,
+tiré au hasard dans `0xFFFF_FFF0_0000_0000..=0xFFFF_FFFF_FFFF_FFFF`, plage que Matter réserve
+et que l'appairage ne tire jamais : interface, plan, règles et historique continuent de
+manipuler un `u64` par appareil sans savoir s'il est ponté. L'identifiant, le nom et l'icône
+choisis survivent aux relectures (même endpoint) ; un endpoint disparu retire l'appareil.
+
+Une seule session CASE et une seule souscription par pont : `node.rs` route chaque rapport
+vers l'appareil de son endpoint (`Routes`), et répercute statut, « vu » et mode du nœud sur
+tous ses appareils, sauf « en ligne » pour ceux que le pont déclare injoignables. Les
+commandes (`Command::SetCover`, actions des règles) passent par la session du pont.
 
 ## Choix techniques
 
@@ -113,7 +131,9 @@ attributs qu'elle sait afficher :
 - Délais fixes, non adaptés aux paramètres SII/SAI annoncés par les appareils.
 - Rapports découpés en plusieurs messages (« chunked ») non gérés : sans effet pour les
   attributs lus ici.
-- Pas d'événements Matter (appuis de bouton), pas de mode service, pas de bundle `.app`.
+- Pas d'événements Matter (appuis de bouton), pas de mode service.
+- Volets : levée seulement (pas d'inclinaison des lames), pas de position cible affichée ;
+  ponts et volets écrits d'après la spécification, pas encore vérifiés avec une TaHoma réelle.
 
 ## Organisation du code
 

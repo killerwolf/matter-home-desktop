@@ -3,7 +3,12 @@
 //!
 //! Chaque nœud a sa propre tâche ; toutes les attentes réseau sont bornées par
 //! un délai pour qu'un appareil endormi ou disparu ne bloque jamais rien.
+//!
+//! Un nœud « pont » (type Aggregator, ex. Somfy TaHoma) expose plusieurs appareils,
+//! un par endpoint portant Bridged Device Basic Information. Chacun a son propre
+//! identifiant ; une seule session et une seule souscription servent pour tous.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,21 +19,24 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 
 use super::convert::{
-    battery_low_from_tlv, battery_percent_from_tlv, energy_kwh_from_tlv, humidity_from_tlv,
-    open_from_tlv, power_w_from_tlv, temperature_from_tlv,
+    battery_low_from_tlv, battery_percent_from_tlv, cover_motion_from_tlv,
+    cover_open_percent_from_tlv, energy_kwh_from_tlv, humidity_from_tlv, open_from_tlv,
+    power_w_from_tlv, temperature_from_tlv,
 };
 use super::tlv::{parse_report_data, parse_subscribe_response_max_interval, Value};
-use super::{node_info, Ctx};
+use super::{Ctx, Interview};
 use crate::events::{now_unix, Event, MeasureKind, NodeStatus, ReportingMode, StateKind};
-use crate::persistence::{StoredNode, INTERVIEW_VERSION};
+use crate::persistence::{StoredBridgedDevice, StoredNode, TrackedEndpoints, INTERVIEW_VERSION};
 
 const CLUSTER_ON_OFF: u32 = 0x0006;
 const CLUSTER_DESCRIPTOR: u32 = 0x001D;
 const CLUSTER_BASIC_INFORMATION: u32 = 0x0028;
 const CLUSTER_POWER_SOURCE: u32 = 0x002F;
+const CLUSTER_BRIDGED_BASIC: u32 = 0x0039;
 const CLUSTER_BOOLEAN_STATE: u32 = 0x0045;
 const CLUSTER_ELECTRICAL_POWER: u32 = 0x0090;
 const CLUSTER_ELECTRICAL_ENERGY: u32 = 0x0091;
+pub(crate) const CLUSTER_WINDOW_COVERING: u32 = 0x0102;
 const CLUSTER_TEMPERATURE: u32 = 0x0402;
 const CLUSTER_HUMIDITY: u32 = 0x0405;
 
@@ -39,9 +47,18 @@ const ATTR_BAT_PERCENT_REMAINING: u32 = 0x000C;
 const ATTR_BAT_CHARGE_LEVEL: u32 = 0x000E;
 const ATTR_ACTIVE_POWER: u32 = 0x0008;
 const ATTR_CUMULATIVE_ENERGY_IMPORTED: u32 = 0x0001;
+/// Bridged Device Basic Information / Reachable.
+const ATTR_REACHABLE: u32 = 0x0011;
+/// Window Covering / OperationalStatus et CurrentPositionLiftPercent100ths.
+const ATTR_COVER_OPERATIONAL_STATUS: u32 = 0x000A;
+const ATTR_COVER_CURRENT_LIFT: u32 = 0x000E;
 const ATTR_FEATURE_MAP: u32 = 0xFFFC;
 /// Power Source : bit « BAT » de la FeatureMap (alimentation par pile).
 const POWER_SOURCE_FEATURE_BATTERY: u64 = 0x2;
+/// Window Covering : bit « PA_LF » (Position Aware Lift) de la FeatureMap.
+const COVER_FEATURE_POSITION_AWARE_LIFT: u64 = 0x4;
+/// Type d'appareil « Aggregator » : le nœud est un pont.
+const DEVICE_TYPE_AGGREGATOR: u64 = 0x000E;
 
 /// Bornes demandées pour la souscription : au plus un rapport toutes les 10 s,
 /// au moins un toutes les 5 min (un appareil sur pile peut choisir plus long).
@@ -120,15 +137,35 @@ async fn wait_retry(ctx: &Ctx, node_id: u64, wake: &Notify, error: String, retry
     *retry = (*retry * 2).min(RETRY_MAX);
 }
 
+/// Statut du nœud, répercuté sur les appareils qu'il expose. Un appareil que le pont
+/// lui-même déclare injoignable ne repasse pas « en ligne » avec le pont.
 fn status(ctx: &Ctx, node_id: u64, status: NodeStatus) {
-    ctx.events.send(Event::Status { node_id, status });
+    let online = status == NodeStatus::Online;
+    for id in ctx.device_ids(node_id) {
+        if online && id != node_id && ctx.is_bridge_unreachable(id) {
+            continue;
+        }
+        ctx.events.send(Event::Status {
+            node_id: id,
+            status: status.clone(),
+        });
+    }
 }
 
 fn seen(ctx: &Ctx, node_id: u64) {
-    ctx.events.send(Event::Seen {
-        node_id,
-        at: now_unix(),
-    });
+    let at = now_unix();
+    for id in ctx.device_ids(node_id) {
+        ctx.events.send(Event::Seen { node_id: id, at });
+    }
+}
+
+fn mode(ctx: &Ctx, node_id: u64, mode: ReportingMode) {
+    for id in ctx.device_ids(node_id) {
+        ctx.events.send(Event::Mode {
+            node_id: id,
+            mode: mode.clone(),
+        });
+    }
 }
 
 /// Ouvre une session CASE : adresse connue d'abord, puis redécouverte mDNS.
@@ -191,8 +228,8 @@ async fn case(ctx: &Ctx, node_id: u64, address: &str) -> Result<Connection> {
     bail!("appareil occupé (BUSY)")
 }
 
-/// Attributs suivis pour ce nœud : (endpoint, cluster, attribut).
-fn tracked_paths(n: &StoredNode) -> Vec<(u16, u32, u32)> {
+/// Attributs suivis pour un appareil : (endpoint, cluster, attribut).
+fn paths_of(e: &TrackedEndpoints) -> Vec<(u16, u32, u32)> {
     let mut paths = Vec::new();
     let mut add = |ep: Option<u16>, cluster: u32, attrs: &[u32]| {
         if let Some(ep) = ep {
@@ -200,37 +237,91 @@ fn tracked_paths(n: &StoredNode) -> Vec<(u16, u32, u32)> {
         }
     };
     add(
-        n.temperature_endpoint,
+        e.temperature_endpoint,
         CLUSTER_TEMPERATURE,
         &[ATTR_MEASURED_VALUE],
     );
     add(
-        n.humidity_endpoint,
+        e.humidity_endpoint,
         CLUSTER_HUMIDITY,
         &[ATTR_MEASURED_VALUE],
     );
     add(
-        n.contact_endpoint,
+        e.contact_endpoint,
         CLUSTER_BOOLEAN_STATE,
         &[ATTR_STATE_VALUE],
     );
     add(
-        n.battery_endpoint,
+        e.battery_endpoint,
         CLUSTER_POWER_SOURCE,
         &[ATTR_BAT_PERCENT_REMAINING, ATTR_BAT_CHARGE_LEVEL],
     );
     add(
-        n.power_endpoint,
+        e.power_endpoint,
         CLUSTER_ELECTRICAL_POWER,
         &[ATTR_ACTIVE_POWER],
     );
     add(
-        n.energy_endpoint,
+        e.energy_endpoint,
         CLUSTER_ELECTRICAL_ENERGY,
         &[ATTR_CUMULATIVE_ENERGY_IMPORTED],
     );
-    add(n.on_off_endpoint, CLUSTER_ON_OFF, &[ATTR_ON_OFF]);
+    add(e.on_off_endpoint, CLUSTER_ON_OFF, &[ATTR_ON_OFF]);
+    // La position n'existe que sur un volet qui la connaît : la demander ailleurs
+    // ferait refuser la souscription par certains appareils.
+    if e.cover_position {
+        add(
+            e.cover_endpoint,
+            CLUSTER_WINDOW_COVERING,
+            &[ATTR_COVER_OPERATIONAL_STATUS, ATTR_COVER_CURRENT_LIFT],
+        );
+    } else {
+        add(
+            e.cover_endpoint,
+            CLUSTER_WINDOW_COVERING,
+            &[ATTR_COVER_OPERATIONAL_STATUS],
+        );
+    }
     paths
+}
+
+/// Attributs suivis pour le nœud et tous les appareils qu'il expose.
+fn tracked_paths(n: &StoredNode) -> Vec<(u16, u32, u32)> {
+    let mut paths = paths_of(&n.endpoints);
+    for b in &n.bridged {
+        paths.extend(paths_of(&b.endpoints));
+        paths.push((b.endpoint, CLUSTER_BRIDGED_BASIC, ATTR_REACHABLE));
+    }
+    paths
+}
+
+/// Quel appareil (identifiant) reçoit les rapports de chaque endpoint du nœud.
+struct Routes {
+    node_id: u64,
+    by_endpoint: HashMap<u16, u64>,
+}
+
+impl Routes {
+    fn of(n: &StoredNode) -> Self {
+        let mut by_endpoint = HashMap::new();
+        for b in &n.bridged {
+            by_endpoint.insert(b.endpoint, b.device_id);
+            for (ep, _, _) in paths_of(&b.endpoints) {
+                by_endpoint.insert(ep, b.device_id);
+            }
+        }
+        Self {
+            node_id: n.node_id,
+            by_endpoint,
+        }
+    }
+
+    fn device(&self, endpoint: u16) -> u64 {
+        self.by_endpoint
+            .get(&endpoint)
+            .copied()
+            .unwrap_or(self.node_id)
+    }
 }
 
 async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
@@ -242,19 +333,21 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
         seen(ctx, node_id);
     }
     let node = ctx.node(node_id).context("nœud inconnu")?;
+    let routes = Routes::of(&node);
     let paths = tracked_paths(&node);
     if paths.is_empty() {
         return liveness_loop(ctx, node_id, conn).await;
     }
-    match subscribe(ctx, node_id, conn, &paths).await {
+    match subscribe(ctx, &routes, conn, &paths).await {
         Ok(max_interval) => {
-            ctx.events.send(Event::Mode {
+            mode(
+                ctx,
                 node_id,
-                mode: ReportingMode::Subscription {
+                ReportingMode::Subscription {
                     max_interval_s: max_interval,
                 },
-            });
-            listen(ctx, node_id, conn, max_interval).await
+            );
+            listen(ctx, &routes, conn, max_interval).await
         }
         Err(e) => {
             log::warn!(
@@ -264,13 +357,14 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
                 "Souscription impossible pour le nœud {node_id:016X} ({e:#}) : interrogation toutes les {} s.",
                 POLL_EVERY.as_secs()
             )));
-            ctx.events.send(Event::Mode {
+            mode(
+                ctx,
                 node_id,
-                mode: ReportingMode::Polling {
+                ReportingMode::Polling {
                     every_s: POLL_EVERY.as_secs(),
                 },
-            });
-            poll_loop(ctx, node_id, conn, &paths).await
+            );
+            poll_loop(ctx, &routes, conn, &paths).await
         }
     }
 }
@@ -297,56 +391,67 @@ async fn read_attr(conn: &Connection, endpoint: u16, cluster: u32, attr: u32) ->
     report.data.map_err(|s| anyhow!("statut IM {s:#04x}"))
 }
 
-/// Lit le nom, le type et les endpoints de l'appareil, et repère les clusters suivis.
-async fn interview(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
-    let text = |v: Result<Value>| {
-        v.ok()
-            .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
-            .filter(|s| !s.is_empty())
-    };
-    let vendor = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0001).await);
-    let product = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0003).await);
-    let label = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0005).await);
+/// Chaîne non vide d'un attribut texte, sinon `None`.
+fn text(v: Result<Value>) -> Option<String> {
+    v.ok()
+        .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
+        .filter(|s| !s.is_empty())
+}
 
+fn u64_list(v: &Value) -> Vec<u64> {
+    v.items().iter().filter_map(|(_, v)| v.as_u64()).collect()
+}
+
+/// Description d'un endpoint : types d'appareil, clusters serveurs, sous-endpoints.
+struct EndpointDesc {
+    ep: u16,
+    device_types: Vec<u64>,
+    servers: Vec<u64>,
+}
+
+async fn describe_endpoints(conn: &Connection) -> Result<Vec<EndpointDesc>> {
     let parts = read_attr(conn, 0, CLUSTER_DESCRIPTOR, 0x0003)
         .await
         .context("lecture de la liste des endpoints")?;
     // L'endpoint 0 (nœud racine) n'est pas dans PartsList mais porte souvent Power Source.
-    let endpoints: Vec<u16> = std::iter::once(0)
-        .chain(
-            parts
-                .items()
-                .iter()
-                .filter_map(|(_, v)| v.as_u64())
-                .map(|e| e as u16),
-        )
-        .collect();
-
-    let mut found = StoredNode::default();
-    let mut device_types = Vec::new();
-    for ep in endpoints {
-        if ep != 0 {
-            if let Ok(list) = read_attr(conn, ep, CLUSTER_DESCRIPTOR, 0x0000).await {
-                for (_, entry) in list.items() {
-                    if let Some(name) = entry
-                        .field(0)
-                        .and_then(Value::as_u64)
-                        .and_then(|dt| device_type_name(dt as u32))
-                    {
-                        if !device_types.contains(&name) {
-                            device_types.push(name);
-                        }
-                    }
-                }
-            }
+    let mut endpoints: Vec<u16> = vec![0];
+    for ep in u64_list(&parts) {
+        let ep = ep as u16;
+        if !endpoints.contains(&ep) {
+            endpoints.push(ep);
         }
-        let servers = read_attr(conn, ep, CLUSTER_DESCRIPTOR, 0x0001).await?;
-        let has = |c: u32| {
-            servers
-                .items()
-                .iter()
-                .any(|(_, v)| v.as_u64() == Some(c as u64))
+    }
+    let mut out = Vec::new();
+    for ep in endpoints {
+        let device_types = if ep == 0 {
+            Vec::new()
+        } else {
+            read_attr(conn, ep, CLUSTER_DESCRIPTOR, 0x0000)
+                .await
+                .map(|list| {
+                    list.items()
+                        .iter()
+                        .filter_map(|(_, entry)| entry.field(0).and_then(Value::as_u64))
+                        .collect()
+                })
+                .unwrap_or_default()
         };
+        let servers = u64_list(&read_attr(conn, ep, CLUSTER_DESCRIPTOR, 0x0001).await?);
+        out.push(EndpointDesc {
+            ep,
+            device_types,
+            servers,
+        });
+    }
+    Ok(out)
+}
+
+/// Repère, parmi ces endpoints, ceux qui portent les clusters suivis.
+async fn scan(conn: &Connection, descs: &[&EndpointDesc]) -> TrackedEndpoints {
+    let mut found = TrackedEndpoints::default();
+    for d in descs {
+        let ep = d.ep;
+        let has = |c: u32| d.servers.contains(&(c as u64));
         let pick = |slot: &mut Option<u16>, cluster: u32| {
             if slot.is_none() && has(cluster) {
                 *slot = Some(ep);
@@ -369,27 +474,113 @@ async fn interview(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
                 found.battery_endpoint = Some(ep);
             }
         }
-    }
-
-    ctx.update_node(node_id, |n| {
-        if let Some(name) = label.clone().or_else(|| product.clone()) {
-            n.name = name;
+        if found.cover_endpoint.is_none() && has(CLUSTER_WINDOW_COVERING) {
+            found.cover_endpoint = Some(ep);
+            let features = read_attr(conn, ep, CLUSTER_WINDOW_COVERING, ATTR_FEATURE_MAP)
+                .await
+                .ok()
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            found.cover_position = features & COVER_FEATURE_POSITION_AWARE_LIFT != 0;
         }
-        n.vendor = vendor;
-        n.product = product;
-        n.device_types = device_types;
-        n.temperature_endpoint = found.temperature_endpoint;
-        n.humidity_endpoint = found.humidity_endpoint;
-        n.contact_endpoint = found.contact_endpoint;
-        n.battery_endpoint = found.battery_endpoint;
-        n.power_endpoint = found.power_endpoint;
-        n.energy_endpoint = found.energy_endpoint;
-        n.on_off_endpoint = found.on_off_endpoint;
-        n.interviewed = true;
-        n.interview_version = INTERVIEW_VERSION;
-    });
+    }
+    found
+}
+
+/// Noms des types d'appareil de ces endpoints, sans doublon.
+fn type_names(descs: &[&EndpointDesc]) -> Vec<String> {
+    let mut names = Vec::new();
+    for d in descs {
+        for dt in &d.device_types {
+            if let Some(name) = device_type_name(*dt as u32) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Lit le nom, le type et les endpoints de l'appareil, et repère les clusters suivis.
+/// Pour un pont, décrit aussi chaque appareil exposé.
+async fn interview(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
+    let vendor = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0001).await);
+    let product = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0003).await);
+    let label = text(read_attr(conn, 0, CLUSTER_BASIC_INFORMATION, 0x0005).await);
+
+    let descs = describe_endpoints(conn).await?;
+    let is_bridge = descs
+        .iter()
+        .any(|d| d.device_types.contains(&DEVICE_TYPE_AGGREGATOR));
+
+    let mut bridged = Vec::new();
+    let mut claimed: HashSet<u16> = HashSet::new();
+    if is_bridge {
+        let bridged_eps: Vec<u16> = descs
+            .iter()
+            .filter(|d| d.servers.contains(&(CLUSTER_BRIDGED_BASIC as u64)))
+            .map(|d| d.ep)
+            .collect();
+        for ep in bridged_eps {
+            // Un appareil ponté peut être composé : ses sous-endpoints sont dans sa PartsList.
+            let children: Vec<u16> = read_attr(conn, ep, CLUSTER_DESCRIPTOR, 0x0003)
+                .await
+                .map(|v| u64_list(&v).into_iter().map(|e| e as u16).collect())
+                .unwrap_or_default();
+            let members: Vec<&EndpointDesc> = descs
+                .iter()
+                .filter(|d| d.ep == ep || children.contains(&d.ep))
+                .collect();
+            let b_label = text(read_attr(conn, ep, CLUSTER_BRIDGED_BASIC, 0x0005).await);
+            let b_product = text(read_attr(conn, ep, CLUSTER_BRIDGED_BASIC, 0x0003).await);
+            let b_vendor = text(read_attr(conn, ep, CLUSTER_BRIDGED_BASIC, 0x0001).await);
+            let endpoints = scan(conn, &members).await;
+            let device_types = type_names(&members);
+            claimed.extend(members.iter().map(|d| d.ep));
+            bridged.push(StoredBridgedDevice {
+                device_id: 0, // attribué (ou conservé) par `set_interview`
+                endpoint: ep,
+                name: b_label
+                    .or_else(|| b_product.clone())
+                    .unwrap_or_else(|| format!("Appareil {ep}")),
+                vendor: b_vendor,
+                product: b_product,
+                device_types,
+                endpoints,
+                custom_name: None,
+                icon: None,
+            });
+        }
+    }
+    let own: Vec<&EndpointDesc> = descs.iter().filter(|d| !claimed.contains(&d.ep)).collect();
+    let endpoints = scan(conn, &own).await;
+    let device_types = type_names(&own);
+
+    let removed = ctx.set_interview(
+        node_id,
+        Interview {
+            name: label.or_else(|| product.clone()),
+            vendor,
+            product,
+            device_types,
+            endpoints,
+            bridged,
+        },
+    );
+    for id in removed {
+        ctx.history.remove(id);
+        ctx.events.send(Event::NodeRemoved(id));
+    }
     if let Some(n) = ctx.node(node_id) {
-        ctx.events.send(Event::Node(node_info(&n)));
+        super::announce(ctx, &n);
+        if !n.bridged.is_empty() {
+            ctx.events.send(Event::Info(format!(
+                "Pont « {} » : {} appareil(s) exposé(s).",
+                n.custom_name.as_deref().unwrap_or(&n.name),
+                n.bridged.len()
+            )));
+        }
     }
     Ok(())
 }
@@ -410,7 +601,7 @@ fn device_type_name(id: u32) -> Option<String> {
         0x0106 => "Capteur de luminosité",
         0x002C => "Capteur de qualité de l'air",
         0x000F => "Interrupteur",
-        0x0202 => "Store",
+        0x0202 => "Volet / store",
         0x000E => "Passerelle",
         _ => {
             return Some(
@@ -424,7 +615,16 @@ fn device_type_name(id: u32) -> Option<String> {
 }
 
 /// Transforme la valeur d'un attribut suivi en événement pour l'interface.
-fn publish(ctx: &Ctx, node_id: u64, cluster: u32, attribute: u32, value: &Value, at: f64) {
+fn publish(
+    ctx: &Ctx,
+    routes: &Routes,
+    endpoint: u16,
+    cluster: u32,
+    attribute: u32,
+    value: &Value,
+    at: f64,
+) {
+    let node_id = routes.device(endpoint);
     // Chaque mesure part vers l'interface et vers l'historique sur disque.
     let emit = |event: Event| {
         ctx.history.record(&event);
@@ -466,6 +666,14 @@ fn publish(ctx: &Ctx, node_id: u64, cluster: u32, attribute: u32, value: &Value,
         (CLUSTER_ELECTRICAL_ENERGY, ATTR_CUMULATIVE_ENERGY_IMPORTED) => {
             measure(MeasureKind::Energy, energy_kwh_from_tlv(value))
         }
+        (CLUSTER_WINDOW_COVERING, ATTR_COVER_CURRENT_LIFT) => {
+            measure(MeasureKind::Position, cover_open_percent_from_tlv(value))
+        }
+        (CLUSTER_WINDOW_COVERING, ATTR_COVER_OPERATIONAL_STATUS) => {
+            if let Some(motion) = cover_motion_from_tlv(value) {
+                ctx.events.send(Event::CoverMotion { node_id, motion });
+            }
+        }
         (CLUSTER_BOOLEAN_STATE, ATTR_STATE_VALUE) => state(StateKind::Open, open_from_tlv(value)),
         (CLUSTER_POWER_SOURCE, ATTR_BAT_CHARGE_LEVEL) => {
             state(StateKind::BatteryLow, battery_low_from_tlv(value))
@@ -474,18 +682,34 @@ fn publish(ctx: &Ctx, node_id: u64, cluster: u32, attribute: u32, value: &Value,
             StateKind::OnOff,
             matches!(value, Value::Bool(_)).then(|| *value == Value::Bool(true)),
         ),
+        (CLUSTER_BRIDGED_BASIC, ATTR_REACHABLE) => {
+            if let Value::Bool(reachable) = value {
+                ctx.set_bridge_reachable(node_id, *reachable);
+                ctx.events.send(Event::Status {
+                    node_id,
+                    status: if *reachable {
+                        NodeStatus::Online
+                    } else {
+                        NodeStatus::Unreachable {
+                            error: "déclaré injoignable par le pont".into(),
+                            retry_in_s: 0,
+                        }
+                    },
+                });
+            }
+        }
         _ => {}
     }
 }
 
-fn handle_reports(ctx: &Ctx, node_id: u64, msg: &Message) {
+fn handle_reports(ctx: &Ctx, routes: &Routes, msg: &Message) {
     let Ok(reports) = parse_report_data(&msg.payload) else {
         return;
     };
     let at = now_unix();
     for r in reports {
         if let Ok(value) = &r.data {
-            publish(ctx, node_id, r.cluster, r.attribute, value, at);
+            publish(ctx, routes, r.endpoint, r.cluster, r.attribute, value, at);
         }
     }
 }
@@ -512,10 +736,11 @@ async fn ack_report(conn: &Connection, msg: &Message) -> Result<()> {
 /// Une seule souscription pour tous les attributs suivis ; retourne le MaxInterval négocié (s).
 async fn subscribe(
     ctx: &Ctx,
-    node_id: u64,
+    routes: &Routes,
     conn: &Connection,
     paths: &[(u16, u32, u32)],
 ) -> Result<u64> {
+    let node_id = routes.node_id;
     let priming = timeout(
         REQUEST_TIMEOUT,
         conn.im_subscribe_request_paths(paths, false, SUB_MIN_FLOOR_S, SUB_MAX_CEILING_S),
@@ -528,7 +753,7 @@ async fn subscribe(
             priming.protocol_header.opcode
         );
     }
-    handle_reports(ctx, node_id, &priming);
+    handle_reports(ctx, routes, &priming);
     seen(ctx, node_id);
     ack_report(conn, &priming).await?;
 
@@ -552,7 +777,7 @@ async fn subscribe(
                 break;
             }
             Ph::INTERACTION_OPCODE_REPORT_DATA => {
-                handle_reports(ctx, node_id, &ev);
+                handle_reports(ctx, routes, &ev);
                 ack_report(conn, &ev).await?;
             }
             _ => {}
@@ -563,7 +788,8 @@ async fn subscribe(
 
 /// Écoute les rapports. Sans nouvelles au-delà de MaxInterval + marge, la
 /// session est considérée perdue et le superviseur se reconnecte.
-async fn listen(ctx: &Ctx, node_id: u64, conn: &Connection, max_interval: u64) -> Result<()> {
+async fn listen(ctx: &Ctx, routes: &Routes, conn: &Connection, max_interval: u64) -> Result<()> {
+    let node_id = routes.node_id;
     let silence = Duration::from_secs(max_interval + 30);
     loop {
         let ev = match timeout(silence, conn.recv_event()).await {
@@ -573,7 +799,7 @@ async fn listen(ctx: &Ctx, node_id: u64, conn: &Connection, max_interval: u64) -
         };
         match ev.protocol_header.opcode {
             Ph::INTERACTION_OPCODE_REPORT_DATA => {
-                handle_reports(ctx, node_id, &ev);
+                handle_reports(ctx, routes, &ev);
                 seen(ctx, node_id);
                 status(ctx, node_id, NodeStatus::Online);
                 ack_report(conn, &ev).await?;
@@ -586,10 +812,11 @@ async fn listen(ctx: &Ctx, node_id: u64, conn: &Connection, max_interval: u64) -
 
 async fn poll_loop(
     ctx: &Ctx,
-    node_id: u64,
+    routes: &Routes,
     conn: &Connection,
     paths: &[(u16, u32, u32)],
 ) -> Result<()> {
+    let node_id = routes.node_id;
     let mut failures = 0;
     loop {
         let mut ok = false;
@@ -598,7 +825,7 @@ async fn poll_loop(
             match read_attr(conn, *ep, *cluster, *attr).await {
                 Ok(v) => {
                     ok = true;
-                    publish(ctx, node_id, *cluster, *attr, &v, now_unix());
+                    publish(ctx, routes, *ep, *cluster, *attr, &v, now_unix());
                 }
                 Err(e) => last_err = Some(e),
             }
@@ -635,5 +862,71 @@ async fn liveness_loop(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()>
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_with_bridge() -> StoredNode {
+        StoredNode {
+            node_id: 0x10,
+            endpoints: TrackedEndpoints {
+                battery_endpoint: Some(0),
+                ..Default::default()
+            },
+            bridged: vec![
+                StoredBridgedDevice {
+                    device_id: 0xFFFF_FFF0_0000_0001,
+                    endpoint: 3,
+                    endpoints: TrackedEndpoints {
+                        cover_endpoint: Some(3),
+                        cover_position: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                StoredBridgedDevice {
+                    device_id: 0xFFFF_FFF0_0000_0002,
+                    endpoint: 4,
+                    endpoints: TrackedEndpoints {
+                        cover_endpoint: Some(5), // volet composé : moteur sur un sous-endpoint
+                        cover_position: false,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bridged_paths_and_routes() {
+        let n = node_with_bridge();
+        let paths = tracked_paths(&n);
+        assert!(paths.contains(&(0, CLUSTER_POWER_SOURCE, ATTR_BAT_PERCENT_REMAINING)));
+        assert!(paths.contains(&(3, CLUSTER_WINDOW_COVERING, ATTR_COVER_CURRENT_LIFT)));
+        assert!(paths.contains(&(3, CLUSTER_WINDOW_COVERING, ATTR_COVER_OPERATIONAL_STATUS)));
+        assert!(paths.contains(&(3, CLUSTER_BRIDGED_BASIC, ATTR_REACHABLE)));
+        // Sans position connue : pas de souscription à la position.
+        assert!(!paths.contains(&(5, CLUSTER_WINDOW_COVERING, ATTR_COVER_CURRENT_LIFT)));
+        assert!(paths.contains(&(5, CLUSTER_WINDOW_COVERING, ATTR_COVER_OPERATIONAL_STATUS)));
+        assert!(paths.contains(&(4, CLUSTER_BRIDGED_BASIC, ATTR_REACHABLE)));
+
+        let routes = Routes::of(&n);
+        assert_eq!(routes.device(0), 0x10);
+        assert_eq!(routes.device(3), 0xFFFF_FFF0_0000_0001);
+        assert_eq!(routes.device(4), 0xFFFF_FFF0_0000_0002);
+        assert_eq!(routes.device(5), 0xFFFF_FFF0_0000_0002);
+        assert_eq!(routes.device(9), 0x10);
+    }
+
+    #[test]
+    fn device_type_names_for_covers_and_bridges() {
+        assert_eq!(device_type_name(0x0202).as_deref(), Some("Volet / store"));
+        assert_eq!(device_type_name(0x000E).as_deref(), Some("Passerelle"));
+        assert_eq!(device_type_name(0x0013), None, "Bridged Node : utilitaire");
     }
 }

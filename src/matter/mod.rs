@@ -8,7 +8,7 @@ mod node;
 pub mod setup_code;
 pub mod tlv;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,10 +22,14 @@ use rand::Rng;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
-use crate::automation::{self, Actuator, BoxFuture, OnOffCommand};
-use crate::events::{Capabilities, Command, Event, EventSink, NodeInfo};
+use crate::automation::{self, Actuator, BoxFuture, CoverCommand, OnOffCommand};
+use crate::events::{BridgeLink, Capabilities, Command, Event, EventSink, NodeInfo};
 use crate::history_store::{self, HistorySink, HistoryStore};
-use crate::persistence::{self, StoredNode, StoredState};
+use crate::home::Symbol;
+use crate::persistence::{
+    self, StoredBridgedDevice, StoredNode, StoredState, TrackedEndpoints, BRIDGED_ID_MAX,
+    BRIDGED_ID_MIN, INTERVIEW_VERSION,
+};
 use discovery::Discovery;
 
 /// Socket UDP local : toutes les interfaces, IPv6 (double pile), port éphémère.
@@ -33,6 +37,7 @@ use discovery::Discovery;
 const LOCAL_ADDRESS: &str = "[::]:0";
 const PAIRING_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(40);
 const COMMISSION_TIMEOUT: Duration = Duration::from_secs(180);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// État partagé par toutes les tâches de fond.
 pub(crate) struct Ctx {
@@ -46,8 +51,28 @@ pub(crate) struct Ctx {
     pub history: HistorySink,
     /// Sessions CASE ouvertes, partagées avec les automatisations.
     connections: Mutex<HashMap<u64, Arc<Connection>>>,
+    /// Appareils que leur pont déclare injoignables (attribut Reachable).
+    bridge_unreachable: Mutex<HashSet<u64>>,
     state: Mutex<StoredState>,
     state_path: PathBuf,
+}
+
+/// Résultat de la lecture de structure d'un nœud (voir `node::interview`).
+pub(crate) struct Interview {
+    pub name: Option<String>,
+    pub vendor: Option<String>,
+    pub product: Option<String>,
+    pub device_types: Vec<String>,
+    pub endpoints: TrackedEndpoints,
+    /// `device_id` à 0 : attribué ici, ou repris de l'ancienne lecture (même endpoint).
+    pub bridged: Vec<StoredBridgedDevice>,
+}
+
+/// Un appareil résolu : le nœud qui le porte et ses endpoints suivis.
+pub(crate) struct Resolved {
+    pub node_id: u64,
+    pub name: String,
+    pub endpoints: TrackedEndpoints,
 }
 
 impl Ctx {
@@ -68,6 +93,127 @@ impl Ctx {
                 }
             }
         }
+    }
+
+    /// Nœud et appareils qu'il expose, le nœud en premier.
+    pub fn device_ids(&self, node_id: u64) -> Vec<u64> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ids = vec![node_id];
+        if let Some(n) = state.nodes.iter().find(|n| n.node_id == node_id) {
+            ids.extend(n.bridged.iter().map(|b| b.device_id));
+        }
+        ids
+    }
+
+    /// Nœud qui porte cet appareil : lui-même, ou son pont.
+    pub fn parent_node(&self, device_id: u64) -> Option<u64> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .nodes
+            .iter()
+            .find(|n| n.node_id == device_id || n.bridged(device_id).is_some())
+            .map(|n| n.node_id)
+    }
+
+    pub fn resolve(&self, device_id: u64) -> Option<Resolved> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        for n in &state.nodes {
+            if n.node_id == device_id {
+                return Some(Resolved {
+                    node_id: n.node_id,
+                    name: n.custom_name.clone().unwrap_or_else(|| n.name.clone()),
+                    endpoints: n.endpoints.clone(),
+                });
+            }
+            if let Some(b) = n.bridged(device_id) {
+                return Some(Resolved {
+                    node_id: n.node_id,
+                    name: b.custom_name.clone().unwrap_or_else(|| b.name.clone()),
+                    endpoints: b.endpoints.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Applique une lecture de structure. Les appareils pontés gardent leur identifiant,
+    /// leur nom et leur icône choisis d'une lecture à l'autre (même endpoint) ; ceux qui
+    /// ont disparu sont retirés et leurs identifiants retournés.
+    pub fn set_interview(&self, node_id: u64, iv: Interview) -> Vec<u64> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut taken: HashSet<u64> = state.device_ids().into_iter().collect();
+        let Some(n) = state.nodes.iter_mut().find(|n| n.node_id == node_id) else {
+            return Vec::new();
+        };
+        let mut bridged = iv.bridged;
+        for b in &mut bridged {
+            if let Some(old) = n.bridged.iter().find(|o| o.endpoint == b.endpoint) {
+                b.device_id = old.device_id;
+                b.custom_name = old.custom_name.clone();
+                b.icon = old.icon;
+            } else {
+                let mut rng = rand::thread_rng();
+                loop {
+                    let id = rng.gen_range(BRIDGED_ID_MIN..=BRIDGED_ID_MAX);
+                    if taken.insert(id) {
+                        b.device_id = id;
+                        break;
+                    }
+                }
+            }
+        }
+        let removed: Vec<u64> = n
+            .bridged
+            .iter()
+            .filter(|o| !bridged.iter().any(|b| b.endpoint == o.endpoint))
+            .map(|o| o.device_id)
+            .collect();
+        if let Some(name) = iv.name {
+            n.name = name;
+        }
+        n.vendor = iv.vendor;
+        n.product = iv.product;
+        n.device_types = iv.device_types;
+        n.endpoints = iv.endpoints;
+        n.bridged = bridged;
+        n.interviewed = true;
+        n.interview_version = INTERVIEW_VERSION;
+        if let Err(e) = persistence::save(&self.state_path, &state) {
+            log::error!("sauvegarde impossible : {e:#}");
+        }
+        removed
+    }
+
+    /// Nom et icône choisis pour un appareil (nœud ou ponté) ; retourne sa fiche à jour.
+    pub fn customize(
+        &self,
+        device_id: u64,
+        name: Option<String>,
+        icon: Option<Symbol>,
+    ) -> Option<NodeInfo> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut info = None;
+        for n in &mut state.nodes {
+            if n.node_id == device_id {
+                n.custom_name = name.clone();
+                n.icon = icon;
+                info = Some(node_info(n));
+                break;
+            }
+            let link = n.node_id;
+            if let Some(b) = n.bridged_mut(device_id) {
+                b.custom_name = name.clone();
+                b.icon = icon;
+                info = Some(bridged_info(link, b));
+                break;
+            }
+        }
+        if info.is_some() {
+            if let Err(e) = persistence::save(&self.state_path, &state) {
+                log::error!("sauvegarde impossible : {e:#}");
+            }
+        }
+        info
     }
 
     fn add_node(&self, node: StoredNode) -> Result<()> {
@@ -99,8 +245,41 @@ impl Ctx {
             .cloned()
     }
 
+    pub fn set_bridge_reachable(&self, device_id: u64, reachable: bool) {
+        let mut set = self
+            .bridge_unreachable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if reachable {
+            set.remove(&device_id);
+        } else {
+            set.insert(device_id);
+        }
+    }
+
+    pub fn is_bridge_unreachable(&self, device_id: u64) -> bool {
+        self.bridge_unreachable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&device_id)
+    }
+
     pub fn instance_name(&self, node_id: u64) -> String {
         format!("{}-{:016X}", self.compressed_fabric, node_id)
+    }
+}
+
+fn caps_of(e: &TrackedEndpoints) -> Capabilities {
+    Capabilities {
+        temperature: e.temperature_endpoint.is_some(),
+        humidity: e.humidity_endpoint.is_some(),
+        contact: e.contact_endpoint.is_some(),
+        battery: e.battery_endpoint.is_some(),
+        power: e.power_endpoint.is_some(),
+        energy: e.energy_endpoint.is_some(),
+        on_off: e.on_off_endpoint.is_some(),
+        cover: e.cover_endpoint.is_some(),
+        cover_position: e.cover_endpoint.is_some() && e.cover_position,
     }
 }
 
@@ -114,15 +293,35 @@ pub fn node_info(n: &StoredNode) -> NodeInfo {
         vendor: n.vendor.clone(),
         product: n.product.clone(),
         device_types: n.device_types.clone(),
-        caps: Capabilities {
-            temperature: n.temperature_endpoint.is_some(),
-            humidity: n.humidity_endpoint.is_some(),
-            contact: n.contact_endpoint.is_some(),
-            battery: n.battery_endpoint.is_some(),
-            power: n.power_endpoint.is_some(),
-            energy: n.energy_endpoint.is_some(),
-            on_off: n.on_off_endpoint.is_some(),
-        },
+        caps: caps_of(&n.endpoints),
+        bridge: None,
+    }
+}
+
+/// Fiche d'un appareil exposé par le pont `bridge_node`.
+pub fn bridged_info(bridge_node: u64, b: &StoredBridgedDevice) -> NodeInfo {
+    NodeInfo {
+        node_id: b.device_id,
+        name: b.custom_name.clone().unwrap_or_else(|| b.name.clone()),
+        device_name: b.name.clone(),
+        custom_name: b.custom_name.clone(),
+        icon: b.icon,
+        vendor: b.vendor.clone(),
+        product: b.product.clone(),
+        device_types: b.device_types.clone(),
+        caps: caps_of(&b.endpoints),
+        bridge: Some(BridgeLink {
+            node_id: bridge_node,
+            endpoint: b.endpoint,
+        }),
+    }
+}
+
+/// Envoie la fiche du nœud, puis celles des appareils qu'il expose.
+pub(crate) fn announce(ctx: &Ctx, n: &StoredNode) {
+    ctx.events.send(Event::Node(node_info(n)));
+    for b in &n.bridged {
+        ctx.events.send(Event::Node(bridged_info(n.node_id, b)));
     }
 }
 
@@ -202,8 +401,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     )));
 
     let nodes = state.nodes.clone();
+    let device_ids = state.device_ids();
     for n in &nodes {
         events.send(Event::Node(node_info(n)));
+        for b in &n.bridged {
+            events.send(Event::Node(bridged_info(n.node_id, b)));
+        }
     }
 
     // Historique sur disque : nettoyage (rétention, taille), puis relecture vers l'interface.
@@ -212,11 +415,11 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     let pruned = store.prune(now);
     let since = now - history_store::RETENTION.as_secs_f64();
     let mut replayed = 0;
-    for n in &nodes {
+    for id in &device_ids {
         for event in store
-            .load(n.node_id, since)
+            .load(*id, since)
             .iter()
-            .filter_map(|r| r.to_event(n.node_id))
+            .filter_map(|r| r.to_event(*id))
         {
             events.send(event);
             replayed += 1;
@@ -226,7 +429,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     for orphan in store
         .nodes()
         .into_iter()
-        .filter(|id| !nodes.iter().any(|n| n.node_id == *id))
+        .filter(|id| !device_ids.contains(id))
     {
         let _ = store.remove(orphan);
     }
@@ -248,6 +451,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
         events: events.clone(),
         history,
         connections: Mutex::new(HashMap::new()),
+        bridge_unreachable: Mutex::new(HashSet::new()),
         state: Mutex::new(state),
         state_path,
     });
@@ -257,13 +461,8 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     if let Some(e) = rules_error {
         events.send(Event::Info(e));
     }
-    automation::spawn(
-        rules.rules,
-        tap_rx,
-        engine_rx,
-        ui,
-        Arc::new(MatterActuator(ctx.clone())),
-    );
+    let actuator: Arc<dyn Actuator> = Arc::new(MatterActuator(ctx.clone()));
+    automation::spawn(rules.rules, tap_rx, engine_rx, ui, actuator.clone());
 
     let mut handles: HashMap<u64, NodeHandle> = HashMap::new();
     for n in &nodes {
@@ -306,29 +505,51 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
                     }
                     Command::Customize { node_id, name, icon } => {
                         let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                        ctx.update_node(node_id, |n| {
-                            n.custom_name = name;
-                            n.icon = icon;
-                        });
-                        if let Some(n) = ctx.node(node_id) {
-                            events.send(Event::Node(node_info(&n)));
+                        if let Some(info) = ctx.customize(node_id, name, icon) {
+                            events.send(Event::Node(info));
                         }
                     }
+                    Command::SetCover { node_id, command } => {
+                        let ctx = ctx.clone();
+                        let actuator = actuator.clone();
+                        tokio::spawn(async move {
+                            let name = ctx.resolve(node_id).map_or_else(
+                                || format!("{node_id:016X}"),
+                                |r| r.name,
+                            );
+                            let what = format!("{name} : {}", command.label().to_lowercase());
+                            match actuator.set_cover(node_id, command).await {
+                                Ok(()) => ctx.events.send(Event::Info(format!("{what} — commande envoyée."))),
+                                Err(e) => ctx.events.send(Event::Info(format!("{what} — échec : {e:#}"))),
+                            }
+                        });
+                    }
                     Command::Retry(node_id) => {
-                        if let Some(h) = handles.get(&node_id) {
+                        let parent = ctx.parent_node(node_id).unwrap_or(node_id);
+                        if let Some(h) = handles.get(&parent) {
                             h.wake.notify_one();
                         }
                     }
                     Command::Forget(node_id) => {
+                        if ctx.parent_node(node_id).is_some_and(|p| p != node_id) {
+                            events.send(Event::Info(
+                                "Cet appareil est exposé par un pont : pour le retirer, oubliez le pont.".into(),
+                            ));
+                            continue;
+                        }
                         if let Some(h) = handles.remove(&node_id) {
                             h.task.abort();
                         }
-                        ctx.history.remove(node_id);
+                        let ids = ctx.device_ids(node_id);
                         ctx.set_connection(node_id, None);
                         if let Err(e) = ctx.remove_node(node_id) {
                             events.send(Event::Info(format!("Sauvegarde impossible : {e:#}")));
                         }
-                        events.send(Event::NodeRemoved(node_id));
+                        for id in ids {
+                            ctx.history.remove(id);
+                            ctx.set_bridge_reachable(id, true);
+                            events.send(Event::NodeRemoved(id));
+                        }
                     }
                 }
             }
@@ -451,28 +672,81 @@ async fn pair(
     Err(explain_commission_error(&last_err))
 }
 
-/// Commandes Matter des automatisations, envoyées sur la session ouverte du nœud.
+/// Commandes Matter des automatisations et de la fiche, envoyées sur la session
+/// ouverte du nœud (ou du pont) qui porte l'appareil.
 struct MatterActuator(Arc<Ctx>);
+
+impl MatterActuator {
+    /// Envoie une commande sur la session du nœud `parent` (l'appareil lui-même ou son pont).
+    async fn invoke(
+        &self,
+        parent: u64,
+        endpoint: u16,
+        cluster: u32,
+        command: u32,
+        payload: &[u8],
+    ) -> Result<()> {
+        let conn = self
+            .0
+            .connection(parent)
+            .context("appareil non connecté pour l'instant")?;
+        let msg = tokio::time::timeout(
+            COMMAND_TIMEOUT,
+            conn.invoke_request(endpoint, cluster, command, payload),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("pas de réponse à la commande"))??;
+        invoke_status(&msg.payload)
+    }
+}
 
 impl Actuator for MatterActuator {
     fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let node = self.0.node(node_id).context("appareil inconnu")?;
-            let endpoint = node
+            let device = self.0.resolve(node_id).context("appareil inconnu")?;
+            let endpoint = device
+                .endpoints
                 .on_off_endpoint
                 .context("cet appareil ne se commande pas (pas de cluster On/Off)")?;
-            let conn = self
-                .0
-                .connection(node_id)
-                .context("appareil non connecté pour l'instant")?;
-            let msg = tokio::time::timeout(
-                Duration::from_secs(30),
-                conn.invoke_request(endpoint, 0x0006, command.command_id(), &[]),
+            self.invoke(device.node_id, endpoint, 0x0006, command.command_id(), &[])
+                .await
+        })
+    }
+
+    fn set_cover(&self, node_id: u64, command: CoverCommand) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let device = self.0.resolve(node_id).context("appareil inconnu")?;
+            let endpoint = device
+                .endpoints
+                .cover_endpoint
+                .context("cet appareil n'est pas un volet (pas de cluster Window Covering)")?;
+            let payload = cover_payload(command)?;
+            self.invoke(
+                device.node_id,
+                endpoint,
+                node::CLUSTER_WINDOW_COVERING,
+                command.command_id(),
+                &payload,
             )
             .await
-            .map_err(|_| anyhow::anyhow!("pas de réponse à la commande"))??;
-            invoke_status(&msg.payload)
         })
+    }
+}
+
+/// Champs TLV de la commande Window Covering : vide, sauf GoToLiftPercentage
+/// (champ 0 : LiftPercent100thsValue, 0 = ouvert, 10000 = fermé).
+fn cover_payload(command: CoverCommand) -> Result<Vec<u8>> {
+    match command {
+        CoverCommand::Position(open) => {
+            let item = matc::tlv::TlvItemEnc {
+                tag: 0,
+                value: matc::tlv::TlvItemValueEnc::UInt16(convert::lift100ths_from_open_percent(
+                    open,
+                )),
+            };
+            item.encode().context("encodage de la position")
+        }
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -532,21 +806,65 @@ mod tests {
     }
 
     #[test]
+    fn cover_payloads() {
+        assert!(cover_payload(CoverCommand::Open).unwrap().is_empty());
+        assert!(cover_payload(CoverCommand::Stop).unwrap().is_empty());
+        // Ouvert à 40 % → 6000 centièmes fermés = 0x1770, uint16 avec tag de contexte 0.
+        assert_eq!(
+            cover_payload(CoverCommand::Position(40)).unwrap(),
+            vec![0x25, 0x00, 0x70, 0x17]
+        );
+        assert_eq!(
+            cover_payload(CoverCommand::Position(100)).unwrap(),
+            vec![0x25, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
     fn node_info_prefers_custom_name_and_icon() {
         let mut n = StoredNode {
             node_id: 1,
             name: "GRILLPLATS Plug".into(),
-            power_endpoint: Some(2),
+            endpoints: TrackedEndpoints {
+                power_endpoint: Some(2),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let info = node_info(&n);
         assert_eq!((info.name.as_str(), info.icon), ("GRILLPLATS Plug", None));
         assert!(info.caps.power);
+        assert!(info.bridge.is_none());
         n.custom_name = Some("Lampe du salon".into());
         n.icon = Some(Symbol::Light);
         let info = node_info(&n);
         assert_eq!(info.name, "Lampe du salon");
         assert_eq!(info.device_name, "GRILLPLATS Plug");
         assert_eq!(info.icon, Some(Symbol::Light));
+    }
+
+    #[test]
+    fn bridged_info_links_to_bridge() {
+        let b = StoredBridgedDevice {
+            device_id: BRIDGED_ID_MIN + 1,
+            endpoint: 4,
+            name: "Volet cuisine".into(),
+            endpoints: TrackedEndpoints {
+                cover_endpoint: Some(4),
+                cover_position: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let info = bridged_info(0x42, &b);
+        assert_eq!(info.node_id, BRIDGED_ID_MIN + 1);
+        assert_eq!(
+            info.bridge,
+            Some(BridgeLink {
+                node_id: 0x42,
+                endpoint: 4
+            })
+        );
+        assert!(info.caps.cover && !info.caps.cover_position);
     }
 }

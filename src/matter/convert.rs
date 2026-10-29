@@ -1,6 +1,7 @@
 //! Conversion des valeurs brutes des clusters de mesure.
 
 use super::tlv::Value;
+use crate::events::CoverMotion;
 
 /// Valeur « nulle » d'un int16 nullable en Matter (0x8000), si l'appareil
 /// ne l'encode pas directement comme un élément TLV Null.
@@ -102,6 +103,50 @@ pub fn format_energy(kwh: f64) -> String {
     format!("{:.3} kWh", kwh).replace('.', ",")
 }
 
+/// Window Covering (0x0102) / CurrentPositionLiftPercent100ths : uint16 en centièmes de %,
+/// 0 = tout ouvert, 10000 = fermé. Retourne l'ouverture en % (100 = ouvert) ; `None` si
+/// la position est inconnue (nullable : moteur sans retour, type RTS).
+pub fn cover_open_percent_from_tlv(v: &Value) -> Option<f64> {
+    let closed100ths = match v {
+        Value::Unsigned(u) => *u,
+        Value::Signed(i) if *i >= 0 => *i as u64,
+        _ => return None,
+    };
+    if closed100ths > 10_000 {
+        return None;
+    }
+    Some((10_000 - closed100ths) as f64 / 100.0)
+}
+
+/// Window Covering / OperationalStatus (bitmap8) : bits 0-1 global, 2-3 levée (lift),
+/// 4-5 inclinaison ; 0 = arrêt, 1 = ouverture (montée), 2 = fermeture (descente).
+pub fn cover_motion_from_tlv(v: &Value) -> Option<CoverMotion> {
+    let bits = v.as_u64()?;
+    let lift = (bits >> 2) & 0b11;
+    let state = if lift != 0 { lift } else { bits & 0b11 };
+    Some(match state {
+        1 => CoverMotion::Opening,
+        2 => CoverMotion::Closing,
+        _ => CoverMotion::Stopped,
+    })
+}
+
+/// Ouverture en % (100 = ouvert) → LiftPercent100thsValue de GoToLiftPercentage
+/// (0 = ouvert, 10000 = fermé).
+pub fn lift100ths_from_open_percent(open: u8) -> u16 {
+    (100 - open.min(100)) as u16 * 100
+}
+
+pub fn format_position(open: f64) -> String {
+    if open <= 0.0 {
+        "Fermé".into()
+    } else if open >= 100.0 {
+        "Ouvert".into()
+    } else {
+        format!("Ouvert à {open:.0} %")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +226,47 @@ mod tests {
         assert_eq!(format_temperature(21.5), "21,50 °C");
         assert_eq!(format_temperature(-0.05), "-0,05 °C");
         assert_eq!(format_humidity(45.55), "45,5 %");
+    }
+
+    #[test]
+    fn cover_conversion() {
+        assert_eq!(
+            cover_open_percent_from_tlv(&Value::Unsigned(0)),
+            Some(100.0)
+        );
+        assert_eq!(
+            cover_open_percent_from_tlv(&Value::Unsigned(10_000)),
+            Some(0.0)
+        );
+        assert_eq!(
+            cover_open_percent_from_tlv(&Value::Unsigned(3_500)),
+            Some(65.0)
+        );
+        assert_eq!(cover_open_percent_from_tlv(&Value::Unsigned(10_001)), None);
+        assert_eq!(cover_open_percent_from_tlv(&Value::Null), None);
+        assert_eq!(
+            cover_motion_from_tlv(&Value::Unsigned(0)),
+            Some(CoverMotion::Stopped)
+        );
+        assert_eq!(
+            cover_motion_from_tlv(&Value::Unsigned(0b0101)),
+            Some(CoverMotion::Opening)
+        );
+        assert_eq!(
+            cover_motion_from_tlv(&Value::Unsigned(0b1000)),
+            Some(CoverMotion::Closing)
+        );
+        assert_eq!(
+            cover_motion_from_tlv(&Value::Unsigned(0b10)),
+            Some(CoverMotion::Closing)
+        );
+        assert_eq!(cover_motion_from_tlv(&Value::Null), None);
+        assert_eq!(lift100ths_from_open_percent(100), 0);
+        assert_eq!(lift100ths_from_open_percent(0), 10_000);
+        assert_eq!(lift100ths_from_open_percent(40), 6_000);
+        assert_eq!(lift100ths_from_open_percent(250), 0);
+        assert_eq!(format_position(0.0), "Fermé");
+        assert_eq!(format_position(100.0), "Ouvert");
+        assert_eq!(format_position(65.4), "Ouvert à 65 %");
     }
 }

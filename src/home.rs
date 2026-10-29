@@ -26,12 +26,15 @@ pub enum Symbol {
     Plug,
     Thermometer,
     Button,
+    /// Volet roulant ou store.
+    Shutter,
 }
 
 impl Symbol {
-    pub const ALL: [Symbol; 6] = [
+    pub const ALL: [Symbol; 7] = [
         Symbol::Door,
         Symbol::Window,
+        Symbol::Shutter,
         Symbol::Light,
         Symbol::Plug,
         Symbol::Thermometer,
@@ -42,6 +45,7 @@ impl Symbol {
         match self {
             Symbol::Door => "Porte",
             Symbol::Window => "Fenêtre",
+            Symbol::Shutter => "Volet",
             Symbol::Light => "Lumière",
             Symbol::Plug => "Prise",
             Symbol::Thermometer => "Thermomètre",

@@ -4,25 +4,33 @@
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
 use tokio::sync::mpsc;
 
 use crate::automation::{
-    self, Action, Actuator, BoxFuture, Condition, OnOffCommand, Rule, RuleSet, Trigger,
+    self, Action, Actuator, BoxFuture, Condition, CoverCommand, OnOffCommand, Rule, RuleSet,
+    Trigger,
 };
 use crate::events::{
-    now_unix, Capabilities, Command, Event, EventSink, MeasureKind, NodeInfo, NodeStatus,
-    ReportingMode, StateKind,
+    now_unix, BridgeLink, Capabilities, Command, CoverMotion, Event, EventSink, MeasureKind,
+    NodeInfo, NodeStatus, ReportingMode, StateKind,
 };
 use crate::matter::setup_code;
+use crate::persistence::BRIDGED_ID_MIN;
 
 const LIVING: u64 = 0xD3_0001;
 const BEDROOM: u64 = 0xD3_0002;
 const DOOR: u64 = 0xD3_0003;
 const PLUG: u64 = 0xD3_0004;
+/// Pont de démo (une TaHoma) et ses volets, avec des identifiants de la plage réservée
+/// aux appareils pontés, comme en mode réel.
+const BRIDGE: u64 = 0xD3_0005;
+const SHUTTER_LIVING: u64 = BRIDGED_ID_MIN + 0xD3_0001;
+const SHUTTER_KITCHEN: u64 = BRIDGED_ID_MIN + 0xD3_0002;
+const SHUTTER_BEDROOM: u64 = BRIDGED_ID_MIN + 0xD3_0003;
 
 /// Température simulée : cycle lent + petite oscillation + bruit.
 fn simulated(t: f64, base: f64, rng: &mut impl Rng) -> f64 {
@@ -74,6 +82,42 @@ fn sensor(node_id: u64, name: &str, has_humidity: bool) -> NodeInfo {
     }
 }
 
+fn shutter(device_id: u64, endpoint: u16, name: &str, product: &str, position: bool) -> NodeInfo {
+    NodeInfo {
+        node_id: device_id,
+        name: name.into(),
+        device_name: name.into(),
+        vendor: Some("Somfy (démo)".into()),
+        product: Some(product.into()),
+        device_types: vec!["Volet / store".into()],
+        caps: Capabilities {
+            cover: true,
+            cover_position: position,
+            ..Default::default()
+        },
+        bridge: Some(BridgeLink {
+            node_id: BRIDGE,
+            endpoint,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Volet simulé : position courante (% ouvert), cible, et s'il connaît sa position.
+struct Shutter {
+    position: f64,
+    target: Option<f64>,
+    position_aware: bool,
+    /// Moteur sans retour : nombre de pas de mouvement restant à simuler.
+    blind_steps: u32,
+    motion: CoverMotion,
+}
+
+type Shutters = Arc<Mutex<HashMap<u64, Shutter>>>;
+
+/// Vitesse de la simulation : % d'ouverture par pas de 2 s.
+const SHUTTER_STEP: f64 = 25.0;
+
 pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
     let (tx, rx) = mpsc::unbounded_channel();
     std::thread::Builder::new()
@@ -90,17 +134,50 @@ pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
 }
 
 async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
-    // Automatisations : même moteur que le mode réel, prise simulée.
+    // Automatisations : même moteur que le mode réel, prise et volets simulés.
     let (tap_tx, tap_rx) = mpsc::unbounded_channel();
     let events = ui.with_tap(tap_tx);
     let plug_on = Arc::new(AtomicBool::new(true));
+    let shutters: Shutters = Arc::new(Mutex::new(HashMap::from([
+        (
+            SHUTTER_LIVING,
+            Shutter {
+                position: 100.0,
+                target: None,
+                position_aware: true,
+                blind_steps: 0,
+                motion: CoverMotion::Stopped,
+            },
+        ),
+        (
+            SHUTTER_KITCHEN,
+            Shutter {
+                position: 35.0,
+                target: None,
+                position_aware: true,
+                blind_steps: 0,
+                motion: CoverMotion::Stopped,
+            },
+        ),
+        (
+            SHUTTER_BEDROOM,
+            Shutter {
+                position: 0.0,
+                target: None,
+                position_aware: false,
+                blind_steps: 0,
+                motion: CoverMotion::Stopped,
+            },
+        ),
+    ])));
     let (engine_tx, engine_rx) = mpsc::unbounded_channel();
     let (rules, _) = automation::load(true, demo_rules);
-    let actuator = DemoActuator {
+    let actuator: Arc<dyn Actuator> = Arc::new(DemoActuator {
         events: events.clone(),
         plug_on: plug_on.clone(),
-    };
-    automation::spawn(rules.rules, tap_rx, engine_rx, ui, Arc::new(actuator));
+        shutters: shutters.clone(),
+    });
+    automation::spawn(rules.rules, tap_rx, engine_rx, ui, actuator.clone());
 
     let mut rng = rand::thread_rng();
     let measure = |node_id, kind, value, at| {
@@ -157,6 +234,30 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
             },
             ..Default::default()
         },
+        NodeInfo {
+            node_id: BRIDGE,
+            name: "TaHoma (démo)".into(),
+            device_name: "TaHoma switch".into(),
+            vendor: Some("Somfy (démo)".into()),
+            product: Some("TaHoma switch".into()),
+            device_types: vec!["Passerelle".into()],
+            ..Default::default()
+        },
+        shutter(SHUTTER_LIVING, 3, "Volet du salon (démo)", "Volet io", true),
+        shutter(
+            SHUTTER_KITCHEN,
+            4,
+            "Volet de la cuisine (démo)",
+            "Volet io",
+            true,
+        ),
+        shutter(
+            SHUTTER_BEDROOM,
+            5,
+            "Volet de la chambre (démo)",
+            "Volet RTS",
+            false,
+        ),
     ] {
         events.send(Event::Node(info.clone()));
         infos.insert(info.node_id, info);
@@ -191,13 +292,53 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         }
         t += 30.0;
     }
+    // Volets : fermés la nuit, ouverts il y a une heure (le salon), à moitié (la cuisine).
+    measure(
+        SHUTTER_LIVING,
+        MeasureKind::Position,
+        0.0,
+        now - 90.0 * 60.0,
+    );
+    measure(
+        SHUTTER_LIVING,
+        MeasureKind::Position,
+        100.0,
+        now - 60.0 * 60.0,
+    );
+    measure(
+        SHUTTER_KITCHEN,
+        MeasureKind::Position,
+        0.0,
+        now - 90.0 * 60.0,
+    );
+    measure(
+        SHUTTER_KITCHEN,
+        MeasureKind::Position,
+        35.0,
+        now - 45.0 * 60.0,
+    );
     measure(PLUG, MeasureKind::Energy, energy_kwh, now);
     state(PLUG, StateKind::OnOff, true, now);
     for (id, pct) in [(LIVING, 87.0), (BEDROOM, 14.0), (DOOR, 62.0)] {
         measure(id, MeasureKind::Battery, pct, now);
     }
     state(BEDROOM, StateKind::BatteryLow, true, now);
-    for id in [LIVING, BEDROOM, DOOR, PLUG] {
+    for id in [SHUTTER_LIVING, SHUTTER_KITCHEN, SHUTTER_BEDROOM] {
+        events.send(Event::CoverMotion {
+            node_id: id,
+            motion: CoverMotion::Stopped,
+        });
+    }
+    for id in [
+        LIVING,
+        BEDROOM,
+        DOOR,
+        PLUG,
+        BRIDGE,
+        SHUTTER_LIVING,
+        SHUTTER_KITCHEN,
+        SHUTTER_BEDROOM,
+    ] {
         events.send(Event::Status {
             node_id: id,
             status: NodeStatus::Online,
@@ -207,7 +348,15 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
             at: now,
         });
     }
-    for id in [LIVING, DOOR, PLUG] {
+    for id in [
+        LIVING,
+        DOOR,
+        PLUG,
+        BRIDGE,
+        SHUTTER_LIVING,
+        SHUTTER_KITCHEN,
+        SHUTTER_BEDROOM,
+    ] {
         events.send(Event::Mode {
             node_id: id,
             mode: ReportingMode::Subscription {
@@ -253,6 +402,18 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                 }
                 if n.is_multiple_of(15) {
                     measure(PLUG, MeasureKind::Energy, energy_kwh, t);
+                }
+                // Volets : un pas vers la cible, puis arrêt ; le pont rapporte pour tous.
+                for (id, position, motion) in step_shutters(&shutters) {
+                    if let Some(p) = position {
+                        measure(id, MeasureKind::Position, p, t);
+                    }
+                    if let Some(m) = motion {
+                        events.send(Event::CoverMotion { node_id: id, motion: m });
+                    }
+                    for node_id in [id, BRIDGE] {
+                        events.send(Event::Seen { node_id, at: t });
+                    }
                 }
                 // Chambre : interrogée toutes les 30 s, injoignable 40 s toutes les 3 min.
                 let phase = n % 90;
@@ -312,6 +473,14 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                             events.send(Event::Node(info.clone()));
                         }
                     }
+                    Command::SetCover { node_id, command } => {
+                        let name = infos.get(&node_id).map_or_else(|| format!("{node_id:016X}"), |i| i.name.clone());
+                        let what = format!("{name} : {}", command.label().to_lowercase());
+                        match actuator.set_cover(node_id, command).await {
+                            Ok(()) => events.send(Event::Info(format!("{what} — commande envoyée (simulé)."))),
+                            Err(e) => events.send(Event::Info(format!("{what} — échec : {e:#}"))),
+                        }
+                    }
                     Command::Retry(id) => {
                         events.send(Event::Status { node_id: id, status: NodeStatus::Connecting });
                     }
@@ -323,6 +492,40 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
             }
         }
     }
+}
+
+/// Avance chaque volet d'un pas vers sa cible. Retourne, par volet, la position à
+/// publier (si connue) et le mouvement s'il a changé.
+fn step_shutters(shutters: &Shutters) -> Vec<(u64, Option<f64>, Option<CoverMotion>)> {
+    let mut out = Vec::new();
+    let mut map = shutters.lock().unwrap_or_else(|e| e.into_inner());
+    for (id, s) in map.iter_mut() {
+        let before = s.motion;
+        let mut position = None;
+        if s.position_aware {
+            if let Some(target) = s.target {
+                let delta = target - s.position;
+                if delta.abs() <= SHUTTER_STEP {
+                    s.position = target;
+                    s.target = None;
+                    s.motion = CoverMotion::Stopped;
+                } else {
+                    s.position += SHUTTER_STEP * delta.signum();
+                }
+                position = Some(s.position);
+            }
+        } else if s.blind_steps > 0 {
+            s.blind_steps -= 1;
+            if s.blind_steps == 0 {
+                s.motion = CoverMotion::Stopped;
+            }
+        }
+        let motion = (s.motion != before).then_some(s.motion);
+        if position.is_some() || motion.is_some() {
+            out.push((*id, position, motion));
+        }
+    }
+    out
 }
 
 /// Plan de démonstration : deux étages, appareils déjà placés.
@@ -365,9 +568,12 @@ pub fn demo_plan() -> crate::home::HomePlan {
                 items: vec![
                     device(10, LIVING, None, 2.5, 2.0),
                     device(11, DOOR, None, 9.0, 4.25),
-                    device(12, PLUG, None, 8.5, 1.0),
+                    device(12, PLUG, None, 9.0, 1.25),
                     decor(13, Symbol::Window, "Baie vitrée", 3.0, 4.25),
                     decor(14, Symbol::Light, "Suspension", 4.5, 1.0),
+                    device(15, SHUTTER_LIVING, None, 1.0, 4.25),
+                    device(16, SHUTTER_KITCHEN, None, 7.5, 0.25),
+                    device(17, BRIDGE, None, 8.0, 2.25),
                 ],
             },
             Floor {
@@ -380,16 +586,18 @@ pub fn demo_plan() -> crate::home::HomePlan {
                 items: vec![
                     device(23, BEDROOM, None, 2.0, 1.75),
                     decor(24, Symbol::Window, "Velux", 5.5, 0.25),
+                    device(25, SHUTTER_BEDROOM, None, 2.0, 3.25),
                 ],
             },
         ],
     }
 }
 
-/// Prise simulée : seule la « prise du frigo » se commande en mode démo.
+/// Prise et volets simulés : seule la « prise du frigo » se commande en mode démo.
 struct DemoActuator {
     events: EventSink,
     plug_on: Arc<AtomicBool>,
+    shutters: Shutters,
 }
 
 impl Actuator for DemoActuator {
@@ -419,6 +627,51 @@ impl Actuator for DemoActuator {
                     at,
                 });
             }
+            Ok(())
+        })
+    }
+
+    fn set_cover(&self, node_id: u64, command: CoverCommand) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async move {
+            let mut map = self.shutters.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(s) = map.get_mut(&node_id) else {
+                anyhow::bail!("cet appareil n'est pas un volet (démo)");
+            };
+            let target = match command {
+                CoverCommand::Open => 100.0,
+                CoverCommand::Close => 0.0,
+                CoverCommand::Position(p) => f64::from(p.min(100)),
+                CoverCommand::Stop => {
+                    s.target = None;
+                    s.blind_steps = 0;
+                    s.motion = CoverMotion::Stopped;
+                    self.events.send(Event::CoverMotion {
+                        node_id,
+                        motion: CoverMotion::Stopped,
+                    });
+                    return Ok(());
+                }
+            };
+            if s.position_aware {
+                s.target = (target != s.position).then_some(target);
+                s.motion = match s.target {
+                    Some(t) if t > s.position => CoverMotion::Opening,
+                    Some(_) => CoverMotion::Closing,
+                    None => CoverMotion::Stopped,
+                };
+            } else {
+                // Moteur sans retour : le pont ne sait que « ça bouge », quelques secondes.
+                s.blind_steps = 3;
+                s.motion = if target > 50.0 {
+                    CoverMotion::Opening
+                } else {
+                    CoverMotion::Closing
+                };
+            }
+            self.events.send(Event::CoverMotion {
+                node_id,
+                motion: s.motion,
+            });
             Ok(())
         })
     }
@@ -482,6 +735,32 @@ pub fn demo_rules() -> RuleSet {
                 }],
                 cooldown_s: 60,
             },
+            Rule {
+                id: 4,
+                name: "Fermer les volets le soir".into(),
+                enabled: false,
+                trigger: Trigger::Time {
+                    hour: 21,
+                    minute: 30,
+                    days: [true; 7],
+                },
+                conditions: Vec::new(),
+                actions: vec![
+                    Action::SetCover {
+                        node_id: SHUTTER_LIVING,
+                        command: CoverCommand::Close,
+                    },
+                    Action::SetCover {
+                        node_id: SHUTTER_KITCHEN,
+                        command: CoverCommand::Position(20),
+                    },
+                    Action::SetCover {
+                        node_id: SHUTTER_BEDROOM,
+                        command: CoverCommand::Close,
+                    },
+                ],
+                cooldown_s: 60,
+            },
         ],
     }
 }
@@ -503,6 +782,16 @@ mod tests {
             let (tap_tx, tap_rx) = mpsc::unbounded_channel();
             let events = ui.with_tap(tap_tx);
             let plug_on = Arc::new(AtomicBool::new(true));
+            let shutters: Shutters = Arc::new(Mutex::new(HashMap::from([(
+                SHUTTER_LIVING,
+                Shutter {
+                    position: 100.0,
+                    target: None,
+                    position_aware: true,
+                    blind_steps: 0,
+                    motion: CoverMotion::Stopped,
+                },
+            )])));
             let (engine_tx, engine_rx) = mpsc::unbounded_channel();
             let rule = Rule {
                 id: 9,
@@ -519,6 +808,10 @@ mod tests {
                         node_id: PLUG,
                         command: OnOffCommand::Toggle,
                     },
+                    Action::SetCover {
+                        node_id: SHUTTER_LIVING,
+                        command: CoverCommand::Position(40),
+                    },
                     Action::SetOnOff {
                         node_id: DOOR,
                         command: OnOffCommand::On,
@@ -529,6 +822,7 @@ mod tests {
             let actuator = DemoActuator {
                 events: events.clone(),
                 plug_on: plug_on.clone(),
+                shutters: shutters.clone(),
             };
             automation::spawn(vec![rule], tap_rx, engine_rx, ui, Arc::new(actuator));
             engine_tx.send(automation::EngineCommand::Test(9)).unwrap();
@@ -550,9 +844,26 @@ mod tests {
                 !plug_on.load(Ordering::Relaxed),
                 "la prise a été éteinte (inversée)"
             );
-            assert!(!ok, "la seconde action (porte) doit échouer : {detail}");
+            {
+                let map = shutters.lock().unwrap();
+                let s = &map[&SHUTTER_LIVING];
+                assert_eq!((s.target, s.motion), (Some(40.0), CoverMotion::Closing));
+            }
+            // Pas à pas vers la cible, puis arrêt.
+            let steps = step_shutters(&shutters);
+            assert_eq!(steps[0].1, Some(75.0));
+            step_shutters(&shutters);
+            let last = step_shutters(&shutters);
+            assert_eq!(
+                last[0],
+                (SHUTTER_LIVING, Some(40.0), Some(CoverMotion::Stopped))
+            );
+            assert!(step_shutters(&shutters).is_empty(), "plus rien à publier");
+            assert!(!ok, "la troisième action (porte) doit échouer : {detail}");
             assert!(
-                detail.contains("inverser") && detail.contains("échec"),
+                detail.contains("inverser")
+                    && detail.contains("ouvrir à 40 %")
+                    && detail.contains("échec"),
                 "{detail}"
             );
         });

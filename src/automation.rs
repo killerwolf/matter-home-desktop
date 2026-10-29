@@ -64,6 +64,56 @@ impl OnOffCommand {
     }
 }
 
+/// Commande d'un volet ou store ; `Position` : ouverture visée en % (100 = tout ouvert).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoverCommand {
+    Open,
+    Close,
+    Stop,
+    Position(u8),
+}
+
+impl CoverCommand {
+    /// Une valeur par genre de commande, pour les sélecteurs de l'interface.
+    pub const KINDS: [CoverCommand; 4] = [
+        CoverCommand::Open,
+        CoverCommand::Close,
+        CoverCommand::Stop,
+        CoverCommand::Position(50),
+    ];
+
+    pub fn label(self) -> String {
+        match self {
+            CoverCommand::Position(p) => format!("Ouvrir à {p} %"),
+            other => other.kind_label().to_string(),
+        }
+    }
+
+    /// Libellé du genre de commande, sans la valeur.
+    pub fn kind_label(self) -> &'static str {
+        match self {
+            CoverCommand::Open => "Ouvrir",
+            CoverCommand::Close => "Fermer",
+            CoverCommand::Stop => "Arrêter",
+            CoverCommand::Position(_) => "Ouvrir à…",
+        }
+    }
+
+    pub fn same_kind(self, other: CoverCommand) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+
+    /// Identifiant de commande du cluster Window Covering (0x0102).
+    pub fn command_id(self) -> u32 {
+        match self {
+            CoverCommand::Open => 0x00,
+            CoverCommand::Close => 0x01,
+            CoverCommand::Stop => 0x02,
+            CoverCommand::Position(_) => 0x05,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Trigger {
@@ -130,6 +180,11 @@ pub enum Action {
     SetOnOff {
         node_id: u64,
         command: OnOffCommand,
+    },
+    /// Ouvrir, fermer, arrêter un volet ou l'amener à une position.
+    SetCover {
+        node_id: u64,
+        command: CoverCommand,
     },
     /// Appel HTTP : POST si `body` n'est pas vide, sinon GET. Mêmes variables.
     Webhook {
@@ -304,6 +359,7 @@ fn format_measure(kind: MeasureKind, v: f64) -> String {
         MeasureKind::Power => format_power(v),
         MeasureKind::Energy => format_energy(v),
         MeasureKind::Battery => format!("{v:.0} %"),
+        MeasureKind::Position => format!("{v:.0} %"),
     }
 }
 
@@ -597,6 +653,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Ce qui pilote réellement les appareils : Matter, ou la simulation du mode démo.
 pub trait Actuator: Send + Sync + 'static {
     fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, Result<()>>;
+    fn set_cover(&self, node_id: u64, command: CoverCommand) -> BoxFuture<'_, Result<()>>;
 }
 
 pub fn render(template: &str, f: &Firing) -> String {
@@ -695,6 +752,18 @@ async fn run(
                     .await
                     .map(|_| format!("{} : {}", name, command.label().to_lowercase()))
                     .with_context(|| format!("{} : {}", name, command.label().to_lowercase()))
+            }
+            Action::SetCover { node_id, command } => {
+                let name = device_names
+                    .get(node_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{node_id:016X}"));
+                let what = format!("{} : {}", name, command.label().to_lowercase());
+                actuator
+                    .set_cover(*node_id, *command)
+                    .await
+                    .map(|_| what.clone())
+                    .with_context(|| what)
             }
             Action::Webhook { url, body } => webhook(render(url, &firing), render(body, &firing))
                 .await
@@ -1080,9 +1149,14 @@ mod tests {
             url: "https://example.org/x".into(),
             body: String::new(),
         });
+        r.actions.push(Action::SetCover {
+            node_id: 3,
+            command: CoverCommand::Position(40),
+        });
         set.rules.push(r);
         let text = serde_json::to_string(&set).unwrap();
         assert!(text.contains("\"type\":\"Threshold\""));
+        assert!(text.contains("\"Position\":40"), "{text}");
         assert_eq!(serde_json::from_str::<RuleSet>(&text).unwrap(), set);
         assert_eq!(set.next_id(), 2);
     }

@@ -25,6 +25,22 @@ directement les appareils qui se déclarent appairables. Voir aussi
 
 Les appareils **Matter over Wi-Fi** s'appairent de la même façon.
 
+## Ponts : volets Somfy derrière une TaHoma
+
+Un **pont Matter** (Somfy TaHoma Switch, par exemple) est un seul nœud qui expose plusieurs
+appareils. Appairez le pont comme n'importe quel appareil : si la TaHoma est dans Apple
+Maison via Matter, ses réglages proposent « Activer le mode jumelage » ; sinon, l'app TaHoma
+génère un code d'appairage Matter dans ses réglages.
+
+Après la lecture de sa description, le pont apparaît comme « Passerelle » et **chaque volet
+devient un appareil à part entière** : sa propre fiche, son nom (celui donné dans l'app
+TaHoma, modifiable ici), sa place sur le plan, ses automatisations. La fiche du pont liste
+ses appareils ; la fiche d'un volet indique son pont. « Oublier » n'existe que sur le pont :
+il retire tous ses appareils.
+
+Un moteur **io-homecontrol** remonte sa position ; un moteur **RTS** (radio à sens unique)
+ne la connaît pas : la fiche le signale, seules les commandes sont possibles.
+
 ## Fiche d'un appareil
 
 Sélectionnez un appareil dans la liste de gauche. La fiche montre son état (en ligne,
@@ -39,6 +55,10 @@ par type de mesure :
   la fenêtre, derniers changements.
 - **Prise** : puissance instantanée, état allumée / éteinte, compteur d'énergie de la prise,
   énergie estimée sur la fenêtre, graphique en escalier.
+- **Volet** : ouverture (« Fermé », « Ouvert à 35 % », « Ouvert ») et mouvement en cours,
+  boutons **▲ Ouvrir**, **■ Stop**, **▼ Fermer**, curseur « Ouverture » puis **Aller à cette
+  position** (0 % = fermé, 100 % = tout ouvert), nombre d'ouvertures et graphique de
+  l'ouverture sur la fenêtre. Le résultat d'une commande s'affiche dans le journal.
 
 Boutons de la fiche :
 
@@ -58,7 +78,7 @@ Réglages, section des services / applications connectés (libellé variable sel
 
 - **Nom** : « Porte d'entrée », « Fenêtre de la cuisine »… Laissé vide, l'application
   reprend le nom annoncé par l'appareil, rappelé sous le titre de la fiche.
-- **Icône** : porte, fenêtre, lumière, prise, thermomètre, bouton, ou « Automatique »
+- **Icône** : porte, fenêtre, volet, lumière, prise, thermomètre, bouton, ou « Automatique »
   (déduite de ce que mesure l'appareil). Pour une prise qui alimente une lampe, choisissez
   « Lumière » : le plan affiche une lumière.
 
