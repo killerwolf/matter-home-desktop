@@ -144,6 +144,8 @@ vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md
 scripts/make-icon.*    génération de l'icône (assets/icon.png, assets/icon.icns)
+scripts/dmg-settings.py           mise en page de la fenêtre du DMG (dmgbuild)
+scripts/make-dmg-background.swift fond du DMG (assets/dmg/background*.png)
 .github/workflows/     CI : vérifications à chaque push, DMG publié sur un tag v*
 docs/                  documentation et captures d'écran
 ```
@@ -154,4 +156,9 @@ docs/                  documentation et captures d'écran
 `Info.plist`, icône et signature ad hoc (pas de certificat Developer ID). L'`Info.plist`
 déclare `NSLocalNetworkUsageDescription` et `NSBonjourServices` (`_matter._tcp`,
 `_matterc._udp`) : sans eux, macOS bloque la découverte mDNS d'une application lancée depuis
-un `.app`. Le DMG contient l'application et un raccourci vers `/Applications`.
+un `.app`.
+
+Le DMG contient l'application et un raccourci vers `/Applications`. Sa fenêtre (600 × 400,
+fond 1x + 2x en TIFF, icônes de 128 px, barres masquées) est décrite par
+`scripts/dmg-settings.py` et écrite par dmgbuild, qui produit lui-même le `.DS_Store` : pas
+d'AppleScript ni de Finder, donc le même résultat en CI que sur un Mac.

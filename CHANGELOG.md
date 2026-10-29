@@ -10,6 +10,12 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Modifié
+
+- **Fenêtre d'installation du DMG** : taille fixe, fond avec la consigne et une flèche vers
+  le dossier Applications, grandes icônes bien placées, fond net sur écran Retina
+  ([#1](https://github.com/killerwolf/matter-home-desktop/issues/1)).
+
 ## [0.1.0] - 2026-10-29
 
 Première version publiée : Matter Home Desktop se télécharge en DMG, une seule application

@@ -107,12 +107,25 @@ if [ "${1:-}" = "--dmg" ]; then
   log "Construction de $(basename "$DMG")"
   rm -f "$DMG"
 
-  STAGE="$(mktemp -d)"
-  cp -R "$APP" "$STAGE/"
-  ln -s /Applications "$STAGE/Applications"
+  # dmgbuild met en page la fenêtre (fond, taille, position des icônes) sans piloter le
+  # Finder. Installé à une version fixe dans un environnement Python isolé, sous target/.
+  DMGBUILD_VERSION="1.6.7"
+  VENV="$ROOT/target/dmgbuild-$DMGBUILD_VERSION"
+  if [ ! -x "$VENV/bin/dmgbuild" ]; then
+    log "Installation de dmgbuild $DMGBUILD_VERSION"
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --quiet --disable-pip-version-check "dmgbuild==$DMGBUILD_VERSION"
+  fi
 
-  hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format ULFO "$DMG" >/dev/null
-  rm -rf "$STAGE"
+  # Fond net en Retina : un TIFF qui contient l'image 1x et l'image 2x.
+  WORK="$(mktemp -d)"
+  tiffutil -cathidpicheck "$ROOT/assets/dmg/background.png" "$ROOT/assets/dmg/background@2x.png" \
+    -out "$WORK/background.tiff" >/dev/null 2>&1
+
+  "$VENV/bin/dmgbuild" -s "$ROOT/scripts/dmg-settings.py" \
+    -D app="$APP" -D background="$WORK/background.tiff" -D icon="$ROOT/assets/icon.icns" \
+    "$NAME" "$DMG" >/dev/null
+  rm -rf "$WORK"
 
   echo "  $DMG  ($(du -sh "$DMG" | cut -f1))"
 fi

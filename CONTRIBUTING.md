@@ -16,7 +16,8 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
 ## Préparer l'environnement
 
 - macOS et [Rust](https://rustup.rs) (stable, 1.87 ou plus), outils en ligne de commande
-  de Xcode (`xcode-select --install`) pour construire le `.app` et l'icône.
+  de Xcode (`xcode-select --install`) pour construire le `.app` et l'icône, et Python 3
+  pour la mise en page du DMG.
 - Pas besoin d'appareil Matter pour la plupart des modifications : le **mode démo** simule
   thermomètres, porte, prise et automatisations.
 
@@ -77,8 +78,13 @@ scripts/bundle.sh --dmg
 Le script compile un binaire universel (Apple Silicon + Intel) si les deux cibles Rust sont
 installées (`rustup target add x86_64-apple-darwin aarch64-apple-darwin`), sinon pour ce Mac
 seulement, puis assemble `dist/Matter Home Desktop.app` (Info.plist, icône, signature ad hoc)
-et `dist/MatterHomeDesktop-<version>-<arch>.dmg`. L'icône se régénère avec
-`scripts/make-icon.sh`.
+et `dist/MatterHomeDesktop-<version>-<arch>.dmg`. La fenêtre du DMG (taille, fond, position
+des icônes) est mise en page par [dmgbuild](https://github.com/dmgbuild/dmgbuild), installé
+automatiquement à une version fixe dans `target/` ; réglages dans `scripts/dmg-settings.py`.
+
+L'icône se régénère avec `scripts/make-icon.sh`, le fond du DMG avec
+`swift scripts/make-dmg-background.swift assets/dmg/background.png 1` (et `…@2x.png 2`) ;
+gardez la flèche alignée sur `icon_locations` de `scripts/dmg-settings.py`.
 
 ## Publier une version
 
