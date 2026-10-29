@@ -3,14 +3,19 @@
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
 use tokio::sync::mpsc;
 
+use crate::automation::{
+    self, Action, Actuator, BoxFuture, Condition, OnOffCommand, Rule, RuleSet, Trigger,
+};
 use crate::events::{
-    now_unix, Capabilities, Command, Event, EventSink, MeasureKind, NodeInfo, NodeStatus, ReportingMode,
-    StateKind,
+    now_unix, Capabilities, Command, Event, EventSink, MeasureKind, NodeInfo, NodeStatus,
+    ReportingMode, StateKind,
 };
 use crate::matter::setup_code;
 
@@ -34,7 +39,11 @@ fn humidity(t: f64, rng: &mut impl Rng) -> f64 {
 
 /// Prise d'un réfrigérateur : compresseur ~85 W pendant 6 min sur 15, sinon ~2 W.
 fn fridge_power(t: f64, rng: &mut impl Rng) -> f64 {
-    let base = if t.rem_euclid(900.0) < 360.0 { 85.0 } else { 2.0 };
+    let base = if t.rem_euclid(900.0) < 360.0 {
+        85.0
+    } else {
+        2.0
+    };
     ((base + rng.gen_range(-1.5..1.5_f64)).max(0.0) * 10.0).round() / 10.0
 }
 
@@ -80,11 +89,39 @@ pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
     tx
 }
 
-async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) {
+async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
+    // Automatisations : même moteur que le mode réel, prise simulée.
+    let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+    let events = ui.with_tap(tap_tx);
+    let plug_on = Arc::new(AtomicBool::new(true));
+    let (engine_tx, engine_rx) = mpsc::unbounded_channel();
+    let (rules, _) = automation::load(true, demo_rules);
+    let actuator = DemoActuator {
+        events: events.clone(),
+        plug_on: plug_on.clone(),
+    };
+    automation::spawn(rules.rules, tap_rx, engine_rx, ui, Arc::new(actuator));
+
     let mut rng = rand::thread_rng();
-    let measure = |node_id, kind, value, at| events.send(Event::Measurement { node_id, kind, value, at });
-    let state = |node_id, kind, value, at| events.send(Event::State { node_id, kind, value, at });
-    events.send(Event::Info("Mode démo : aucune communication réseau, données simulées.".into()));
+    let measure = |node_id, kind, value, at| {
+        events.send(Event::Measurement {
+            node_id,
+            kind,
+            value,
+            at,
+        })
+    };
+    let state = |node_id, kind, value, at| {
+        events.send(Event::State {
+            node_id,
+            kind,
+            value,
+            at,
+        })
+    };
+    events.send(Event::Info(
+        "Mode démo : aucune communication réseau, données simulées.".into(),
+    ));
 
     // Nœuds de démo, gardés pour pouvoir appliquer les renommages (non sauvegardés).
     let mut infos: HashMap<u64, NodeInfo> = HashMap::new();
@@ -98,7 +135,11 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
             vendor: Some("IKEA of Sweden (démo)".into()),
             product: Some("MYGGBETT door/window sensor".into()),
             device_types: vec!["Capteur d'ouverture".into()],
-            caps: Capabilities { contact: true, battery: true, ..Default::default() },
+            caps: Capabilities {
+                contact: true,
+                battery: true,
+                ..Default::default()
+            },
             ..Default::default()
         },
         NodeInfo {
@@ -108,7 +149,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
             vendor: Some("IKEA of Sweden (démo)".into()),
             product: Some("GRILLPLATS Plug".into()),
             device_types: vec!["Prise".into(), "Electrical Sensor".into()],
-            caps: Capabilities { power: true, energy: true, on_off: true, ..Default::default() },
+            caps: Capabilities {
+                power: true,
+                energy: true,
+                on_off: true,
+                ..Default::default()
+            },
             ..Default::default()
         },
     ] {
@@ -123,7 +169,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
     let mut last_door = None;
     while t < now {
         for (id, base) in [(LIVING, 21.0), (BEDROOM, 18.5)] {
-            measure(id, MeasureKind::Temperature, simulated(t, base, &mut rng), t);
+            measure(
+                id,
+                MeasureKind::Temperature,
+                simulated(t, base, &mut rng),
+                t,
+            );
         }
         measure(LIVING, MeasureKind::Humidity, humidity(t, &mut rng), t);
         let p = fridge_power(t, &mut rng);
@@ -147,13 +198,27 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
     }
     state(BEDROOM, StateKind::BatteryLow, true, now);
     for id in [LIVING, BEDROOM, DOOR, PLUG] {
-        events.send(Event::Status { node_id: id, status: NodeStatus::Online });
-        events.send(Event::Seen { node_id: id, at: now });
+        events.send(Event::Status {
+            node_id: id,
+            status: NodeStatus::Online,
+        });
+        events.send(Event::Seen {
+            node_id: id,
+            at: now,
+        });
     }
     for id in [LIVING, DOOR, PLUG] {
-        events.send(Event::Mode { node_id: id, mode: ReportingMode::Subscription { max_interval_s: 300 } });
+        events.send(Event::Mode {
+            node_id: id,
+            mode: ReportingMode::Subscription {
+                max_interval_s: 300,
+            },
+        });
     }
-    events.send(Event::Mode { node_id: BEDROOM, mode: ReportingMode::Polling { every_s: 30 } });
+    events.send(Event::Mode {
+        node_id: BEDROOM,
+        mode: ReportingMode::Polling { every_s: 30 },
+    });
 
     let mut paired: Vec<u64> = Vec::new();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -181,7 +246,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                 }
                 // Prise : puissance toutes les 10 s, compteur d'énergie toutes les 30 s.
                 if n.is_multiple_of(5) {
-                    let p = fridge_power(t, &mut rng);
+                    let p = if plug_on.load(Ordering::Relaxed) { fridge_power(t, &mut rng) } else { 0.0 };
                     energy_kwh += p * 10.0 / 3600.0 / 1000.0;
                     measure(PLUG, MeasureKind::Power, p, t);
                     events.send(Event::Seen { node_id: PLUG, at: t });
@@ -233,6 +298,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                     }
                     // Le mode démo n'enregistre rien sur disque : rien à effacer côté backend.
                     Command::ClearHistory(_) => {}
+                    Command::SetRules(rules) => {
+                        let _ = engine_tx.send(automation::EngineCommand::SetRules(rules));
+                    }
+                    Command::TestRule(id) => {
+                        let _ = engine_tx.send(automation::EngineCommand::Test(id));
+                    }
                     Command::Customize { node_id, name, icon } => {
                         if let Some(info) = infos.get_mut(&node_id) {
                             info.custom_name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
@@ -257,11 +328,26 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
 /// Plan de démonstration : deux étages, appareils déjà placés.
 pub fn demo_plan() -> crate::home::HomePlan {
     use crate::home::{Floor, HomePlan, Item, ItemKind, Room, Symbol};
-    let room = |id, name: &str, x, y, w, h| Room { id, name: name.into(), x, y, w, h };
-    let device = |id, node_id, symbol, x, y| Item { id, kind: ItemKind::Device { node_id, symbol }, x, y };
+    let room = |id, name: &str, x, y, w, h| Room {
+        id,
+        name: name.into(),
+        x,
+        y,
+        w,
+        h,
+    };
+    let device = |id, node_id, symbol, x, y| Item {
+        id,
+        kind: ItemKind::Device { node_id, symbol },
+        x,
+        y,
+    };
     let decor = |id, symbol, label: &str, x, y| Item {
         id,
-        kind: ItemKind::Decor { symbol, label: label.into() },
+        kind: ItemKind::Decor {
+            symbol,
+            label: label.into(),
+        },
         x,
         y,
     };
@@ -287,9 +373,166 @@ pub fn demo_plan() -> crate::home::HomePlan {
             Floor {
                 id: 20,
                 name: "Étage".into(),
-                rooms: vec![room(21, "Chambre", 0.0, 0.0, 4.0, 3.5), room(22, "Bureau", 4.0, 0.0, 3.0, 3.5)],
-                items: vec![device(23, BEDROOM, None, 2.0, 1.75), decor(24, Symbol::Window, "Velux", 5.5, 0.25)],
+                rooms: vec![
+                    room(21, "Chambre", 0.0, 0.0, 4.0, 3.5),
+                    room(22, "Bureau", 4.0, 0.0, 3.0, 3.5),
+                ],
+                items: vec![
+                    device(23, BEDROOM, None, 2.0, 1.75),
+                    decor(24, Symbol::Window, "Velux", 5.5, 0.25),
+                ],
             },
         ],
+    }
+}
+
+/// Prise simulée : seule la « prise du frigo » se commande en mode démo.
+struct DemoActuator {
+    events: EventSink,
+    plug_on: Arc<AtomicBool>,
+}
+
+impl Actuator for DemoActuator {
+    fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async move {
+            if node_id != PLUG {
+                anyhow::bail!("cet appareil ne se commande pas (démo)");
+            }
+            let on = match command {
+                OnOffCommand::On => true,
+                OnOffCommand::Off => false,
+                OnOffCommand::Toggle => !self.plug_on.load(Ordering::Relaxed),
+            };
+            self.plug_on.store(on, Ordering::Relaxed);
+            let at = now_unix();
+            self.events.send(Event::State {
+                node_id,
+                kind: StateKind::OnOff,
+                value: on,
+                at,
+            });
+            if !on {
+                self.events.send(Event::Measurement {
+                    node_id,
+                    kind: MeasureKind::Power,
+                    value: 0.0,
+                    at,
+                });
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Règles d'exemple du mode démo.
+pub fn demo_rules() -> RuleSet {
+    RuleSet {
+        version: 1,
+        rules: vec![
+            Rule {
+                id: 1,
+                name: "Porte d'entrée ouverte".into(),
+                enabled: true,
+                trigger: Trigger::Contact {
+                    node_id: DOOR,
+                    open: true,
+                },
+                conditions: Vec::new(),
+                actions: vec![Action::Notify {
+                    title: "{appareil}".into(),
+                    message: "Porte {valeur} à {heure}".into(),
+                }],
+                // La porte de démo s'ouvre toutes les 2 min : une notification par quart d'heure suffit.
+                cooldown_s: 900,
+            },
+            Rule {
+                id: 2,
+                name: "Frigo : consommation élevée".into(),
+                enabled: true,
+                trigger: Trigger::Threshold {
+                    node_id: PLUG,
+                    measure: MeasureKind::Power,
+                    above: true,
+                    value: 80.0,
+                    for_s: 120,
+                },
+                conditions: Vec::new(),
+                actions: vec![Action::Notify {
+                    title: "{regle}".into(),
+                    message: "{appareil} consomme {valeur} depuis 2 min".into(),
+                }],
+                cooldown_s: 900,
+            },
+            Rule {
+                id: 3,
+                name: "Couper la prise la nuit".into(),
+                enabled: false,
+                trigger: Trigger::Time {
+                    hour: 23,
+                    minute: 0,
+                    days: [true; 7],
+                },
+                conditions: vec![Condition::Switch {
+                    node_id: PLUG,
+                    on: true,
+                }],
+                actions: vec![Action::SetOnOff {
+                    node_id: PLUG,
+                    command: OnOffCommand::Off,
+                }],
+                cooldown_s: 60,
+            },
+        ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Chaîne complète sans interface : « Tester » → moteur → actionneur → compte rendu.
+    #[test]
+    fn test_rule_switches_simulated_plug() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+            let ui = EventSink::new(ui_tx, eframe::egui::Context::default());
+            let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+            let events = ui.with_tap(tap_tx);
+            let plug_on = Arc::new(AtomicBool::new(true));
+            let (engine_tx, engine_rx) = mpsc::unbounded_channel();
+            let rule = Rule {
+                id: 9,
+                name: "Couper".into(),
+                enabled: true,
+                trigger: Trigger::Time { hour: 3, minute: 0, days: [true; 7] },
+                conditions: Vec::new(),
+                actions: vec![
+                    Action::SetOnOff { node_id: PLUG, command: OnOffCommand::Toggle },
+                    Action::SetOnOff { node_id: DOOR, command: OnOffCommand::On },
+                ],
+                cooldown_s: 0,
+            };
+            let actuator = DemoActuator { events: events.clone(), plug_on: plug_on.clone() };
+            automation::spawn(vec![rule], tap_rx, engine_rx, ui, Arc::new(actuator));
+            engine_tx.send(automation::EngineCommand::Test(9)).unwrap();
+
+            let mut report = None;
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                while let Ok(ev) = ui_rx.try_recv() {
+                    if let Event::RuleRun { ok, detail, .. } = ev {
+                        report = Some((ok, detail));
+                    }
+                }
+                if report.is_some() {
+                    break;
+                }
+            }
+            let (ok, detail) = report.expect("compte rendu de la règle");
+            assert!(!plug_on.load(Ordering::Relaxed), "la prise a été éteinte (inversée)");
+            assert!(!ok, "la seconde action (porte) doit échouer : {detail}");
+            assert!(detail.contains("inverser") && detail.contains("échec"), "{detail}");
+        });
     }
 }

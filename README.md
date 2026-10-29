@@ -13,7 +13,9 @@ Application de bureau en Rust (egui) qui s'ajoute comme **contrôleur supplémen
    (kWh), énergie estimée sur la fenêtre, état allumée / éteinte (lecture seule) ;
 6. pour tout appareil sur pile : niveau de la pile et alerte de pile faible ;
 7. un **plan de la maison** : étages, pièces nommées, appareils et objets placés, avec leur
-   état en direct (porte ouverte en orange, température, puissance, pile faible…).
+   état en direct (porte ouverte en orange, température, puissance, pile faible…) ;
+8. des **automatisations** « Quand… Si… Alors… » : notifications macOS, marche/arrêt des
+   prises et lampes, appels HTTP (webhooks).
 
 ## Option retenue : **A — tout en Rust, avec la crate [`matc`](https://crates.io/crates/matc) 0.1.3**
 
@@ -77,6 +79,7 @@ cargo build --release
 |---|---|
 | `matter-demo` | Mode normal, réseau réel |
 | `matter-demo --demo` | Appareils simulés (thermomètres, porte, prise du frigo), aucune communication réseau |
+| `matter-demo --rules` | Ouvre directement l'onglet « Automatisations » (combinable avec `--demo`) |
 | `matter-demo --plan` | Ouvre directement l'onglet « Plan de la maison » (combinable avec `--demo`) |
 | `matter-demo --discover` | Diagnostic : liste les nœuds Matter vus en mDNS par la pile de l'application, puis quitte |
 | `RUST_LOG=debug matter-demo` | Journaux détaillés (`RUST_LOG=debug,matc=debug` pour le protocole) |
@@ -105,6 +108,38 @@ sur sa propre fabric. Pas de Bluetooth : l'appareil est déjà sur le réseau Th
 Pour un appareil « sleepy » (capteur sur pile), réveillez-le (appui sur son bouton) juste avant
 d'activer le mode jumelage. L'app Maison affiche le code immédiatement, mais l'appareil n'ouvre
 sa fenêtre qu'à son réveil, puis la republie via le HomePod : l'application attend jusqu'à 2 min.
+
+## Automatisations
+
+Onglet **« Automatisations »** : une liste de règles (case à cocher = activée), un éditeur
+et le journal des dernières exécutions.
+
+| | Possibilités |
+|---|---|
+| **Quand** | une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
+| **Si** (toutes) | plage horaire (peut passer minuit : 22:00 → 07:00) ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
+| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe (cluster On/Off) ; appeler une URL (GET, ou POST si un corps est saisi ; JSON si le corps commence par `{`) ; attendre N secondes |
+
+- **Variables** dans les textes des notifications et webhooks : `{appareil}`, `{valeur}`,
+  `{heure}`, `{regle}`.
+- **Anti-rafale** : « pas plus d'une exécution toutes les N minutes » par règle (1 min par
+  défaut). Un seuil ne se déclenche qu'une fois tant qu'il reste franchi ; il se réarme quand
+  la mesure repasse de l'autre côté.
+- **Front uniquement** : la première valeur connue d'un appareil (démarrage, reconnexion) et
+  les mesures relues de l'historique ne déclenchent rien ; un seuil déjà franchi au démarrage
+  se déclenche à la première mesure reçue.
+- **« ▶ Tester »** exécute les actions tout de suite, sans vérifier « Quand » ni « Si ».
+- **Sauvegarde** : `regles.json` dans les données locales (mode démo : `regles-demo.json`,
+  avec trois règles d'exemple).
+- **Fonctionnement** : le moteur reçoit une copie de chaque événement du backend, tient
+  l'état courant des appareils et lance les actions dans des tâches séparées. Les commandes
+  On/Off passent par la session Matter déjà ouverte avec l'appareil (partagée avec la
+  souscription). Notifications : `osascript` ; webhooks : `curl` (fournis par macOS, textes
+  passés en arguments, sans shell). Délai de 30 s par commande, 10 s par appel HTTP.
+- **Limites** : les règles ne tournent que **tant que l'application est ouverte** (un mode
+  service sans fenêtre serait l'étape suivante) ; les notifications apparaissent au nom de
+  « Éditeur de script » / osascript ; pas encore de déclencheur « appui sur le bouton »
+  (événements Matter à gérer).
 
 ## Nom et icône des appareils
 
@@ -234,7 +269,7 @@ Onglet **« Plan de la maison »** en haut de la fenêtre.
 - **Graphique** : température seule. L'humidité n'a pas la même échelle ; elle est affichée en valeur et en statistiques.
 - **Prise** : graphique de puissance en escalier (la valeur ne change qu'à chaque rapport).
   L'énergie « sur la fenêtre » est intégrée à partir des puissances reçues ; le compteur
-  en kWh est celui de la prise. Pas de commande marche/arrêt (hors périmètre).
+  en kWh est celui de la prise. La marche/arrêt se commande par les automatisations.
 - **Historique des ouvertures** : 1000 derniers changements affichés (relus du disque au démarrage).
 - **« Oublier »** retire l'appareil de l'application seulement. Il garde notre fabric : on peut
   la supprimer dans Maison → appareil → Réglages, section des services/applications
@@ -294,6 +329,8 @@ src/
   ui/thermometer.rs    vue thermomètre
   ui/sensors.rs        vues détecteur d'ouverture et prise (consommation)
   ui/plan.rs           plan de la maison : dessin, édition, état en direct (+ tests)
+  ui/rules.rs          onglet Automatisations : liste, éditeur, journal (+ test)
+  automation.rs        règles, moteur (déclencheurs, conditions), actions (+ tests)
   matter/mod.rs        démarrage du backend, appairage
   matter/node.rs       supervision d'un nœud (CASE, description, souscription, interrogation)
   matter/discovery.rs  cache mDNS commissionable / opérationnel

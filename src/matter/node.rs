@@ -94,10 +94,14 @@ pub(crate) async fn supervise(
         status(&ctx, node_id, NodeStatus::Online);
         seen(&ctx, node_id);
 
+        // Connexion partagée avec les automatisations (commandes envoyées pendant l'écoute).
+        let conn = Arc::new(conn);
+        ctx.set_connection(node_id, Some(conn.clone()));
         let err = match run_session(&ctx, node_id, &conn).await {
             Ok(()) => anyhow!("session terminée"),
             Err(e) => e,
         };
+        ctx.set_connection(node_id, None);
         log::info!("nœud {node_id:016X} : {err:#}");
         wait_retry(&ctx, node_id, &wake, format!("{err:#}"), &mut retry).await;
     }

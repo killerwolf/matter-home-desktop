@@ -4,6 +4,7 @@
 //! - `matter-demo --demo`     : données simulées, sans réseau
 //! - `matter-demo --discover` : diagnostic en ligne de commande (mDNS)
 
+mod automation;
 mod demo;
 mod events;
 mod history;
@@ -26,6 +27,7 @@ Usage :
   matter-demo --demo      lance l'application avec des appareils simulés
   matter-demo --discover  liste les nœuds Matter vus en mDNS puis quitte
   matter-demo --plan      ouvre directement le plan de la maison (combinable avec --demo)
+  matter-demo --rules     ouvre directement les automatisations (combinable avec --demo)
   matter-demo --help      affiche cette aide
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
@@ -41,7 +43,7 @@ fn main() -> eframe::Result {
     }
     if let Some(unknown) = args
         .iter()
-        .find(|a| !matches!(a.as_str(), "--demo" | "--discover" | "--plan"))
+        .find(|a| !matches!(a.as_str(), "--demo" | "--discover" | "--plan" | "--rules"))
     {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
@@ -52,6 +54,7 @@ fn main() -> eframe::Result {
     }
     let demo = args.iter().any(|a| a == "--demo");
     let open_plan = args.iter().any(|a| a == "--plan");
+    let open_rules = args.iter().any(|a| a == "--rules");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -70,6 +73,9 @@ fn main() -> eframe::Result {
             let mut app = ui::MatterApp::new(commands, rx, demo);
             if open_plan {
                 app.show_plan();
+            }
+            if open_rules {
+                app.show_rules();
             }
             Ok(Box::new(app))
         }),

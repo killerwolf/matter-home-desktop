@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
 use crate::events::{Capabilities, Command, Event, EventSink, NodeInfo};
+use crate::automation::{self, Actuator, BoxFuture, OnOffCommand};
 use crate::history_store::{self, HistorySink, HistoryStore};
 use crate::persistence::{self, StoredNode, StoredState};
 use discovery::Discovery;
@@ -43,6 +44,8 @@ pub(crate) struct Ctx {
     pub compressed_fabric: String,
     pub events: EventSink,
     pub history: HistorySink,
+    /// Sessions CASE ouvertes, partagées avec les automatisations.
+    connections: Mutex<HashMap<u64, Arc<Connection>>>,
     state: Mutex<StoredState>,
     state_path: PathBuf,
 }
@@ -78,6 +81,18 @@ impl Ctx {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.nodes.retain(|n| n.node_id != node_id);
         persistence::save(&self.state_path, &state)
+    }
+
+    pub fn set_connection(&self, node_id: u64, conn: Option<Arc<Connection>>) {
+        let mut map = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        match conn {
+            Some(c) => map.insert(node_id, c),
+            None => map.remove(&node_id),
+        };
+    }
+
+    fn connection(&self, node_id: u64) -> Option<Arc<Connection>> {
+        self.connections.lock().unwrap_or_else(|e| e.into_inner()).get(&node_id).cloned()
     }
 
     pub fn instance_name(&self, node_id: u64) -> String {
@@ -144,7 +159,10 @@ enum Internal {
     Paired(u64, Connection),
 }
 
-async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) -> Result<()> {
+async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> Result<()> {
+    // Tous les événements du backend passent aussi par le moteur d'automatisations.
+    let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+    let events = ui.with_tap(tap_tx);
     let state_path = persistence::state_path();
     let state = match persistence::load(&state_path)? {
         Some(s) => s,
@@ -217,9 +235,17 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
         compressed_fabric,
         events: events.clone(),
         history,
+        connections: Mutex::new(HashMap::new()),
         state: Mutex::new(state),
         state_path,
     });
+
+    let (engine_tx, engine_rx) = mpsc::unbounded_channel();
+    let (rules, rules_error) = automation::load(false, automation::RuleSet::default);
+    if let Some(e) = rules_error {
+        events.send(Event::Info(e));
+    }
+    automation::spawn(rules.rules, tap_rx, engine_rx, ui, Arc::new(MatterActuator(ctx.clone())));
 
     let mut handles: HashMap<u64, NodeHandle> = HashMap::new();
     for n in &nodes {
@@ -254,6 +280,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                         });
                     }
                     Command::ClearHistory(node_id) => ctx.history.remove(node_id),
+                    Command::SetRules(rules) => {
+                        let _ = engine_tx.send(automation::EngineCommand::SetRules(rules));
+                    }
+                    Command::TestRule(id) => {
+                        let _ = engine_tx.send(automation::EngineCommand::Test(id));
+                    }
                     Command::Customize { node_id, name, icon } => {
                         let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                         ctx.update_node(node_id, |n| {
@@ -274,6 +306,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, events: EventSink) 
                             h.task.abort();
                         }
                         ctx.history.remove(node_id);
+                        ctx.set_connection(node_id, None);
                         if let Err(e) = ctx.remove_node(node_id) {
                             events.send(Event::Info(format!("Sauvegarde impossible : {e:#}")));
                         }
@@ -400,6 +433,45 @@ async fn pair(
     Err(explain_commission_error(&last_err))
 }
 
+/// Commandes Matter des automatisations, envoyées sur la session ouverte du nœud.
+struct MatterActuator(Arc<Ctx>);
+
+impl Actuator for MatterActuator {
+    fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let node = self.0.node(node_id).context("appareil inconnu")?;
+            let endpoint = node
+                .on_off_endpoint
+                .context("cet appareil ne se commande pas (pas de cluster On/Off)")?;
+            let conn = self
+                .0
+                .connection(node_id)
+                .context("appareil non connecté pour l'instant")?;
+            let msg = tokio::time::timeout(
+                Duration::from_secs(30),
+                conn.invoke_request(endpoint, 0x0006, command.command_id(), &[]),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("pas de réponse à la commande"))??;
+            invoke_status(&msg.payload)
+        })
+    }
+}
+
+/// Statut d'une InvokeResponse : `Ok` si la commande a réussi.
+/// Structure : {1: [InvokeResponseIB {1: CommandStatusIB {1: StatusIB {0: statut}}}]}.
+fn invoke_status(payload: &[u8]) -> Result<()> {
+    let root = tlv::decode(payload).context("réponse de commande illisible")?;
+    let response = root
+        .field(1)
+        .and_then(|list| list.items().first().map(|(_, v)| v))
+        .context("réponse de commande vide")?;
+    match response.path(&[1, 1, 0]).and_then(tlv::Value::as_u64) {
+        None | Some(0) => Ok(()),
+        Some(status) => anyhow::bail!("commande refusée par l'appareil (statut {status:#04x})"),
+    }
+}
+
 fn explain_commission_error(err: &str) -> String {
     let lower = err.to_lowercase();
     let hint = if lower.contains("pake") || lower.contains("spake") || lower.contains("pase") {
@@ -421,6 +493,23 @@ fn explain_commission_error(err: &str) -> String {
 mod tests {
     use super::*;
     use crate::home::Symbol;
+
+    /// InvokeResponse : {0: false, 1: [{1: {0: Path{0:1,1:6,2:1}, 1: Status{0: statut}}}], 0xFF: 11}
+    fn invoke_response(status: u8) -> Vec<u8> {
+        vec![
+            0x15, 0x28, 0x00, 0x36, 0x01, 0x15, 0x35, 0x01, 0x37, 0x00, 0x24, 0x00, 0x01, 0x24, 0x01, 0x06,
+            0x24, 0x02, 0x01, 0x18, 0x35, 0x01, 0x24, 0x00, status, 0x18, 0x18, 0x18, 0x18, 0x24, 0xFF,
+            0x0B, 0x18,
+        ]
+    }
+
+    #[test]
+    fn invoke_status_success_and_failure() {
+        assert!(invoke_status(&invoke_response(0)).is_ok());
+        let err = invoke_status(&invoke_response(0x81)).unwrap_err().to_string();
+        assert!(err.contains("0x81"), "{err}");
+        assert!(invoke_status(&[0x15, 0x18]).is_err());
+    }
 
     #[test]
     fn node_info_prefers_custom_name_and_icon() {

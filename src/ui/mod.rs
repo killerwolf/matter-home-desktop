@@ -3,6 +3,7 @@
 
 mod customize;
 mod plan;
+mod rules;
 mod sensors;
 mod thermometer;
 
@@ -95,6 +96,7 @@ const DOOR_EVENTS_CAPACITY: usize = 1000;
 enum View {
     Devices,
     Plan,
+    Rules,
 }
 
 enum Pairing {
@@ -118,6 +120,7 @@ pub struct MatterApp {
     log: VecDeque<String>,
     view: View,
     plan: plan::PlanView,
+    rules: rules::RulesView,
     /// Appareil dont l'effacement d'historique attend confirmation.
     confirm_clear: Option<u64>,
     /// Nom et icône en cours de modification sur la fiche.
@@ -139,10 +142,16 @@ impl MatterApp {
             fatal: None,
             log: VecDeque::new(),
             view: View::Devices,
+            rules: rules::RulesView::load(demo, if demo { crate::demo::demo_rules } else { crate::automation::RuleSet::default }),
             confirm_clear: None,
             device_edit: None,
             plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
         }
+    }
+
+    /// Ouvre l'onglet « Automatisations ».
+    pub fn show_rules(&mut self) {
+        self.view = View::Rules;
     }
 
     /// Ouvre l'onglet « Plan de la maison ».
@@ -263,6 +272,10 @@ impl MatterApp {
                     self.fatal = Some(m);
                 }
                 Event::Info(m) => self.push_log(m),
+                Event::RuleRun { rule_id, name, at, ok, detail } => {
+                    self.push_log(format!("Règle « {name} » {} : {detail}", if ok { "exécutée" } else { "en échec" }));
+                    self.rules.record_run(rules::RunEntry { rule_id, name, at, ok, detail });
+                }
             }
         }
     }
@@ -460,7 +473,7 @@ impl MatterApp {
         });
         if !caps.any() && (!device.info.device_types.is_empty() || device.last_seen.is_some()) {
             ui.label("Cet appareil n'expose aucune mesure suivie par cette application.");
-            ui.label("Les commandes (ampoules, prises) sont hors périmètre de cette preuve de concept.");
+            ui.label("Une prise ou une lampe se commande depuis l'onglet « Automatisations ».");
         } else if !caps.any() {
             ui.label("Description de l'appareil pas encore lue (il est peut-être endormi).");
         }
@@ -533,6 +546,7 @@ impl eframe::App for MatterApp {
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Devices, "Appareils");
                 ui.selectable_value(&mut self.view, View::Plan, "Plan de la maison");
+                ui.selectable_value(&mut self.view, View::Rules, "Automatisations");
             });
             if let Some(f) = &self.fatal {
                 ui.colored_label(Color32::from_rgb(210, 60, 50), format!("Erreur : {f}"));
@@ -583,6 +597,11 @@ impl eframe::App for MatterApp {
                     plan::PlanAction::None => {}
                 }
             }
+            View::Rules => match self.rules.show(ui, &self.devices) {
+                rules::RulesAction::Changed(rules) => self.send(Command::SetRules(rules)),
+                rules::RulesAction::Test(id) => self.send(Command::TestRule(id)),
+                rules::RulesAction::None => {}
+            },
         });
     }
 }

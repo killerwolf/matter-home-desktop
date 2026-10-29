@@ -15,6 +15,10 @@ pub enum Command {
     Forget(u64),
     /// Effacer l'historique enregistré d'un nœud (sur disque).
     ClearHistory(u64),
+    /// Nouvelles règles d'automatisation (déjà sauvegardées par l'interface).
+    SetRules(Vec<crate::automation::Rule>),
+    /// Exécuter tout de suite les actions d'une règle (bouton « Tester »).
+    TestRule(u64),
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {
         node_id: u64,
@@ -32,7 +36,7 @@ pub enum NodeStatus {
 }
 
 /// Grandeurs numériques suivies dans le temps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MeasureKind {
     /// °C
     Temperature,
@@ -135,6 +139,14 @@ pub enum Event {
         value: bool,
         at: f64,
     },
+    /// Une règle s'est exécutée (ou a échoué).
+    RuleRun {
+        rule_id: u64,
+        name: String,
+        at: f64,
+        ok: bool,
+        detail: String,
+    },
     PairingProgress(String),
     PairingDone {
         node_id: u64,
@@ -152,14 +164,24 @@ pub enum Event {
 pub struct EventSink {
     tx: mpsc::Sender<Event>,
     ctx: eframe::egui::Context,
+    /// Copie des événements pour le moteur d'automatisations.
+    tap: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
 }
 
 impl EventSink {
     pub fn new(tx: mpsc::Sender<Event>, ctx: eframe::egui::Context) -> Self {
-        Self { tx, ctx }
+        Self { tx, ctx, tap: None }
+    }
+
+    /// Même destination, avec une copie de chaque événement vers `tap`.
+    pub fn with_tap(&self, tap: tokio::sync::mpsc::UnboundedSender<Event>) -> Self {
+        Self { tx: self.tx.clone(), ctx: self.ctx.clone(), tap: Some(tap) }
     }
 
     pub fn send(&self, event: Event) {
+        if let Some(tap) = &self.tap {
+            let _ = tap.send(event.clone());
+        }
         // L'interface peut avoir été fermée : on ignore l'erreur.
         let _ = self.tx.send(event);
         self.ctx.request_repaint();
