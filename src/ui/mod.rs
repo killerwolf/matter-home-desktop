@@ -158,6 +158,11 @@ impl MatterApp {
         self.view = View::Devices;
     }
 
+    /// Ajoute une ligne au journal de l'interface.
+    pub fn note(&mut self, line: String) {
+        self.push_log(line);
+    }
+
     /// Ouvre l'onglet « Automatisations ».
     pub fn show_rules(&mut self) {
         self.view = View::Rules;

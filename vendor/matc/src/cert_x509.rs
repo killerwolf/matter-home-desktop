@@ -83,7 +83,7 @@ pub fn encode_x509(
     let now = SystemTime::now();
     encoder.write_string_with_tag(0x17, &systemtime_to_x509_time(now)?)?;
     let not_after = now
-        // [matter-demo] 20 ans au lieu de 100 jours (reste exprimable en UTCTime, < 2050).
+        // [matter-home-desktop] 20 ans au lieu de 100 jours (reste exprimable en UTCTime, < 2050).
         .checked_add(Duration::from_secs(60 * 60 * 24 * 365 * 20))
         .context("time continuity error")?;
     encoder.write_string_with_tag(0x17, &systemtime_to_x509_time(not_after)?)?;

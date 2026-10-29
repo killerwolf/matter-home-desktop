@@ -87,12 +87,61 @@ pub struct StoredState {
     pub nodes: Vec<StoredNode>,
 }
 
+fn project_dir(organization: &str, application: &str) -> Option<PathBuf> {
+    directories::ProjectDirs::from("dev", organization, application).map(|d| d.data_dir().to_path_buf())
+}
+
+fn current_dir() -> PathBuf {
+    project_dir("matter-home-desktop", "MatterHomeDesktop")
+        .unwrap_or_else(|| PathBuf::from("./matter-home-desktop-data"))
+}
+
+/// Dossier des versions nommées « matter-demo ».
+fn legacy_dir() -> Option<PathBuf> {
+    project_dir("matter-demo", "MatterDemo")
+}
+
+/// Dossier à utiliser : le nouveau, sauf s'il n'existe pas encore alors que
+/// l'ancien existe (migration pas encore faite ou ratée) : jamais de perte de données.
+fn resolve_dir(current: PathBuf, legacy: Option<PathBuf>) -> PathBuf {
+    match legacy {
+        Some(old) if !current.exists() && old.exists() => old,
+        _ => current,
+    }
+}
+
 /// Dossier de données de l'application
-/// (macOS : `~/Library/Application Support/dev.matter-demo.MatterDemo`).
+/// (macOS : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`).
 pub fn data_dir() -> PathBuf {
-    directories::ProjectDirs::from("dev", "matter-demo", "MatterDemo")
-        .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("./matter-demo-data"))
+    resolve_dir(current_dir(), legacy_dir())
+}
+
+/// Déplace l'ancien dossier vers le nouveau s'il n'y a que l'ancien. `Ok(true)` si déplacé.
+fn migrate(old: &Path, new: &Path) -> std::io::Result<bool> {
+    if new.exists() || !old.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(old, new)?;
+    Ok(true)
+}
+
+/// À appeler au démarrage : renomme le dossier de données des versions « matter-demo ».
+/// Retourne un message pour le journal si quelque chose s'est passé.
+pub fn migrate_legacy_data_dir() -> Option<String> {
+    let old = legacy_dir()?;
+    let new = current_dir();
+    match migrate(&old, &new) {
+        Ok(true) => Some(format!("Données déplacées de {} vers {}.", old.display(), new.display())),
+        Ok(false) => None,
+        Err(e) => Some(format!(
+            "Impossible de déplacer {} vers {} ({e}) : l'ancien dossier reste utilisé.",
+            old.display(),
+            new.display()
+        )),
+    }
 }
 
 pub fn state_path() -> PathBuf {
@@ -164,7 +213,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let dir = std::env::temp_dir().join(format!("matter-demo-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("matter-home-desktop-test-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
         assert!(load(&path).unwrap().is_none());
         save(&path, &sample()).unwrap();
@@ -172,5 +221,28 @@ mod tests {
         assert_eq!(back.identity.fabric_id, 42);
         assert_eq!(back.nodes, sample().nodes);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_dir_migration() {
+        let base = std::env::temp_dir().join(format!("mhd-migration-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let old = base.join("dev.matter-demo.MatterDemo");
+        let new = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        std::fs::create_dir_all(old.join("history")).unwrap();
+        std::fs::write(old.join(FILE_NAME), "{}").unwrap();
+
+        // Tant que rien n'est déplacé, l'ancien dossier est utilisé.
+        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), old);
+        assert!(migrate(&old, &new).unwrap());
+        assert!(new.join(FILE_NAME).exists() && new.join("history").is_dir() && !old.exists());
+        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), new);
+        // Deuxième lancement : rien à faire.
+        assert!(!migrate(&old, &new).unwrap());
+        // Les deux existent : le nouveau gagne, l'ancien n'est pas touché.
+        std::fs::create_dir_all(&old).unwrap();
+        assert!(!migrate(&old, &new).unwrap());
+        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), new);
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

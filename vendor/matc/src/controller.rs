@@ -459,7 +459,7 @@ impl Connection {
         self.active.request(exchange, &msg).await
     }
 
-    /// [matter-demo] Souscription unique couvrant plusieurs attributs. Retourne le ReportData initial.
+    /// [matter-home-desktop] Souscription unique couvrant plusieurs attributs. Retourne le ReportData initial.
     pub async fn im_subscribe_request_paths(
         &self,
         paths: &[(u16, u32, u32)],

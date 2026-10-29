@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 
 use crate::{messages, session, transport::ConnectionTrait};
 
-// [matter-demo] délais allongés pour les appareils Thread « sleepy » (SII jusqu'à ~16 s).
+// [matter-home-desktop] délais allongés pour les appareils Thread « sleepy » (SII jusqu'à ~16 s).
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RETRANSMIT_TIME: Duration = Duration::from_secs(45);
 const RELIABLE_MAX_WAIT_TIME: Duration = Duration::from_secs(60);

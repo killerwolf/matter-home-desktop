@@ -1,8 +1,8 @@
 //! Contrôleur Matter over Thread de bureau — preuve de concept.
 //!
-//! - `matter-demo`            : mode normal (réseau réel)
-//! - `matter-demo --demo`     : données simulées, sans réseau
-//! - `matter-demo --discover` : diagnostic en ligne de commande (mDNS)
+//! - `matter-home-desktop`            : mode normal (réseau réel)
+//! - `matter-home-desktop --demo`     : données simulées, sans réseau
+//! - `matter-home-desktop --discover` : diagnostic en ligne de commande (mDNS)
 
 mod automation;
 mod demo;
@@ -20,16 +20,16 @@ use std::time::Duration;
 use eframe::egui;
 
 const HELP: &str = "\
-matter-demo — contrôleur Matter over Thread (preuve de concept)
+matter-home-desktop — contrôleur Matter over Thread de bureau
 
 Usage :
-  matter-demo             lance l'application (réseau réel)
-  matter-demo --demo      lance l'application avec des appareils simulés
-  matter-demo --discover  liste les nœuds Matter vus en mDNS puis quitte
-  matter-demo --plan      ouvre directement le plan de la maison (combinable avec --demo)
-  matter-demo --rules     ouvre directement les automatisations (combinable avec --demo)
-  matter-demo --device X  ouvre la fiche du premier appareil dont le nom contient X
-  matter-demo --help      affiche cette aide
+  matter-home-desktop             lance l'application (réseau réel)
+  matter-home-desktop --demo      lance l'application avec des appareils simulés
+  matter-home-desktop --discover  liste les nœuds Matter vus en mDNS puis quitte
+  matter-home-desktop --plan      ouvre directement le plan de la maison (combinable avec --demo)
+  matter-home-desktop --rules     ouvre directement les automatisations (combinable avec --demo)
+  matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
+  matter-home-desktop --help      affiche cette aide
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
@@ -67,6 +67,11 @@ fn main() -> eframe::Result {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
+    // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
+    let migration = persistence::migrate_legacy_data_dir();
+    if let Some(m) = &migration {
+        log::warn!("{m}");
+    }
     if args.iter().any(|a| a == "--discover") {
         discover();
         return Ok(());
@@ -77,13 +82,13 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(if demo { "Matter Demo (démo)" } else { "Matter Demo" })
+            .with_title(if demo { "Matter Home Desktop (démo)" } else { "Matter Home Desktop" })
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([800.0, 520.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "Matter Demo",
+        "Matter Home Desktop",
         options,
         Box::new(move |cc| {
             let (tx, rx) = mpsc::channel();
@@ -95,6 +100,9 @@ fn main() -> eframe::Result {
             }
             if open_rules {
                 app.show_rules();
+            }
+            if let Some(m) = migration {
+                app.note(m);
             }
             if let Some(filter) = device_filter {
                 app.select_device_named(filter);

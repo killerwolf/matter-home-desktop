@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{messages::{self, Message, ProtocolMessageHeader}, session::Session, transport::ConnectionTrait};
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(1);
-// [matter-demo] délais allongés pour les appareils Thread « sleepy » (SII jusqu'à ~16 s).
+// [matter-home-desktop] délais allongés pour les appareils Thread « sleepy » (SII jusqu'à ~16 s).
 const RETRANSMIT_THRESHOLD: Duration = Duration::from_secs(5);
 const MAX_RETRANSMIT_AGE: Duration = Duration::from_secs(45);
 const MAX_CACHED_COUNTERS: usize = 512;

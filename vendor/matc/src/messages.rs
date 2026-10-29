@@ -714,7 +714,7 @@ pub fn im_subscribe_request_attr(endpoint: Option<u16>, cluster: Option<u32>, at
     Ok(tlv.data)
 }
 
-/// [matter-demo] SubscribeRequest portant plusieurs chemins d'attributs (endpoint, cluster,
+/// [matter-home-desktop] SubscribeRequest portant plusieurs chemins d'attributs (endpoint, cluster,
 /// attribut) dans une seule souscription, avec les bornes d'intervalle choisies.
 pub fn im_subscribe_request_paths(
     paths: &[(u16, u32, u32)],

@@ -1,12 +1,12 @@
 [package]
-name = "matter-demo-app"
+name = "matter-home-desktop"
 version = "0.1.0"
 edition = "2021"
-description = "Preuve de concept : contrôleur Matter over Thread de bureau (egui + matc)"
+description = "Contrôleur Matter over Thread de bureau (egui + matc) : capteurs, plan de la maison, automatisations"
 license = "MIT"
 
 [[bin]]
-name = "matter-demo"
+name = "matter-home-desktop"
 path = "src/main.rs"
 
 [dependencies]

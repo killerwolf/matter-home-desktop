@@ -2328,7 +2328,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "matter-demo-app"
+name = "matter-home-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
