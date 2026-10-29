@@ -28,6 +28,7 @@ Usage :
   matter-demo --discover  liste les nœuds Matter vus en mDNS puis quitte
   matter-demo --plan      ouvre directement le plan de la maison (combinable avec --demo)
   matter-demo --rules     ouvre directement les automatisations (combinable avec --demo)
+  matter-demo --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-demo --help      affiche cette aide
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
@@ -41,6 +42,24 @@ fn main() -> eframe::Result {
         println!("{HELP}");
         return Ok(());
     }
+    // `--device` attend une valeur : on la met de côté avant de vérifier les options.
+    let mut device_filter = None;
+    let mut flags = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--device" {
+            match it.next() {
+                Some(v) => device_filter = Some(v.clone()),
+                None => {
+                    eprintln!("--device attend un nom d'appareil\n\n{HELP}");
+                    std::process::exit(2);
+                }
+            }
+        } else {
+            flags.push(a.clone());
+        }
+    }
+    let args = flags;
     if let Some(unknown) = args
         .iter()
         .find(|a| !matches!(a.as_str(), "--demo" | "--discover" | "--plan" | "--rules"))
@@ -76,6 +95,9 @@ fn main() -> eframe::Result {
             }
             if open_rules {
                 app.show_rules();
+            }
+            if let Some(filter) = device_filter {
+                app.select_device_named(filter);
             }
             Ok(Box::new(app))
         }),

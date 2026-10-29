@@ -125,6 +125,8 @@ pub struct MatterApp {
     confirm_clear: Option<u64>,
     /// Nom et icône en cours de modification sur la fiche.
     device_edit: Option<customize::DeviceEdit>,
+    /// Option `--device` : appareil à sélectionner quand il apparaîtra.
+    select_on_arrival: Option<String>,
 }
 
 impl MatterApp {
@@ -145,8 +147,15 @@ impl MatterApp {
             rules: rules::RulesView::load(demo, if demo { crate::demo::demo_rules } else { crate::automation::RuleSet::default }),
             confirm_clear: None,
             device_edit: None,
+            select_on_arrival: None,
             plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
         }
+    }
+
+    /// Sélectionne, dès qu'il est connu, le premier appareil dont le nom contient `filter`.
+    pub fn select_device_named(&mut self, filter: String) {
+        self.select_on_arrival = Some(filter);
+        self.view = View::Devices;
     }
 
     /// Ouvre l'onglet « Automatisations ».
@@ -186,6 +195,13 @@ impl MatterApp {
                     }
                     if self.selected.is_none() {
                         self.selected = Some(id);
+                    }
+                    let wanted = self.select_on_arrival.as_deref().map(str::to_lowercase);
+                    if let Some(w) = wanted {
+                        if self.devices[&id].info.name.to_lowercase().contains(&w) {
+                            self.selected = Some(id);
+                            self.select_on_arrival = None;
+                        }
                     }
                 }
                 Event::NodeRemoved(id) => {

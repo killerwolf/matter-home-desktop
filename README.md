@@ -1,16 +1,48 @@
-# Matter Demo — contrôleur Matter over Thread (preuve de concept)
+# Matter Home Desktop — contrôleur Matter over Thread
 
 Application de bureau en Rust (egui) qui s'ajoute comme **contrôleur supplémentaire**
-(multi-admin) à des appareils Matter over Thread déjà gérés par Apple Maison, puis :
+(multi-admin) à des appareils Matter over Thread ou Wi-Fi déjà gérés par Apple Maison :
+mesures en direct, plan de la maison, automatisations. Tout reste en local, sans cloud.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/thermometre.png" alt="Fiche d'un thermomètre : température et humidité en direct, statistiques, graphique"></td>
+    <td width="50%"><img src="docs/screenshots/plan.png" alt="Plan de la maison avec l'état des appareils en direct"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Thermomètre</b> — valeur en direct, statistiques, historique</td>
+    <td align="center"><b>Plan de la maison</b> — pièces, appareils, porte ouverte en orange</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/prise.png" alt="Consommation électrique d'une prise connectée"></td>
+    <td width="50%"><img src="docs/screenshots/porte.png" alt="Détecteur d'ouverture : état et chronologie"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Prise connectée</b> — puissance, énergie, courbe en escalier</td>
+    <td align="center"><b>Détecteur d'ouverture</b> — état, ouvertures, chronologie</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/automatisations.png" alt="Éditeur d'automatisations Quand / Si / Alors"></td>
+    <td width="50%"><img src="docs/screenshots/capteur-endormi.png" alt="Capteur sur pile endormi, pile faible, interrogation périodique"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Automatisations</b> — « Quand… Si… Alors… »</td>
+    <td align="center"><b>Capteur sur pile</b> — pile faible, interrogation périodique</td>
+  </tr>
+</table>
+
+<sub>Captures prises en mode démo (<code>matter-demo --demo</code>) : appareils et mesures simulés.</sub>
+
+## Fonctionnalités
 
 1. appaire un appareil à partir d'un code d'appairage (code manuel à 11 chiffres ou `MT:...`) ;
 2. liste les appareils appairés avec leur état (en ligne / connexion / injoignable) et leur dernière communication ;
 3. pour un thermomètre : température (et humidité) en direct, graphique de l'historique,
-   fenêtre 15 min / 1 h / session, min / max / moyenne, export CSV ;
+   fenêtre 15 min / 1 h / tout l'historique, min / max / moyenne, export CSV ;
 4. pour un détecteur d'ouverture : ouvert / fermé en direct, depuis quand, nombre d'ouvertures
    et chronologie des derniers changements ;
 5. pour une prise : puissance instantanée (W) avec graphique et statistiques, compteur d'énergie
-   (kWh), énergie estimée sur la fenêtre, état allumée / éteinte (lecture seule) ;
+   (kWh), énergie estimée sur la fenêtre, état allumée / éteinte ;
 6. pour tout appareil sur pile : niveau de la pile et alerte de pile faible ;
 7. un **plan de la maison** : étages, pièces nommées, appareils et objets placés, avec leur
    état en direct (porte ouverte en orange, température, puissance, pile faible…) ;
@@ -79,6 +111,7 @@ cargo build --release
 |---|---|
 | `matter-demo` | Mode normal, réseau réel |
 | `matter-demo --demo` | Appareils simulés (thermomètres, porte, prise du frigo), aucune communication réseau |
+| `matter-demo --device X` | Ouvre la fiche du premier appareil dont le nom contient X (ex. `--device porte`) |
 | `matter-demo --rules` | Ouvre directement l'onglet « Automatisations » (combinable avec `--demo`) |
 | `matter-demo --plan` | Ouvre directement l'onglet « Plan de la maison » (combinable avec `--demo`) |
 | `matter-demo --discover` | Diagnostic : liste les nœuds Matter vus en mDNS par la pile de l'application, puis quitte |
