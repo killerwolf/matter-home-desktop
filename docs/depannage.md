@@ -42,15 +42,15 @@ secondes : l'application patiente puis se reconnecte.
 Vérifiez que l'appareil apparaît sur le réseau :
 
 ```bash
-./target/release/matter-home-desktop --discover
+"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --discover
 ```
 
 ## Rien n'apparaît sur le réseau
 
 - Le Mac doit être sur le même réseau local que les routeurs de bordure Thread (HomePod),
   avec IPv6 actif.
-- Au premier lancement, macOS demande l'accès au réseau local : s'il a été refusé, activez-le
-  dans Réglages Système → Confidentialité et sécurité → Réseau local.
+- Au premier lancement, macOS demande l'accès au réseau local : s'il a été refusé, activez
+  « Matter Home Desktop » dans Réglages Système → Confidentialité et sécurité → Réseau local.
 - `dns-sd -B _matter._tcp local.` doit lister vos appareils.
 
 ## Les connexions échouent après début février 2027
@@ -62,5 +62,10 @@ Les appareils appairés avec les toutes premières versions ont reçu des certif
 ## Journaux détaillés
 
 ```bash
-RUST_LOG=debug,matc=debug ./target/release/matter-home-desktop
+RUST_LOG=debug,matc=debug "/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop"
 ```
+
+## « Matter Home Desktop est endommagé » au premier lancement
+
+L'application n'est pas signée avec un certificat Apple Developer : voir
+la section « Premier lancement » du [README](../README.md) : une commande `xattr -cr` à lancer une fois.

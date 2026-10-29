@@ -6,3 +6,4 @@ controller.json
 maison.json
 maison-demo.json
 *.json.tmp
+dist/

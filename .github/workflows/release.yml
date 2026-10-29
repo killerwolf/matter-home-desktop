@@ -1,0 +1,124 @@
+name: Build, Lint, and Release
+
+on:
+  push:
+    # Un tag v* publie une version ; main ne lance que les vérifications, pour que le
+    # badge du README reflète l'état de la branche principale.
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Lint and Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run linter
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Décodage TLV, conversions, codes d'appairage, historique, plan, moteur
+      # d'automatisations et mode démo de bout en bout (sans fenêtre).
+      - name: Run tests
+        run: cargo test
+
+      # Tout ce qui précède passe même si le .app livré est cassé : on le construit aussi.
+      - name: Build the app bundle
+        run: scripts/bundle.sh
+
+  build:
+    name: Build & Publish macOS (universal)
+    runs-on: macos-latest
+    needs: test
+    # Sur un tag de version (v*), ou à la demande depuis n'importe quelle branche
+    # (le DMG est alors seulement attaché à l'exécution, sans publier de version).
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    env:
+      # Jeton fourni automatiquement par GitHub : aucun jeton personnel nécessaire
+      # pour publier une version sur ce même dépôt.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Un seul binaire universel pour les Mac Apple Silicon et Intel.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set app version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting app version to $VERSION"
+          # Seule la version du [package], la première ligne « version = ».
+          VERSION="$VERSION" perl -0pi -e 's/^version = ".*"/version = "$ENV{VERSION}"/m' Cargo.toml
+          grep -m1 '^version' Cargo.toml
+
+      - name: Build the DMG
+        run: scripts/bundle.sh --dmg
+
+      - name: Determine release channel
+        id: channel
+        run: |
+          # Un tag de pré-version (ex. v0.2.0-rc.1) est publié comme « prerelease ».
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Une pré-version n'a pas forcément sa section dans CHANGELOG.md : on publie
+          # alors sans notes plutôt que d'échouer.
+          NOTES=()
+          if scripts/changelog-section.sh "${GITHUB_REF_NAME}" > "$RUNNER_TEMP/notes.md"; then
+            NOTES=(--notes-file "$RUNNER_TEMP/notes.md")
+          else
+            echo "No CHANGELOG section for ${GITHUB_REF_NAME}; publishing without notes."
+            NOTES=(--notes "")
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" dist/*.dmg \
+            --title "${GITHUB_REF_NAME}" \
+            ${{ steps.channel.outputs.prerelease }} \
+            "${NOTES[@]}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: matter-home-desktop-mac
+          path: dist/*.dmg
+          retention-days: 30
+          if-no-files-found: ignore

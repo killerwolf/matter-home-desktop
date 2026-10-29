@@ -141,5 +141,17 @@ src/
   matter/tlv.rs        décodeur TLV (+ tests)
   matter/convert.rs    conversions des mesures (+ tests)
 vendor/matc/           copie modifiée de matc 0.1.3
+scripts/bundle.sh      construction du .app et du DMG
+scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md
+scripts/make-icon.*    génération de l'icône (assets/icon.png, assets/icon.icns)
+.github/workflows/     CI : vérifications à chaque push, DMG publié sur un tag v*
 docs/                  documentation et captures d'écran
 ```
+
+## Paquet macOS
+
+`scripts/bundle.sh` assemble `Matter Home Desktop.app` : binaire universel (`lipo`),
+`Info.plist`, icône et signature ad hoc (pas de certificat Developer ID). L'`Info.plist`
+déclare `NSLocalNetworkUsageDescription` et `NSBonjourServices` (`_matter._tcp`,
+`_matterc._udp`) : sans eux, macOS bloque la découverte mDNS d'une application lancée depuis
+un `.app`. Le DMG contient l'application et un raccourci vers `/Applications`.

@@ -15,7 +15,8 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
 
 ## Préparer l'environnement
 
-- macOS et [Rust](https://rustup.rs) (stable, 1.87 ou plus).
+- macOS et [Rust](https://rustup.rs) (stable, 1.87 ou plus), outils en ligne de commande
+  de Xcode (`xcode-select --install`) pour construire le `.app` et l'icône.
 - Pas besoin d'appareil Matter pour la plupart des modifications : le **mode démo** simule
   thermomètres, porte, prise et automatisations.
 
@@ -66,6 +67,36 @@ avec de vrais appareils.
   commentaire `[matter-home-desktop]` et documentez-le dans
   [docs/architecture.md](docs/architecture.md).
 - **Captures d'écran** : uniquement en mode démo, rangées dans `docs/screenshots/`.
+
+## Construire l'application et le DMG
+
+```bash
+scripts/bundle.sh --dmg
+```
+
+Le script compile un binaire universel (Apple Silicon + Intel) si les deux cibles Rust sont
+installées (`rustup target add x86_64-apple-darwin aarch64-apple-darwin`), sinon pour ce Mac
+seulement, puis assemble `dist/Matter Home Desktop.app` (Info.plist, icône, signature ad hoc)
+et `dist/MatterHomeDesktop-<version>-<arch>.dmg`. L'icône se régénère avec
+`scripts/make-icon.sh`.
+
+## Publier une version
+
+La CI (`.github/workflows/release.yml`) vérifie chaque push et chaque pull request
+(formatage, clippy, tests, construction du `.app`). Un tag `v*` publie en plus une version
+GitHub avec le DMG universel :
+
+1. Décrivez les changements dans `CHANGELOG.md`, sous un titre `## [x.y.z] - AAAA-MM-JJ` :
+   c'est ce texte qui devient la note de version.
+2. Commitez, puis créez et poussez le tag :
+
+   ```bash
+   git tag v0.2.0 && git push origin main v0.2.0
+   ```
+
+La version du tag est reportée dans `Cargo.toml` au moment du build. Un tag avec un tiret
+(`v0.2.0-rc.1`) est publié comme pré-version. On peut aussi lancer le workflow à la main
+(« Run workflow ») pour obtenir un DMG de test, sans publier de version.
 
 ## Commits et pull requests
 

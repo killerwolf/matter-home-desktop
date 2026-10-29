@@ -77,3 +77,9 @@ Le nom et l'icône s'appliquent partout (liste, fiche, plan, automatisations).
 | `RUST_LOG=debug matter-home-desktop` | journaux détaillés (`RUST_LOG=debug,matc=debug` pour le protocole) |
 
 Les options `--plan`, `--rules` et `--device` se combinent avec `--demo`.
+
+Avec l'application installée depuis le DMG, le programme se trouve dans le paquet :
+
+```bash
+"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --demo --plan
+```

@@ -1,5 +1,8 @@
 # Matter Home Desktop
 
+[![Build](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml/badge.svg)](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml)
+[![Dernière version](https://img.shields.io/github/v/release/killerwolf/matter-home-desktop)](https://github.com/killerwolf/matter-home-desktop/releases/latest)
+
 Application de bureau pour macOS qui pilote et observe vos appareils **Matter** (Thread ou
 Wi-Fi) déjà installés dans Apple Maison : mesures en direct, plan de la maison,
 automatisations. Elle s'ajoute comme un contrôleur de plus ; tout reste en local, sans cloud.
@@ -48,32 +51,54 @@ automatisations. Elle s'ajoute comme un contrôleur de plus ; tout reste en loca
 Testé avec des appareils IKEA (TIMMERFLOTTE, MYGGBETT, GRILLPLATS, BILRESA, KAJPLATS) et
 des routeurs de bordure Thread HomePod.
 
-## Installation
+## Télécharger
 
-Il faut un Mac et [Rust](https://rustup.rs). Le Mac doit être sur le même réseau local que
-vos HomePod (ou autres routeurs de bordure Thread).
+Téléchargez la dernière version sur la
+[page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest) ;
+les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md).
+
+Un seul fichier, `MatterHomeDesktop-<version>-universal.dmg`, pour **macOS 12 et plus**, sur
+les Mac Apple Silicon comme Intel (environ 13 Mo). Ouvrez-le et glissez
+**Matter Home Desktop** dans **Applications**.
+
+Le Mac doit être sur le même réseau local que vos HomePod (ou autres routeurs de bordure
+Thread). Au premier lancement, macOS demande l'accès au **réseau local** : acceptez, sans
+quoi l'application ne voit aucun appareil.
+
+### Premier lancement : « Matter Home Desktop est endommagé »
+
+L'application n'est pas abîmée : elle n'est pas encore signée avec un certificat Apple
+Developer payant, et macOS bloque les applications non signées téléchargées sur internet.
+Pour l'autoriser, lancez une fois dans le Terminal :
 
 ```bash
-git clone https://github.com/killerwolf/matter-home-desktop.git
+xattr -cr "/Applications/Matter Home Desktop.app"
+```
+
+Ouvrez ensuite l'application normalement. C'est à refaire après chaque nouvelle version.
+
+### Essayer sans appareil
+
+Le **mode démo** simule thermomètres, porte, prise et automatisations :
+
+```bash
+"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --demo
+```
+
+### Compiler depuis les sources
+
+Avec [Rust](https://rustup.rs) installé :
+
+```bash
+git clone https://github.com/killerwolf/matter-home-desktop.git && cd matter-home-desktop
 ```
 
 ```bash
-cd matter-home-desktop && cargo build --release
+scripts/bundle.sh --dmg
 ```
 
-Pour découvrir l'application sans appareil, lancez le **mode démo** :
-
-```bash
-./target/release/matter-home-desktop --demo
-```
-
-Puis, avec vos appareils :
-
-```bash
-./target/release/matter-home-desktop
-```
-
-Au premier lancement, macOS peut demander l'accès au **réseau local** : acceptez.
+L'application et le DMG sont créés dans `dist/`. Plus de détails dans
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Ajouter un appareil
 
