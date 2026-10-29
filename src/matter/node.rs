@@ -432,12 +432,22 @@ fn publish(ctx: &Ctx, node_id: u64, cluster: u32, attribute: u32, value: &Value,
     };
     let measure = |kind, v: Option<f64>| {
         if let Some(value) = v {
-            emit(Event::Measurement { node_id, kind, value, at });
+            emit(Event::Measurement {
+                node_id,
+                kind,
+                value,
+                at,
+            });
         }
     };
     let state = |kind, v: Option<bool>| {
         if let Some(value) = v {
-            emit(Event::State { node_id, kind, value, at });
+            emit(Event::State {
+                node_id,
+                kind,
+                value,
+                at,
+            });
         }
     };
     match (cluster, attribute) {

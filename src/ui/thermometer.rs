@@ -32,10 +32,20 @@ pub fn show(
     ui.horizontal(|ui| {
         match device.temperature.last() {
             Some(s) => {
-                ui.label(RichText::new(format_temperature(s.value)).size(56.0).strong().color(TEMP_COLOR));
+                ui.label(
+                    RichText::new(format_temperature(s.value))
+                        .size(56.0)
+                        .strong()
+                        .color(TEMP_COLOR),
+                );
             }
             None => {
-                ui.label(RichText::new("— °C").size(56.0).strong().color(Color32::GRAY));
+                ui.label(
+                    RichText::new("— °C")
+                        .size(56.0)
+                        .strong()
+                        .color(Color32::GRAY),
+                );
             }
         }
         if device.info.caps.humidity || !device.humidity.is_empty() {
@@ -45,7 +55,11 @@ pub fn show(
                 .last()
                 .map(|s| format_humidity(s.value))
                 .unwrap_or_else(|| "— %".into());
-            ui.label(RichText::new(format!("💧 {text}")).size(30.0).color(HUM_COLOR));
+            ui.label(
+                RichText::new(format!("💧 {text}"))
+                    .size(30.0)
+                    .color(HUM_COLOR),
+            );
         }
     });
     let mut line = match device.temperature.last() {
@@ -54,10 +68,14 @@ pub fn show(
     };
     match &device.mode {
         Some(ReportingMode::Subscription { max_interval_s }) => {
-            line.push_str(&format!(" · souscription active (rapport au moins toutes les {max_interval_s} s)"));
+            line.push_str(&format!(
+                " · souscription active (rapport au moins toutes les {max_interval_s} s)"
+            ));
         }
         Some(ReportingMode::Polling { every_s }) => {
-            line.push_str(&format!(" · interrogation toutes les {every_s} s (souscription impossible)"));
+            line.push_str(&format!(
+                " · interrogation toutes les {every_s} s (souscription impossible)"
+            ));
         }
         None => {}
     }
@@ -78,59 +96,77 @@ pub fn show(
         }
         ui.separator();
         if ui
-            .add_enabled(!device.temperature.is_empty(), egui::Button::new("Exporter en CSV"))
+            .add_enabled(
+                !device.temperature.is_empty(),
+                egui::Button::new("Exporter en CSV"),
+            )
             .clicked()
         {
             *export_message = Some(export_csv(device));
         }
     });
     if let Some((ok, msg)) = export_message {
-        let color = if *ok { Color32::from_rgb(40, 160, 70) } else { Color32::from_rgb(210, 60, 50) };
+        let color = if *ok {
+            Color32::from_rgb(40, 160, 70)
+        } else {
+            Color32::from_rgb(210, 60, 50)
+        };
         ui.colored_label(color, msg.as_str());
     }
 
     let temp_stats = compute_stats(device.temperature.since(start));
     let hum_stats = compute_stats(device.humidity.since(start));
-    egui::Grid::new("stats").num_columns(5).spacing([24.0, 4.0]).show(ui, |ui| {
-        ui.label("");
-        ui.strong("Min");
-        ui.strong("Max");
-        ui.strong("Moyenne");
-        ui.strong("Points");
-        ui.end_row();
-        match temp_stats {
-            Some(st) => {
-                ui.label("Température");
-                ui.label(format_temperature(st.min));
-                ui.label(format_temperature(st.max));
-                ui.label(format_temperature(st.mean));
-                ui.label(st.count.to_string());
-            }
-            None => {
-                ui.label("Température");
-                ui.label("—");
-                ui.label("—");
-                ui.label("—");
-                ui.label("0");
-            }
-        }
-        ui.end_row();
-        if let Some(st) = hum_stats {
-            ui.label("Humidité");
-            ui.label(format_humidity(st.min));
-            ui.label(format_humidity(st.max));
-            ui.label(format_humidity(st.mean));
-            ui.label(st.count.to_string());
+    egui::Grid::new("stats")
+        .num_columns(5)
+        .spacing([24.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("");
+            ui.strong("Min");
+            ui.strong("Max");
+            ui.strong("Moyenne");
+            ui.strong("Points");
             ui.end_row();
-        }
-    });
+            match temp_stats {
+                Some(st) => {
+                    ui.label("Température");
+                    ui.label(format_temperature(st.min));
+                    ui.label(format_temperature(st.max));
+                    ui.label(format_temperature(st.mean));
+                    ui.label(st.count.to_string());
+                }
+                None => {
+                    ui.label("Température");
+                    ui.label("—");
+                    ui.label("—");
+                    ui.label("—");
+                    ui.label("0");
+                }
+            }
+            ui.end_row();
+            if let Some(st) = hum_stats {
+                ui.label("Humidité");
+                ui.label(format_humidity(st.min));
+                ui.label(format_humidity(st.max));
+                ui.label(format_humidity(st.mean));
+                ui.label(st.count.to_string());
+                ui.end_row();
+            }
+        });
     ui.add_space(8.0);
 
     // Graphique température (axe gauche) ; l'humidité n'a pas la même échelle, elle
     // n'est pas tracée pour garder un graphique lisible.
-    let points: PlotPoints = device.temperature.since(start).map(|s| [s.t, s.value]).collect();
+    let points: PlotPoints = device
+        .temperature
+        .since(start)
+        .map(|s| [s.t, s.value])
+        .collect();
     let x_min = if *window == TimeWindow::Session {
-        device.temperature.iter().next().map_or(now - 900.0, |s| s.t)
+        device
+            .temperature
+            .iter()
+            .next()
+            .map_or(now - 900.0, |s| s.t)
     } else {
         start
     };
@@ -144,13 +180,21 @@ pub fn show(
                 HoverPosition::NearDataPoint { position, .. } => position,
                 HoverPosition::Elsewhere { position } => position,
             };
-            Some(format!("{}\n{}", local_time(p.x, true), format_temperature(p.y)))
+            Some(format!(
+                "{}\n{}",
+                local_time(p.x, true),
+                format_temperature(p.y)
+            ))
         })
         .include_x(x_min)
         .include_x(now)
         .allow_scroll(false)
         .show(ui, |plot_ui| {
-            plot_ui.line(Line::new("Température (°C)", points).color(TEMP_COLOR).width(2.0));
+            plot_ui.line(
+                Line::new("Température (°C)", points)
+                    .color(TEMP_COLOR)
+                    .width(2.0),
+            );
         });
 }
 
@@ -171,10 +215,16 @@ fn export_csv(device: &Device) -> (bool, String) {
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
     let humidity = (!device.humidity.is_empty()).then_some(&device.humidity);
-    match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, to_csv(&device.temperature, humidity))) {
+    match std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(&file, to_csv(&device.temperature, humidity)))
+    {
         Ok(()) => (
             true,
-            format!("{} points exportés dans {}", device.temperature.len(), file.display()),
+            format!(
+                "{} points exportés dans {}",
+                device.temperature.len(),
+                file.display()
+            ),
         ),
         Err(e) => (false, format!("Export impossible : {e}")),
     }

@@ -82,7 +82,11 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(if demo { "Matter Home Desktop (démo)" } else { "Matter Home Desktop" })
+            .with_title(if demo {
+                "Matter Home Desktop (démo)"
+            } else {
+                "Matter Home Desktop"
+            })
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([800.0, 520.0]),
         ..Default::default()
@@ -93,7 +97,11 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let (tx, rx) = mpsc::channel();
             let sink = events::EventSink::new(tx, cc.egui_ctx.clone());
-            let commands = if demo { demo::spawn(sink) } else { matter::spawn(sink) };
+            let commands = if demo {
+                demo::spawn(sink)
+            } else {
+                matter::spawn(sink)
+            };
             let mut app = ui::MatterApp::new(commands, rx, demo);
             if open_plan {
                 app.show_plan();

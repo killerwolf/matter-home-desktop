@@ -216,7 +216,10 @@ mod tests {
     #[test]
     fn stats_single_and_negative_values() {
         let st = compute_stats(&[s(0.0, -4.25)]).unwrap();
-        assert_eq!((st.min, st.max, st.mean, st.count), (-4.25, -4.25, -4.25, 1));
+        assert_eq!(
+            (st.min, st.max, st.mean, st.count),
+            (-4.25, -4.25, -4.25, 1)
+        );
 
         let st = compute_stats(&[s(0.0, -2.0), s(1.0, 2.0)]).unwrap();
         assert_eq!(st.mean, 0.0);
@@ -253,11 +256,18 @@ mod tests {
         let csv = to_csv(&t, Some(&h));
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0], "timestamp_unix,datetime_local,temperature_c,humidity_pct");
+        assert_eq!(
+            lines[0],
+            "timestamp_unix,datetime_local,temperature_c,humidity_pct"
+        );
         assert!(lines[1].starts_with("1700000000,"));
         assert!(lines[1].ends_with(",21.50,45.00"));
         assert!(lines[2].ends_with(",21.75,45.00"));
         assert!(lines[3].ends_with(",22.00,"));
-        assert!(to_csv(&t, None).lines().nth(1).unwrap().ends_with(",21.50,"));
+        assert!(to_csv(&t, None)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .ends_with(",21.50,"));
     }
 }

@@ -493,7 +493,10 @@ mod tests {
     /// Chaîne complète sans interface : « Tester » → moteur → actionneur → compte rendu.
     #[test]
     fn test_rule_switches_simulated_plug() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let (ui_tx, ui_rx) = std::sync::mpsc::channel();
             let ui = EventSink::new(ui_tx, eframe::egui::Context::default());
@@ -505,15 +508,28 @@ mod tests {
                 id: 9,
                 name: "Couper".into(),
                 enabled: true,
-                trigger: Trigger::Time { hour: 3, minute: 0, days: [true; 7] },
+                trigger: Trigger::Time {
+                    hour: 3,
+                    minute: 0,
+                    days: [true; 7],
+                },
                 conditions: Vec::new(),
                 actions: vec![
-                    Action::SetOnOff { node_id: PLUG, command: OnOffCommand::Toggle },
-                    Action::SetOnOff { node_id: DOOR, command: OnOffCommand::On },
+                    Action::SetOnOff {
+                        node_id: PLUG,
+                        command: OnOffCommand::Toggle,
+                    },
+                    Action::SetOnOff {
+                        node_id: DOOR,
+                        command: OnOffCommand::On,
+                    },
                 ],
                 cooldown_s: 0,
             };
-            let actuator = DemoActuator { events: events.clone(), plug_on: plug_on.clone() };
+            let actuator = DemoActuator {
+                events: events.clone(),
+                plug_on: plug_on.clone(),
+            };
             automation::spawn(vec![rule], tap_rx, engine_rx, ui, Arc::new(actuator));
             engine_tx.send(automation::EngineCommand::Test(9)).unwrap();
 
@@ -530,9 +546,15 @@ mod tests {
                 }
             }
             let (ok, detail) = report.expect("compte rendu de la règle");
-            assert!(!plug_on.load(Ordering::Relaxed), "la prise a été éteinte (inversée)");
+            assert!(
+                !plug_on.load(Ordering::Relaxed),
+                "la prise a été éteinte (inversée)"
+            );
             assert!(!ok, "la seconde action (porte) doit échouer : {detail}");
-            assert!(detail.contains("inverser") && detail.contains("échec"), "{detail}");
+            assert!(
+                detail.contains("inverser") && detail.contains("échec"),
+                "{detail}"
+            );
         });
     }
 }

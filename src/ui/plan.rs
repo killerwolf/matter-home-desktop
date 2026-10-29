@@ -412,7 +412,11 @@ impl PlanView {
         });
     }
 
-    fn palette(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> Option<PlanAction> {
+    fn palette(
+        &mut self,
+        ui: &mut egui::Ui,
+        devices: &BTreeMap<u64, Device>,
+    ) -> Option<PlanAction> {
         let mut action = None;
         // Inspecteur de la sélection.
         let floor = self.floor;
@@ -466,7 +470,9 @@ impl PlanView {
                                             icon: edit.icon,
                                         });
                                     }
-                                    Some(EditResult::Cancel) => self.device_edit = Some(DeviceEdit::from_info(&d.info)),
+                                    Some(EditResult::Cancel) => {
+                                        self.device_edit = Some(DeviceEdit::from_info(&d.info))
+                                    }
                                     None => {}
                                 }
                             }
@@ -1061,7 +1067,10 @@ mod tests {
         devices.get_mut(&1).unwrap().info.icon = Some(Symbol::Light);
         let legacy = Item {
             id: 7,
-            kind: ItemKind::Device { node_id: 1, symbol: Some(Symbol::Window) },
+            kind: ItemKind::Device {
+                node_id: 1,
+                symbol: Some(Symbol::Window),
+            },
             x: 0.0,
             y: 0.0,
         };

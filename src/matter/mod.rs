@@ -22,8 +22,8 @@ use rand::Rng;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
-use crate::events::{Capabilities, Command, Event, EventSink, NodeInfo};
 use crate::automation::{self, Actuator, BoxFuture, OnOffCommand};
+use crate::events::{Capabilities, Command, Event, EventSink, NodeInfo};
 use crate::history_store::{self, HistorySink, HistoryStore};
 use crate::persistence::{self, StoredNode, StoredState};
 use discovery::Discovery;
@@ -92,7 +92,11 @@ impl Ctx {
     }
 
     fn connection(&self, node_id: u64) -> Option<Arc<Connection>> {
-        self.connections.lock().unwrap_or_else(|e| e.into_inner()).get(&node_id).cloned()
+        self.connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&node_id)
+            .cloned()
     }
 
     pub fn instance_name(&self, node_id: u64) -> String {
@@ -209,13 +213,21 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     let since = now - history_store::RETENTION.as_secs_f64();
     let mut replayed = 0;
     for n in &nodes {
-        for event in store.load(n.node_id, since).iter().filter_map(|r| r.to_event(n.node_id)) {
+        for event in store
+            .load(n.node_id, since)
+            .iter()
+            .filter_map(|r| r.to_event(n.node_id))
+        {
             events.send(event);
             replayed += 1;
         }
     }
     // Historique d'appareils oubliés entre-temps : supprimé.
-    for orphan in store.nodes().into_iter().filter(|id| !nodes.iter().any(|n| n.node_id == *id)) {
+    for orphan in store
+        .nodes()
+        .into_iter()
+        .filter(|id| !nodes.iter().any(|n| n.node_id == *id))
+    {
         let _ = store.remove(orphan);
     }
     let summary = format!(
@@ -245,7 +257,13 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     if let Some(e) = rules_error {
         events.send(Event::Info(e));
     }
-    automation::spawn(rules.rules, tap_rx, engine_rx, ui, Arc::new(MatterActuator(ctx.clone())));
+    automation::spawn(
+        rules.rules,
+        tap_rx,
+        engine_rx,
+        ui,
+        Arc::new(MatterActuator(ctx.clone())),
+    );
 
     let mut handles: HashMap<u64, NodeHandle> = HashMap::new();
     for n in &nodes {
@@ -497,16 +515,18 @@ mod tests {
     /// InvokeResponse : {0: false, 1: [{1: {0: Path{0:1,1:6,2:1}, 1: Status{0: statut}}}], 0xFF: 11}
     fn invoke_response(status: u8) -> Vec<u8> {
         vec![
-            0x15, 0x28, 0x00, 0x36, 0x01, 0x15, 0x35, 0x01, 0x37, 0x00, 0x24, 0x00, 0x01, 0x24, 0x01, 0x06,
-            0x24, 0x02, 0x01, 0x18, 0x35, 0x01, 0x24, 0x00, status, 0x18, 0x18, 0x18, 0x18, 0x24, 0xFF,
-            0x0B, 0x18,
+            0x15, 0x28, 0x00, 0x36, 0x01, 0x15, 0x35, 0x01, 0x37, 0x00, 0x24, 0x00, 0x01, 0x24,
+            0x01, 0x06, 0x24, 0x02, 0x01, 0x18, 0x35, 0x01, 0x24, 0x00, status, 0x18, 0x18, 0x18,
+            0x18, 0x24, 0xFF, 0x0B, 0x18,
         ]
     }
 
     #[test]
     fn invoke_status_success_and_failure() {
         assert!(invoke_status(&invoke_response(0)).is_ok());
-        let err = invoke_status(&invoke_response(0x81)).unwrap_err().to_string();
+        let err = invoke_status(&invoke_response(0x81))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("0x81"), "{err}");
         assert!(invoke_status(&[0x15, 0x18]).is_err());
     }

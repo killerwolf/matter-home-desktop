@@ -42,15 +42,20 @@ pub fn editor(ui: &mut egui::Ui, edit: &mut DeviceEdit, device_name: &str) -> Op
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             result = Some(EditResult::Save);
         }
-        let current = edit
-            .icon
-            .map_or_else(|| "Automatique".to_string(), |s| format!("{} {}", glyph(Some(s)), s.label()));
+        let current = edit.icon.map_or_else(
+            || "Automatique".to_string(),
+            |s| format!("{} {}", glyph(Some(s)), s.label()),
+        );
         egui::ComboBox::from_id_salt(("icon", edit.node_id))
             .selected_text(current)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut edit.icon, None, "Automatique");
                 for s in Symbol::ALL {
-                    ui.selectable_value(&mut edit.icon, Some(s), format!("{} {}", glyph(Some(s)), s.label()));
+                    ui.selectable_value(
+                        &mut edit.icon,
+                        Some(s),
+                        format!("{} {}", glyph(Some(s)), s.label()),
+                    );
                 }
             });
         if ui.button("Enregistrer").clicked() {

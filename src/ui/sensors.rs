@@ -28,16 +28,28 @@ pub fn door(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
     ui.heading("Ouverture");
     match device.open {
         Some(open) => {
-            let (text, color) = if open { ("Ouvert", OPEN_COLOR) } else { ("Fermé", CLOSED_COLOR) };
+            let (text, color) = if open {
+                ("Ouvert", OPEN_COLOR)
+            } else {
+                ("Fermé", CLOSED_COLOR)
+            };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).size(48.0).strong().color(color));
                 if let Some(since) = device.open_since {
-                    ui.label(format!("depuis {} ({})", local_time(since, false), ago(now - since)));
+                    ui.label(format!(
+                        "depuis {} ({})",
+                        local_time(since, false),
+                        ago(now - since)
+                    ));
                 }
             });
         }
         None => {
-            ui.label(RichText::new("État inconnu").size(32.0).color(Color32::GRAY));
+            ui.label(
+                RichText::new("État inconnu")
+                    .size(32.0)
+                    .color(Color32::GRAY),
+            );
         }
     }
 
@@ -104,10 +116,20 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
     ui.horizontal(|ui| {
         match device.power.last() {
             Some(s) => {
-                ui.label(RichText::new(format_power(s.value)).size(48.0).strong().color(POWER_COLOR));
+                ui.label(
+                    RichText::new(format_power(s.value))
+                        .size(48.0)
+                        .strong()
+                        .color(POWER_COLOR),
+                );
             }
             None if device.info.caps.power => {
-                ui.label(RichText::new("— W").size(48.0).strong().color(Color32::GRAY));
+                ui.label(
+                    RichText::new("— W")
+                        .size(48.0)
+                        .strong()
+                        .color(Color32::GRAY),
+                );
             }
             None => {}
         }
@@ -202,9 +224,18 @@ mod tests {
     #[test]
     fn step_points_without_duplicates() {
         // Cas réel : 0 W, puis 7,1 W répété trois fois.
-        let data = [s(10.0, 0.0), s(20.0, 7.1), s(30.0, 7.1), s(30.0, 7.1), s(50.0, 7.1)];
+        let data = [
+            s(10.0, 0.0),
+            s(20.0, 7.1),
+            s(30.0, 7.1),
+            s(30.0, 7.1),
+            s(50.0, 7.1),
+        ];
         let pts = step_points(data.iter(), 60.0);
-        assert_eq!(pts, vec![[10.0, 0.0], [20.0, 0.0], [20.0, 7.1], [60.0, 7.1]]);
+        assert_eq!(
+            pts,
+            vec![[10.0, 0.0], [20.0, 0.0], [20.0, 7.1], [60.0, 7.1]]
+        );
         assert!(pts.windows(2).all(|w| w[0] != w[1]));
     }
 

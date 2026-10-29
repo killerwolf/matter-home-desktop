@@ -122,7 +122,10 @@ mod tests {
         assert_eq!(power_w_from_tlv(&Value::Signed(12_345)), Some(12.345));
         assert_eq!(power_w_from_tlv(&Value::Signed(-500)), Some(-0.5));
         assert_eq!(power_w_from_tlv(&Value::Null), None);
-        let energy = Value::Container(vec![(Some(0), Value::Signed(1_234_567)), (Some(1), Value::Unsigned(0))]);
+        let energy = Value::Container(vec![
+            (Some(0), Value::Signed(1_234_567)),
+            (Some(1), Value::Unsigned(0)),
+        ]);
         assert_eq!(energy_kwh_from_tlv(&energy), Some(1.234567));
         assert_eq!(energy_kwh_from_tlv(&Value::Null), None);
         assert_eq!(format_power(12.34), "12,3 W");

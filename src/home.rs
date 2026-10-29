@@ -55,7 +55,10 @@ impl Symbol {
 pub enum ItemKind {
     /// Appareil Matter appairé ; `symbol` remplace le pictogramme déduit de ses capacités
     /// (ex. un détecteur d'ouverture posé sur une fenêtre).
-    Device { node_id: u64, symbol: Option<Symbol> },
+    Device {
+        node_id: u64,
+        symbol: Option<Symbol>,
+    },
     /// Objet non connecté, pour la lisibilité du plan.
     Decor { symbol: Symbol, label: String },
 }
@@ -171,7 +174,14 @@ mod tests {
     use super::*;
 
     fn room(id: u64, x: f32, y: f32, w: f32, h: f32) -> Room {
-        Room { id, name: format!("R{id}"), x, y, w, h }
+        Room {
+            id,
+            name: format!("R{id}"),
+            x,
+            y,
+            w,
+            h,
+        }
     }
 
     #[test]
@@ -201,13 +211,19 @@ mod tests {
         plan.floors[0].rooms.push(room(5, 0.0, 0.0, 3.0, 3.0));
         plan.floors[0].items.push(Item {
             id: 6,
-            kind: ItemKind::Device { node_id: 42, symbol: None },
+            kind: ItemKind::Device {
+                node_id: 42,
+                symbol: None,
+            },
             x: 1.0,
             y: 1.0,
         });
         plan.floors[0].items.push(Item {
             id: 7,
-            kind: ItemKind::Decor { symbol: Symbol::Window, label: "Baie".into() },
+            kind: ItemKind::Decor {
+                symbol: Symbol::Window,
+                label: "Baie".into(),
+            },
             x: 2.0,
             y: 0.0,
         });
@@ -224,7 +240,10 @@ mod tests {
         plan.floors[0].rooms.push(room(2, 0.0, 0.0, 4.0, 3.0));
         plan.floors[0].items.push(Item {
             id: 3,
-            kind: ItemKind::Device { node_id: 9, symbol: Some(Symbol::Window) },
+            kind: ItemKind::Device {
+                node_id: 9,
+                symbol: Some(Symbol::Window),
+            },
             x: 1.5,
             y: 0.0,
         });

@@ -16,8 +16,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::events::{
     now_unix, Command, Event, MeasureKind, NodeInfo, NodeStatus, ReportingMode, StateKind,
 };
-use crate::matter::convert::{format_power, format_temperature};
 use crate::history::{RingBuffer, Sample, TimeWindow};
+use crate::matter::convert::{format_power, format_temperature};
 
 pub struct Device {
     pub info: NodeInfo,
@@ -74,16 +74,27 @@ impl Device {
             parts.push(format_temperature(s.value));
         }
         if let Some(open) = self.open {
-            parts.push(if open { "Ouvert".into() } else { "Fermé".into() });
+            parts.push(if open {
+                "Ouvert".into()
+            } else {
+                "Fermé".into()
+            });
         }
         if let Some(s) = self.power.last() {
             parts.push(format_power(s.value));
         }
         if let Some(on) = self.on_off {
-            parts.push(if on { "Allumé".into() } else { "Éteint".into() });
+            parts.push(if on {
+                "Allumé".into()
+            } else {
+                "Éteint".into()
+            });
         }
         if let Some(b) = self.battery {
-            parts.push(format!("pile {b:.0} %{}", if self.battery_low { " (faible)" } else { "" }));
+            parts.push(format!(
+                "pile {b:.0} %{}",
+                if self.battery_low { " (faible)" } else { "" }
+            ));
         }
         parts.join(" · ")
     }
@@ -130,7 +141,11 @@ pub struct MatterApp {
 }
 
 impl MatterApp {
-    pub fn new(commands: UnboundedSender<Command>, events: mpsc::Receiver<Event>, demo: bool) -> Self {
+    pub fn new(
+        commands: UnboundedSender<Command>,
+        events: mpsc::Receiver<Event>,
+        demo: bool,
+    ) -> Self {
         Self {
             commands,
             events,
@@ -144,11 +159,25 @@ impl MatterApp {
             fatal: None,
             log: VecDeque::new(),
             view: View::Devices,
-            rules: rules::RulesView::load(demo, if demo { crate::demo::demo_rules } else { crate::automation::RuleSet::default }),
+            rules: rules::RulesView::load(
+                demo,
+                if demo {
+                    crate::demo::demo_rules
+                } else {
+                    crate::automation::RuleSet::default
+                },
+            ),
             confirm_clear: None,
             device_edit: None,
             select_on_arrival: None,
-            plan: plan::PlanView::load(demo, if demo { crate::demo::demo_plan } else { crate::home::HomePlan::default }),
+            plan: plan::PlanView::load(
+                demo,
+                if demo {
+                    crate::demo::demo_plan
+                } else {
+                    crate::home::HomePlan::default
+                },
+            ),
         }
     }
 
@@ -245,7 +274,12 @@ impl MatterApp {
                         d.mode = Some(mode);
                     }
                 }
-                Event::Measurement { node_id, kind, value, at } => {
+                Event::Measurement {
+                    node_id,
+                    kind,
+                    value,
+                    at,
+                } => {
                     if let Some(d) = self.devices.get_mut(&node_id) {
                         let sample = Sample { t: at, value };
                         match kind {
@@ -257,7 +291,12 @@ impl MatterApp {
                         }
                     }
                 }
-                Event::State { node_id, kind, value, at } => {
+                Event::State {
+                    node_id,
+                    kind,
+                    value,
+                    at,
+                } => {
                     if let Some(d) = self.devices.get_mut(&node_id) {
                         match kind {
                             StateKind::Open => {
@@ -285,7 +324,10 @@ impl MatterApp {
                     self.code.clear();
                 }
                 Event::PairingFailed(m) => {
-                    self.push_log(format!("Échec d'appairage : {}", m.lines().next().unwrap_or("")));
+                    self.push_log(format!(
+                        "Échec d'appairage : {}",
+                        m.lines().next().unwrap_or("")
+                    ));
                     self.pairing = Pairing::Failed(m);
                 }
                 Event::Fatal(m) => {
@@ -293,9 +335,24 @@ impl MatterApp {
                     self.fatal = Some(m);
                 }
                 Event::Info(m) => self.push_log(m),
-                Event::RuleRun { rule_id, name, at, ok, detail } => {
-                    self.push_log(format!("Règle « {name} » {} : {detail}", if ok { "exécutée" } else { "en échec" }));
-                    self.rules.record_run(rules::RunEntry { rule_id, name, at, ok, detail });
+                Event::RuleRun {
+                    rule_id,
+                    name,
+                    at,
+                    ok,
+                    detail,
+                } => {
+                    self.push_log(format!(
+                        "Règle « {name} » {} : {detail}",
+                        if ok { "exécutée" } else { "en échec" }
+                    ));
+                    self.rules.record_run(rules::RunEntry {
+                        rule_id,
+                        name,
+                        at,
+                        ok,
+                        detail,
+                    });
                 }
             }
         }
@@ -313,7 +370,10 @@ impl MatterApp {
         );
         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let clicked = ui
-            .add_enabled(!busy && !self.code.trim().is_empty(), egui::Button::new("Appairer"))
+            .add_enabled(
+                !busy && !self.code.trim().is_empty(),
+                egui::Button::new("Appairer"),
+            )
             .clicked();
         if (clicked || enter) && !busy && !self.code.trim().is_empty() {
             let code = self.code.trim().to_string();
@@ -359,10 +419,20 @@ impl MatterApp {
                         ui.horizontal(|ui| {
                             let (color, text) = status_badge(&d.status);
                             ui.colored_label(color, "●");
-                            ui.label(RichText::new(format!("{} {}", plan::glyph(plan::icon_of(d)), d.info.name)).strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.small(text);
-                            });
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} {}",
+                                    plan::glyph(plan::icon_of(d)),
+                                    d.info.name
+                                ))
+                                .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.small(text);
+                                },
+                            );
                         });
                         let kind = if d.info.device_types.is_empty() {
                             "Type inconnu".to_string()
@@ -400,7 +470,9 @@ impl MatterApp {
             });
             return;
         };
-        let Some(device) = self.devices.get(&id) else { return };
+        let Some(device) = self.devices.get(&id) else {
+            return;
+        };
         let fresh_edit = customize::DeviceEdit::from_info(&device.info);
 
         let mut retry = false;
@@ -408,11 +480,17 @@ impl MatterApp {
         let mut clear = false;
         let mut customize = false;
         ui.horizontal(|ui| {
-            ui.heading(format!("{} {}", plan::glyph(plan::icon_of(device)), device.info.name));
+            ui.heading(format!(
+                "{} {}",
+                plan::glyph(plan::icon_of(device)),
+                device.info.name
+            ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 forget = ui
                     .button("Oublier")
-                    .on_hover_text("Retire l'appareil de cette application (il reste dans Apple Home).")
+                    .on_hover_text(
+                        "Retire l'appareil de cette application (il reste dans Apple Home).",
+                    )
                     .clicked();
                 retry = ui.button("Reconnecter").clicked();
                 if self.confirm_clear == Some(id) {
@@ -425,7 +503,9 @@ impl MatterApp {
                     ui.label("Effacer tout l'historique de cet appareil ?");
                 } else if ui
                     .button("Effacer l'historique")
-                    .on_hover_text("Supprime les mesures enregistrées (mémoire et disque) de cet appareil.")
+                    .on_hover_text(
+                        "Supprime les mesures enregistrées (mémoire et disque) de cet appareil.",
+                    )
                     .clicked()
                 {
                     self.confirm_clear = Some(id);
@@ -433,7 +513,11 @@ impl MatterApp {
             });
         });
         let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
-        if !editing && ui.small_button("✏ Personnaliser le nom et l'icône").clicked() {
+        if !editing
+            && ui
+                .small_button("✏ Personnaliser le nom et l'icône")
+                .clicked()
+        {
             customize = true;
         }
         if device.info.custom_name.is_some() {
@@ -460,7 +544,11 @@ impl MatterApp {
             } else {
                 Color32::from_rgb(40, 160, 70)
             };
-            let warn = if device.battery_low { " — pile faible, à remplacer" } else { "" };
+            let warn = if device.battery_low {
+                " — pile faible, à remplacer"
+            } else {
+                ""
+            };
             ui.colored_label(color, format!("Pile : {b:.0} %{warn}"));
         }
         let (color, text) = status_badge(&device.status);
@@ -478,20 +566,22 @@ impl MatterApp {
 
         let caps = device.info.caps;
         let window = &mut self.window;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            if caps.temperature {
-                thermometer::show(ui, device, window, &mut self.export_message);
-                ui.separator();
-            }
-            if caps.contact {
-                sensors::door(ui, device, window);
-                ui.separator();
-            }
-            if caps.power || caps.energy || caps.on_off {
-                sensors::power(ui, device, window);
-                ui.separator();
-            }
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                if caps.temperature {
+                    thermometer::show(ui, device, window, &mut self.export_message);
+                    ui.separator();
+                }
+                if caps.contact {
+                    sensors::door(ui, device, window);
+                    ui.separator();
+                }
+                if caps.power || caps.energy || caps.on_off {
+                    sensors::power(ui, device, window);
+                    ui.separator();
+                }
+            });
         if !caps.any() && (!device.info.device_types.is_empty() || device.last_seen.is_some()) {
             ui.label("Cet appareil n'expose aucune mesure suivie par cette application.");
             ui.label("Une prise ou une lampe se commande depuis l'onglet « Automatisations ».");
@@ -507,7 +597,11 @@ impl MatterApp {
         }
         if let Some(edit) = save {
             self.device_edit = None;
-            self.send(Command::Customize { node_id: id, name: Some(edit.name), icon: edit.icon });
+            self.send(Command::Customize {
+                node_id: id,
+                name: Some(edit.name),
+                icon: edit.icon,
+            });
         }
         if forget {
             self.send(Command::Forget(id));
@@ -551,7 +645,8 @@ impl eframe::App for MatterApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Rafraîchit les « il y a X s » même sans événement.
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -605,19 +700,25 @@ impl eframe::App for MatterApp {
 
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Devices => self.details(ui),
-            View::Plan => {
-                match self.plan.show(ui, &self.devices) {
-                    plan::PlanAction::OpenDevice(id) => {
-                        self.selected = Some(id);
-                        self.export_message = None;
-                        self.view = View::Devices;
-                    }
-                    plan::PlanAction::Customize { node_id, name, icon } => {
-                        self.send(Command::Customize { node_id, name, icon });
-                    }
-                    plan::PlanAction::None => {}
+            View::Plan => match self.plan.show(ui, &self.devices) {
+                plan::PlanAction::OpenDevice(id) => {
+                    self.selected = Some(id);
+                    self.export_message = None;
+                    self.view = View::Devices;
                 }
-            }
+                plan::PlanAction::Customize {
+                    node_id,
+                    name,
+                    icon,
+                } => {
+                    self.send(Command::Customize {
+                        node_id,
+                        name,
+                        icon,
+                    });
+                }
+                plan::PlanAction::None => {}
+            },
             View::Rules => match self.rules.show(ui, &self.devices) {
                 rules::RulesAction::Changed(rules) => self.send(Command::SetRules(rules)),
                 rules::RulesAction::Test(id) => self.send(Command::TestRule(id)),
@@ -664,7 +765,11 @@ mod tests {
         let door = app.devices.values().find(|d| d.info.caps.contact).unwrap();
         assert!(door.open.is_some());
         assert!(door.door_events.len() > 10, "historique des ouvertures");
-        assert!(door.door_events.iter().zip(door.door_events.iter().skip(1)).all(|(a, b)| a.1 != b.1));
+        assert!(door
+            .door_events
+            .iter()
+            .zip(door.door_events.iter().skip(1))
+            .all(|(a, b)| a.1 != b.1));
 
         // Prise : puissance, énergie, marche/arrêt.
         let plug = app.devices.values().find(|d| d.info.caps.power).unwrap();
@@ -683,23 +788,40 @@ mod tests {
             name: Some("  Lampe du salon ".into()),
             icon: Some(crate::home::Symbol::Light),
         });
-        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.name == "Lampe du salon"));
+        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.name
+            == "Lampe du salon"));
         let p = &app.devices[&plug_id];
         assert_eq!(p.info.icon, Some(crate::home::Symbol::Light));
         assert_eq!(p.info.device_name, "GRILLPLATS Plug");
         assert_eq!(plan::icon_of(p), Some(crate::home::Symbol::Light));
-        app.send(Command::Customize { node_id: plug_id, name: Some("   ".into()), icon: None });
-        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.custom_name.is_none()));
+        app.send(Command::Customize {
+            node_id: plug_id,
+            name: Some("   ".into()),
+            icon: None,
+        });
+        assert!(wait_for(&mut app, &|a| a.devices[&plug_id]
+            .info
+            .custom_name
+            .is_none()));
         assert_eq!(app.devices[&plug_id].info.name, "GRILLPLATS Plug");
-        assert_eq!(plan::icon_of(&app.devices[&plug_id]), Some(crate::home::Symbol::Plug));
+        assert_eq!(
+            plan::icon_of(&app.devices[&plug_id]),
+            Some(crate::home::Symbol::Plug)
+        );
 
         // Code invalide : message d'erreur clair.
         app.send(Command::Pair("12345".into()));
-        assert!(wait_for(&mut app, &|a| matches!(a.pairing, Pairing::Failed(_))));
+        assert!(wait_for(&mut app, &|a| matches!(
+            a.pairing,
+            Pairing::Failed(_)
+        )));
 
         // Code valide : un appareil de plus.
         app.send(Command::Pair("3497-011-2332".into()));
-        assert!(wait_for(&mut app, &|a| matches!(a.pairing, Pairing::Success(_))));
+        assert!(wait_for(&mut app, &|a| matches!(
+            a.pairing,
+            Pairing::Success(_)
+        )));
         assert_eq!(app.devices.len(), 5);
         let new_id = app.selected.unwrap();
 

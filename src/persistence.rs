@@ -88,7 +88,8 @@ pub struct StoredState {
 }
 
 fn project_dir(organization: &str, application: &str) -> Option<PathBuf> {
-    directories::ProjectDirs::from("dev", organization, application).map(|d| d.data_dir().to_path_buf())
+    directories::ProjectDirs::from("dev", organization, application)
+        .map(|d| d.data_dir().to_path_buf())
 }
 
 fn current_dir() -> PathBuf {
@@ -134,7 +135,11 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
     let old = legacy_dir()?;
     let new = current_dir();
     match migrate(&old, &new) {
-        Ok(true) => Some(format!("Données déplacées de {} vers {}.", old.display(), new.display())),
+        Ok(true) => Some(format!(
+            "Données déplacées de {} vers {}.",
+            old.display(),
+            new.display()
+        )),
         Ok(false) => None,
         Err(e) => Some(format!(
             "Impossible de déplacer {} vers {} ({e}) : l'ancien dossier reste utilisé.",
@@ -162,8 +167,8 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("lecture de {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("lecture de {}", path.display()))?;
     let value = serde_json::from_str(&text)
         .with_context(|| format!("fichier {} illisible", path.display()))?;
     Ok(Some(value))
@@ -172,8 +177,7 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 /// Écrit un fichier JSON de façon atomique (fichier temporaire puis renommage), droits 0600.
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("création de {}", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(value)?;
@@ -213,7 +217,8 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let dir = std::env::temp_dir().join(format!("matter-home-desktop-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("matter-home-desktop-test-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
         assert!(load(&path).unwrap().is_none());
         save(&path, &sample()).unwrap();

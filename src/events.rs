@@ -32,7 +32,10 @@ pub enum NodeStatus {
     Connecting,
     Online,
     /// Injoignable ; nouvel essai dans `retry_in_s` secondes.
-    Unreachable { error: String, retry_in_s: u64 },
+    Unreachable {
+        error: String,
+        retry_in_s: u64,
+    },
 }
 
 /// Grandeurs numériques suivies dans le temps.
@@ -175,7 +178,11 @@ impl EventSink {
 
     /// Même destination, avec une copie de chaque événement vers `tap`.
     pub fn with_tap(&self, tap: tokio::sync::mpsc::UnboundedSender<Event>) -> Self {
-        Self { tx: self.tx.clone(), ctx: self.ctx.clone(), tap: Some(tap) }
+        Self {
+            tx: self.tx.clone(),
+            ctx: self.ctx.clone(),
+            tap: Some(tap),
+        }
     }
 
     pub fn send(&self, event: Event) {
