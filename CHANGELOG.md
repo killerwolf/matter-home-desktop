@@ -10,7 +10,10 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-11-03
+## [0.2.1] - 2026-11-03
+
+La 0.2.0 n'a jamais été publiée (échec de la fabrication du DMG sur la CI) ; elle est
+reprise ici telle quelle.
 
 ### Ajouté
 
