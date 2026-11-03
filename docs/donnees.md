@@ -39,9 +39,23 @@ indéfiniment :
 L'interface affiche au plus 5000 points par mesure : pour une mesure très fréquente comme
 la puissance, seules les plus récentes apparaissent.
 
+## Changer de Mac
+
+1. Sur l'ancien Mac : menu **Fichier → Exporter mes données…**, puis enregistrez le fichier
+   `.matterhome` (tout y est : appareils, plan, règles, historique).
+2. Transférez-le par AirDrop ou clé USB. Il contient les clés privées de votre maison : ne le
+   partagez pas et supprimez-le après l'import.
+3. Sur le nouveau Mac : installez l'application, puis **Fichier → Importer des données…**,
+   choisissez le fichier et confirmez. Quittez puis relancez l'application : les données
+   sont chargées au lancement.
+
+Vos données précédentes sont gardées dans un dossier voisin « …avant-import-<date> ».
+N'utilisez pas l'ancien et le nouveau Mac en même temps avec la même identité. Ces menus sont
+désactivés en mode démo.
+
 ## Sauvegarder et repartir de zéro
 
-- **Sauvegarde** : copiez le dossier ci-dessus. Le fichier le plus précieux est
+- **Sauvegarde** : le menu d'export ci-dessus, ou copiez le dossier. Le fichier le plus précieux est
   `controller.json` : sans lui, il faut réappairer tous les appareils.
 - **Repartir de zéro** : supprimez `controller.json`. Une nouvelle identité est créée au
   lancement suivant ; pensez à retirer l'ancienne des appareils dans l'app Maison.

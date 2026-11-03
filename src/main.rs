@@ -5,6 +5,7 @@
 //! - `matter-home-desktop --discover` : diagnostic en ligne de commande (mDNS)
 
 mod automation;
+mod backup;
 mod demo;
 mod events;
 mod history;
@@ -68,8 +69,13 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     }
     // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
-    let migration = persistence::migrate_legacy_data_dir();
-    if let Some(m) = &migration {
+    let mut startup_notes: Vec<String> = Vec::new();
+    startup_notes.extend(persistence::migrate_legacy_data_dir());
+    // Import demandé au lancement précédent (menu Fichier → Importer) : à appliquer avant tout chargement.
+    if !args.iter().any(|a| a == "--demo" || a == "--discover") {
+        startup_notes.extend(backup::apply_pending(&persistence::data_dir()));
+    }
+    for m in &startup_notes {
         log::warn!("{m}");
     }
     if args.iter().any(|a| a == "--discover") {
@@ -109,7 +115,7 @@ fn main() -> eframe::Result {
             if open_rules {
                 app.show_rules();
             }
-            if let Some(m) = migration {
+            for m in startup_notes {
                 app.note(m);
             }
             if let Some(filter) = device_filter {

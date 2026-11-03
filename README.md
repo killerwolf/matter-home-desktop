@@ -150,7 +150,7 @@ ailleurs, sauf les webhooks que vous configurez vous-même. Détails :
 | [Guide d'utilisation](docs/utilisation.md) | fiches des appareils, nom et icône, export CSV, options de lancement |
 | [Plan de la maison](docs/plan.md) | dessin, couleurs, sauvegarde |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
-| [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, remise à zéro |
+| [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
 | [Dépannage](docs/depannage.md) | problèmes connus, diagnostic réseau |
 | [Architecture](docs/architecture.md) | choix techniques, fonctionnement interne |
 | [Contribuer](CONTRIBUTING.md) | compiler, tester, proposer une modification |

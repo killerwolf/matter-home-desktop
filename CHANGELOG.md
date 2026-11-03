@@ -12,6 +12,9 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Changer de Mac** : menu Fichier → Exporter mes données… / Importer des données…. Un seul
+  fichier `.matterhome` emporte appareils, plan, règles et historique ; l'import est appliqué
+  au lancement suivant et garde une copie des anciennes données.
 - **Volets et stores** (cluster Window Covering) : fiche avec ouverture, mouvement en cours,
   boutons ouvrir / stop / fermer, curseur de position, historique ; icône « Volet » ; état
   sur le plan ; action « Ouvrir / fermer un volet » et mesure « ouverture du volet » dans

@@ -164,6 +164,21 @@ pub struct MatterApp {
     device_edit: Option<customize::DeviceEdit>,
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
     select_on_arrival: Option<String>,
+    /// Fenêtre d'information ou de confirmation du menu Fichier (export / import).
+    data_dialog: Option<DataDialog>,
+}
+
+/// Fenêtre ouverte par le menu Fichier → Exporter / Importer.
+enum DataDialog {
+    /// Résultat d'un export ou message d'erreur.
+    Message { ok: bool, text: String },
+    /// Sauvegarde choisie, validée, en attente de confirmation.
+    ConfirmImport {
+        path: std::path::PathBuf,
+        summary: String,
+    },
+    /// Import prêt : il sera appliqué au prochain lancement.
+    ImportReady,
 }
 
 impl MatterApp {
@@ -196,6 +211,7 @@ impl MatterApp {
             confirm_clear: None,
             device_edit: None,
             select_on_arrival: None,
+            data_dialog: None,
             plan: plan::PlanView::load(
                 demo,
                 if demo {
@@ -226,6 +242,130 @@ impl MatterApp {
     /// Ouvre l'onglet « Plan de la maison ».
     pub fn show_plan(&mut self) {
         self.view = View::Plan;
+    }
+
+    /// Menu Fichier → Exporter : choisit un fichier puis y écrit toutes les données.
+    fn export_data(&mut self) {
+        let Some(dest) = rfd::FileDialog::new()
+            .set_title("Exporter mes données")
+            .set_file_name(crate::backup::default_file_name())
+            .add_filter("Sauvegarde Matter Home", &[crate::backup::EXTENSION])
+            .save_file()
+        else {
+            return;
+        };
+        let dir = crate::persistence::data_dir();
+        self.data_dialog = Some(match crate::backup::export(&dir, &dest) {
+            Ok(summary) => {
+                self.push_log(format!("Export vers {}", dest.display()));
+                DataDialog::Message {
+                    ok: true,
+                    text: format!(
+                        "Exporté dans {}\n({})\n\nCe fichier contient les clés privées de votre \
+                         maison et les heures d'ouverture des portes : transférez-le par AirDrop ou \
+                         clé USB, ne le partagez pas, et supprimez-le une fois l'import fait.",
+                        dest.display(),
+                        summary.describe()
+                    ),
+                }
+            }
+            Err(e) => DataDialog::Message {
+                ok: false,
+                text: format!("Export impossible : {e:#}"),
+            },
+        });
+    }
+
+    /// Menu Fichier → Importer : choisit une sauvegarde, la valide, demande confirmation.
+    fn import_data(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Importer des données")
+            .add_filter("Sauvegarde Matter Home", &[crate::backup::EXTENSION])
+            .pick_file()
+        else {
+            return;
+        };
+        self.data_dialog = Some(match crate::backup::inspect(&path) {
+            Ok(summary) => DataDialog::ConfirmImport {
+                path,
+                summary: summary.describe(),
+            },
+            Err(e) => DataDialog::Message {
+                ok: false,
+                text: format!("Import impossible : {e:#}"),
+            },
+        });
+    }
+
+    /// Fenêtre d'information ou de confirmation du menu Fichier.
+    fn data_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &self.data_dialog else {
+            return;
+        };
+        let mut close = false;
+        let mut confirmed = None;
+        let mut quit = false;
+        egui::Window::new("Données")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                match dialog {
+                    DataDialog::Message { ok, text } => {
+                        let color = if *ok {
+                            Color32::from_rgb(60, 160, 90)
+                        } else {
+                            Color32::from_rgb(210, 60, 50)
+                        };
+                        ui.colored_label(color, text);
+                        ui.add_space(6.0);
+                        close = ui.button("OK").clicked();
+                    }
+                    DataDialog::ConfirmImport { path, summary } => {
+                        ui.label(format!("Importer {} ?", path.display()));
+                        ui.label(summary);
+                        ui.add_space(4.0);
+                        ui.label(
+                            "Vos données actuelles seront remplacées au prochain lancement ; \
+                             une copie est gardée dans un dossier de secours à côté.",
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Importer").clicked() {
+                                confirmed = Some(path.clone());
+                            }
+                            close = ui.button("Annuler").clicked();
+                        });
+                    }
+                    DataDialog::ImportReady => {
+                        ui.label(
+                            "Import prêt. Quittez l'application puis relancez-la : \
+                             les données importées seront alors chargées.",
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            quit = ui.button("Quitter maintenant").clicked();
+                            close = ui.button("Plus tard").clicked();
+                        });
+                    }
+                }
+            });
+        if let Some(path) = confirmed {
+            let dir = crate::persistence::data_dir();
+            self.data_dialog = Some(match crate::backup::stage_import(&dir, &path) {
+                Ok(_) => DataDialog::ImportReady,
+                Err(e) => DataDialog::Message {
+                    ok: false,
+                    text: format!("Import impossible : {e:#}"),
+                },
+            });
+        } else if close {
+            self.data_dialog = None;
+        }
+        if quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     fn send(&mut self, cmd: Command) {
@@ -758,7 +898,30 @@ impl eframe::App for MatterApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(1));
 
+        let mut menu_export = false;
+        let mut menu_import = false;
         egui::Panel::top("top").show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("Fichier", |ui| {
+                    // En démo il n'y a pas de vraies données à déménager.
+                    if ui
+                        .add_enabled(!self.demo, egui::Button::new("Exporter mes données…"))
+                        .on_disabled_hover_text("Indisponible en mode démo")
+                        .clicked()
+                    {
+                        menu_export = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(!self.demo, egui::Button::new("Importer des données…"))
+                        .on_disabled_hover_text("Indisponible en mode démo")
+                        .clicked()
+                    {
+                        menu_import = true;
+                        ui.close();
+                    }
+                });
+            });
             ui.horizontal(|ui| {
                 ui.heading("Matter over Thread — contrôleur");
                 if self.demo {
@@ -778,6 +941,15 @@ impl eframe::App for MatterApp {
                 ui.colored_label(Color32::from_rgb(210, 60, 50), format!("Erreur : {f}"));
             }
         });
+
+        // Les boîtes de dialogue système bloquent : on les ouvre hors des panneaux.
+        if menu_export {
+            self.export_data();
+        }
+        if menu_import {
+            self.import_data();
+        }
+        self.data_dialog_window(ui.ctx());
 
         egui::Panel::bottom("log")
             .resizable(true)
