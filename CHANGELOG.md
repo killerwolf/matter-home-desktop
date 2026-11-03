@@ -10,6 +10,8 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Ajouté
 
 - **Changer de Mac** : menu Fichier → Exporter mes données… / Importer des données…. Un seul
