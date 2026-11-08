@@ -364,6 +364,9 @@ impl Client {
         if let Some(b) = body {
             stream.write_all(b).await.unwrap();
         }
+        // Sans `flush`, la fin du corps peut rester dans le tampon TLS du client (tokio-rustls
+        // n'écrit pas en lisant) : le serveur attendrait la suite jusqu'à son délai de 120 s.
+        stream.flush().await.unwrap();
         let mut raw = Vec::new();
         // Le serveur ferme après la réponse ; une coupure TLS brutale en fin de flux est normale.
         let _ = stream.read_to_end(&mut raw).await;

@@ -7,6 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
+use futures_util::StreamExt;
 use matter_home_server::persistence::BRIDGED_ID_MIN;
 use serde_json::{json, Value};
 
@@ -672,7 +673,9 @@ fn slow_client_is_dropped_without_blocking_others() {
     let server = Server::start_with(
         &dir,
         &[
-            ("MATTER_HOME_TEST_BROADCAST_CAPACITY", "2"),
+            // Assez de place pour que le client rapide ne soit jamais en retard : seul le client
+            // dont la connexion est bloquée doit être écarté.
+            ("MATTER_HOME_TEST_BROADCAST_CAPACITY", "16"),
             ("MATTER_HOME_TEST_WRITE_TIMEOUT_MS", "1500"),
         ],
     );
@@ -722,27 +725,28 @@ fn slow_client_is_dropped_without_blocking_others() {
         assert!(before.elapsed() < 5 * SECOND);
         let _ = started;
 
-        // Le client lent finit déconnecté : la fin du flux doit arriver (pas seulement un silence),
-        // éventuellement après un état complet de resynchronisation.
-        let mut resynced = false;
-        let mut ended = false;
-        let deadline = std::time::Instant::now() + 30 * SECOND;
-        while std::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_secs(10), next_json(&mut slow, 10 * SECOND))
-                .await
-            {
-                Ok(None) => {
-                    ended = true;
-                    break;
-                }
-                Ok(Some(m)) => resynced |= m["type"] == "snapshot",
-                Err(_) => panic!("le flux du client lent est resté ouvert mais muet"),
+        // Le serveur déconnecte le client lent : sa décision est dans le journal du serveur (le
+        // client, lui, met du temps à vider ce que le système avait déjà en tampon, avec sa
+        // fenêtre de réception minuscule, avant de voir la fin du flux).
+        let deadline = std::time::Instant::now() + 20 * SECOND;
+        while !server
+            .log()
+            .contains("client WebSocket déconnecté : écriture bloquée")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "le serveur n'a pas déconnecté le client lent"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Lecture bornée de ce qui reste : si la fin du flux arrive, tant mieux ; sinon le client
+        // est simplement encore en train de vider ses tampons.
+        let drain_until = std::time::Instant::now() + 8 * SECOND;
+        while std::time::Instant::now() < drain_until {
+            if let Ok(None | Some(Err(_))) = tokio::time::timeout(SECOND, slow.next()).await {
+                break;
             }
         }
-        assert!(
-            ended,
-            "le client lent n'a pas été déconnecté (état complet reçu : {resynced})"
-        );
         // Et le serveur n'a rien perdu : il sert encore l'état complet.
         assert_eq!(client.get("/api/state", &token).await.status, 200);
     });
@@ -791,18 +795,18 @@ fn lagging_client_gets_a_fresh_snapshot() {
                 .await;
             assert_eq!(r.status, 200, "{}", r.text());
         }
-        // Le client reprend sa lecture : il doit retrouver l'état final, par un nouvel état complet
-        // (les messages intermédiaires ont été perdus).
+        // Le client reprend sa lecture. Les messages perdus ne se rattrapent pas : il reçoit un état
+        // complet à la place. S'il prend du retard trop souvent, le serveur le déconnecte ; il
+        // se reconnecte alors et repart d'un état complet. Dans les deux cas, il finit à jour.
         let mut snapshots = 0;
         let mut last_name = String::new();
-        let mut trace = Vec::new();
+        let mut ended = false;
         let deadline = std::time::Instant::now() + 60 * SECOND;
         while std::time::Instant::now() < deadline && last_name != "r39" {
             let Some(m) = next_json(&mut lagging, 30 * SECOND).await else {
-                trace.push("fin du flux".to_string());
+                ended = true;
                 break;
             };
-            trace.push(format!("{} {}", m["type"], m["event"]["type"]));
             match m["type"].as_str().unwrap() {
                 "snapshot" => {
                     snapshots += 1;
@@ -818,18 +822,23 @@ fn lagging_client_gets_a_fresh_snapshot() {
                 _ => {}
             }
         }
-        assert_eq!(
-            last_name,
-            "r39",
-            "le client n'a pas retrouvé l'état final\n{trace:?}\n{}",
-            server
-                .log()
-                .lines()
-                .filter(|l| !l.contains("DEBUG") && !l.contains("TRACE"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        assert!(snapshots >= 1, "aucun état complet de resynchronisation");
+        if ended {
+            assert!(
+                server.log().contains("client trop lent"),
+                "flux fermé sans raison dans le journal du serveur"
+            );
+            let mut again = client.ws(&token, 1).await.unwrap();
+            next_json(&mut again, 10 * SECOND).await.unwrap();
+            let fresh = next_json(&mut again, 30 * SECOND).await.unwrap();
+            assert_eq!(fresh["type"], "snapshot");
+            last_name = fresh["rules"]["rules"][0]["name"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        } else {
+            assert!(snapshots >= 1, "aucun état complet de resynchronisation");
+        }
+        assert_eq!(last_name, "r39", "le client n'a pas retrouvé l'état final");
     });
 }
 
