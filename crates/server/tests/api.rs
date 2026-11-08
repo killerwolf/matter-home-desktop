@@ -1,0 +1,813 @@
+//! Tests d'intégration : le vrai binaire `matter-home-server --demo`, en TLS sur 127.0.0.1,
+//! avec un client qui épingle l'empreinte du certificat. Aucun appareil réel, aucun dossier
+//! de données réel : chaque test a son dossier temporaire et un HOME factice.
+
+mod common;
+
+use std::time::Duration;
+
+use common::*;
+use matter_home_server::persistence::BRIDGED_ID_MIN;
+use serde_json::{json, Value};
+
+/// Un identifiant tel qu'il apparaît dans le JSON : en texte.
+fn text(id: u64) -> Value {
+    Value::String(id.to_string())
+}
+
+const SECOND: Duration = Duration::from_secs(1);
+const LIVING: u64 = 0xD3_0001;
+const PLUG: u64 = 0xD3_0004;
+const SHUTTER_LIVING: u64 = BRIDGED_ID_MIN + 0xD3_0001;
+
+#[test]
+fn login_succeeds_and_is_refused() {
+    let dir = temp_dir("login");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        // La version est publique.
+        let version = client.request("GET", "/api/version", None, None).await;
+        assert_eq!(version.status, 200);
+        assert_eq!(version.json()["protocol_version"], 1);
+
+        let ok = client.login_as(USER, PASSWORD, 1).await;
+        assert_eq!(ok.status, 200, "{}", ok.text());
+        let token = ok.json()["token"].as_str().unwrap().to_string();
+        assert_eq!(token.len(), 64);
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+
+        // Mauvais mot de passe, mauvais identifiant : même réponse, rien de plus.
+        let bad_password = client.login_as(USER, "un-mauvais-mot-de-passe", 1).await;
+        assert_eq!(
+            (bad_password.status, bad_password.code().as_str()),
+            (401, "invalid_credentials")
+        );
+        let bad_user = client.login_as("inconnu", PASSWORD, 1).await;
+        assert_eq!(
+            (bad_user.status, bad_user.code().as_str()),
+            (401, "invalid_credentials")
+        );
+        assert_eq!(bad_user.json(), bad_password.json());
+
+        // Version du protocole incompatible : signalé proprement, avant tout test d'identifiants.
+        let mismatch = client.login_as(USER, PASSWORD, 2).await;
+        assert_eq!(
+            (mismatch.status, mismatch.code().as_str()),
+            (426, "version_incompatible")
+        );
+        let mismatch = client.login_as("inconnu", "x", 0).await;
+        assert_eq!(mismatch.code(), "version_incompatible");
+
+        // Corps illisible : code d'erreur du protocole, pas un texte d'axum.
+        let junk = client
+            .request("POST", "/api/login", None, Some(b"pas du json"))
+            .await;
+        assert_eq!((junk.status, junk.code().as_str()), (400, "bad_request"));
+    });
+}
+
+#[test]
+fn login_attempts_are_limited() {
+    let dir = temp_dir("limit");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        for _ in 0..4 {
+            let r = client.login_as(USER, "faux-mot-de-passe", 1).await;
+            assert_eq!(r.code(), "invalid_credentials");
+            assert!(r.json()["error"]["retry_after_s"].is_null());
+        }
+        // Le 5e échec déclenche l'attente...
+        let fifth = client.login_as(USER, "faux-mot-de-passe", 1).await;
+        assert_eq!(fifth.code(), "invalid_credentials");
+        assert!(fifth.json()["error"]["retry_after_s"].as_u64().unwrap() >= 29);
+        // ...pendant laquelle même le bon mot de passe est refusé, avec le délai à attendre.
+        let locked = client.login_as(USER, PASSWORD, 1).await;
+        assert_eq!(
+            (locked.status, locked.code().as_str()),
+            (429, "too_many_attempts")
+        );
+        assert!(locked.json()["error"]["retry_after_s"].as_u64().unwrap() >= 1);
+        assert!(locked.headers.contains_key("retry-after"));
+    });
+}
+
+#[test]
+fn every_route_requires_the_token() {
+    let dir = temp_dir("auth");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let routes = [
+            ("GET", "/api/state"),
+            ("GET", "/api/plan"),
+            ("PUT", "/api/plan"),
+            ("GET", "/api/rules"),
+            ("PUT", "/api/rules"),
+            ("GET", "/api/rule-runs"),
+            ("POST", "/api/rules/1/test"),
+            ("POST", "/api/pairing"),
+            ("POST", "/api/logout"),
+            ("DELETE", "/api/devices/1"),
+            ("POST", "/api/devices/1/retry"),
+            ("PUT", "/api/devices/1/customization"),
+            ("POST", "/api/devices/1/on-off"),
+            ("POST", "/api/devices/1/cover"),
+            ("GET", "/api/devices/1/history"),
+            ("GET", "/api/devices/1/history.csv"),
+            ("DELETE", "/api/devices/1/history"),
+            ("GET", "/api/export"),
+            ("POST", "/api/import"),
+            ("GET", "/api/ws?protocol=1"),
+        ];
+        for (method, path) in routes {
+            let none = client.request(method, path, None, Some(b"{}")).await;
+            assert_eq!(
+                (none.status, none.code().as_str()),
+                (401, "unauthorized"),
+                "{method} {path}"
+            );
+            let wrong = client
+                .request(method, path, Some("0".repeat(64).as_str()), Some(b"{}"))
+                .await;
+            assert_eq!(wrong.status, 401, "{method} {path}");
+            // Le jeton dans l'URL ne compte pas.
+            let sep = if path.contains('?') { '&' } else { '?' };
+            let in_url = client
+                .request(
+                    method,
+                    &format!("{path}{sep}token={token}"),
+                    None,
+                    Some(b"{}"),
+                )
+                .await;
+            assert_eq!(in_url.status, 401, "{method} {path} (jeton dans l'URL)");
+        }
+        // Un schéma d'autorisation autre que Bearer n'est pas accepté non plus.
+        assert_eq!(
+            client
+                .request("GET", "/api/state", Some(&token), None)
+                .await
+                .status,
+            200
+        );
+        // Route inconnue : 404 au format du protocole (avec jeton).
+        let unknown = client.get("/api/nexiste-pas", &token).await;
+        assert_eq!(
+            (unknown.status, unknown.code().as_str()),
+            (404, "not_found")
+        );
+    });
+}
+
+#[test]
+fn websocket_needs_token_and_matching_version() {
+    let dir = temp_dir("wsauth");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let no_token = client.ws("", 1).await.err().unwrap();
+        assert_eq!(no_token.status, 401);
+        let wrong = client.ws(&"a".repeat(64), 1).await.err().unwrap();
+        assert_eq!(wrong.status, 401);
+        let old = client.ws(&token, 2).await.err().unwrap();
+        assert_eq!(
+            (old.status, old.code().as_str()),
+            (426, "version_incompatible")
+        );
+        assert!(client.ws(&token, 1).await.is_ok());
+    });
+}
+
+#[test]
+fn websocket_sends_full_state_then_events_with_text_ids() {
+    let dir = temp_dir("ws");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let mut ws = client.ws(&token, 1).await.unwrap();
+        let hello = next_json(&mut ws, 10 * SECOND).await.unwrap();
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["protocol_version"], 1);
+        let snapshot = next_json(&mut ws, 10 * SECOND).await.unwrap();
+        assert_eq!(snapshot["type"], "snapshot");
+
+        // Identifiants en texte, partout : appareils (dont les volets pontés, au-delà de
+        // 2^53), plan et règles.
+        assert_no_big_numbers(&snapshot);
+        let devices = snapshot["devices"].as_array().unwrap();
+        assert!(devices.len() >= 8, "{} appareils", devices.len());
+        let shutter = devices
+            .iter()
+            .find(|d| d["device"]["node_id"] == text(SHUTTER_LIVING))
+            .expect("volet pondé");
+        assert_eq!(
+            shutter["device"]["bridge"]["node_id"],
+            0xD3_0005u64.to_string()
+        );
+        assert!(snapshot["plan"]["floors"][0]["id"].is_string());
+        let rule = &snapshot["rules"]["rules"][0];
+        assert!(rule["id"].is_string() && rule["trigger"]["node_id"].is_string());
+        assert!(snapshot["rule_runs"].is_array());
+        let first_seq = snapshot["seq"].as_u64().unwrap();
+
+        // Puis des événements, numérotés à la suite de l'état complet.
+        let event = wait_event(&mut ws, "reading", 15 * SECOND, |e| {
+            e["metric"] == "temperature" && e["node_id"] == text(LIVING)
+        })
+        .await;
+        assert!(event["seq"].as_u64().unwrap() > first_seq);
+        assert!(event["event"]["value"].is_f64());
+        // Le même état est lisible en HTTPS.
+        let state = client.get("/api/state", &token).await;
+        assert_eq!(state.status, 200);
+        assert_no_big_numbers(&state.json());
+    });
+}
+
+#[test]
+fn two_clients_see_the_same_changes_and_last_write_wins() {
+    let dir = temp_dir("two");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let t1 = client.login().await;
+        let t2 = client.login().await;
+        assert_ne!(t1, t2);
+        let mut a = client.ws(&t1, 1).await.unwrap();
+        let mut b = client.ws(&t2, 1).await.unwrap();
+        for ws in [&mut a, &mut b] {
+            assert_eq!(next_json(ws, 10 * SECOND).await.unwrap()["type"], "hello");
+            assert_eq!(
+                next_json(ws, 10 * SECOND).await.unwrap()["type"],
+                "snapshot"
+            );
+        }
+
+        // Le client 1 modifie le plan, le client 2 aussi juste après : le dernier gagne.
+        let mut plan = client.get("/api/plan", &t1).await.json();
+        plan["floors"][0]["name"] = json!("Écrit par 1");
+        let put1 = client.send_json("PUT", "/api/plan", &t1, &plan).await;
+        assert_eq!(put1.status, 200, "{}", put1.text());
+        plan["floors"][0]["name"] = json!("Écrit par 2");
+        assert_eq!(
+            client
+                .send_json("PUT", "/api/plan", &t2, &plan)
+                .await
+                .status,
+            200
+        );
+
+        // Les deux reçoivent les deux changements, dans le même ordre.
+        for ws in [&mut a, &mut b] {
+            let first = wait_event(ws, "plan_changed", 10 * SECOND, |_| true).await;
+            assert_eq!(first["event"]["plan"]["floors"][0]["name"], "Écrit par 1");
+            let second = wait_event(ws, "plan_changed", 10 * SECOND, |_| true).await;
+            assert_eq!(second["event"]["plan"]["floors"][0]["name"], "Écrit par 2");
+            assert!(second["seq"].as_u64() > first["seq"].as_u64());
+        }
+        let current = client.get("/api/plan", &t1).await.json();
+        assert_eq!(current["floors"][0]["name"], "Écrit par 2");
+
+        // Même chose pour les règles.
+        let mut rules = client.get("/api/rules", &t1).await.json();
+        rules["rules"][0]["name"] = json!("Renommée");
+        assert_eq!(
+            client
+                .send_json("PUT", "/api/rules", &t2, &rules)
+                .await
+                .status,
+            200
+        );
+        for ws in [&mut a, &mut b] {
+            let e = wait_event(ws, "rules_changed", 10 * SECOND, |_| true).await;
+            assert_eq!(e["event"]["rules"]["rules"][0]["name"], "Renommée");
+        }
+    });
+}
+
+#[test]
+fn plan_and_rules_updates_are_validated() {
+    let dir = temp_dir("valid");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let plan = client.get("/api/plan", &token).await.json();
+        // Identifiant numérique (arrondi par JavaScript) : refusé.
+        let mut numeric = plan.clone();
+        numeric["floors"][0]["id"] = json!(1);
+        let r = client.send_json("PUT", "/api/plan", &token, &numeric).await;
+        assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+        // Identifiants en double.
+        let mut twice = plan.clone();
+        let floor = twice["floors"][0].clone();
+        twice["floors"].as_array_mut().unwrap().push(floor);
+        assert_eq!(
+            client
+                .send_json("PUT", "/api/plan", &token, &twice)
+                .await
+                .code(),
+            "bad_request"
+        );
+        // Webhook vers un fichier local.
+        let mut rules = client.get("/api/rules", &token).await.json();
+        rules["rules"][0]["actions"] =
+            json!([{"type": "Webhook", "url": "file:///etc/passwd", "body": ""}]);
+        assert_eq!(
+            client
+                .send_json("PUT", "/api/rules", &token, &rules)
+                .await
+                .code(),
+            "bad_request"
+        );
+        // Corps trop gros.
+        let big = vec![b' '; 1024 * 1024 + 10];
+        let r = client
+            .request("PUT", "/api/plan", Some(&token), Some(&big))
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (413, "payload_too_large"));
+        // Les données n'ont pas changé.
+        assert_eq!(client.get("/api/plan", &token).await.json(), plan);
+    });
+}
+
+#[test]
+fn commands_reach_devices_and_results_come_back_as_events() {
+    let dir = temp_dir("cmd");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let mut ws = client.ws(&token, 1).await.unwrap();
+        for _ in 0..2 {
+            next_json(&mut ws, 10 * SECOND).await.unwrap();
+        }
+
+        // Volet : ouverture à 20 %, la position suit en événements.
+        let r = client
+            .send_json(
+                "POST",
+                &format!("/api/devices/{SHUTTER_LIVING}/cover"),
+                &token,
+                &json!({"command": {"Position": 20}}),
+            )
+            .await;
+        assert_eq!(
+            (r.status, r.json()["accepted"].clone()),
+            (202, json!(true)),
+            "{}",
+            r.text()
+        );
+        let reading = wait_event(&mut ws, "reading", 15 * SECOND, |e| {
+            e["metric"] == "position" && e["node_id"] == text(SHUTTER_LIVING) && e["value"] == 20.0
+        })
+        .await;
+        assert_eq!(reading["event"]["node_id"], SHUTTER_LIVING.to_string());
+
+        // Marche/arrêt de la prise.
+        let r = client
+            .send_json(
+                "POST",
+                &format!("/api/devices/{PLUG}/on-off"),
+                &token,
+                &json!({"command": "Off"}),
+            )
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        wait_event(&mut ws, "notice", 10 * SECOND, |e| {
+            e["text"].as_str().unwrap().contains("éteindre")
+        })
+        .await;
+
+        // Personnalisation puis retour à l'automatique.
+        let r = client
+            .send_json(
+                "PUT",
+                &format!("/api/devices/{LIVING}/customization"),
+                &token,
+                &json!({"name": "Salon chic", "icon": "Light"}),
+            )
+            .await;
+        assert_eq!(r.status, 202);
+        let updated = wait_event(&mut ws, "device_updated", 10 * SECOND, |e| {
+            e["device"]["custom_name"] == "Salon chic"
+        })
+        .await;
+        assert_eq!(updated["event"]["device"]["icon"], "Light");
+
+        // Réessayer, oublier : appareil inconnu → not_found, identifiant mal formé → bad_request.
+        let r = client
+            .request("POST", "/api/devices/999/retry", Some(&token), None)
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (404, "not_found"));
+        let r = client
+            .request("POST", "/api/devices/abc/retry", Some(&token), None)
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+        let r = client
+            .request(
+                "POST",
+                &format!("/api/devices/{LIVING}/retry"),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202);
+        let r = client
+            .request(
+                "DELETE",
+                &format!("/api/devices/{LIVING}"),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202);
+        wait_event(&mut ws, "device_removed", 10 * SECOND, |e| {
+            e["node_id"] == text(LIVING)
+        })
+        .await;
+        // Un volet n'a pas de marche/arrêt.
+        let r = client
+            .send_json(
+                "POST",
+                &format!("/api/devices/{SHUTTER_LIVING}/on-off"),
+                &token,
+                &json!({"command": "On"}),
+            )
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+
+        // Appairage : code invalide refusé tout de suite ; code valide accepté, un seul à la fois.
+        let r = client
+            .send_json("POST", "/api/pairing", &token, &json!({"code": "abc"}))
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+        let ok = json!({"code": "3497-011-2332"});
+        assert_eq!(
+            client
+                .send_json("POST", "/api/pairing", &token, &ok)
+                .await
+                .status,
+            202
+        );
+        let busy = client.send_json("POST", "/api/pairing", &token, &ok).await;
+        assert_eq!((busy.status, busy.code().as_str()), (409, "pairing_busy"));
+        wait_event(&mut ws, "pairing_done", 20 * SECOND, |_| true).await;
+    });
+    // Ni le code d'appairage ni le mot de passe ne sont dans le journal.
+    let log = server.log();
+    assert!(!log.contains("3497-011-2332") && !log.contains("34970112332"));
+    assert!(!log.contains(PASSWORD));
+}
+
+#[test]
+fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
+    let dir = temp_dir("notify");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        // Aucun client connecté en temps réel : la règle s'exécute, personne ne reçoit rien.
+        let r = client
+            .request("POST", "/api/rules/1/test", Some(&token), None)
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        let r = client
+            .request("POST", "/api/rules/999/test", Some(&token), None)
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (404, "not_found"));
+
+        // Le journal des exécutions garde la trace, même pour un client arrivé après.
+        let mut found = Value::Null;
+        for _ in 0..50 {
+            let runs = client.get("/api/rule-runs", &token).await.json();
+            if let Some(run) = runs.as_array().unwrap().first() {
+                found = run.clone();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(found["rule_id"], "1");
+        assert_eq!(found["ok"], true);
+
+        // Client connecté : il reçoit la notification, puis le compte rendu.
+        let mut ws = client.ws(&token, 1).await.unwrap();
+        let snapshot = {
+            next_json(&mut ws, 10 * SECOND).await.unwrap();
+            next_json(&mut ws, 10 * SECOND).await.unwrap()
+        };
+        // (La porte de la démo s'ouvre toutes les 2 min et peut déclencher la règle 1 d'elle-même.)
+        assert!(!snapshot["rule_runs"].as_array().unwrap().is_empty());
+        client
+            .request("POST", "/api/rules/1/test", Some(&token), None)
+            .await;
+        let n = wait_event(&mut ws, "notification", 10 * SECOND, |_| true).await;
+        assert!(n["event"]["title"].is_string() && n["event"]["at"].is_f64());
+        let run = wait_event(&mut ws, "rule_run", 10 * SECOND, |_| true).await;
+        assert_eq!(run["event"]["rule_id"], "1");
+    });
+}
+
+#[test]
+fn history_is_read_on_demand_with_window_and_volume_limits() {
+    let dir = temp_dir("history");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        // Le salon rapporte une température toutes les 2 s : on attend quelques points.
+        let path = format!("/api/devices/{LIVING}/history?metrics=temperature&limit=1000");
+        let mut points = 0;
+        for _ in 0..60 {
+            let r = client.get(&path, &token).await;
+            assert_eq!(r.status, 200, "{}", r.text());
+            points = r.json()["points"].as_array().unwrap().len();
+            if points >= 3 {
+                break;
+            }
+            tokio::time::sleep(SECOND).await;
+        }
+        assert!(points >= 3, "{points} point(s)");
+        let r = client.get(&path, &token).await.json();
+        assert_eq!(r["node_id"], LIVING.to_string());
+        assert_eq!(r["truncated"], false);
+        assert_eq!(r["points"][0]["metric"], "temperature");
+        assert!(r["until"].as_f64().unwrap() - r["since"].as_f64().unwrap() <= 3600.5);
+
+        // Borne de volume : seuls les plus récents, avec l'indicateur.
+        let cut = client
+            .get(
+                &format!("/api/devices/{LIVING}/history?metrics=temperature&limit=2"),
+                &token,
+            )
+            .await
+            .json();
+        assert_eq!(cut["truncated"], true);
+        assert_eq!(cut["points"].as_array().unwrap().len(), 2);
+        // Fenêtre trop large : bornée à 7 jours. Paramètres invalides : refusés.
+        let wide = client
+            .get(
+                &format!("/api/devices/{LIVING}/history?since=0&until=2000000000"),
+                &token,
+            )
+            .await
+            .json();
+        assert_eq!(
+            wide["until"].as_f64().unwrap() - wide["since"].as_f64().unwrap(),
+            7.0 * 86400.0
+        );
+        for bad in [
+            "since=abc",
+            "metrics=couleur",
+            "limit=0",
+            "since=10&until=5",
+        ] {
+            let r = client
+                .get(&format!("/api/devices/{LIVING}/history?{bad}"), &token)
+                .await;
+            assert_eq!((r.status, r.code().as_str()), (400, "bad_request"), "{bad}");
+        }
+        let r = client.get("/api/devices/12345/history", &token).await;
+        assert_eq!((r.status, r.code().as_str()), (404, "not_found"));
+
+        // CSV à la demande.
+        let csv = client
+            .get(&format!("/api/devices/{LIVING}/history.csv"), &token)
+            .await;
+        assert_eq!(csv.status, 200);
+        assert!(csv.headers["content-type"].starts_with("text/csv"));
+        assert!(csv.headers["content-disposition"].contains("attachment"));
+        let text = csv.text();
+        assert!(text.starts_with("timestamp_unix,datetime_local,temperature_c,humidity_pct\n"));
+        assert!(text.lines().count() >= 4);
+
+        // Effacement : accepté.
+        let r = client
+            .request(
+                "DELETE",
+                &format!("/api/devices/{LIVING}/history"),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202);
+    });
+}
+
+#[test]
+fn logout_revokes_the_token_and_closes_the_stream() {
+    let dir = temp_dir("logout");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let other = client.login().await;
+        let mut ws = client.ws(&token, 1).await.unwrap();
+        for _ in 0..2 {
+            next_json(&mut ws, 10 * SECOND).await.unwrap();
+        }
+        let r = client
+            .request("POST", "/api/logout", Some(&token), None)
+            .await;
+        assert_eq!(r.status, 204);
+        assert_eq!(client.get("/api/state", &token).await.status, 401);
+        // Le flux en temps réel de cette session se termine ; l'autre session n'est pas touchée.
+        let deadline = std::time::Instant::now() + 15 * SECOND;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(1), next_json(&mut ws, 10 * SECOND))
+                .await
+            {
+                Ok(None) => break,
+                _ => assert!(
+                    std::time::Instant::now() < deadline,
+                    "le WebSocket est resté ouvert"
+                ),
+            }
+        }
+        assert_eq!(client.get("/api/state", &other).await.status, 200);
+    });
+}
+
+/// Un client qui n'avance plus ne gêne ni les autres clients ni le serveur : il est
+/// déconnecté, les autres reçoivent tout.
+#[test]
+fn slow_client_is_dropped_without_blocking_others() {
+    let dir = temp_dir("slow");
+    let server = Server::start_with(
+        &dir,
+        &[
+            ("MATTER_HOME_TEST_BROADCAST_CAPACITY", "2"),
+            ("MATTER_HOME_TEST_WRITE_TIMEOUT_MS", "1500"),
+        ],
+    );
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let mut slow = client.ws_slow(&token, 1).await.unwrap();
+        let mut fast = client.ws(&token, 1).await.unwrap();
+        for ws in [&mut slow, &mut fast] {
+            next_json(ws, 10 * SECOND).await.unwrap();
+            next_json(ws, 10 * SECOND).await.unwrap();
+        }
+        // Le client lent ne lit plus. Gros messages : les tampons du système se remplissent.
+        let big_rules = |n: usize| {
+            let mut rules = json!({"version": 1, "rules": []});
+            for i in 0..8 {
+                let message = "x".repeat(1900);
+                let actions: Vec<Value> = (0..50)
+                    .map(|_| json!({"type": "Notify", "title": "t", "message": message}))
+                    .collect();
+                rules["rules"].as_array_mut().unwrap().push(json!({
+                    "id": (i + 1).to_string(), "name": format!("r{n}-{i}"), "enabled": false,
+                    "trigger": {"type": "Time", "hour": 7, "minute": 0},
+                    "conditions": [], "actions": actions, "cooldown_s": 60
+                }));
+            }
+            rules
+        };
+        let started = std::time::Instant::now();
+        let mut fast_received = 0;
+        for n in 0..12 {
+            let r = client
+                .send_json("PUT", "/api/rules", &token, &big_rules(n))
+                .await;
+            assert_eq!(r.status, 200, "{}", r.text());
+            // Le client rapide les reçoit au fur et à mesure.
+            wait_event(&mut fast, "rules_changed", 10 * SECOND, |e| {
+                e["rules"]["rules"][0]["name"] == format!("r{n}-0")
+            })
+            .await;
+            fast_received += 1;
+        }
+        assert_eq!(fast_received, 12);
+        // Le serveur répond toujours, vite, pendant que l'autre est bloqué.
+        let before = std::time::Instant::now();
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+        assert!(before.elapsed() < 5 * SECOND);
+        let _ = started;
+
+        // Le client lent finit déconnecté (écriture bloquée au-delà du délai) ou resynchronisé.
+        let mut closed = false;
+        let mut resynced = false;
+        let deadline = std::time::Instant::now() + 30 * SECOND;
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(5), next_json(&mut slow, 5 * SECOND))
+                .await
+            {
+                Ok(None) | Err(_) => {
+                    closed = true;
+                    break;
+                }
+                Ok(Some(m)) => resynced |= m["type"] == "snapshot",
+            }
+        }
+        assert!(closed || resynced, "le client lent est resté sur son état");
+        // Et le serveur n'a rien perdu : il sert encore l'état complet.
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+    });
+}
+
+/// Un client en retard (mais qui finit par lire) reçoit l'état complet au lieu des messages perdus.
+#[test]
+fn lagging_client_gets_a_fresh_snapshot() {
+    let dir = temp_dir("lag");
+    // Capacité assez large pour absorber les rafales d'événements de la démo, trop petite
+    // pour 40 messages de près d'un mégaoctet.
+    let server = Server::start_with(&dir, &[("MATTER_HOME_TEST_BROADCAST_CAPACITY", "6")]);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let mut lagging = client.ws(&token, 1).await.unwrap();
+        next_json(&mut lagging, 10 * SECOND).await.unwrap();
+        let first = next_json(&mut lagging, 10 * SECOND).await.unwrap();
+        let first_seq = first["seq"].as_u64().unwrap();
+        let big_rules = |n: usize| {
+            let message = "x".repeat(1900);
+            let actions: Vec<Value> = (0..50)
+                .map(|_| json!({"type": "Notify", "title": "t", "message": message}))
+                .collect();
+            let rules: Vec<Value> = (0..8)
+                .map(|i| {
+                    json!({
+                        "id": (i + 1).to_string(), "name": format!("r{n}"), "enabled": false,
+                        "trigger": {"type": "Time", "hour": 7, "minute": 0},
+                        "conditions": [], "actions": actions, "cooldown_s": 60
+                    })
+                })
+                .collect();
+            json!({"version": 1, "rules": rules})
+        };
+        for n in 0..40 {
+            let r = client
+                .send_json("PUT", "/api/rules", &token, &big_rules(n))
+                .await;
+            assert_eq!(r.status, 200, "{}", r.text());
+        }
+        // Le client reprend sa lecture : il doit retrouver l'état final, par un nouvel état complet
+        // (les messages intermédiaires ont été perdus).
+        let mut snapshots = 0;
+        let mut last_name = String::new();
+        let deadline = std::time::Instant::now() + 60 * SECOND;
+        while std::time::Instant::now() < deadline && last_name != "r39" {
+            let Some(m) = next_json(&mut lagging, 30 * SECOND).await else {
+                break;
+            };
+            match m["type"].as_str().unwrap() {
+                "snapshot" => {
+                    snapshots += 1;
+                    assert!(m["seq"].as_u64().unwrap() > first_seq);
+                    last_name = m["rules"]["rules"][0]["name"].as_str().unwrap().to_string();
+                }
+                "event" if m["event"]["type"] == "rules_changed" => {
+                    last_name = m["event"]["rules"]["rules"][0]["name"]
+                        .as_str()
+                        .unwrap()
+                        .to_string();
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(last_name, "r39", "le client n'a pas retrouvé l'état final");
+        assert!(snapshots >= 1, "aucun état complet de resynchronisation");
+    });
+}
+
+#[test]
+fn log_never_contains_secrets() {
+    let dir = temp_dir("secrets");
+    let server = Server::start(&dir);
+    let client = server.client();
+    let (token, token2) = runtime().block_on(async {
+        let token = client.login().await;
+        let _ = client
+            .login_as(USER, "un-mauvais-mot-de-passe-secret", 1)
+            .await;
+        let mut ws = client.ws(&token, 1).await.unwrap();
+        next_json(&mut ws, 10 * SECOND).await.unwrap();
+        let token2 = client.login().await;
+        client
+            .request("POST", "/api/logout", Some(&token2), None)
+            .await;
+        (token, token2)
+    });
+    let log = server.log();
+    assert!(log.contains("connexion acceptée"), "{log}");
+    for secret in [
+        PASSWORD,
+        "un-mauvais-mot-de-passe-secret",
+        token.as_str(),
+        token2.as_str(),
+    ] {
+        assert!(!log.contains(secret), "secret dans le journal : {secret}");
+    }
+    // Le fichier des sessions ne contient que des empreintes.
+    let sessions = std::fs::read_to_string(dir.join("serveur/sessions.json")).unwrap();
+    assert!(!sessions.contains(&token));
+    let account = std::fs::read_to_string(dir.join("serveur/compte.json")).unwrap();
+    assert!(!account.contains(PASSWORD) && account.contains("$argon2id$"));
+}

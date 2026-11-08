@@ -11,6 +11,13 @@ license = "MIT"
 [profile.release]
 strip = true
 
+# Argon2 est lent sans optimisation (plusieurs secondes par vérification en debug) :
+# on l'optimise aussi pour les tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 # Copie locale de matc 0.1.3 avec des délais adaptés aux appareils « sleepy »
 # et des certificats valables 20 ans (voir README, section « Option retenue »).
 [patch.crates-io]

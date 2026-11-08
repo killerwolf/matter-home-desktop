@@ -11,6 +11,11 @@ use protocol::home::Symbol;
 
 pub const FILE_NAME: &str = "controller.json";
 
+/// Sous-dossier du dossier de données réservé au serveur réseau : compte, sessions,
+/// certificat TLS et sa clé. Il n'est ni exporté ni accepté à l'import, et l'import le
+/// laisse en place (voir `backup::apply_pending`).
+pub const SERVER_DIR: &str = "serveur";
+
 /// Identité du contrôleur sur sa fabric (clés en clair, comme les fichiers PEM de matc).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControllerIdentity {
@@ -158,13 +163,28 @@ fn project_dir(organization: &str, application: &str) -> Option<PathBuf> {
         .map(|d| d.data_dir().to_path_buf())
 }
 
+/// Dossier de données imposé par `--data-dir` (essais, tests) ; fixé une seule fois, au
+/// lancement. Sans lui, le dossier standard de l'application est utilisé.
+static DATA_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Impose le dossier de données pour tout le processus. `false` s'il était déjà fixé.
+pub fn set_data_dir(dir: PathBuf) -> bool {
+    DATA_DIR_OVERRIDE.set(dir).is_ok()
+}
+
 fn current_dir() -> PathBuf {
+    if let Some(dir) = DATA_DIR_OVERRIDE.get() {
+        return dir.clone();
+    }
     project_dir("matter-home-desktop", "MatterHomeDesktop")
         .unwrap_or_else(|| PathBuf::from("./matter-home-desktop-data"))
 }
 
-/// Dossier des versions nommées « matter-demo ».
+/// Dossier des versions nommées « matter-demo » (jamais avec un dossier imposé).
 fn legacy_dir() -> Option<PathBuf> {
+    if DATA_DIR_OVERRIDE.get().is_some() {
+        return None;
+    }
     project_dir("matter-demo", "MatterDemo")
 }
 

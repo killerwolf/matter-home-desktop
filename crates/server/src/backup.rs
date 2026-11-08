@@ -8,6 +8,10 @@
 //! il dépose la sauvegarde validée dans le dossier de données, et c'est le lancement
 //! suivant qui l'applique ([`apply_pending`]), avant tout chargement. Les données
 //! remplacées sont conservées dans un dossier voisin « …avant-import-<date> ».
+//!
+//! Le sous-dossier du serveur réseau (`serveur/` : compte, sessions, certificat TLS et sa
+//! clé) n'est jamais exporté, jamais accepté dans une sauvegarde, et passe de l'ancien
+//! dossier au nouveau pendant l'import : l'empreinte du certificat et le compte ne changent pas.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::persistence::{StoredState, FILE_NAME};
+use crate::persistence::{StoredState, FILE_NAME, SERVER_DIR};
 
 /// Extension proposée dans les boîtes de dialogue.
 pub const EXTENSION: &str = "matterhome";
@@ -142,6 +146,14 @@ pub fn default_file_name() -> String {
 
 /// Exporte le dossier de données `dir` vers le fichier `dest`.
 pub fn export(dir: &Path, dest: &Path) -> Result<Summary> {
+    let (text, summary) = export_to_string(dir)?;
+    write_private(dest, &text)?;
+    Ok(summary)
+}
+
+/// Sauvegarde de `dir` sous forme de texte (le contenu d'un fichier `.matterhome`).
+/// Elle contient les clés privées en clair.
+pub fn export_to_string(dir: &Path) -> Result<(String, Summary)> {
     let mut files = BTreeMap::new();
     for name in [FILE_NAME, PLAN, RULES] {
         let path = dir.join(name);
@@ -172,8 +184,7 @@ pub fn export(dir: &Path, dest: &Path) -> Result<Summary> {
         files,
     };
     let summary = summarize(&bundle)?;
-    write_private(dest, &serde_json::to_string(&bundle)?)?;
-    Ok(summary)
+    Ok((serde_json::to_string(&bundle)?, summary))
 }
 
 /// Lit et valide une sauvegarde sans rien modifier.
@@ -183,7 +194,15 @@ pub fn inspect(src: &Path) -> Result<Summary> {
 
 /// Valide `src` puis le met de côté dans `dir` : il sera appliqué au prochain lancement.
 pub fn stage_import(dir: &Path, src: &Path) -> Result<Summary> {
-    let (bundle, summary) = read_bundle(src)?;
+    let text =
+        std::fs::read_to_string(src).with_context(|| format!("lecture de {}", src.display()))?;
+    stage_import_text(dir, &text)
+}
+
+/// Comme [`stage_import`], pour une sauvegarde reçue en mémoire (import par l'API : aucune
+/// copie intermédiaire des clés sur le disque).
+pub fn stage_import_text(dir: &Path, text: &str) -> Result<Summary> {
+    let (bundle, summary) = parse(text)?;
     write_private(&dir.join(PENDING), &serde_json::to_string(&bundle)?)?;
     Ok(summary)
 }
@@ -222,12 +241,26 @@ fn apply(dir: &Path, pending: &Path) -> Result<(Summary, PathBuf)> {
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
     std::fs::rename(dir, &backup).with_context(|| format!("mise de côté de {}", dir.display()))?;
-    let written = bundle
-        .files
-        .iter()
-        .try_for_each(|(rel, text)| write_private(&dir.join(rel), text));
-    if let Err(e) = written {
-        // Retour en arrière : on remet les anciennes données en place.
+    // Le dossier du serveur réseau (compte, sessions, certificat) ne fait pas partie des
+    // données importées : il est remis tel quel dans le nouveau dossier.
+    let kept_old = backup.join(SERVER_DIR);
+    let kept_new = dir.join(SERVER_DIR);
+    let restored = (|| -> Result<()> {
+        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+        if kept_old.exists() {
+            std::fs::rename(&kept_old, &kept_new)
+                .with_context(|| format!("conservation de {}", kept_new.display()))?;
+        }
+        bundle
+            .files
+            .iter()
+            .try_for_each(|(rel, text)| write_private(&dir.join(rel), text))
+    })();
+    if let Err(e) = restored {
+        // Retour en arrière : on remet les anciennes données en place, dossier du serveur compris.
+        if kept_new.exists() {
+            let _ = std::fs::rename(&kept_new, &kept_old);
+        }
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::rename(&backup, dir);
         return Err(e);
@@ -369,6 +402,46 @@ mod tests {
             std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
             CONTROLLER
         );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+    /// Le dossier du serveur réseau (compte, sessions, certificat) ne part pas dans un export,
+    /// n'est pas accepté dans une sauvegarde, et survit à l'import.
+    #[test]
+    fn server_dir_is_neither_exported_nor_replaced_by_import() {
+        let base = temp("serveur");
+        let dir = sample_dir(&base);
+        let secret = dir.join(SERVER_DIR);
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("tls-key.pem"), "CLE PRIVEE DU SERVEUR").unwrap();
+        std::fs::write(secret.join("compte.json"), "{\"username\":\"hamdi\"}").unwrap();
+
+        // Export : le dossier du serveur n'y figure pas.
+        let (text, _) = export_to_string(&dir).unwrap();
+        assert!(!text.contains("CLE PRIVEE DU SERVEUR") && !text.contains("compte.json"));
+        assert!(!text.contains(SERVER_DIR));
+
+        // Une sauvegarde qui prétend en fournir un est refusée.
+        let evil = format!(
+            r#"{{"format":"{FORMAT}","version":1,"created":"2026-01-01","files":{{"controller.json":{},"serveur/tls-key.pem":"x"}}}}"#,
+            serde_json::to_string(CONTROLLER).unwrap()
+        );
+        assert!(stage_import_text(&dir, &evil).is_err());
+        assert!(!dir.join(PENDING).exists());
+
+        // Import : les données changent, le dossier du serveur reste identique.
+        let mut other = text.clone();
+        other = other.replace("Capteur", "Capteur importé");
+        stage_import_text(&dir, &other).unwrap();
+        let msg = apply_pending(&dir).unwrap();
+        assert!(msg.contains("Import terminé"), "{msg}");
+        assert!(std::fs::read_to_string(dir.join(FILE_NAME))
+            .unwrap()
+            .contains("Capteur importé"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(SERVER_DIR).join("tls-key.pem")).unwrap(),
+            "CLE PRIVEE DU SERVEUR"
+        );
+        assert!(dir.join(SERVER_DIR).join("compte.json").exists());
         std::fs::remove_dir_all(base).unwrap();
     }
 }

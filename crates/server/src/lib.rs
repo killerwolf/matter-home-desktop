@@ -1,13 +1,20 @@
 //! Serveur Matter Home : tout ce qui pilote les appareils et garde les données, sans
 //! aucune interface graphique. Le binaire `matter-home-server` (voir `main.rs`) l'assemble.
 
+pub mod app;
 pub mod automation;
 pub mod backup;
 pub mod demo;
 pub mod events;
+pub mod export;
 pub mod history_store;
+pub mod hub;
 pub mod matter;
+pub mod net;
 pub mod persistence;
+pub mod scrub;
+pub mod security;
+pub mod validate;
 
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -27,6 +34,12 @@ impl Backend {
         threads: Vec<JoinHandle<()>>,
     ) -> Self {
         Self { commands, threads }
+    }
+
+    /// Une copie de l'émetteur de commandes. Son porteur doit le lâcher avant `shutdown`,
+    /// sinon le canal ne se ferme pas et le backend ne s'arrête pas.
+    pub fn sender(&self) -> tokio::sync::mpsc::UnboundedSender<Command> {
+        self.commands.clone()
     }
 
     pub fn send(

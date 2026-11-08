@@ -10,6 +10,19 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **Serveur : API réseau sécurisée** (étape 3 du découpage client-serveur). HTTPS (certificat
+  auto-signé créé au premier lancement, empreinte SHA-256 affichée et journalisée) et
+  WebSocket pour le temps réel ; compte unique créé en ligne de commande
+  (`matter-home-server create-account`, mot de passe haché en argon2id, tentatives limitées),
+  jetons de session stockés hachés. Le serveur tient l'état complet des appareils, le plan et
+  les règles, diffuse chaque changement à tous les clients et envoie les notifications des
+  règles aux clients connectés (plus de notification macOS sur le Mac du serveur). Export,
+  import, historique et CSV sont servis à la demande. Protocole décrit dans
+  `docs/protocole.md`.
+- Options du serveur `--listen` et `--data-dir`.
+
 ## [0.2.1] - 2026-11-03
 
 La 0.2.0 n'a jamais été publiée (échec de la fabrication du DMG sur la CI) ; elle est
