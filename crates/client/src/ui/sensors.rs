@@ -5,10 +5,10 @@ use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::thermometer::local_time;
 use super::{ago, Device};
-use crate::automation::CoverCommand;
-use crate::events::{now_unix, CoverMotion};
 use crate::history::{compute_stats, Sample, TimeWindow};
-use crate::matter::convert::{format_energy, format_position, format_power};
+use protocol::automation::CoverCommand;
+use protocol::events::{now_unix, CoverMotion};
+use protocol::format::{format_energy, format_position, format_power};
 
 const OPEN_COLOR: Color32 = Color32::from_rgb(230, 140, 30);
 const CLOSED_COLOR: Color32 = Color32::from_rgb(40, 160, 70);

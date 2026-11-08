@@ -18,15 +18,15 @@ Un compagnon Node.js (matter.js) était prévu en repli ; il n'a pas été néce
 
 ### Ce que l'application ajoute à matc
 
-- **Décodeur TLV** (`src/matter/tlv.rs`) : celui de matc lit les entiers signés sur 1 octet
+- **Décodeur TLV** (`crates/server/src/matter/tlv.rs`) : celui de matc lit les entiers signés sur 1 octet
   comme non signés (−0,05 °C deviendrait 2,51 °C). Les réponses sont décodées depuis les
   octets bruts (`Message::payload`).
-- **Codes d'appairage** (`src/matter/setup_code.rs`) : chiffre de contrôle Verhoeff et
+- **Codes d'appairage** (`crates/server/src/matter/setup_code.rs`) : chiffre de contrôle Verhoeff et
   messages clairs ; le décodeur manuel de matc panique sur un code trop court.
-- **Découverte mDNS adaptée à Thread** (`src/matter/discovery.rs`) : les HomePod publient
+- **Découverte mDNS adaptée à Thread** (`crates/server/src/matter/discovery.rs`) : les HomePod publient
   les appareils Thread via leur proxy SRP, et la réponse à un parcours ne contient souvent
   que le PTR. L'application interroge alors l'instance (SRV, TXT) puis l'hôte (AAAA).
-- **Identité dans un seul JSON** (`src/matter/certs.rs`) : implémentation du trait
+- **Identité dans un seul JSON** (`crates/server/src/matter/certs.rs`) : implémentation du trait
   `CertManager` de matc, au lieu de ses fichiers PEM.
 
 ### Modifications de `vendor/matc`
@@ -64,7 +64,7 @@ Branchée par `[patch.crates-io]` dans `Cargo.toml`, chaque modification est rep
 - `EventSink::with_tap` envoie une copie de chaque événement au moteur d'automatisations.
 - Les commandes On/Off passent par la session CASE déjà ouverte avec l'appareil, partagée
   avec la souscription (`Ctx::set_connection`).
-- Le mode démo (`src/demo.rs`) émet les mêmes événements et utilise le même moteur de règles,
+- Le mode démo (`crates/server/src/demo.rs`) émet les mêmes événements et utilise le même moteur de règles,
   avec un actionneur simulé.
 
 ## Appareils et mesures
@@ -121,7 +121,7 @@ commandes (`Command::SetCover`, actions des règles) passent par la session du p
 - Graphique de puissance en escalier, avec `allow_band(false)` : sinon egui_plot remplace les
   marches verticales par une bande remplie.
 - Historique : JSON Lines par appareil, rétention 7 jours, 5 Mo maximum
-  (`src/history_store.rs`) ; l'interface garde 5000 points par mesure.
+  (`crates/server/src/history_store.rs`) ; l'interface garde 5000 points par mesure.
 
 ## Limites connues
 
@@ -138,28 +138,35 @@ commandes (`Command::SetCover`, actions des règles) passent par la session du p
 ## Organisation du code
 
 ```
-src/
-  main.rs              options de lancement, migration du dossier de données, eframe
-  events.rs            Command / Event entre l'interface et le backend
-  persistence.rs       fichiers JSON, dossier de données (+ tests)
-  history.rs           tampon circulaire, fenêtres, statistiques, CSV (+ tests)
-  history_store.rs     historique sur disque : ajout, relecture, rétention (+ tests)
+crates/protocol/src/   types partagés (serde seul : ni egui ni matc)
+  events.rs            Command / Event entre le client et le serveur
   home.rs              modèle du plan : étages, pièces, objets (+ tests)
-  automation.rs        règles, moteur, actions (+ tests)
-  demo.rs              backend simulé (--demo) (+ test)
-  ui/mod.rs            fenêtre, appairage, liste, fiche, journal (+ test de bout en bout)
-  ui/thermometer.rs    vue thermomètre
-  ui/sensors.rs        vues ouverture et prise (+ tests)
-  ui/plan.rs           plan de la maison (+ tests)
-  ui/rules.rs          onglet Automatisations (+ test)
-  ui/customize.rs      éditeur nom et icône
+  automation.rs        modèle des règles : déclencheurs, conditions, actions
+  format.rs            formatage français des mesures
+crates/server/src/     serveur (Matter, règles, historique) : aucune dépendance egui
+  main.rs              binaire matter-home-server : --demo, --discover, journaux, arrêt propre
+  events.rs            EventSink (émetteur d'événements, sans interface)
+  persistence.rs       fichiers JSON, dossier de données, garde-fou controller.json (+ tests)
+  history_store.rs     historique sur disque : ajout, relecture, rétention (+ tests)
+  automation.rs        moteur de règles, actions (+ tests)
+  backup.rs            export / import des données
+  demo.rs              backend simulé (--demo) (+ tests)
   matter/mod.rs        démarrage du backend, appairage, commandes (+ tests)
   matter/node.rs       supervision d'un nœud : CASE, description, souscription
   matter/discovery.rs  cache mDNS (+ tests)
   matter/certs.rs      identité du contrôleur (+ test)
   matter/setup_code.rs codes d'appairage (+ tests)
   matter/tlv.rs        décodeur TLV (+ tests)
-  matter/convert.rs    conversions des mesures (+ tests)
+  matter/convert.rs    décodage des mesures (+ tests)
+crates/client/src/     client (egui) : aucune dépendance matc ni serveur
+  main.rs              options de lancement, eframe
+  history.rs           tampon circulaire, fenêtres, statistiques, CSV (+ tests)
+  ui/mod.rs            fenêtre, appairage, liste, fiche, journal (+ tests)
+  ui/thermometer.rs    vue thermomètre
+  ui/sensors.rs        vues ouverture et prise (+ tests)
+  ui/plan.rs           plan de la maison (+ tests)
+  ui/rules.rs          onglet Automatisations (+ test)
+  ui/customize.rs      éditeur nom et icône
 vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md

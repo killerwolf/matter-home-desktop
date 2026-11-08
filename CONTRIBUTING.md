@@ -21,26 +21,32 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
 - Pas besoin d'appareil Matter pour la plupart des modifications : le **mode démo** simule
   thermomètres, porte, prise et automatisations.
 
+Le dépôt est un workspace Cargo de trois crates : `crates/protocol` (types partagés),
+`crates/server` (Matter, règles, historique ; binaire `matter-home-server`, sans fenêtre) et
+`crates/client` (interface egui ; binaire `matter-home-desktop`). Version 1 en cours : le client
+n'est pas encore branché sur le serveur et affiche « déconnecté ».
+
 ```bash
-cargo build
+cargo build --workspace
 ```
 
 ```bash
-cargo run -- --demo
+cargo run -p matter-home-server -- --demo
 ```
 
-`--plan`, `--rules` et `--device <nom>` ouvrent directement un onglet ou une fiche.
+`--demo` ne touche à aucun fichier. Côté client, `cargo run -p matter-home-desktop` lance
+l'interface ; `--plan`, `--rules` et `--device <nom>` ouvrent directement un onglet ou une fiche.
 
 ## Avant de proposer une modification
 
 Ces trois commandes doivent passer sans erreur ni avertissement :
 
 ```bash
-cargo test
+cargo test --workspace
 ```
 
 ```bash
-cargo clippy --all-targets
+cargo clippy --workspace --all-targets
 ```
 
 ```bash

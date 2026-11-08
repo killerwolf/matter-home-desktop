@@ -3,8 +3,8 @@
 use eframe::egui;
 
 use super::plan::glyph;
-use crate::events::NodeInfo;
-use crate::home::Symbol;
+use protocol::events::NodeInfo;
+use protocol::home::Symbol;
 
 /// Brouillon en cours d'édition.
 #[derive(Debug, Clone, PartialEq)]

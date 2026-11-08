@@ -37,12 +37,12 @@ jobs:
         run: cargo fmt --check
 
       - name: Run linter
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Décodage TLV, conversions, codes d'appairage, historique, plan, moteur
       # d'automatisations et mode démo de bout en bout (sans fenêtre).
       - name: Run tests
-        run: cargo test
+        run: cargo test --workspace
 
       # Tout ce qui précède passe même si le .app livré est cassé : on le construit aussi.
       - name: Build the app bundle
@@ -87,7 +87,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Setting app version to $VERSION"
-          # Seule la version du [package], la première ligne « version = ».
+          # Seule la version de [workspace.package] (partagée par les trois crates), la première
+          # ligne « version = » de la racine.
           VERSION="$VERSION" perl -0pi -e 's/^version = ".*"/version = "$ENV{VERSION}"/m' Cargo.toml
           grep -m1 '^version' Cargo.toml
 

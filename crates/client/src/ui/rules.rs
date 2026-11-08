@@ -1,17 +1,13 @@
 //! Onglet « Automatisations » : liste des règles, éditeur « Quand / Si / Alors », journal.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText};
 
 use super::plan::{glyph, icon_of};
 use super::{ago, Device};
-use crate::automation::{
-    self, Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger,
-};
-use crate::events::{now_unix, MeasureKind};
-use crate::persistence;
+use protocol::automation::{Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger};
+use protocol::events::{now_unix, MeasureKind};
 
 const RED: Color32 = Color32::from_rgb(210, 60, 50);
 const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
@@ -40,9 +36,7 @@ pub enum RulesAction {
 
 pub struct RulesView {
     set: RuleSet,
-    path: PathBuf,
     selected: Option<u64>,
-    save_error: Option<String>,
     confirm_delete: bool,
     runs: VecDeque<RunEntry>,
 }
@@ -303,13 +297,13 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
 }
 
 impl RulesView {
-    pub fn load(demo: bool, default: impl FnOnce() -> RuleSet) -> Self {
-        let (set, save_error) = automation::load(demo, default);
+    /// Règles vides. TODO étape 4 : les règles viendront du serveur, qui les enregistre
+    /// (le client ne lit ni n'écrit plus aucun fichier).
+    pub fn new() -> Self {
+        let set = RuleSet::default();
         Self {
             selected: set.rules.first().map(|r| r.id),
             set,
-            path: automation::path(demo),
-            save_error,
             confirm_delete: false,
             runs: VecDeque::new(),
         }
@@ -321,10 +315,6 @@ impl RulesView {
     }
 
     fn save(&mut self) -> RulesAction {
-        match persistence::save_json(&self.path, &self.set) {
-            Ok(()) => self.save_error = None,
-            Err(e) => self.save_error = Some(format!("Sauvegarde des règles impossible : {e:#}")),
-        }
         RulesAction::Changed(self.set.rules.clone())
     }
 
@@ -341,10 +331,7 @@ impl RulesView {
                 changed = true;
             }
         });
-        ui.small("Les règles s'exécutent tant que l'application est ouverte.");
-        if let Some(e) = &self.save_error {
-            ui.colored_label(RED, e);
-        }
+        ui.small("Les règles s'exécutent sur le serveur, tant qu'il tourne.");
         ui.separator();
 
         egui::Panel::bottom("rules_journal")
@@ -874,7 +861,7 @@ impl RulesView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{Capabilities, NodeInfo};
+    use protocol::events::{Capabilities, NodeInfo};
 
     #[test]
     fn summary_reads_naturally() {

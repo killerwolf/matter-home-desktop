@@ -14,6 +14,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
 NAME="Matter Home Desktop"
+# Seul le client est livré en .app (le serveur, sans fenêtre, a son propre binaire).
+PACKAGE="matter-home-desktop"
 BIN="matter-home-desktop"
 APP="$DIST/$NAME.app"
 
@@ -38,13 +40,13 @@ if [ ${#TARGETS[@]} -lt 2 ]; then
   echo "  note : x86_64-apple-darwin n'est pas installée, ce build n'est pas universel." >&2
   echo "         rustup target add x86_64-apple-darwin  # pour livrer les deux" >&2
   log "Compilation pour ce Mac"
-  (cd "$ROOT" && cargo build --release)
+  (cd "$ROOT" && cargo build --release -p "$PACKAGE")
   BINARIES+=("$ROOT/target/release/$BIN")
   FLAVOUR="$(uname -m)"
 else
   for target in "${TARGETS[@]}"; do
     log "Compilation $target"
-    (cd "$ROOT" && cargo build --release --target "$target")
+    (cd "$ROOT" && cargo build --release -p "$PACKAGE" --target "$target")
     BINARIES+=("$ROOT/target/$target/release/$BIN")
   done
   FLAVOUR="universal"

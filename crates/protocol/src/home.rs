@@ -1,14 +1,10 @@
 //! Plan de la maison : étages, pièces rectangulaires et objets placés.
 //! Coordonnées en mètres, origine en haut à gauche, y vers le bas.
-//! Sauvegardé dans `maison.json` (ou `maison-demo.json` en mode démo).
+//! Sauvegardé par le serveur dans `maison.json` (ou `maison-demo.json` en mode démo).
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-
-pub const FILE_NAME: &str = "maison.json";
-pub const DEMO_FILE_NAME: &str = "maison-demo.json";
 
 /// Pas de la grille magnétique des pièces (m).
 pub const ROOM_SNAP: f32 = 0.5;
@@ -167,10 +163,6 @@ impl HomePlan {
 /// Arrondit au pas de grille le plus proche.
 pub fn snap(v: f32, step: f32) -> f32 {
     (v / step).round() * step
-}
-
-pub fn path(demo: bool) -> PathBuf {
-    crate::persistence::data_dir().join(if demo { DEMO_FILE_NAME } else { FILE_NAME })
 }
 
 #[cfg(test)]

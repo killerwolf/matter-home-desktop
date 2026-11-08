@@ -2,18 +2,16 @@
 //! avec l'état des appareils en direct. Deux modes : consultation et modification.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use super::customize::{editor, DeviceEdit, EditResult};
 use super::Device;
-use crate::events::NodeStatus;
-use crate::home::{
+use protocol::events::NodeStatus;
+use protocol::format::{format_position, format_power, format_temperature};
+use protocol::home::{
     self, snap, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MIN_ROOM_SIZE, ROOM_SNAP,
 };
-use crate::matter::convert::{format_position, format_power, format_temperature};
-use crate::persistence;
 
 const ITEM_RADIUS: f32 = 15.0;
 const HANDLE_SIZE: f32 = 10.0;
@@ -73,7 +71,6 @@ pub enum PlanAction {
 
 pub struct PlanView {
     plan: HomePlan,
-    path: PathBuf,
     floor: usize,
     edit: bool,
     /// Pixels par mètre.
@@ -84,7 +81,6 @@ pub struct PlanView {
     drag: Option<Drag>,
     selection: Option<Selection>,
     dirty: bool,
-    save_error: Option<String>,
     confirm_delete_floor: bool,
     /// Brouillon du nom et de l'icône de l'appareil sélectionné.
     device_edit: Option<DeviceEdit>,
@@ -205,8 +201,8 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                     None => String::new(),
                 };
                 match d.cover_motion {
-                    Some(crate::events::CoverMotion::Opening) => text.push_str(" ▲"),
-                    Some(crate::events::CoverMotion::Closing) => text.push_str(" ▼"),
+                    Some(protocol::events::CoverMotion::Opening) => text.push_str(" ▲"),
+                    Some(protocol::events::CoverMotion::Closing) => text.push_str(" ▼"),
                     _ => {}
                 }
                 let text = text.trim().to_string();
@@ -270,20 +266,11 @@ fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) ->
 }
 
 impl PlanView {
-    /// Charge le plan sauvegardé ; à défaut `default_plan`.
-    pub fn load(demo: bool, default_plan: impl FnOnce() -> HomePlan) -> Self {
-        let path = home::path(demo);
-        let (plan, save_error) = match persistence::load_json::<HomePlan>(&path) {
-            Ok(Some(p)) if !p.floors.is_empty() => (p, None),
-            Ok(_) => (default_plan(), None),
-            Err(e) => (
-                default_plan(),
-                Some(format!("Plan illisible, plan vide utilisé : {e:#}")),
-            ),
-        };
+    /// Plan par défaut. TODO étape 4 : le plan viendra du serveur, qui l'enregistre
+    /// (le client ne lit ni n'écrit plus aucun fichier).
+    pub fn new() -> Self {
         Self {
-            plan,
-            path,
+            plan: HomePlan::default(),
             floor: 0,
             edit: false,
             scale: 50.0,
@@ -292,7 +279,6 @@ impl PlanView {
             drag: None,
             selection: None,
             dirty: false,
-            save_error,
             confirm_delete_floor: false,
             device_edit: None,
         }
@@ -311,10 +297,7 @@ impl PlanView {
 
     fn save_if_needed(&mut self, ui: &egui::Ui) {
         if self.dirty && !ui.input(|i| i.pointer.any_down()) {
-            match persistence::save_json(&self.path, &self.plan) {
-                Ok(()) => self.save_error = None,
-                Err(e) => self.save_error = Some(format!("Sauvegarde du plan impossible : {e:#}")),
-            }
+            // TODO étape 4 : envoyer le plan modifié au serveur.
             self.dirty = false;
         }
     }
@@ -322,9 +305,6 @@ impl PlanView {
     pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {
         self.floor = self.floor.min(self.plan.floors.len() - 1);
         self.toolbar(ui);
-        if let Some(e) = &self.save_error {
-            ui.colored_label(RED, e);
-        }
         ui.separator();
 
         let mut palette_action = None;
@@ -1010,7 +990,7 @@ impl PlanView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{Capabilities, NodeInfo};
+    use protocol::events::{Capabilities, NodeInfo};
     use crate::history::Sample;
 
     fn device(caps: Capabilities) -> Device {
@@ -1085,7 +1065,7 @@ mod tests {
             t: 1.0,
             value: 65.0,
         });
-        d.cover_motion = Some(crate::events::CoverMotion::Opening);
+        d.cover_motion = Some(protocol::events::CoverMotion::Opening);
         let lk = look(&item, &devices);
         assert_eq!(
             (lk.fill, lk.value.as_deref()),

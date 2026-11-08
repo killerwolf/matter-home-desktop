@@ -1,0 +1,19 @@
+[package]
+name = "matter-home-desktop"
+version.workspace = true
+edition.workspace = true
+description = "Client de bureau Matter Home (egui) : capteurs, plan de la maison, automatisations"
+license.workspace = true
+
+[[bin]]
+name = "matter-home-desktop"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
+chrono = "0.4"
+directories = "6"
+eframe = "0.37"
+egui_plot = "0.38"
+env_logger = "0.11"
+log = "0.4"

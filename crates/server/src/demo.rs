@@ -171,7 +171,8 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         ),
     ])));
     let (engine_tx, engine_rx) = mpsc::unbounded_channel();
-    let (rules, _) = automation::load(true, demo_rules);
+    // Règles de démonstration fixes : le mode démo ne lit ni n'écrit aucun fichier.
+    let rules = demo_rules();
     let actuator: Arc<dyn Actuator> = Arc::new(DemoActuator {
         events: events.clone(),
         plug_on: plug_on.clone(),
@@ -768,6 +769,7 @@ pub fn demo_rules() -> RuleSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::home::Symbol;
 
     /// Chaîne complète sans interface : « Tester » → moteur → actionneur → compte rendu.
     #[test]
@@ -778,7 +780,7 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let (ui_tx, ui_rx) = std::sync::mpsc::channel();
-            let ui = EventSink::new(ui_tx, eframe::egui::Context::default());
+            let ui = EventSink::new(ui_tx);
             let (tap_tx, tap_rx) = mpsc::unbounded_channel();
             let events = ui.with_tap(tap_tx);
             let plug_on = Arc::new(AtomicBool::new(true));
@@ -867,5 +869,273 @@ mod tests {
                 "{detail}"
             );
         });
+    }
+
+    /// Attend, en lisant `rx`, qu'une condition soit vraie sur les événements reçus depuis
+    /// la position `from` de `seen` (50 ms entre deux lectures).
+    fn wait_until(
+        rx: &std::sync::mpsc::Receiver<Event>,
+        seen: &mut Vec<Event>,
+        from: usize,
+        polls: u32,
+        cond: impl Fn(&[Event]) -> bool,
+    ) -> bool {
+        for _ in 0..polls {
+            seen.extend(rx.try_iter());
+            if cond(&seen[from..]) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    fn nodes_of(events: &[Event]) -> HashMap<u64, NodeInfo> {
+        let mut nodes = HashMap::new();
+        for e in events {
+            if let Event::Node(info) = e {
+                nodes.insert(info.node_id, info.clone());
+            }
+        }
+        nodes
+    }
+
+    fn measures(events: &[Event], id: u64, wanted: MeasureKind) -> Vec<f64> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Measurement {
+                    node_id,
+                    kind,
+                    value,
+                    ..
+                } if *node_id == id && *kind == wanted => Some(*value),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Mode démo de bout en bout, sans interface : commandes → événements. Pendant, côté
+    /// serveur, de l'ancien test de l'interface (qui lisait ce même flux d'événements).
+    #[test]
+    fn demo_backend_end_to_end() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let commands = spawn(EventSink::new(tx));
+        let mut seen: Vec<Event> = Vec::new();
+
+        // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli :
+        // 4 appareils, un pont et ses 3 volets.
+        assert!(wait_until(&rx, &mut seen, 0, 100, |ev| {
+            let online = ev
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        Event::Status {
+                            status: NodeStatus::Online,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            nodes_of(ev).len() == 8 && online >= 8
+        }));
+        let nodes = nodes_of(&seen);
+        let living = nodes.values().find(|n| n.caps.humidity).unwrap().node_id;
+        assert!(
+            measures(&seen, living, MeasureKind::Temperature).len() > 150,
+            "historique pré-rempli"
+        );
+        assert!(!measures(&seen, living, MeasureKind::Humidity).is_empty());
+        assert!(seen.iter().any(|e| matches!(
+            e,
+            Event::Measurement {
+                kind: MeasureKind::Battery,
+                value,
+                ..
+            } if *value == 87.0
+        )));
+
+        // Porte : transitions rejouées.
+        let door = nodes.values().find(|n| n.caps.contact).unwrap().node_id;
+        let door_states: Vec<bool> = seen
+            .iter()
+            .filter_map(|e| match e {
+                Event::State {
+                    node_id,
+                    kind: StateKind::Open,
+                    value,
+                    ..
+                } if *node_id == door => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert!(door_states.len() > 10, "historique des ouvertures");
+        assert!(door_states.windows(2).all(|w| w[0] != w[1]));
+
+        // Prise : puissance, énergie, marche/arrêt.
+        let plug = nodes.values().find(|n| n.caps.power).unwrap().node_id;
+        assert!(measures(&seen, plug, MeasureKind::Power).len() > 150);
+        assert!(measures(&seen, plug, MeasureKind::Energy)
+            .last()
+            .is_some_and(|e| *e > 12.0));
+        assert!(seen.iter().any(|e| matches!(
+            e,
+            Event::State { node_id, kind: StateKind::OnOff, value: true, .. } if *node_id == plug
+        )));
+        // Pile faible signalée.
+        assert!(seen.iter().any(|e| matches!(
+            e,
+            Event::State {
+                kind: StateKind::BatteryLow,
+                value: true,
+                ..
+            }
+        )));
+
+        // Volets derrière le pont : position connue pour deux, inconnue pour le moteur RTS.
+        let bridge = nodes
+            .values()
+            .find(|n| n.device_types.iter().any(|t| t == "Passerelle"))
+            .unwrap()
+            .node_id;
+        let shutters: Vec<&NodeInfo> = nodes
+            .values()
+            .filter(|n| n.bridge.is_some_and(|b| b.node_id == bridge))
+            .collect();
+        assert_eq!(shutters.len(), 3);
+        assert!(shutters.iter().all(|n| n.caps.cover));
+        assert_eq!(shutters.iter().filter(|n| n.caps.cover_position).count(), 2);
+        let open_shutter = shutters
+            .iter()
+            .find(|n| {
+                measures(&seen, n.node_id, MeasureKind::Position)
+                    .last()
+                    .is_some_and(|p| *p >= 100.0)
+            })
+            .expect("un volet tout ouvert")
+            .node_id;
+        let rts = shutters
+            .iter()
+            .find(|n| !n.caps.cover_position)
+            .unwrap()
+            .node_id;
+        assert!(measures(&seen, rts, MeasureKind::Position).is_empty());
+
+        // Fermer un volet : il descend par paliers puis s'arrête fermé.
+        let mark = seen.len();
+        commands
+            .send(Command::SetCover {
+                node_id: open_shutter,
+                command: CoverCommand::Close,
+            })
+            .unwrap();
+        let motion = |ev: &[Event], id: u64, wanted: CoverMotion| {
+            ev.iter().any(|e| {
+                matches!(e, Event::CoverMotion { node_id, motion }
+                    if *node_id == id && *motion == wanted)
+            })
+        };
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| motion(
+            ev,
+            open_shutter,
+            CoverMotion::Closing
+        )));
+        // 100 % → 0 % par pas de 25 % toutes les 2 s : une dizaine de secondes.
+        assert!(wait_until(&rx, &mut seen, mark, 300, |ev| {
+            motion(ev, open_shutter, CoverMotion::Stopped)
+                && measures(ev, open_shutter, MeasureKind::Position)
+                    .last()
+                    .is_some_and(|p| *p <= 0.0)
+        }));
+        // Puis à mi-hauteur.
+        let mark = seen.len();
+        commands
+            .send(Command::SetCover {
+                node_id: open_shutter,
+                command: CoverCommand::Position(50),
+            })
+            .unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 300, |ev| {
+            measures(ev, open_shutter, MeasureKind::Position)
+                .last()
+                .is_some_and(|p| *p == 50.0)
+        }));
+        // Le moteur RTS bouge sans jamais donner de position.
+        let mark = seen.len();
+        commands
+            .send(Command::SetCover {
+                node_id: rts,
+                command: CoverCommand::Open,
+            })
+            .unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| motion(
+            ev,
+            rts,
+            CoverMotion::Opening
+        )));
+        assert!(measures(&seen, rts, MeasureKind::Position).is_empty());
+
+        // Nom et icône choisis, puis retour à l'automatique.
+        let mark = seen.len();
+        commands
+            .send(Command::Customize {
+                node_id: plug,
+                name: Some("  Lampe du salon ".into()),
+                icon: Some(Symbol::Light),
+            })
+            .unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| {
+            nodes_of(ev).get(&plug).is_some_and(|n| {
+                n.name == "Lampe du salon"
+                    && n.icon == Some(Symbol::Light)
+                    && n.device_name == "GRILLPLATS Plug"
+            })
+        }));
+        let mark = seen.len();
+        commands
+            .send(Command::Customize {
+                node_id: plug,
+                name: Some("   ".into()),
+                icon: None,
+            })
+            .unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| {
+            nodes_of(ev)
+                .get(&plug)
+                .is_some_and(|n| n.custom_name.is_none() && n.name == "GRILLPLATS Plug")
+        }));
+
+        // Code invalide : message d'erreur clair.
+        let mark = seen.len();
+        commands.send(Command::Pair("12345".into())).unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| ev
+            .iter()
+            .any(|e| matches!(e, Event::PairingFailed(_)))));
+
+        // Code valide : un appareil de plus.
+        let mark = seen.len();
+        commands
+            .send(Command::Pair("3497-011-2332".into()))
+            .unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| ev
+            .iter()
+            .any(|e| matches!(e, Event::PairingDone { .. }))));
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| nodes_of(ev)
+            .keys()
+            .any(|id| !nodes.contains_key(id))));
+        let new_id = *nodes_of(&seen[mark..])
+            .keys()
+            .find(|id| !nodes.contains_key(id))
+            .unwrap();
+
+        // Oublier.
+        let mark = seen.len();
+        commands.send(Command::Forget(new_id)).unwrap();
+        assert!(wait_until(&rx, &mut seen, mark, 100, |ev| ev
+            .iter()
+            .any(|e| matches!(e, Event::NodeRemoved(id) if *id == new_id))));
+        // Aucune erreur fatale pendant tout le scénario.
+        assert!(!seen.iter().any(|e| matches!(e, Event::Fatal(_))));
     }
 }

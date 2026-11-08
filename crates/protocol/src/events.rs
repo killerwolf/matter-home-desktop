@@ -1,17 +1,17 @@
-//! Messages échangés entre l'interface (thread egui) et la tâche de fond (tokio).
+//! Messages échangés entre le client (interface) et le serveur (tâche de fond Matter).
 //!
 //! Les appareils sont désignés par un identifiant `u64` : l'identifiant du nœud Matter,
 //! ou, pour un appareil exposé par un pont (volet Somfy derrière une TaHoma…), un
 //! identifiant propre tiré dans une plage que Matter réserve et n'attribue jamais à un
 //! nœud opérationnel. Les champs s'appellent `node_id` par continuité.
 
-use std::sync::mpsc;
+use serde::{Deserialize, Serialize};
 
-use crate::automation::CoverCommand;
+use crate::automation::{CoverCommand, Rule};
 use crate::home::Symbol;
 
 /// Commandes envoyées par l'interface.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Appairer un appareil avec ce code (manuel ou `MT:...`).
     Pair(String),
@@ -22,7 +22,7 @@ pub enum Command {
     /// Effacer l'historique enregistré d'un appareil (sur disque).
     ClearHistory(u64),
     /// Nouvelles règles d'automatisation (déjà sauvegardées par l'interface).
-    SetRules(Vec<crate::automation::Rule>),
+    SetRules(Vec<Rule>),
     /// Exécuter tout de suite les actions d'une règle (bouton « Tester »).
     TestRule(u64),
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
@@ -35,7 +35,7 @@ pub enum Command {
     SetCover { node_id: u64, command: CoverCommand },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeStatus {
     Connecting,
     Online,
@@ -48,7 +48,7 @@ pub enum NodeStatus {
 }
 
 /// Grandeurs numériques suivies dans le temps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MeasureKind {
     /// °C
     Temperature,
@@ -65,7 +65,7 @@ pub enum MeasureKind {
 }
 
 /// États binaires.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateKind {
     /// `true` = ouvert (pas de contact).
     Open,
@@ -76,14 +76,14 @@ pub enum StateKind {
 }
 
 /// Mouvement d'un volet (Window Covering / OperationalStatus).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoverMotion {
     Stopped,
     Opening,
     Closing,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ReportingMode {
     /// Souscription active ; l'appareil promet un rapport au moins toutes les `max_interval_s`.
     Subscription { max_interval_s: u64 },
@@ -92,7 +92,7 @@ pub enum ReportingMode {
 }
 
 /// Ce que l'appareil sait mesurer ou faire, d'après sa description (clusters présents).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub temperature: bool,
     pub humidity: bool,
@@ -121,13 +121,13 @@ impl Capabilities {
 }
 
 /// Pont qui expose cet appareil, et endpoint de l'appareil sur ce pont.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeLink {
     pub node_id: u64,
     pub endpoint: u16,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub node_id: u64,
     /// Nom affiché : celui choisi par l'utilisateur, sinon celui de l'appareil.
@@ -145,7 +145,7 @@ pub struct NodeInfo {
 }
 
 /// Événements envoyés par la tâche de fond.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     /// Appareil connu (au démarrage, après appairage, ou après lecture de sa description).
     Node(NodeInfo),
@@ -198,39 +198,6 @@ pub enum Event {
     Fatal(String),
     /// Information diverse affichée dans le journal de l'interface.
     Info(String),
-}
-
-/// Côté émetteur des événements : réveille l'interface à chaque envoi.
-#[derive(Clone)]
-pub struct EventSink {
-    tx: mpsc::Sender<Event>,
-    ctx: eframe::egui::Context,
-    /// Copie des événements pour le moteur d'automatisations.
-    tap: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
-}
-
-impl EventSink {
-    pub fn new(tx: mpsc::Sender<Event>, ctx: eframe::egui::Context) -> Self {
-        Self { tx, ctx, tap: None }
-    }
-
-    /// Même destination, avec une copie de chaque événement vers `tap`.
-    pub fn with_tap(&self, tap: tokio::sync::mpsc::UnboundedSender<Event>) -> Self {
-        Self {
-            tx: self.tx.clone(),
-            ctx: self.ctx.clone(),
-            tap: Some(tap),
-        }
-    }
-
-    pub fn send(&self, event: Event) {
-        if let Some(tap) = &self.tap {
-            let _ = tap.send(event.clone());
-        }
-        // L'interface peut avoir été fermée : on ignore l'erreur.
-        let _ = self.tx.send(event);
-        self.ctx.request_repaint();
-    }
 }
 
 pub fn now_unix() -> f64 {

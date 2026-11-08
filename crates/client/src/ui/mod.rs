@@ -1,5 +1,8 @@
 //! Interface egui. Ne fait jamais d'entrée/sortie réseau : elle envoie des
 //! `Command` et applique les `Event` reçus à chaque image.
+//!
+//! Étape 1 du découpage client-serveur : le client n'a plus de lien Matter, il affiche
+//! « déconnecté » (le branchement sur le serveur est l'étape 4).
 
 mod customize;
 mod plan;
@@ -11,14 +14,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc;
 
 use eframe::egui::{self, Color32, RichText};
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::events::{
+use crate::history::{RingBuffer, Sample, TimeWindow};
+use protocol::events::{
     now_unix, Command, CoverMotion, Event, MeasureKind, NodeInfo, NodeStatus, ReportingMode,
     StateKind,
 };
-use crate::history::{RingBuffer, Sample, TimeWindow};
-use crate::matter::convert::{format_position, format_power, format_temperature};
+use protocol::format::{format_position, format_power, format_temperature};
 
 pub struct Device {
     pub info: NodeInfo,
@@ -144,9 +146,10 @@ enum Pairing {
 }
 
 pub struct MatterApp {
-    commands: UnboundedSender<Command>,
+    commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<Event>,
-    demo: bool,
+    /// Lien avec le serveur. TODO étape 4 : passe à `true` une fois connecté.
+    connected: bool,
     devices: BTreeMap<u64, Device>,
     selected: Option<u64>,
     code: String,
@@ -164,33 +167,14 @@ pub struct MatterApp {
     device_edit: Option<customize::DeviceEdit>,
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
     select_on_arrival: Option<String>,
-    /// Fenêtre d'information ou de confirmation du menu Fichier (export / import).
-    data_dialog: Option<DataDialog>,
-}
-
-/// Fenêtre ouverte par le menu Fichier → Exporter / Importer.
-enum DataDialog {
-    /// Résultat d'un export ou message d'erreur.
-    Message { ok: bool, text: String },
-    /// Sauvegarde choisie, validée, en attente de confirmation.
-    ConfirmImport {
-        path: std::path::PathBuf,
-        summary: String,
-    },
-    /// Import prêt : il sera appliqué au prochain lancement.
-    ImportReady,
 }
 
 impl MatterApp {
-    pub fn new(
-        commands: UnboundedSender<Command>,
-        events: mpsc::Receiver<Event>,
-        demo: bool,
-    ) -> Self {
+    pub fn new(commands: mpsc::Sender<Command>, events: mpsc::Receiver<Event>) -> Self {
         Self {
             commands,
             events,
-            demo,
+            connected: false,
             devices: BTreeMap::new(),
             selected: None,
             code: String::new(),
@@ -200,26 +184,11 @@ impl MatterApp {
             fatal: None,
             log: VecDeque::new(),
             view: View::Devices,
-            rules: rules::RulesView::load(
-                demo,
-                if demo {
-                    crate::demo::demo_rules
-                } else {
-                    crate::automation::RuleSet::default
-                },
-            ),
+            rules: rules::RulesView::new(),
             confirm_clear: None,
             device_edit: None,
             select_on_arrival: None,
-            data_dialog: None,
-            plan: plan::PlanView::load(
-                demo,
-                if demo {
-                    crate::demo::demo_plan
-                } else {
-                    crate::home::HomePlan::default
-                },
-            ),
+            plan: plan::PlanView::new(),
         }
     }
 
@@ -227,11 +196,6 @@ impl MatterApp {
     pub fn select_device_named(&mut self, filter: String) {
         self.select_on_arrival = Some(filter);
         self.view = View::Devices;
-    }
-
-    /// Ajoute une ligne au journal de l'interface.
-    pub fn note(&mut self, line: String) {
-        self.push_log(line);
     }
 
     /// Ouvre l'onglet « Automatisations ».
@@ -244,133 +208,11 @@ impl MatterApp {
         self.view = View::Plan;
     }
 
-    /// Menu Fichier → Exporter : choisit un fichier puis y écrit toutes les données.
-    fn export_data(&mut self) {
-        let Some(dest) = rfd::FileDialog::new()
-            .set_title("Exporter mes données")
-            .set_file_name(crate::backup::default_file_name())
-            .add_filter("Sauvegarde Matter Home", &[crate::backup::EXTENSION])
-            .save_file()
-        else {
-            return;
-        };
-        let dir = crate::persistence::data_dir();
-        self.data_dialog = Some(match crate::backup::export(&dir, &dest) {
-            Ok(summary) => {
-                self.push_log(format!("Export vers {}", dest.display()));
-                DataDialog::Message {
-                    ok: true,
-                    text: format!(
-                        "Exporté dans {}\n({})\n\nCe fichier contient les clés privées de votre \
-                         maison et les heures d'ouverture des portes : transférez-le par AirDrop ou \
-                         clé USB, ne le partagez pas, et supprimez-le une fois l'import fait.",
-                        dest.display(),
-                        summary.describe()
-                    ),
-                }
-            }
-            Err(e) => DataDialog::Message {
-                ok: false,
-                text: format!("Export impossible : {e:#}"),
-            },
-        });
-    }
-
-    /// Menu Fichier → Importer : choisit une sauvegarde, la valide, demande confirmation.
-    fn import_data(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Importer des données")
-            .add_filter("Sauvegarde Matter Home", &[crate::backup::EXTENSION])
-            .pick_file()
-        else {
-            return;
-        };
-        self.data_dialog = Some(match crate::backup::inspect(&path) {
-            Ok(summary) => DataDialog::ConfirmImport {
-                path,
-                summary: summary.describe(),
-            },
-            Err(e) => DataDialog::Message {
-                ok: false,
-                text: format!("Import impossible : {e:#}"),
-            },
-        });
-    }
-
-    /// Fenêtre d'information ou de confirmation du menu Fichier.
-    fn data_dialog_window(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &self.data_dialog else {
-            return;
-        };
-        let mut close = false;
-        let mut confirmed = None;
-        let mut quit = false;
-        egui::Window::new("Données")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_max_width(460.0);
-                match dialog {
-                    DataDialog::Message { ok, text } => {
-                        let color = if *ok {
-                            Color32::from_rgb(60, 160, 90)
-                        } else {
-                            Color32::from_rgb(210, 60, 50)
-                        };
-                        ui.colored_label(color, text);
-                        ui.add_space(6.0);
-                        close = ui.button("OK").clicked();
-                    }
-                    DataDialog::ConfirmImport { path, summary } => {
-                        ui.label(format!("Importer {} ?", path.display()));
-                        ui.label(summary);
-                        ui.add_space(4.0);
-                        ui.label(
-                            "Vos données actuelles seront remplacées au prochain lancement ; \
-                             une copie est gardée dans un dossier de secours à côté.",
-                        );
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Importer").clicked() {
-                                confirmed = Some(path.clone());
-                            }
-                            close = ui.button("Annuler").clicked();
-                        });
-                    }
-                    DataDialog::ImportReady => {
-                        ui.label(
-                            "Import prêt. Quittez l'application puis relancez-la : \
-                             les données importées seront alors chargées.",
-                        );
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            quit = ui.button("Quitter maintenant").clicked();
-                            close = ui.button("Plus tard").clicked();
-                        });
-                    }
-                }
-            });
-        if let Some(path) = confirmed {
-            let dir = crate::persistence::data_dir();
-            self.data_dialog = Some(match crate::backup::stage_import(&dir, &path) {
-                Ok(_) => DataDialog::ImportReady,
-                Err(e) => DataDialog::Message {
-                    ok: false,
-                    text: format!("Import impossible : {e:#}"),
-                },
-            });
-        } else if close {
-            self.data_dialog = None;
-        }
-        if quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-    }
-
     fn send(&mut self, cmd: Command) {
         if self.commands.send(cmd).is_err() {
-            self.fatal = Some("La tâche de fond s'est arrêtée.".into());
+            // TODO étape 4 : mettre la commande en file d'attente et se reconnecter.
+            self.connected = false;
+            self.push_log("Déconnecté : commande non envoyée.".into());
         }
     }
 
@@ -898,39 +740,17 @@ impl eframe::App for MatterApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(1));
 
-        let mut menu_export = false;
-        let mut menu_import = false;
         egui::Panel::top("top").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Fichier", |ui| {
-                    // En démo il n'y a pas de vraies données à déménager.
-                    if ui
-                        .add_enabled(!self.demo, egui::Button::new("Exporter mes données…"))
-                        .on_disabled_hover_text("Indisponible en mode démo")
-                        .clicked()
-                    {
-                        menu_export = true;
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(!self.demo, egui::Button::new("Importer des données…"))
-                        .on_disabled_hover_text("Indisponible en mode démo")
-                        .clicked()
-                    {
-                        menu_import = true;
-                        ui.close();
-                    }
-                });
-            });
             ui.horizontal(|ui| {
                 ui.heading("Matter over Thread — contrôleur");
-                if self.demo {
+                if !self.connected {
                     ui.label(
-                        RichText::new(" MODE DÉMO ")
+                        RichText::new(" DÉCONNECTÉ ")
                             .strong()
                             .color(Color32::BLACK)
                             .background_color(Color32::from_rgb(250, 200, 60)),
-                    );
+                    )
+                    .on_hover_text("Aucun serveur Matter Home n'est connecté.");
                 }
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Devices, "Appareils");
@@ -941,15 +761,6 @@ impl eframe::App for MatterApp {
                 ui.colored_label(Color32::from_rgb(210, 60, 50), format!("Erreur : {f}"));
             }
         });
-
-        // Les boîtes de dialogue système bloquent : on les ouvre hors des panneaux.
-        if menu_export {
-            self.export_data();
-        }
-        if menu_import {
-            self.import_data();
-        }
-        self.data_dialog_window(ui.ctx());
 
         egui::Panel::bottom("log")
             .resizable(true)
@@ -1013,186 +824,262 @@ impl eframe::App for MatterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation::CoverCommand;
+    use protocol::automation::CoverCommand;
+    use protocol::events::{BridgeLink, Capabilities};
+    use protocol::home::Symbol;
 
-    /// Mode démo de bout en bout, sans fenêtre : backend simulé → événements → état de l'interface.
+    fn node(node_id: u64, name: &str, caps: Capabilities) -> NodeInfo {
+        NodeInfo {
+            node_id,
+            name: name.into(),
+            device_name: name.into(),
+            caps,
+            ..Default::default()
+        }
+    }
+
+    fn app() -> (MatterApp, mpsc::Sender<Event>) {
+        let (commands, _unconnected) = mpsc::channel();
+        let (tx, events) = mpsc::channel();
+        (MatterApp::new(commands, events), tx)
+    }
+
+    /// Sans serveur : l'interface est « déconnectée » et une commande n'est pas envoyée,
+    /// sans que cela passe pour une erreur fatale.
     #[test]
-    fn demo_backend_end_to_end() {
-        let (tx, rx) = mpsc::channel();
-        let sink = crate::events::EventSink::new(tx, egui::Context::default());
-        let commands = crate::demo::spawn(sink);
-        let mut app = MatterApp::new(commands, rx, true);
+    fn starts_disconnected() {
+        let (mut app, _tx) = app();
+        assert!(!app.connected);
+        app.send(Command::Retry(1));
+        assert!(!app.connected);
+        assert!(app.fatal.is_none());
+        assert!(app.log.back().is_some_and(|l| l.contains("Déconnecté")));
+    }
 
-        let wait_up_to = |app: &mut MatterApp, cond: &dyn Fn(&MatterApp) -> bool, n: u32| {
-            for _ in 0..n {
-                app.apply_events();
-                if cond(app) {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            false
+    /// Événements du serveur (fabriqués à la main) → état de l'interface, sans fenêtre.
+    /// Le pendant côté serveur, avec le vrai simulateur, est `demo_backend_end_to_end`.
+    #[test]
+    fn events_update_the_interface_state() {
+        let (mut app, tx) = app();
+        let send = |e: Event| tx.send(e).unwrap();
+        let bridge_id = 5;
+        let shutter_id = u64::MAX - 0xFF;
+        let rts_id = u64::MAX - 0xFE;
+        let plug_id = 4;
+        let plug_caps = Capabilities {
+            power: true,
+            energy: true,
+            on_off: true,
+            ..Default::default()
         };
-        let wait_for =
-            |app: &mut MatterApp, cond: &dyn Fn(&MatterApp) -> bool| wait_up_to(app, cond, 100);
 
-        // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli :
-        // 4 appareils, un pont et ses 3 volets.
-        assert!(wait_for(&mut app, &|a| {
-            a.devices.len() == 8 && a.devices.values().all(|d| d.status == NodeStatus::Online)
+        send(Event::Node(node(
+            1,
+            "Salon",
+            Capabilities {
+                temperature: true,
+                humidity: true,
+                battery: true,
+                ..Default::default()
+            },
+        )));
+        send(Event::Node(node(
+            3,
+            "Porte",
+            Capabilities {
+                contact: true,
+                ..Default::default()
+            },
+        )));
+        send(Event::Node(node(plug_id, "GRILLPLATS Plug", plug_caps)));
+        send(Event::Node(NodeInfo {
+            device_types: vec!["Passerelle".into()],
+            ..node(bridge_id, "TaHoma", Capabilities::default())
         }));
-        let living = app.devices.values().find(|d| d.info.caps.humidity).unwrap();
-        assert!(living.temperature.len() > 150, "historique pré-rempli");
-        assert!(!living.humidity.is_empty());
-        assert_eq!(living.status, NodeStatus::Online);
-        assert_eq!(living.battery, Some(87.0));
+        for (id, position) in [(shutter_id, true), (rts_id, false)] {
+            send(Event::Node(NodeInfo {
+                bridge: Some(BridgeLink {
+                    node_id: bridge_id,
+                    endpoint: 2,
+                }),
+                ..node(
+                    id,
+                    "Volet",
+                    Capabilities {
+                        cover: true,
+                        cover_position: position,
+                        ..Default::default()
+                    },
+                )
+            }));
+        }
+        for i in 0..200 {
+            let at = 1000.0 + i as f64;
+            for (kind, value) in [
+                (MeasureKind::Temperature, 21.0),
+                (MeasureKind::Humidity, 45.0),
+            ] {
+                send(Event::Measurement {
+                    node_id: 1,
+                    kind,
+                    value,
+                    at,
+                });
+            }
+            send(Event::Measurement {
+                node_id: plug_id,
+                kind: MeasureKind::Power,
+                value: 85.0,
+                at,
+            });
+        }
+        send(Event::Measurement {
+            node_id: 1,
+            kind: MeasureKind::Battery,
+            value: 87.0,
+            at: 1200.0,
+        });
+        send(Event::State {
+            node_id: 1,
+            kind: StateKind::BatteryLow,
+            value: true,
+            at: 1200.0,
+        });
+        // Porte : seules les vraies transitions sont gardées.
+        for (i, open) in [true, true, false, true, false].into_iter().enumerate() {
+            send(Event::State {
+                node_id: 3,
+                kind: StateKind::Open,
+                value: open,
+                at: 1000.0 + i as f64,
+            });
+        }
+        send(Event::Measurement {
+            node_id: plug_id,
+            kind: MeasureKind::Energy,
+            value: 12.5,
+            at: 1200.0,
+        });
+        send(Event::State {
+            node_id: plug_id,
+            kind: StateKind::OnOff,
+            value: true,
+            at: 1200.0,
+        });
+        send(Event::Measurement {
+            node_id: shutter_id,
+            kind: MeasureKind::Position,
+            value: 100.0,
+            at: 1200.0,
+        });
+        for id in [1, 3, plug_id, bridge_id, shutter_id, rts_id] {
+            send(Event::Status {
+                node_id: id,
+                status: NodeStatus::Online,
+            });
+        }
+        app.apply_events();
 
-        // Porte : transitions rejouées et état courant connu.
-        let door = app.devices.values().find(|d| d.info.caps.contact).unwrap();
-        assert!(door.open.is_some());
-        assert!(door.door_events.len() > 10, "historique des ouvertures");
+        assert_eq!(app.devices.len(), 6);
+        assert!(app.devices.values().all(|d| d.status == NodeStatus::Online));
+        let living = &app.devices[&1];
+        assert_eq!(living.temperature.len(), 200);
+        assert!(!living.humidity.is_empty());
+        assert_eq!(living.battery, Some(87.0));
+        assert!(living.battery_low);
+        assert!(living.summary().contains("pile 87 % (faible)"));
+
+        let door = &app.devices[&3];
+        assert_eq!(door.open, Some(false));
+        assert_eq!(door.door_events.len(), 4);
         assert!(door
             .door_events
             .iter()
             .zip(door.door_events.iter().skip(1))
             .all(|(a, b)| a.1 != b.1));
 
-        // Prise : puissance, énergie, marche/arrêt.
-        let plug = app.devices.values().find(|d| d.info.caps.power).unwrap();
-        assert!(plug.power.len() > 150);
+        let plug = &app.devices[&plug_id];
+        assert_eq!(plug.power.len(), 200);
         assert!(plug.energy.is_some_and(|e| e.value > 12.0));
         assert_eq!(plug.on_off, Some(true));
         assert!(plug.summary().contains(" W"));
-        let plug_id = plug.info.node_id;
 
-        // Pile faible signalée.
-        assert!(app.devices.values().any(|d| d.battery_low));
-
-        // Volets derrière le pont : position connue pour deux, inconnue pour le moteur RTS.
-        let bridge = app
-            .devices
-            .values()
-            .find(|d| d.info.device_types.iter().any(|t| t == "Passerelle"))
-            .unwrap();
-        let bridge_id = bridge.info.node_id;
-        let shutters: Vec<&Device> = app
+        // Volets derrière le pont : position connue pour l'un, jamais pour le moteur RTS.
+        let shutters = app
             .devices
             .values()
             .filter(|d| d.info.bridge.is_some_and(|b| b.node_id == bridge_id))
-            .collect();
-        assert_eq!(shutters.len(), 3);
-        assert!(shutters.iter().all(|d| d.info.caps.cover));
-        assert_eq!(
-            shutters
-                .iter()
-                .filter(|d| d.info.caps.cover_position)
-                .count(),
-            2
-        );
-        let open_shutter = shutters
-            .iter()
-            .find(|d| d.position.last().is_some_and(|p| p.value >= 100.0))
-            .expect("un volet tout ouvert");
-        assert!(open_shutter.summary().contains("Ouvert"));
-        let shutter_id = open_shutter.info.node_id;
-        let rts = shutters
-            .iter()
-            .find(|d| !d.info.caps.cover_position)
-            .unwrap();
-        assert!(rts.position.is_empty());
-        let rts_id = rts.info.node_id;
+            .count();
+        assert_eq!(shutters, 2);
+        assert_eq!(app.devices[&shutter_id].summary(), "Ouvert");
+        assert!(app.devices[&rts_id].position.is_empty());
 
-        // Fermer un volet : il descend par paliers puis s'arrête fermé.
+        // Un volet se ferme : mouvement puis position.
+        for (motion, value, at) in [
+            (CoverMotion::Closing, 50.0, 1300.0),
+            (CoverMotion::Stopped, 0.0, 1310.0),
+        ] {
+            send(Event::CoverMotion {
+                node_id: shutter_id,
+                motion,
+            });
+            send(Event::Measurement {
+                node_id: shutter_id,
+                kind: MeasureKind::Position,
+                value,
+                at,
+            });
+        }
+        app.apply_events();
+        assert_eq!(app.devices[&shutter_id].summary(), "Fermé");
+
+        // Nom et icône choisis (le serveur renvoie la fiche), puis retour à l'automatique.
+        send(Event::Node(NodeInfo {
+            name: "Lampe du salon".into(),
+            custom_name: Some("Lampe du salon".into()),
+            icon: Some(Symbol::Light),
+            ..node(plug_id, "GRILLPLATS Plug", plug_caps)
+        }));
+        app.apply_events();
+        let p = &app.devices[&plug_id];
+        assert_eq!(p.info.name, "Lampe du salon");
+        assert_eq!(p.info.device_name, "GRILLPLATS Plug");
+        assert_eq!(plan::icon_of(p), Some(Symbol::Light));
+        send(Event::Node(node(plug_id, "GRILLPLATS Plug", plug_caps)));
+        app.apply_events();
+        assert_eq!(app.devices[&plug_id].info.name, "GRILLPLATS Plug");
+        assert_eq!(plan::icon_of(&app.devices[&plug_id]), Some(Symbol::Plug));
+
+        // Appairage : échec puis réussite, puis oubli de l'appareil.
+        send(Event::PairingFailed("code invalide".into()));
+        app.apply_events();
+        assert!(matches!(app.pairing, Pairing::Failed(_)));
+        send(Event::PairingDone {
+            node_id: 9,
+            name: "Nouveau".into(),
+        });
+        send(Event::Node(node(9, "Nouveau", Capabilities::default())));
+        app.apply_events();
+        assert!(matches!(app.pairing, Pairing::Success(_)));
+        assert_eq!(app.devices.len(), 7);
+        assert_eq!(app.selected, Some(9));
+        send(Event::NodeRemoved(9));
+        app.apply_events();
+        assert_eq!(app.devices.len(), 6);
+
+        // Une erreur fatale du serveur est affichée.
+        send(Event::Fatal("panne".into()));
+        app.apply_events();
+        assert_eq!(app.fatal.as_deref(), Some("panne"));
+
+        // Commande de volet, sans serveur : pas de plantage.
         app.send(Command::SetCover {
             node_id: shutter_id,
             command: CoverCommand::Close,
         });
-        assert!(wait_for(&mut app, &|a| a.devices[&shutter_id].cover_motion
-            == Some(CoverMotion::Closing)));
-        // 100 % → 0 % par pas de 25 % toutes les 2 s : une dizaine de secondes.
-        assert!(wait_up_to(
-            &mut app,
-            &|a| {
-                let d = &a.devices[&shutter_id];
-                d.cover_motion == Some(CoverMotion::Stopped)
-                    && d.position.last().is_some_and(|p| p.value <= 0.0)
-            },
-            300
-        ));
-        assert_eq!(app.devices[&shutter_id].summary(), "Fermé");
-        // Puis à mi-hauteur.
-        app.send(Command::SetCover {
-            node_id: shutter_id,
-            command: CoverCommand::Position(50),
-        });
-        assert!(wait_up_to(
-            &mut app,
-            &|a| {
-                a.devices[&shutter_id]
-                    .position
-                    .last()
-                    .is_some_and(|p| p.value == 50.0)
-            },
-            300
-        ));
-        // Le moteur RTS bouge sans jamais donner de position.
-        app.send(Command::SetCover {
-            node_id: rts_id,
-            command: CoverCommand::Open,
-        });
-        assert!(wait_for(&mut app, &|a| a.devices[&rts_id].cover_motion
-            == Some(CoverMotion::Opening)));
-        assert!(app.devices[&rts_id].position.is_empty());
-
-        // Nom et icône choisis, puis retour à l'automatique.
-        app.send(Command::Customize {
-            node_id: plug_id,
-            name: Some("  Lampe du salon ".into()),
-            icon: Some(crate::home::Symbol::Light),
-        });
-        assert!(wait_for(&mut app, &|a| a.devices[&plug_id].info.name
-            == "Lampe du salon"));
-        let p = &app.devices[&plug_id];
-        assert_eq!(p.info.icon, Some(crate::home::Symbol::Light));
-        assert_eq!(p.info.device_name, "GRILLPLATS Plug");
-        assert_eq!(plan::icon_of(p), Some(crate::home::Symbol::Light));
-        app.send(Command::Customize {
-            node_id: plug_id,
-            name: Some("   ".into()),
-            icon: None,
-        });
-        assert!(wait_for(&mut app, &|a| a.devices[&plug_id]
-            .info
-            .custom_name
-            .is_none()));
-        assert_eq!(app.devices[&plug_id].info.name, "GRILLPLATS Plug");
-        assert_eq!(
-            plan::icon_of(&app.devices[&plug_id]),
-            Some(crate::home::Symbol::Plug)
-        );
-
-        // Code invalide : message d'erreur clair.
-        app.send(Command::Pair("12345".into()));
-        assert!(wait_for(&mut app, &|a| matches!(
-            a.pairing,
-            Pairing::Failed(_)
-        )));
-
-        // Code valide : un appareil de plus.
-        app.send(Command::Pair("3497-011-2332".into()));
-        assert!(wait_for(&mut app, &|a| matches!(
-            a.pairing,
-            Pairing::Success(_)
-        )));
-        assert_eq!(app.devices.len(), 9);
-        let new_id = app.selected.unwrap();
-
-        // Oublier.
-        app.send(Command::Forget(new_id));
-        assert!(wait_for(&mut app, &|a| a.devices.len() == 8));
 
         // Export CSV du salon.
-        let living = app.devices.values().find(|d| d.info.caps.humidity).unwrap();
+        let living = &app.devices[&1];
         let csv = crate::history::to_csv(&living.temperature, Some(&living.humidity));
         assert_eq!(csv.lines().count(), living.temperature.len() + 1);
     }

@@ -1,7 +1,7 @@
 //! Conversion des valeurs brutes des clusters de mesure.
 
 use super::tlv::Value;
-use crate::events::CoverMotion;
+use protocol::events::CoverMotion;
 
 /// Valeur « nulle » d'un int16 nullable en Matter (0x8000), si l'appareil
 /// ne l'encode pas directement comme un élément TLV Null.
@@ -45,15 +45,6 @@ pub fn humidity_from_tlv(v: &Value) -> Option<f64> {
     }
 }
 
-/// Formatage français : `21.5` → `"21,50 °C"`.
-pub fn format_temperature(c: f64) -> String {
-    format!("{:.2} °C", c).replace('.', ",")
-}
-
-pub fn format_humidity(p: f64) -> String {
-    format!("{:.1} %", p).replace('.', ",")
-}
-
 /// Power Source (0x002F) / BatPercentRemaining : uint8 en demi-pourcents (200 = 100 %).
 pub fn battery_percent_from_tlv(v: &Value) -> Option<f64> {
     v.as_u64().filter(|r| *r <= 200).map(|r| r as f64 / 2.0)
@@ -91,18 +82,6 @@ pub fn open_from_tlv(v: &Value) -> Option<bool> {
     }
 }
 
-pub fn format_power(w: f64) -> String {
-    if w.abs() >= 1000.0 {
-        format!("{:.2} kW", w / 1000.0).replace('.', ",")
-    } else {
-        format!("{:.1} W", w).replace('.', ",")
-    }
-}
-
-pub fn format_energy(kwh: f64) -> String {
-    format!("{:.3} kWh", kwh).replace('.', ",")
-}
-
 /// Window Covering (0x0102) / CurrentPositionLiftPercent100ths : uint16 en centièmes de %,
 /// 0 = tout ouvert, 10000 = fermé. Retourne l'ouverture en % (100 = ouvert) ; `None` si
 /// la position est inconnue (nullable : moteur sans retour, type RTS).
@@ -137,19 +116,10 @@ pub fn lift100ths_from_open_percent(open: u8) -> u16 {
     (100 - open.min(100)) as u16 * 100
 }
 
-pub fn format_position(open: f64) -> String {
-    if open <= 0.0 {
-        "Fermé".into()
-    } else if open >= 100.0 {
-        "Ouvert".into()
-    } else {
-        format!("Ouvert à {open:.0} %")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::format::*;
 
     #[test]
     fn battery_conversion() {

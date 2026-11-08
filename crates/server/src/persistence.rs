@@ -3,11 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::home::Symbol;
+use protocol::home::Symbol;
 
 pub const FILE_NAME: &str = "controller.json";
 
@@ -215,6 +215,41 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
     }
 }
 
+/// Refuse de créer une nouvelle identité (fabric) quand `controller.json` manque alors que
+/// d'autres données existent dans `dir` : plan (`maison.json`), règles (`regles.json`) ou
+/// historique (`history/` non vide). Une nouvelle fabric ne reconnaîtrait plus aucun
+/// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
+/// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
+pub fn check_fresh_start(dir: &Path) -> Result<()> {
+    let mut found = Vec::new();
+    for name in ["maison.json", "regles.json"] {
+        if dir.join(name).exists() {
+            found.push(name.to_string());
+        }
+    }
+    let history = dir.join("history");
+    // Un dossier illisible est compté comme non vide : dans le doute, on ne purge rien.
+    let history_used = history.is_dir()
+        && std::fs::read_dir(&history)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(true);
+    if history_used {
+        found.push("history/".to_string());
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{FILE_NAME} est introuvable dans {} alors que des données existent déjà ({}). \
+         Démarrer ainsi créerait une nouvelle fabric : les appareils appairés ne seraient plus \
+         reconnus et l'historique serait supprimé. Remettez {FILE_NAME} en place (sauvegarde \
+         ou import d'un fichier .matterhome), ou déplacez ces données si vous voulez repartir \
+         de zéro.",
+        dir.display(),
+        found.join(", ")
+    )
+}
+
 pub fn state_path() -> PathBuf {
     data_dir().join(FILE_NAME)
 }
@@ -330,6 +365,43 @@ mod tests {
         let out = serde_json::to_string(&n).unwrap();
         assert!(out.contains("\"power_endpoint\":2"), "{out}");
         assert!(!out.contains("\"endpoints\""), "{out}");
+    }
+
+    /// Les identifiants d'appareils pontés dépassent 2^53 : un client JavaScript les arrondirait.
+    #[test]
+    fn bridged_ids_exceed_js_safe_integers() {
+        const { assert!(BRIDGED_ID_MIN > 1 << 53) };
+        // Deux identifiants voisins ne seraient plus distincts une fois passés par un f64.
+        assert_eq!((BRIDGED_ID_MIN + 1) as f64, (BRIDGED_ID_MIN + 2) as f64);
+    }
+
+    #[test]
+    fn refuses_fresh_identity_when_data_exists() {
+        let base = std::env::temp_dir().join(format!("mhd-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // Dossier absent ou vide : première installation, on peut créer l'identité.
+        assert!(check_fresh_start(&base).is_ok());
+        std::fs::create_dir_all(&base).unwrap();
+        assert!(check_fresh_start(&base).is_ok());
+        // Les fichiers de démonstration et un historique vide ne comptent pas.
+        std::fs::write(base.join("maison-demo.json"), "{}").unwrap();
+        std::fs::write(base.join("regles-demo.json"), "{}").unwrap();
+        std::fs::create_dir_all(base.join("history")).unwrap();
+        assert!(check_fresh_start(&base).is_ok());
+
+        // Le plan, les règles ou un historique non vide interdisent de repartir de zéro.
+        std::fs::write(base.join("maison.json"), "{}").unwrap();
+        let err = check_fresh_start(&base).unwrap_err().to_string();
+        assert!(err.contains(FILE_NAME) && err.contains("maison.json"), "{err}");
+        std::fs::remove_file(base.join("maison.json")).unwrap();
+        std::fs::write(base.join("regles.json"), "{}").unwrap();
+        assert!(check_fresh_start(&base).is_err());
+        std::fs::remove_file(base.join("regles.json")).unwrap();
+        std::fs::write(base.join("history").join("1.jsonl"), "").unwrap();
+        let err = check_fresh_start(&base).unwrap_err().to_string();
+        assert!(err.contains("history/"), "{err}");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

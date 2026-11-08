@@ -352,6 +352,43 @@ pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
     tx
 }
 
+/// Attente avant le n-ième nouvel essai quand le réseau n'est pas prêt : 2 s, doublée à
+/// chaque échec, plafonnée à 30 s.
+fn network_backoff(attempt: u32) -> Duration {
+    Duration::from_secs((2u64 << attempt.min(4)).min(30))
+}
+
+/// Refait `op` jusqu'à ce qu'elle réussisse, en annonçant chaque échec dans le journal.
+/// Ne renonce jamais : c'est au démarrage du processus de décider quand abandonner.
+async fn retry_until_ok<T, F, Fut>(
+    what: &str,
+    events: &EventSink,
+    delay: impl Fn(u32) -> Duration,
+    mut op: F,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match op().await {
+            Ok(value) => return value,
+            Err(e) => {
+                let wait = delay(attempt);
+                let line = format!(
+                    "Réseau indisponible ({what} : {e:#}) ; nouvel essai dans {} s.",
+                    wait.as_secs()
+                );
+                log::warn!("{line}");
+                events.send(Event::Info(line));
+                tokio::time::sleep(wait).await;
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
 struct NodeHandle {
     task: JoinHandle<()>,
     wake: Arc<Notify>,
@@ -370,6 +407,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     let state = match persistence::load(&state_path)? {
         Some(s) => s,
         None => {
+            // Pas de controller.json : première installation, ou fichier perdu. Dans le second
+            // cas, créer une nouvelle fabric ferait oublier tous les appareils et purgerait
+            // l'historique ci-dessous (appareils « orphelins »).
+            if let Some(dir) = state_path.parent() {
+                persistence::check_fresh_start(dir)?;
+            }
             let s = StoredState {
                 version: 1,
                 identity: certs::generate_identity()?,
@@ -386,13 +429,27 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
 
     let cm: Arc<dyn CertManager> =
         Arc::new(certs::JsonCertManager::from_identity(&state.identity)?);
-    let transport = Transport::new(LOCAL_ADDRESS)
-        .await
-        .context("ouverture du socket UDP IPv6")?;
+    // Au démarrage d'une machine, le réseau (IPv6, adresse locale de lien) peut ne pas être
+    // prêt : on réessaie au lieu d'échouer. Les sockets sont créés une seule fois ici.
+    let transport = retry_until_ok(
+        "ouverture du socket UDP IPv6",
+        &events,
+        network_backoff,
+        || async {
+            Transport::new(LOCAL_ADDRESS)
+                .await
+                .context("ouverture du socket UDP IPv6")
+        },
+    )
+    .await;
     let controller = Controller::new(&cm, &transport, state.identity.fabric_id)?;
     let fabric = matc::fabric::Fabric::new(state.identity.fabric_id, 1, &cm.get_ca_public_key()?);
     let compressed_fabric = hex::encode_upper(fabric.compressed()?);
-    let discovery = Discovery::start().await.context("démarrage mDNS")?;
+    // `MdnsService` ouvre ses sockets IPv6 une seule fois : il faut attendre le réseau.
+    let discovery = retry_until_ok("démarrage mDNS", &events, network_backoff, || async {
+        Discovery::start().await.context("démarrage mDNS")
+    })
+    .await;
 
     events.send(Event::Info(format!(
         "Données : {} — fabric {:#x} (compressée {compressed_fabric}).",
@@ -785,6 +842,42 @@ fn explain_commission_error(err: &str) -> String {
 mod tests {
     use super::*;
     use crate::home::Symbol;
+
+    #[test]
+    fn network_backoff_grows_then_caps() {
+        let secs: Vec<u64> = (0..7).map(|n| network_backoff(n).as_secs()).collect();
+        assert_eq!(secs, vec![2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(network_backoff(u32::MAX).as_secs(), 30);
+    }
+
+    #[tokio::test]
+    async fn retries_until_the_network_is_up() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let events = EventSink::new(tx);
+        let mut calls = 0;
+        let value = retry_until_ok(
+            "test",
+            &events,
+            |_| Duration::from_millis(1),
+            || {
+                calls += 1;
+                let up = calls > 3;
+                async move {
+                    if up {
+                        Ok(42)
+                    } else {
+                        anyhow::bail!("pas de réseau")
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(value, 42);
+        // Un message par échec, et aucune erreur fatale.
+        let sent: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(sent.len(), 3);
+        assert!(sent.iter().all(|e| matches!(e, Event::Info(_))));
+    }
 
     /// InvokeResponse : {0: false, 1: [{1: {0: Path{0:1,1:6,2:1}, 1: Status{0: statut}}}], 0xFF: 11}
     fn invoke_response(status: u8) -> Vec<u8> {

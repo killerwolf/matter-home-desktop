@@ -4,9 +4,9 @@ use eframe::egui::{self, Color32, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::{ago, Device};
-use crate::events::{now_unix, ReportingMode};
 use crate::history::{compute_stats, to_csv, TimeWindow};
-use crate::matter::convert::{format_humidity, format_temperature};
+use protocol::events::{now_unix, ReportingMode};
+use protocol::format::{format_humidity, format_temperature};
 
 const TEMP_COLOR: Color32 = Color32::from_rgb(230, 90, 50);
 const HUM_COLOR: Color32 = Color32::from_rgb(60, 140, 220);
@@ -198,11 +198,11 @@ pub fn show(
         });
 }
 
-/// Écrit le CSV dans le dossier Téléchargements (ou le dossier de données à défaut).
+/// Écrit le CSV dans le dossier Téléchargements (ou le dossier temporaire à défaut).
 fn export_csv(device: &Device) -> (bool, String) {
     let dir = directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(|d| d.to_path_buf()))
-        .unwrap_or_else(crate::persistence::data_dir);
+        .unwrap_or_else(std::env::temp_dir);
     let safe_name: String = device
         .info
         .name
