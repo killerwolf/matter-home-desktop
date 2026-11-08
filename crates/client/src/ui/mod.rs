@@ -224,6 +224,8 @@ impl MatterApp {
         }
     }
 
+    // TODO étape 4 : cette agrégation (état des appareils, séries) passe côté serveur, qui
+    // envoie l'état complet ; le client n'aura plus qu'à l'afficher. Ne pas la développer.
     fn apply_events(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -349,6 +351,10 @@ impl MatterApp {
                     self.fatal = Some(m);
                 }
                 Event::Info(m) => self.push_log(m),
+                // TODO étape 4 : afficher une notification du système sur le Mac du client.
+                Event::Notification { title, message, .. } => {
+                    self.push_log(format!("Notification : {title} — {message}"));
+                }
                 Event::RuleRun {
                     rule_id,
                     name,

@@ -688,6 +688,21 @@ async fn run(
                             }
                         });
                     }
+                    Command::SetOnOff { node_id, command } => {
+                        let ctx = ctx.clone();
+                        let actuator = actuator.clone();
+                        tokio::spawn(async move {
+                            let name = ctx.resolve(node_id).map_or_else(
+                                || format!("{node_id:016X}"),
+                                |r| r.name,
+                            );
+                            let what = format!("{name} : {}", command.label().to_lowercase());
+                            match actuator.set_on_off(node_id, command).await {
+                                Ok(()) => ctx.events.send(Event::Info(format!("{what} — commande envoyée."))),
+                                Err(e) => ctx.events.send(Event::Info(format!("{what} — échec : {e:#}"))),
+                            }
+                        });
+                    }
                     Command::Retry(node_id) => {
                         let parent = ctx.parent_node(node_id).unwrap_or(node_id);
                         if let Some(h) = handles.get(&parent) {

@@ -1,7 +1,8 @@
 //! Automatisations « Quand… Si… Alors… ».
 //!
-//! - Les règles sont sauvegardées dans `regles.json` (données locales ; `regles-demo.json`
-//!   en mode démo). Le client les édite et les envoie au moteur (`Command::SetRules`).
+//! - Les règles sont sauvegardées dans `regles.json` par le hub du serveur, seul à l'écrire
+//!   (rien en mode démo). Les clients les éditent par l'API ; le hub les envoie au moteur
+//!   (`Command::SetRules`).
 //! - Le moteur tourne dans le runtime tokio du backend : il reçoit une copie de chaque
 //!   événement (`EventSink::with_tap`), tient l'état courant des appareils, évalue les
 //!   déclencheurs et lance les actions dans des tâches séparées (un délai ne bloque rien).
@@ -441,32 +442,6 @@ pub fn render(template: &str, f: &Firing) -> String {
         .replace("{regle}", &f.rule.name)
 }
 
-/// Notification macOS via `osascript`, textes passés en arguments (pas d'injection AppleScript).
-async fn notify(title: String, message: String) -> Result<()> {
-    let status = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "display notification (item 2 of argv) with title (item 1 of argv)",
-                "-e",
-                "end run",
-                &title,
-                &message,
-            ])
-            .output()
-    })
-    .await??;
-    if !status.status.success() {
-        bail!(
-            "osascript : {}",
-            String::from_utf8_lossy(&status.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
 /// Appel HTTP via `curl` (présent sur macOS), arguments passés sans shell.
 async fn webhook(url: String, body: String) -> Result<String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -514,10 +489,15 @@ async fn run(
     let mut ok = true;
     for action in &firing.rule.actions {
         let result: Result<String> = match action {
+            // Pas de notification du système : le serveur n'a pas d'écran. Elle part vers les
+            // clients connectés (un client fermé ne la reçoit pas).
             Action::Notify { title, message } => {
-                notify(render(title, &firing), render(message, &firing))
-                    .await
-                    .map(|_| "notification envoyée".into())
+                ui.send(Event::Notification {
+                    title: render(title, &firing),
+                    message: render(message, &firing),
+                    at: now_unix(),
+                });
+                Ok("notification transmise aux clients connectés".to_string())
             }
             Action::SetOnOff { node_id, command } => {
                 let name = device_names

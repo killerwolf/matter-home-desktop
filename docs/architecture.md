@@ -116,8 +116,9 @@ commandes (`Command::SetCover`, actions des règles) passent par la session du p
   écartées (inutilisables sans identifiant d'interface).
 - Identifiant de nœud tiré au hasard à l'appairage ; le contrôleur a l'ID 112233.
 - Nom affiché : nom choisi, sinon NodeLabel, ProductName, nom mDNS, ou l'identifiant.
-- Notifications par `osascript`, webhooks par `curl` : présents sur macOS, arguments passés
-  sans shell, aucune dépendance HTTP.
+- Notifications : le serveur les envoie aux clients connectés (WebSocket, voir
+  [protocole](protocole.md)), plus de `osascript` sur le Mac du serveur. Webhooks par `curl` :
+  présent sur macOS, arguments passés sans shell, aucune dépendance HTTP.
 - Graphique de puissance en escalier, avec `allow_band(false)` : sinon egui_plot remplace les
   marches verticales par une bande remplie.
 - Historique : JSON Lines par appareil, rétention 7 jours, 5 Mo maximum

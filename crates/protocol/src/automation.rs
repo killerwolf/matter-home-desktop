@@ -142,7 +142,8 @@ pub enum Condition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    /// Notification macOS. Variables : {appareil}, {valeur}, {heure}, {regle}.
+    /// Notification envoyée aux clients connectés (pas au Mac du serveur, où personne ne
+    /// la verrait). Variables : {appareil}, {valeur}, {heure}, {regle}.
     Notify {
         title: String,
         message: String,

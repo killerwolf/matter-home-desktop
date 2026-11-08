@@ -482,6 +482,14 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                             Err(e) => events.send(Event::Info(format!("{what} — échec : {e:#}"))),
                         }
                     }
+                    Command::SetOnOff { node_id, command } => {
+                        let name = infos.get(&node_id).map_or_else(|| format!("{node_id:016X}"), |i| i.name.clone());
+                        let what = format!("{name} : {}", command.label().to_lowercase());
+                        match actuator.set_on_off(node_id, command).await {
+                            Ok(()) => events.send(Event::Info(format!("{what} — commande envoyée (simulé)."))),
+                            Err(e) => events.send(Event::Info(format!("{what} — échec : {e:#}"))),
+                        }
+                    }
                     Command::Retry(id) => {
                         events.send(Event::Status { node_id: id, status: NodeStatus::Connecting });
                     }

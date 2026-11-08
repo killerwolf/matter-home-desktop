@@ -58,7 +58,7 @@ acceptées ; délai maximal de 10 s. Pratique pour IFTTT, ntfy, Slack, Home Assi
 ## Limites
 
 - Les règles ne s'exécutent que **tant que l'application est ouverte**.
-- Les notifications apparaissent au nom de « Éditeur de script » (osascript).
+- Les notifications partent vers les clients connectés au serveur ; un client fermé ne reçoit rien (étape 4 du découpage : l'affichage côté client n'est pas encore branché).
 - Pas encore de déclencheur « appui sur un bouton » (BILRESA…).
 
 ## Sauvegarde

@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::automation::{CoverCommand, Rule};
+use crate::automation::{CoverCommand, OnOffCommand, Rule};
 use crate::home::Symbol;
 
 /// Commandes envoyées par l'interface.
@@ -21,7 +21,7 @@ pub enum Command {
     Forget(u64),
     /// Effacer l'historique enregistré d'un appareil (sur disque).
     ClearHistory(u64),
-    /// Nouvelles règles d'automatisation (déjà sauvegardées par l'interface).
+    /// Nouvelles règles d'automatisation (déjà sauvegardées par le serveur).
     SetRules(Vec<Rule>),
     /// Exécuter tout de suite les actions d'une règle (bouton « Tester »).
     TestRule(u64),
@@ -33,6 +33,8 @@ pub enum Command {
     },
     /// Ouvrir, fermer, arrêter un volet ou l'amener à une position (boutons de la fiche).
     SetCover { node_id: u64, command: CoverCommand },
+    /// Allumer, éteindre ou inverser une prise ou une lampe.
+    SetOnOff { node_id: u64, command: OnOffCommand },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,7 +67,7 @@ pub enum MeasureKind {
 }
 
 /// États binaires.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateKind {
     /// `true` = ouvert (pas de contact).
     Open,
@@ -76,7 +78,8 @@ pub enum StateKind {
 }
 
 /// Mouvement d'un volet (Window Covering / OperationalStatus).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CoverMotion {
     Stopped,
     Opening,
@@ -92,7 +95,7 @@ pub enum ReportingMode {
 }
 
 /// Ce que l'appareil sait mesurer ou faire, d'après sa description (clusters présents).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub temperature: bool,
     pub humidity: bool,
@@ -187,6 +190,13 @@ pub enum Event {
         at: f64,
         ok: bool,
         detail: String,
+    },
+    /// Une action « Notifier » d'une règle : à transmettre aux clients connectés
+    /// (le serveur n'a pas d'écran, une notification locale ne servirait à rien).
+    Notification {
+        title: String,
+        message: String,
+        at: f64,
     },
     PairingProgress(String),
     PairingDone {
