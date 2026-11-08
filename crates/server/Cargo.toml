@@ -2,6 +2,7 @@
 name = "matter-home-server"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Serveur Matter Home : pilote les appareils Matter over Thread, exécute les automatisations et garde l'historique (sans interface graphique)"
 license.workspace = true
 

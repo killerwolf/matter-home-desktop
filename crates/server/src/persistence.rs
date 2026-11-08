@@ -284,8 +284,9 @@ pub fn acquire_instance_lock(path: &Path) -> Result<std::fs::File> {
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => bail!(
-            "un autre serveur Matter Home (ou l'application de bureau v0.2) utilise déjà ces \
-             données (verrou {}). Arrêtez-le avant de lancer celui-ci.",
+            "un autre serveur Matter Home utilise déjà ces \
+             données (verrou {}). Arrêtez-le avant de lancer celui-ci. (L'application de bureau v0.2 ne prend pas ce verrou : \
+             ne la lancez pas en même temps.)",
             path.display()
         ),
         Err(TryLockError::Error(e)) => {

@@ -2,6 +2,7 @@
 name = "protocol"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Types partagés entre le client et le serveur Matter Home (aucune dépendance Matter ni interface)"
 license.workspace = true
 

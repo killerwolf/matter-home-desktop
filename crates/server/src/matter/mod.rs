@@ -419,11 +419,20 @@ where
     }
 }
 
-/// `true` si l'une des adresses (interface en boucle locale ?, adresse) est une IPv6
-/// lien-local (fe80::/10) sur une interface qui n'est pas la boucle locale.
-fn has_link_local_ipv6(addrs: impl IntoIterator<Item = (bool, std::net::IpAddr)>) -> bool {
-    addrs.into_iter().any(|(loopback, ip)| match ip {
-        std::net::IpAddr::V6(v6) => !loopback && (v6.segments()[0] & 0xffc0) == 0xfe80,
+/// Interface physique (Wi-Fi, Ethernet) : `en0`, `en5`… Sur macOS, `awdl0`, `llw0`, `utun*`
+/// ou `bridge0` ont souvent une fe80 bien avant `en0`, sans mener à aucun appareil.
+fn is_physical_interface(name: &str) -> bool {
+    name.strip_prefix("en")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `true` si l'une des adresses (nom d'interface, adresse) est une IPv6 lien-local
+/// (fe80::/10) sur une interface physique `en*`.
+fn has_link_local_ipv6<'a>(addrs: impl IntoIterator<Item = (&'a str, std::net::IpAddr)>) -> bool {
+    addrs.into_iter().any(|(name, ip)| match ip {
+        std::net::IpAddr::V6(v6) => {
+            is_physical_interface(name) && (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
         std::net::IpAddr::V4(_) => false,
     })
 }
@@ -431,22 +440,27 @@ fn has_link_local_ipv6(addrs: impl IntoIterator<Item = (bool, std::net::IpAddr)>
 /// Vérifie les interfaces réelles de la machine.
 fn system_has_link_local_ipv6() -> bool {
     if_addrs::get_if_addrs()
-        .map(|ifaces| has_link_local_ipv6(ifaces.iter().map(|i| (i.is_loopback(), i.ip()))))
+        .map(|ifaces| has_link_local_ipv6(ifaces.iter().map(|i| (i.name.as_str(), i.ip()))))
         .unwrap_or(false)
 }
 
-/// Attend que `ready` devienne vraie, au plus `max_wait`. `MdnsService` réussit sur la seule
+/// Attend que `ready` devienne vraie, au plus `max_wait`. `Ok(false)` si `cancelled` devient
+/// vraie avant (arrêt demandé pendant l'attente). `MdnsService` réussit sur la seule
 /// boucle locale : sans cette attente, au démarrage de la machine (interface pas encore
 /// configurée), le serveur resterait vivant sans jamais voir un appareil.
 async fn wait_for_network(
     mut ready: impl FnMut() -> bool,
+    cancelled: impl Fn() -> bool,
     poll: Duration,
     max_wait: Duration,
     events: &EventSink,
-) -> Result<()> {
+) -> Result<bool> {
     let start = std::time::Instant::now();
     let mut announced = false;
     while !ready() {
+        if cancelled() {
+            return Ok(false);
+        }
         if start.elapsed() >= max_wait {
             anyhow::bail!(
                 "aucune adresse IPv6 lien-local sur une interface réseau après {} s : \
@@ -462,7 +476,7 @@ async fn wait_for_network(
         }
         tokio::time::sleep(poll).await;
     }
-    Ok(())
+    Ok(true)
 }
 
 struct NodeHandle {
@@ -517,13 +531,18 @@ async fn run(
     let compressed_fabric = hex::encode_upper(fabric.compressed()?);
     // `MdnsService` ouvre ses sockets IPv6 une seule fois, au démarrage : on attend d'abord
     // une adresse lien-local, puis on ne réessaie que sur les erreurs réseau transitoires.
-    wait_for_network(
+    let network_up = wait_for_network(
         system_has_link_local_ipv6,
+        || commands.is_closed(),
         NETWORK_POLL,
         NETWORK_WAIT_MAX,
         &events,
     )
     .await?;
+    if !network_up {
+        // Arrêt demandé avant la fin de l'attente : on s'en va sans erreur.
+        return Ok(());
+    }
     let discovery = retry_transient(
         "démarrage mDNS",
         &events,
@@ -1013,20 +1032,30 @@ mod tests {
     fn link_local_detection() {
         use std::net::IpAddr;
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
-        // Boucle locale seule, ou adresse routable seule : pas prêt.
-        assert!(!has_link_local_ipv6([
-            (true, ip("::1")),
-            (true, ip("fe80::1"))
-        ]));
-        assert!(!has_link_local_ipv6([(false, ip("192.168.1.2"))]));
-        assert!(!has_link_local_ipv6([(false, ip("2001:db8::1"))]));
-        // fe80::/10 sur une vraie interface : prêt.
+        // Interfaces qui ne mènent à aucun appareil, même avec une fe80 : pas prêt.
+        for name in [
+            "lo0", "awdl0", "llw0", "utun0", "bridge0", "en", "enx", "en0a",
+        ] {
+            assert!(
+                !has_link_local_ipv6([(name, ip("fe80::1c2:3ff:fe04:506"))]),
+                "{name}"
+            );
+        }
+        // Wi-Fi ou Ethernet : prêt.
+        for name in ["en0", "en5"] {
+            assert!(
+                has_link_local_ipv6([(name, ip("fe80::1c2:3ff:fe04:506"))]),
+                "{name}"
+            );
+        }
+        // Sur en0, ni IPv4 ni adresse routable ne suffisent.
+        assert!(!has_link_local_ipv6([("en0", ip("192.168.1.2"))]));
+        assert!(!has_link_local_ipv6([("en0", ip("2001:db8::1"))]));
+        assert!(!has_link_local_ipv6([("en0", ip("fec0::1"))]));
         assert!(has_link_local_ipv6([
-            (true, ip("::1")),
-            (false, ip("fe80::1c2:3ff:fe04:506"))
+            ("awdl0", ip("fe80::1")),
+            ("en0", ip("febf::1"))
         ]));
-        assert!(has_link_local_ipv6([(false, ip("febf::1"))]));
-        assert!(!has_link_local_ipv6([(false, ip("fec0::1"))]));
     }
 
     #[tokio::test]
@@ -1034,21 +1063,24 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let events = EventSink::new(tx);
         let mut polls = 0;
-        wait_for_network(
+        let up = wait_for_network(
             || {
                 polls += 1;
                 polls > 3
             },
+            || false,
             Duration::from_millis(1),
             Duration::from_secs(5),
             &events,
         )
         .await
         .unwrap();
+        assert!(up);
         assert_eq!(polls, 4);
         assert_eq!(rx.try_iter().count(), 1, "une seule annonce");
 
         let err = wait_for_network(
+            || false,
             || false,
             Duration::from_millis(1),
             Duration::from_millis(20),
@@ -1057,6 +1089,31 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("lien-local"), "{err}");
+    }
+
+    /// L'arrêt demandé pendant l'attente du réseau interrompt l'attente, sans erreur.
+    #[tokio::test]
+    async fn shutdown_interrupts_the_network_wait() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let events = EventSink::new(tx);
+        let (commands, receiver) = mpsc::unbounded_channel::<Command>();
+        let closer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            drop(commands);
+        });
+        let started = std::time::Instant::now();
+        let up = wait_for_network(
+            || false,
+            || receiver.is_closed(),
+            Duration::from_millis(5),
+            Duration::from_secs(60),
+            &events,
+        )
+        .await
+        .unwrap();
+        closer.await.unwrap();
+        assert!(!up);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// InvokeResponse : {0: false, 1: [{1: {0: Path{0:1,1:6,2:1}, 1: Status{0: statut}}}], 0xFF: 11}

@@ -2,6 +2,7 @@
 name = "matter-home-desktop"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Client de bureau Matter Home (egui) : capteurs, plan de la maison, automatisations"
 license.workspace = true
 
