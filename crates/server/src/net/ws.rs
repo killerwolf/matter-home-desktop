@@ -67,10 +67,17 @@ pub async fn upgrade(
 
 /// Envoie un message avec un délai : un client qui n'avance plus ne retient personne.
 async fn send(socket: &mut WebSocket, message: Message, timeout: Duration) -> bool {
-    matches!(
-        tokio::time::timeout(timeout, socket.send(message)).await,
-        Ok(Ok(()))
-    )
+    match tokio::time::timeout(timeout, socket.send(message)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            log::warn!(
+                "client WebSocket déconnecté : écriture bloquée depuis plus de {} ms",
+                timeout.as_millis()
+            );
+            false
+        }
+    }
 }
 
 fn text(json: &str) -> Message {

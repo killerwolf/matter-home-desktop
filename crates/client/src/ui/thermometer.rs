@@ -199,6 +199,7 @@ pub fn show(
 }
 
 /// Écrit le CSV dans le dossier Téléchargements (ou le dossier temporaire à défaut).
+// TODO étape 4 : télécharger le CSV du serveur (`GET /api/devices/{id}/history.csv`).
 fn export_csv(device: &Device) -> (bool, String) {
     let dir = directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(|d| d.to_path_buf()))

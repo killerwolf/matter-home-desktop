@@ -22,6 +22,8 @@ use protocol::events::{
 };
 use protocol::format::{format_position, format_power, format_temperature};
 
+// TODO étape 4 : les séries (`RingBuffer`) disparaissent du client : il lit l'historique à la
+// demande (`GET /api/devices/{id}/history`) et les dernières valeurs viennent de l'état complet.
 pub struct Device {
     pub info: NodeInfo,
     pub status: NodeStatus,
@@ -250,6 +252,7 @@ impl MatterApp {
                 }
                 Event::NodeRemoved(id) => {
                     self.devices.remove(&id);
+                    // TODO étape 4 : le serveur retire lui-même l'appareil du plan et diffuse `plan_changed`.
                     self.plan.remove_device(id);
                     if self.selected == Some(id) {
                         self.selected = self.devices.keys().next().copied();

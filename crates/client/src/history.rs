@@ -128,6 +128,9 @@ pub fn compute_stats<'a>(samples: impl IntoIterator<Item = &'a Sample>) -> Optio
 /// Âge maximal de la dernière humidité connue pour l'associer à une température.
 const HUMIDITY_MATCH_S: f64 = 120.0;
 
+/// TODO étape 4 : l'export CSV est produit à la demande par le serveur (`history.csv`) ; cette
+/// version locale disparaît avec les séries du client.
+///
 /// Export CSV : une ligne par mesure de température, avec la dernière humidité
 /// connue à cet instant (si elle date de moins de 2 min).
 pub fn to_csv(temperature: &RingBuffer, humidity: Option<&RingBuffer>) -> String {
