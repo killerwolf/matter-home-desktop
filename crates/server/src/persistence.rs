@@ -217,7 +217,7 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
 
 /// Refuse de créer une nouvelle identité (fabric) quand `controller.json` manque alors que
 /// d'autres données existent dans `dir` : plan (`maison.json`), règles (`regles.json`) ou
-/// historique (`history/` non vide). Une nouvelle fabric ne reconnaîtrait plus aucun
+/// historique (`history/` avec au moins un `*.jsonl`). Une nouvelle fabric ne reconnaîtrait plus aucun
 /// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
 /// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
 pub fn check_fresh_start(dir: &Path) -> Result<()> {
@@ -229,9 +229,15 @@ pub fn check_fresh_start(dir: &Path) -> Result<()> {
     }
     let history = dir.join("history");
     // Un dossier illisible est compté comme non vide : dans le doute, on ne purge rien.
+    // Seuls les `*.jsonl` comptent (pas un `.DS_Store`).
     let history_used = history.is_dir()
         && std::fs::read_dir(&history)
-            .map(|mut entries| entries.next().is_some())
+            .map(|mut entries| {
+                entries.any(|e| {
+                    e.map(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+                        .unwrap_or(true)
+                })
+            })
             .unwrap_or(true);
     if history_used {
         found.push("history/".to_string());
@@ -248,6 +254,44 @@ pub fn check_fresh_start(dir: &Path) -> Result<()> {
         dir.display(),
         found.join(", ")
     )
+}
+
+/// Fichier de verrou d'instance : à côté du dossier de données et non dedans, car l'import
+/// de sauvegarde renomme ce dossier.
+pub fn instance_lock_path() -> PathBuf {
+    let dir = current_dir();
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "matter-home-desktop-data".into());
+    dir.with_file_name(format!("{name}.lock"))
+}
+
+/// Prend le verrou exclusif de `path` et le garde tant que le fichier retourné est ouvert.
+/// Deux serveurs avec la même identité Matter se chasseraient (abonnements, règles
+/// exécutées deux fois, `controller.json` écrasé) : le second doit refuser de démarrer.
+pub fn acquire_instance_lock(path: &Path) -> Result<std::fs::File> {
+    use std::fs::{File, TryLockError};
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+    }
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("ouverture de {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => bail!(
+            "un autre serveur Matter Home (ou l'application de bureau v0.2) utilise déjà ces \
+             données (verrou {}). Arrêtez-le avant de lancer celui-ci.",
+            path.display()
+        ),
+        Err(TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("verrou de {}", path.display()))
+        }
+    }
 }
 
 pub fn state_path() -> PathBuf {
@@ -282,7 +326,16 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(value)?;
-    std::fs::write(&tmp, text).with_context(|| format!("écriture de {}", tmp.display()))?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)
+            .with_context(|| format!("écriture de {}", tmp.display()))?;
+        file.write_all(text.as_bytes())
+            .with_context(|| format!("écriture de {}", tmp.display()))?;
+        // Sur disque avant le renommage : après une coupure, jamais un fichier vide.
+        file.sync_all()
+            .with_context(|| format!("écriture de {}", tmp.display()))?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -393,14 +446,36 @@ mod tests {
         // Le plan, les règles ou un historique non vide interdisent de repartir de zéro.
         std::fs::write(base.join("maison.json"), "{}").unwrap();
         let err = check_fresh_start(&base).unwrap_err().to_string();
-        assert!(err.contains(FILE_NAME) && err.contains("maison.json"), "{err}");
+        assert!(
+            err.contains(FILE_NAME) && err.contains("maison.json"),
+            "{err}"
+        );
         std::fs::remove_file(base.join("maison.json")).unwrap();
         std::fs::write(base.join("regles.json"), "{}").unwrap();
         assert!(check_fresh_start(&base).is_err());
         std::fs::remove_file(base.join("regles.json")).unwrap();
+        // Un fichier parasite (.DS_Store) dans history/ ne bloque pas un démarrage neuf.
+        std::fs::write(base.join("history").join(".DS_Store"), "").unwrap();
+        assert!(check_fresh_start(&base).is_ok());
         std::fs::write(base.join("history").join("1.jsonl"), "").unwrap();
         let err = check_fresh_start(&base).unwrap_err().to_string();
         assert!(err.contains("history/"), "{err}");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn instance_lock_is_exclusive() {
+        let base = std::env::temp_dir().join(format!("mhd-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("donnees.lock");
+        let first = acquire_instance_lock(&path).unwrap();
+        let err = acquire_instance_lock(&path).unwrap_err().to_string();
+        assert!(err.contains("utilise déjà"), "{err}");
+        // Le verrou tombe avec le fichier (arrêt ou plantage du premier serveur).
+        drop(first);
+        assert!(acquire_instance_lock(&path).is_ok());
+        // Il est à côté du dossier de données, pas dedans.
+        assert_ne!(instance_lock_path().parent(), Some(current_dir().as_path()));
         std::fs::remove_dir_all(base).unwrap();
     }
 

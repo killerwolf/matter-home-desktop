@@ -11,7 +11,7 @@ use crate::automation::{CoverCommand, Rule};
 use crate::home::Symbol;
 
 /// Commandes envoyées par l'interface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Command {
     /// Appairer un appareil avec ce code (manuel ou `MT:...`).
     Pair(String),
@@ -35,7 +35,7 @@ pub enum Command {
     SetCover { node_id: u64, command: CoverCommand },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NodeStatus {
     Connecting,
     Online,
@@ -65,7 +65,7 @@ pub enum MeasureKind {
 }
 
 /// États binaires.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateKind {
     /// `true` = ouvert (pas de contact).
     Open,
@@ -76,14 +76,14 @@ pub enum StateKind {
 }
 
 /// Mouvement d'un volet (Window Covering / OperationalStatus).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverMotion {
     Stopped,
     Opening,
     Closing,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReportingMode {
     /// Souscription active ; l'appareil promet un rapport au moins toutes les `max_interval_s`.
     Subscription { max_interval_s: u64 },
@@ -92,7 +92,7 @@ pub enum ReportingMode {
 }
 
 /// Ce que l'appareil sait mesurer ou faire, d'après sa description (clusters présents).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
     pub temperature: bool,
     pub humidity: bool,
@@ -121,13 +121,13 @@ impl Capabilities {
 }
 
 /// Pont qui expose cet appareil, et endpoint de l'appareil sur ce pont.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BridgeLink {
     pub node_id: u64,
     pub endpoint: u16,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct NodeInfo {
     pub node_id: u64,
     /// Nom affiché : celui choisi par l'utilisateur, sinon celui de l'appareil.
@@ -145,7 +145,7 @@ pub struct NodeInfo {
 }
 
 /// Événements envoyés par la tâche de fond.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Event {
     /// Appareil connu (au démarrage, après appairage, ou après lecture de sa description).
     Node(NodeInfo),

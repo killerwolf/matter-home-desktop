@@ -2349,6 +2349,7 @@ dependencies = [
  "directories",
  "env_logger",
  "hex",
+ "if-addrs",
  "log",
  "matc",
  "p256",

@@ -325,10 +325,11 @@ pub(crate) fn announce(ctx: &Ctx, n: &StoredNode) {
     }
 }
 
-/// Démarre la tâche de fond sur son propre thread et retourne le canal de commandes.
-pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
+/// Démarre la tâche de fond sur son propre thread. Ce thread joint aussi le thread
+/// d'écriture de l'historique une fois le runtime arrêté, pour que sa file soit vidée.
+pub fn spawn(events: EventSink) -> crate::Backend {
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("matter-backend".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -342,14 +343,21 @@ pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
                     return;
                 }
             };
-            rt.block_on(async move {
-                if let Err(e) = run(rx, events.clone()).await {
+            let writer = Arc::new(Mutex::new(None));
+            rt.block_on(async {
+                if let Err(e) = run(rx, events.clone(), writer.clone()).await {
                     events.send(Event::Fatal(format!("{e:#}")));
                 }
             });
+            // Les tâches abandonnées lâchent leurs émetteurs d'historique.
+            drop(rt);
+            let writer = writer.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
         })
         .expect("thread backend");
-    tx
+    crate::Backend::new(tx, vec![handle])
 }
 
 /// Attente avant le n-ième nouvel essai quand le réseau n'est pas prêt : 2 s, doublée à
@@ -358,14 +366,35 @@ fn network_backoff(attempt: u32) -> Duration {
     Duration::from_secs((2u64 << attempt.min(4)).min(30))
 }
 
-/// Refait `op` jusqu'à ce qu'elle réussisse, en annonçant chaque échec dans le journal.
-/// Ne renonce jamais : c'est au démarrage du processus de décider quand abandonner.
-async fn retry_until_ok<T, F, Fut>(
+/// Nombre maximal d'essais pour une opération réseau qui échoue de façon transitoire.
+const NETWORK_MAX_ATTEMPTS: u32 = 8;
+/// Attente maximale d'une adresse IPv6 lien-local au démarrage, puis intervalle de vérification.
+const NETWORK_WAIT_MAX: Duration = Duration::from_secs(180);
+const NETWORK_POLL: Duration = Duration::from_secs(2);
+
+/// Erreur qui disparaît quand le réseau devient disponible (interface pas encore configurée).
+/// Toute autre erreur est permanente : on sort en erreur et le superviseur relance.
+fn is_transient_network_error(e: &anyhow::Error) -> bool {
+    use std::io::ErrorKind::{AddrNotAvailable, NetworkDown, NetworkUnreachable};
+    e.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| {
+            matches!(
+                io.kind(),
+                AddrNotAvailable | NetworkUnreachable | NetworkDown
+            )
+        })
+}
+
+/// Refait `op` tant qu'elle échoue de façon transitoire (au plus `max_attempts` essais),
+/// en annonçant chaque échec dans le journal. Une erreur permanente est renvoyée aussitôt.
+async fn retry_transient<T, F, Fut>(
     what: &str,
     events: &EventSink,
     delay: impl Fn(u32) -> Duration,
+    max_attempts: u32,
     mut op: F,
-) -> T
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
@@ -373,8 +402,8 @@ where
     let mut attempt = 0u32;
     loop {
         match op().await {
-            Ok(value) => return value,
-            Err(e) => {
+            Ok(value) => return Ok(value),
+            Err(e) if is_transient_network_error(&e) && attempt + 1 < max_attempts => {
                 let wait = delay(attempt);
                 let line = format!(
                     "Réseau indisponible ({what} : {e:#}) ; nouvel essai dans {} s.",
@@ -383,10 +412,57 @@ where
                 log::warn!("{line}");
                 events.send(Event::Info(line));
                 tokio::time::sleep(wait).await;
-                attempt = attempt.saturating_add(1);
+                attempt += 1;
             }
+            Err(e) => return Err(e),
         }
     }
+}
+
+/// `true` si l'une des adresses (interface en boucle locale ?, adresse) est une IPv6
+/// lien-local (fe80::/10) sur une interface qui n'est pas la boucle locale.
+fn has_link_local_ipv6(addrs: impl IntoIterator<Item = (bool, std::net::IpAddr)>) -> bool {
+    addrs.into_iter().any(|(loopback, ip)| match ip {
+        std::net::IpAddr::V6(v6) => !loopback && (v6.segments()[0] & 0xffc0) == 0xfe80,
+        std::net::IpAddr::V4(_) => false,
+    })
+}
+
+/// Vérifie les interfaces réelles de la machine.
+fn system_has_link_local_ipv6() -> bool {
+    if_addrs::get_if_addrs()
+        .map(|ifaces| has_link_local_ipv6(ifaces.iter().map(|i| (i.is_loopback(), i.ip()))))
+        .unwrap_or(false)
+}
+
+/// Attend que `ready` devienne vraie, au plus `max_wait`. `MdnsService` réussit sur la seule
+/// boucle locale : sans cette attente, au démarrage de la machine (interface pas encore
+/// configurée), le serveur resterait vivant sans jamais voir un appareil.
+async fn wait_for_network(
+    mut ready: impl FnMut() -> bool,
+    poll: Duration,
+    max_wait: Duration,
+    events: &EventSink,
+) -> Result<()> {
+    let start = std::time::Instant::now();
+    let mut announced = false;
+    while !ready() {
+        if start.elapsed() >= max_wait {
+            anyhow::bail!(
+                "aucune adresse IPv6 lien-local sur une interface réseau après {} s : \
+                 réseau indisponible",
+                max_wait.as_secs()
+            );
+        }
+        if !announced {
+            let line = "En attente du réseau (adresse IPv6 lien-local)…".to_string();
+            log::warn!("{line}");
+            events.send(Event::Info(line));
+            announced = true;
+        }
+        tokio::time::sleep(poll).await;
+    }
+    Ok(())
 }
 
 struct NodeHandle {
@@ -399,7 +475,11 @@ enum Internal {
     Paired(u64, Connection),
 }
 
-async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> Result<()> {
+async fn run(
+    mut commands: mpsc::UnboundedReceiver<Command>,
+    ui: EventSink,
+    writer_slot: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+) -> Result<()> {
     // Tous les événements du backend passent aussi par le moteur d'automatisations.
     let (tap_tx, tap_rx) = mpsc::unbounded_channel();
     let events = ui.with_tap(tap_tx);
@@ -429,27 +509,29 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
 
     let cm: Arc<dyn CertManager> =
         Arc::new(certs::JsonCertManager::from_identity(&state.identity)?);
-    // Au démarrage d'une machine, le réseau (IPv6, adresse locale de lien) peut ne pas être
-    // prêt : on réessaie au lieu d'échouer. Les sockets sont créés une seule fois ici.
-    let transport = retry_until_ok(
-        "ouverture du socket UDP IPv6",
-        &events,
-        network_backoff,
-        || async {
-            Transport::new(LOCAL_ADDRESS)
-                .await
-                .context("ouverture du socket UDP IPv6")
-        },
-    )
-    .await;
+    let transport = Transport::new(LOCAL_ADDRESS)
+        .await
+        .context("ouverture du socket UDP IPv6")?;
     let controller = Controller::new(&cm, &transport, state.identity.fabric_id)?;
     let fabric = matc::fabric::Fabric::new(state.identity.fabric_id, 1, &cm.get_ca_public_key()?);
     let compressed_fabric = hex::encode_upper(fabric.compressed()?);
-    // `MdnsService` ouvre ses sockets IPv6 une seule fois : il faut attendre le réseau.
-    let discovery = retry_until_ok("démarrage mDNS", &events, network_backoff, || async {
-        Discovery::start().await.context("démarrage mDNS")
-    })
-    .await;
+    // `MdnsService` ouvre ses sockets IPv6 une seule fois, au démarrage : on attend d'abord
+    // une adresse lien-local, puis on ne réessaie que sur les erreurs réseau transitoires.
+    wait_for_network(
+        system_has_link_local_ipv6,
+        NETWORK_POLL,
+        NETWORK_WAIT_MAX,
+        &events,
+    )
+    .await?;
+    let discovery = retry_transient(
+        "démarrage mDNS",
+        &events,
+        network_backoff,
+        NETWORK_MAX_ATTEMPTS,
+        || async { Discovery::start().await.context("démarrage mDNS") },
+    )
+    .await?;
 
     events.send(Event::Info(format!(
         "Données : {} — fabric {:#x} (compressée {compressed_fabric}).",
@@ -482,13 +564,18 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
             replayed += 1;
         }
     }
-    // Historique d'appareils oubliés entre-temps : supprimé.
-    for orphan in store
-        .nodes()
-        .into_iter()
-        .filter(|id| !device_ids.contains(id))
-    {
-        let _ = store.remove(orphan);
+    // Historique d'appareils oubliés entre-temps : mis de côté, jamais supprimé (et rien
+    // n'est touché si aucun appareil n'est connu).
+    let archived =
+        history_store::archive_orphans(&mut store, &device_ids, &history_store::orphans_dir());
+    if !archived.is_empty() {
+        let line = format!(
+            "{} historique(s) d'appareils inconnus déplacé(s) dans {}.",
+            archived.len(),
+            history_store::ORPHANS_DIR
+        );
+        log::warn!("{line}");
+        events.send(Event::Info(line));
     }
     let summary = format!(
         "Historique : {replayed} mesures rechargées ({} jours max) ; {} anciennes retirées au nettoyage.",
@@ -497,7 +584,8 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) -> R
     );
     log::info!("{summary}");
     events.send(Event::Info(summary));
-    let history = history_store::start(store);
+    let (history, history_writer) = history_store::start(store);
+    *writer_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(history_writer);
 
     let ctx = Arc::new(Ctx {
         controller,
@@ -850,15 +938,21 @@ mod tests {
         assert_eq!(network_backoff(u32::MAX).as_secs(), 30);
     }
 
+    fn transient() -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+            .context("démarrage mDNS")
+    }
+
     #[tokio::test]
-    async fn retries_until_the_network_is_up() {
+    async fn retries_transient_errors_until_the_network_is_up() {
         let (tx, rx) = std::sync::mpsc::channel();
         let events = EventSink::new(tx);
         let mut calls = 0;
-        let value = retry_until_ok(
+        let value = retry_transient(
             "test",
             &events,
             |_| Duration::from_millis(1),
+            8,
             || {
                 calls += 1;
                 let up = calls > 3;
@@ -866,17 +960,103 @@ mod tests {
                     if up {
                         Ok(42)
                     } else {
-                        anyhow::bail!("pas de réseau")
+                        Err(transient())
                     }
                 }
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(value, 42);
         // Un message par échec, et aucune erreur fatale.
         let sent: Vec<Event> = rx.try_iter().collect();
         assert_eq!(sent.len(), 3);
         assert!(sent.iter().all(|e| matches!(e, Event::Info(_))));
+    }
+
+    #[tokio::test]
+    async fn permanent_errors_and_the_attempt_cap_stop_the_retries() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let events = EventSink::new(tx);
+        let mut calls = 0;
+        let result: Result<()> = retry_transient(
+            "test",
+            &events,
+            |_| Duration::from_millis(1),
+            8,
+            || {
+                calls += 1;
+                async { anyhow::bail!("mdns2: no sockets could be created") }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1, "erreur permanente : aucun nouvel essai");
+
+        let mut calls = 0;
+        let result: Result<()> = retry_transient(
+            "test",
+            &events,
+            |_| Duration::from_millis(1),
+            3,
+            || {
+                calls += 1;
+                async { Err(transient()) }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 3, "plafond d'essais");
+    }
+
+    #[test]
+    fn link_local_detection() {
+        use std::net::IpAddr;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // Boucle locale seule, ou adresse routable seule : pas prêt.
+        assert!(!has_link_local_ipv6([
+            (true, ip("::1")),
+            (true, ip("fe80::1"))
+        ]));
+        assert!(!has_link_local_ipv6([(false, ip("192.168.1.2"))]));
+        assert!(!has_link_local_ipv6([(false, ip("2001:db8::1"))]));
+        // fe80::/10 sur une vraie interface : prêt.
+        assert!(has_link_local_ipv6([
+            (true, ip("::1")),
+            (false, ip("fe80::1c2:3ff:fe04:506"))
+        ]));
+        assert!(has_link_local_ipv6([(false, ip("febf::1"))]));
+        assert!(!has_link_local_ipv6([(false, ip("fec0::1"))]));
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_network_then_gives_up() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let events = EventSink::new(tx);
+        let mut polls = 0;
+        wait_for_network(
+            || {
+                polls += 1;
+                polls > 3
+            },
+            Duration::from_millis(1),
+            Duration::from_secs(5),
+            &events,
+        )
+        .await
+        .unwrap();
+        assert_eq!(polls, 4);
+        assert_eq!(rx.try_iter().count(), 1, "une seule annonce");
+
+        let err = wait_for_network(
+            || false,
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            &events,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("lien-local"), "{err}");
     }
 
     /// InvokeResponse : {0: false, 1: [{1: {0: Path{0:1,1:6,2:1}, 1: Status{0: statut}}}], 0xFF: 11}

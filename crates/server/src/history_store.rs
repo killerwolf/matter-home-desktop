@@ -196,6 +196,26 @@ impl HistoryStore {
         }
     }
 
+    /// Déplace l'historique d'un appareil dans `dest` (hors du dossier d'historique, donc
+    /// hors rétention et hors sauvegarde) au lieu de l'effacer. Un fichier déjà présent
+    /// dans `dest` n'est jamais écrasé.
+    pub fn archive(&mut self, node_id: u64, dest: &Path) -> std::io::Result<()> {
+        self.open.remove(&node_id);
+        let from = self.path(node_id);
+        if !from.exists() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dest)?;
+        let name = format!("{node_id:016X}");
+        let mut target = dest.join(format!("{name}.jsonl"));
+        let mut n = 1;
+        while target.exists() {
+            target = dest.join(format!("{name}-{n}.jsonl"));
+            n += 1;
+        }
+        std::fs::rename(from, target)
+    }
+
     /// Applique la rétention par âge puis la taille maximale, à chaque fichier.
     pub fn prune(&mut self, now: f64) -> PruneReport {
         let mut report = PruneReport::default();
@@ -273,10 +293,36 @@ impl HistorySink {
     }
 }
 
+/// Dossier (voisin de `history/`, dans le dossier de données) où vont les historiques
+/// d'appareils inconnus.
+pub const ORPHANS_DIR: &str = "history-orphelins";
+
+pub fn orphans_dir() -> PathBuf {
+    crate::persistence::data_dir().join(ORPHANS_DIR)
+}
+
+/// Archive dans `dest` l'historique des appareils absents de `known`, et retourne leurs
+/// identifiants. Ne fait rien si `known` est vide : une liste vide vient d'un fichier
+/// d'identité vide ou perdu, pas d'une maison où tous les appareils ont été oubliés.
+pub fn archive_orphans(store: &mut HistoryStore, known: &[u64], dest: &Path) -> Vec<u64> {
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let mut archived = Vec::new();
+    for orphan in store.nodes().into_iter().filter(|id| !known.contains(id)) {
+        match store.archive(orphan, dest) {
+            Ok(()) => archived.push(orphan),
+            Err(e) => log::error!("historique {orphan:016X} : archivage impossible : {e}"),
+        }
+    }
+    archived
+}
+
 /// Lance le thread d'écriture ; le premier nettoyage a déjà été fait par l'appelant.
-pub fn start(mut store: HistoryStore) -> HistorySink {
+/// Le thread s'arrête, après avoir vidé sa file, quand tous les `HistorySink` sont lâchés.
+pub fn start(mut store: HistoryStore) -> (HistorySink, std::thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<Msg>();
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("history-writer".into())
         .spawn(move || {
             let mut last_prune = Instant::now();
@@ -303,7 +349,7 @@ pub fn start(mut store: HistoryStore) -> HistorySink {
             }
         })
         .expect("thread historique");
-    HistorySink(tx)
+    (HistorySink(tx), handle)
 }
 
 pub fn dir() -> PathBuf {
@@ -372,6 +418,38 @@ mod tests {
         store.remove(1).unwrap(); // déjà absent : pas d'erreur
         assert!(store.load(1, 0.0).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn orphans_are_archived_never_purged() {
+        let dir = temp_dir("orph");
+        let dest = temp_dir("orph-dest");
+        let mut store = HistoryStore::new(dir.clone());
+        for id in [1, 2, 3] {
+            store.append(id, &rec(100.0, "temperature", 21.5)).unwrap();
+        }
+        // Aucun appareil connu : rien n'est touché.
+        assert!(archive_orphans(&mut store, &[], &dest).is_empty());
+        assert_eq!(store.nodes().len(), 3);
+        assert!(!dest.exists());
+
+        // Seul l'appareil 2 est connu : 1 et 3 sont déplacés, pas effacés.
+        let mut gone = archive_orphans(&mut store, &[2], &dest);
+        gone.sort();
+        assert_eq!(gone, vec![1, 3]);
+        assert_eq!(store.nodes(), vec![2]);
+        assert!(dest.join(format!("{:016X}.jsonl", 1)).exists());
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 2);
+
+        // Un deuxième archivage du même appareil n'écrase rien.
+        store.append(1, &rec(200.0, "temperature", 22.0)).unwrap();
+        assert_eq!(archive_orphans(&mut store, &[2], &dest), vec![1]);
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 3);
+        // Les archives ne sont ni vues par le stock d'historique, ni sous `history/`.
+        assert_eq!(store.nodes(), vec![2]);
+        assert!(!dest.starts_with(&dir));
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(dest).unwrap();
     }
 
     #[test]

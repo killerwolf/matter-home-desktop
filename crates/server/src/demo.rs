@@ -118,9 +118,9 @@ type Shutters = Arc<Mutex<HashMap<u64, Shutter>>>;
 /// Vitesse de la simulation : % d'ouverture par pas de 2 s.
 const SHUTTER_STEP: f64 = 25.0;
 
-pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
+pub fn spawn(events: EventSink) -> crate::Backend {
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("demo-backend".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -130,7 +130,7 @@ pub fn spawn(events: EventSink) -> mpsc::UnboundedSender<Command> {
             rt.block_on(run(rx, events));
         })
         .expect("thread démo");
-    tx
+    crate::Backend::new(tx, vec![handle])
 }
 
 async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
@@ -926,19 +926,18 @@ mod tests {
         // La démo envoie les statuts « en ligne » après tout l'historique pré-rempli :
         // 4 appareils, un pont et ses 3 volets.
         assert!(wait_until(&rx, &mut seen, 0, 100, |ev| {
-            let online = ev
+            // Appareils distincts en ligne (un même appareil peut l'être plusieurs fois).
+            let online: std::collections::HashSet<u64> = ev
                 .iter()
-                .filter(|e| {
-                    matches!(
-                        e,
-                        Event::Status {
-                            status: NodeStatus::Online,
-                            ..
-                        }
-                    )
+                .filter_map(|e| match e {
+                    Event::Status {
+                        node_id,
+                        status: NodeStatus::Online,
+                    } => Some(*node_id),
+                    _ => None,
                 })
-                .count();
-            nodes_of(ev).len() == 8 && online >= 8
+                .collect();
+            nodes_of(ev).len() == 8 && online.len() == 8
         }));
         let nodes = nodes_of(&seen);
         let living = nodes.values().find(|n| n.caps.humidity).unwrap().node_id;

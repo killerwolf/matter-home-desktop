@@ -26,6 +26,9 @@ Usage :
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
+/// Délai laissé au backend et à l'écriture de l'historique pour s'arrêter.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Intervalle entre deux lignes de bilan des événements reçus.
 const SUMMARY_EVERY: Duration = Duration::from_secs(5);
 
@@ -48,7 +51,23 @@ fn main() -> ExitCode {
     let demo = args.iter().any(|a| a == "--demo");
     let discover_only = args.iter().any(|a| a == "--discover");
 
-    // Le mode démo ne touche à aucun fichier : ni migration de dossier, ni import en attente.
+    // Une panique dans une sous-tâche ou dans le thread d'historique ne doit pas laisser un
+    // serveur à moitié vivant : on journalise puis on quitte, le superviseur relancera.
+    install_panic_hook();
+
+    // Le mode démo ne touche à aucun fichier (ni verrou, ni migration de dossier, ni import
+    // en attente). Le verrou est pris avant tout le reste : l'import renomme le dossier.
+    let _instance_lock = if !demo && !discover_only {
+        match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+            Ok(lock) => Some(lock),
+            Err(e) => {
+                log::error!("{e:#}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     if !demo && !discover_only {
         // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
         let mut notes: Vec<String> = Vec::new();
@@ -65,8 +84,8 @@ fn main() -> ExitCode {
 
     let (tx, rx) = mpsc::channel();
     let sink = EventSink::new(tx);
-    // Garder l'émetteur de commandes en vie : le fermer demande l'arrêt de la tâche de fond.
-    let commands = if demo {
+    // Garder le backend en vie : fermer ses commandes demande l'arrêt de la tâche de fond.
+    let backend = if demo {
         log::info!("Mode démo : appareils simulés, rien n'est écrit sur disque.");
         demo::spawn(sink)
     } else {
@@ -76,8 +95,27 @@ fn main() -> ExitCode {
     let stop = Arc::new(AtomicBool::new(false));
     watch_signals(stop.clone());
     let code = serve(&rx, &stop);
-    drop(commands);
-    code
+    // Arrêt ordonné, sur signal comme sur erreur fatale : le backend s'arrête, l'écriture de
+    // l'historique vide sa file, puis on journalise ce qui restait dans le canal.
+    let clean = backend.shutdown(SHUTDOWN_TIMEOUT);
+    for event in rx.try_iter() {
+        log_event(&event);
+    }
+    if clean {
+        code
+    } else {
+        log::error!("arrêt incomplet : certains threads n'ont pas fini à temps.");
+        ExitCode::FAILURE
+    }
+}
+
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        log::error!("panique : {info}");
+        std::process::exit(1);
+    }));
 }
 
 /// Boucle principale : journalise les événements jusqu'à une erreur fatale ou un arrêt demandé.

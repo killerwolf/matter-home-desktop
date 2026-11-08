@@ -990,8 +990,8 @@ impl PlanView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::events::{Capabilities, NodeInfo};
     use crate::history::Sample;
+    use protocol::events::{Capabilities, NodeInfo};
 
     fn device(caps: Capabilities) -> Device {
         Device::new(NodeInfo {

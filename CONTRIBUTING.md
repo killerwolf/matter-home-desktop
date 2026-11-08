@@ -15,7 +15,7 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
 
 ## Préparer l'environnement
 
-- macOS et [Rust](https://rustup.rs) (stable, 1.87 ou plus), outils en ligne de commande
+- macOS et [Rust](https://rustup.rs) (stable, 1.89 ou plus), outils en ligne de commande
   de Xcode (`xcode-select --install`) pour construire le `.app` et l'icône, et Python 3
   pour la mise en page du DMG.
 - Pas besoin d'appareil Matter pour la plupart des modifications : le **mode démo** simule
