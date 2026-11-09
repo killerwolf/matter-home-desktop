@@ -1,10 +1,16 @@
 //! L'interface : icône de la barre de menus (tray-icon) et petite fenêtre egui, toutes deux sur
 //! le fil principal, dans la boucle d'événements d'eframe. La fenêtre est cachée tant qu'on ne la
-//! demande pas ; `ui()` continue de tourner (réveillée par les événements du menu et par un
-//! minuteur) et met l'icône et le menu à jour.
+//! demande pas.
+//!
+//! Tout ce qui ne dessine pas (clics du menu, icône, infobulle, ligne d'état, phases du serveur,
+//! ouverture à la connexion) se fait dans `App::logic`, pas dans `App::ui` : tant que la fenêtre
+//! est cachée, eframe 0.37 ne lance aucune passe egui (donc pas de `ui()`) mais continue d'appeler
+//! `logic()`, réveillée par les clics du menu (`request_repaint`) et par un minuteur lent.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
@@ -20,6 +26,11 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Attente maximale de l'arrêt propre du serveur à la fermeture.
 const EXIT_WAIT: Duration = Duration::from_secs(20);
+
+/// Délai entre deux passes de `logic()` : fenêtre cachée, deux secondes suffisent pour tenir
+/// l'icône à jour (les clics du menu réveillent tout de suite) ; visible, on reste réactif.
+const HIDDEN_TICK: Duration = Duration::from_millis(2000);
+const VISIBLE_TICK: Duration = Duration::from_millis(500);
 
 const SLEEP_NOTE: &str = "Tant que Matter Home Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
 
@@ -70,6 +81,51 @@ fn low_power_gpu(config: &mut eframe::egui_wgpu::WgpuConfiguration) {
     if let WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
         setup.power_preference = wgpu::PowerPreference::LowPower;
     }
+}
+
+fn confirm_quit() -> bool {
+    use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+    let quit = "Quitter".to_string();
+    let result = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title("Quitter Matter Home Server ?")
+        .set_description(
+            "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture de Matter Home Server.",
+        )
+        .set_buttons(MessageButtons::OkCancelCustom(quit.clone(), "Annuler".into()))
+        .show();
+    result == MessageDialogResult::Ok || result == MessageDialogResult::Custom(quit)
+}
+
+/// Ce qu'un changement de phase du serveur déclenche.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PhaseEffects {
+    /// Une configuration commence dans cette session.
+    start_setup_session: bool,
+    /// Le serveur tourne : ouverture à la connexion par défaut.
+    apply_login_default: bool,
+    /// La configuration vient de se terminer : écran de fin.
+    show_done: bool,
+    /// La fenêtre doit s'ouvrir toute seule.
+    open_window: bool,
+}
+
+/// La configuration s'ouvre toute seule ; sa fin active l'ouverture à la connexion (par défaut)
+/// et montre l'écran de fin.
+fn phase_effects(now: &Phase, setup_session: bool) -> PhaseEffects {
+    let mut e = PhaseEffects::default();
+    if *now == Phase::NeedsSetup {
+        e.start_setup_session = true;
+        e.open_window = true;
+    }
+    if *now == Phase::Running {
+        e.apply_login_default = true;
+        if setup_session {
+            e.show_done = true;
+            e.open_window = true;
+        }
+    }
+    e
 }
 
 fn tray_image(kind: IconKind) -> Icon {
@@ -136,6 +192,9 @@ struct App {
     shown_icon: Option<IconKind>,
     shown_tooltip: String,
     visible: bool,
+    /// L'ordre « cacher » a déjà été donné à la fenêtre (il ne faut pas le répéter à chaque passe :
+    /// chaque ordre réveille eframe et ferait boucler `ui()` à 10 Hz).
+    hide_sent: bool,
     last_phase: Option<Phase>,
     page: Page,
     form: AccountForm,
@@ -150,6 +209,8 @@ struct App {
     picking: Option<Receiver<Result<Restore, String>>>,
     // Interrupteur : l'écran de fin a déjà activé l'ouverture à la connexion.
     login_defaulted: bool,
+    /// La confirmation « Quitter » est à l'écran : un second clic n'en ouvre pas une autre.
+    quit_dialog_open: Arc<AtomicBool>,
 }
 
 impl App {
@@ -163,6 +224,7 @@ impl App {
             shown_icon: None,
             shown_tooltip: String::new(),
             visible: false,
+            hide_sent: false,
             last_phase: None,
             page: Page::Start,
             form: AccountForm::default(),
@@ -174,6 +236,7 @@ impl App {
             local_notice: None,
             login_defaulted: false,
             picking: None,
+            quit_dialog_open: Arc::new(AtomicBool::new(false)),
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
         if !app.demo {
@@ -253,27 +316,35 @@ impl App {
 
     fn show_window(&mut self, ctx: &egui::Context) {
         self.visible = true;
+        self.hide_sent = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Fenêtre cachée jusque-là : une passe complète doit dessiner le contenu tout de suite.
+        ctx.request_repaint();
     }
 
     fn hide_window(&mut self, ctx: &egui::Context) {
         self.visible = false;
+        self.hide_sent = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
-    fn confirm_quit(&self) -> bool {
-        use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
-        let quit = "Quitter".to_string();
-        let result = MessageDialog::new()
-            .set_level(MessageLevel::Warning)
-            .set_title("Quitter Matter Home Server ?")
-            .set_description(
-                "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture de Matter Home Server.",
-            )
-            .set_buttons(MessageButtons::OkCancelCustom(quit.clone(), "Annuler".into()))
-            .show();
-        result == MessageDialogResult::Ok || result == MessageDialogResult::Custom(quit)
+    /// Demande confirmation puis arrête le serveur. L'alerte tourne dans un fil à part : rfd la
+    /// fait afficher par le fil principal, mais depuis la boucle d'événements elle-même et non
+    /// depuis l'intérieur d'un rappel d'eframe. Pendant qu'elle est ouverte, la boucle continue
+    /// donc de tourner normalement (menu, icône) sans ré-entrer dans `logic()`.
+    fn ask_quit(&self) {
+        if self.quit_dialog_open.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (tx, open) = (self.handle.tx.clone(), self.quit_dialog_open.clone());
+        std::thread::spawn(move || {
+            let confirmed = confirm_quit();
+            open.store(false, Ordering::SeqCst);
+            if confirmed {
+                let _ = tx.send(Cmd::Quit);
+            }
+        });
     }
 
     fn do_action(&mut self, ctx: &egui::Context, action: Action, st: &State) {
@@ -296,11 +367,7 @@ impl App {
                 }
             }
             Action::Settings => self.show_window(ctx),
-            Action::Quit => {
-                if self.confirm_quit() {
-                    let _ = self.handle.tx.send(Cmd::Quit);
-                }
-            }
+            Action::Quit => self.ask_quit(),
         }
     }
 
@@ -380,46 +447,62 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+    /// Le travail qui ne dessine pas. eframe l'appelle avant chaque `ui()` et aussi, fenêtre
+    /// cachée, à chaque `request_repaint` / `request_repaint_after` (sans passe egui). C'est le
+    /// fil principal : icône, menu et fenêtre se manipulent ici.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let st = self.handle.snapshot();
         self.refresh_login();
         self.poll_picking();
         while let Ok(action) = self.actions.try_recv() {
-            self.do_action(&ctx, action, &st);
+            self.do_action(ctx, action, &st);
         }
 
-        // Changements de phase : la configuration s'ouvre toute seule ; la fin de la
-        // configuration active l'ouverture à la connexion (par défaut).
         if self.last_phase.as_ref() != Some(&st.phase) {
-            if st.phase == Phase::NeedsSetup {
+            let effects = phase_effects(&st.phase, self.setup_session);
+            if effects.start_setup_session {
                 self.setup_session = true;
-                self.show_window(&ctx);
             }
-            if st.phase == Phase::Running {
+            if effects.apply_login_default {
                 self.apply_login_default();
             }
-            if st.phase == Phase::Running && self.setup_session {
+            if effects.show_done {
                 self.show_done = true;
-                self.show_window(&ctx);
+            }
+            if effects.open_window {
+                self.show_window(ctx);
             }
             self.last_phase = Some(st.phase.clone());
         }
         self.sync_tray(&st);
 
+        ctx.request_repaint_after(if self.visible {
+            VISIBLE_TICK
+        } else {
+            HIDDEN_TICK
+        });
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         if ui.input(|i| i.viewport().close_requested()) {
             // La croix cache la fenêtre : le serveur continue, seul « Quitter » l'arrête.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(&ctx);
         }
-        if self.visible {
-            egui::CentralPanel::default().show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
-            });
+        if !self.visible {
+            // eframe montre la fenêtre après sa première image, même créée cachée : on la recache,
+            // une seule fois.
+            if !self.hide_sent {
+                self.hide_sent = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            return;
         }
-        // Fenêtre cachée : deux secondes suffisent pour tenir l'icône à jour (les clics du menu
-        // réveillent l'interface tout de suite).
-        ctx.request_repaint_after(Duration::from_millis(if self.visible { 500 } else { 2000 }));
+        let st = self.handle.snapshot();
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
+        });
     }
 }
 
@@ -813,6 +896,38 @@ mod tests {
             panic!("configuration inattendue");
         };
         assert_eq!(setup.power_preference, wgpu::PowerPreference::LowPower);
+    }
+
+    #[test]
+    fn needs_setup_opens_the_window_by_itself() {
+        let e = phase_effects(&Phase::NeedsSetup, false);
+        assert!(e.start_setup_session && e.open_window);
+        assert!(!e.apply_login_default && !e.show_done);
+    }
+
+    #[test]
+    fn running_after_a_setup_shows_the_done_page() {
+        let e = phase_effects(&Phase::Running, true);
+        assert!(e.apply_login_default && e.show_done && e.open_window);
+    }
+
+    #[test]
+    fn running_without_setup_only_applies_the_login_default() {
+        let e = phase_effects(&Phase::Running, false);
+        assert_eq!(
+            e,
+            PhaseEffects {
+                apply_login_default: true,
+                ..PhaseEffects::default()
+            }
+        );
+    }
+
+    #[test]
+    fn other_phases_do_not_touch_the_window() {
+        for p in [Phase::Starting, Phase::Stopping, Phase::Problem("x".into())] {
+            assert_eq!(phase_effects(&p, true), PhaseEffects::default());
+        }
     }
 
     #[test]

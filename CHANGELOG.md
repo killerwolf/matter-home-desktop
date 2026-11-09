@@ -44,6 +44,17 @@ Les téléchargements de chaque version sont sur la
   statut IM, BUSY compris, vaut refus définitif : moins de trafic) ; entrée introuvable, lecture
   en échec, réponse illisible et échecs de transport sont retentés, 3 essais au total par appareil.
 
+### Corrigé
+
+- **Matter Home Server : le menu de la barre de menus ne répondait plus une fois la fenêtre
+  fermée.** « Quitter », « Ouvrir le journal », « Compte et réglages… », les copies et
+  « Ouvrir à la connexion » ne faisaient rien, et l'icône, l'infobulle et la ligne d'état ne se
+  mettaient plus à jour : eframe 0.37 ne lance plus `ui()` pour une fenêtre cachée, alors que tout
+  ce travail s'y faisait. Il se fait désormais dans `App::logic`, que eframe appelle aussi fenêtre
+  cachée (réveil par les clics du menu, puis toutes les 2 s). La confirmation « Quitter » s'ouvre
+  hors de ce rappel, la fenêtre s'ouvre avec son contenu, et ne reste plus à l'écran, noire et vide, au lancement
+  (eframe l'y montrait après sa première image : elle est recachée tout de suite, sans boucler).
+
 ## [1.0.0] - 2026-11-09
 
 Version 1 : l'application est séparée en deux parties, **sans aucun cloud**. Le **serveur**
