@@ -55,7 +55,8 @@ pub struct Auth {
     pub accounts: AccountStore,
     pub sessions: SessionStore,
     pub limiter: LoginLimiter,
-    /// Vérifications de mot de passe simultanées (argon2 consomme de la mémoire).
+    /// Vérifications de mot de passe simultanées : une seule (argon2 consomme du temps et de la
+    /// mémoire ; c'est aussi le débit maximal d'une attaque répartie).
     pub hash_slots: Semaphore,
 }
 
@@ -65,7 +66,7 @@ impl Auth {
             accounts,
             sessions,
             limiter: LoginLimiter::new(),
-            hash_slots: Semaphore::new(2),
+            hash_slots: Semaphore::new(1),
         }
     }
 }

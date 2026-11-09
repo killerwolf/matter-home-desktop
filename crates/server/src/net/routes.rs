@@ -29,6 +29,8 @@ const JSON_LIMIT: usize = 1024 * 1024;
 const LOGIN_LIMIT: usize = 4 * 1024;
 /// Une sauvegarde porte jusqu'à 5 Mo d'historique par appareil.
 const IMPORT_LIMIT: usize = 128 * 1024 * 1024;
+/// Pause avant de répondre à un échec de connexion.
+const FAILURE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn router(state: AppState) -> Router {
@@ -247,23 +249,28 @@ async fn login(
     }
     let ip = peer.ip();
     check_not_locked(&state, ip)?;
-    // Argon2 coûte du temps et de la mémoire : deux vérifications à la fois au plus.
-    let _slot = state
-        .auth
-        .hash_slots
-        .acquire()
+    // Argon2 coûte du temps et de la mémoire : une vérification à la fois, pour tout le
+    // serveur. C'est ce qui limite le débit d'une attaque répartie sur plusieurs adresses,
+    // sans jamais refuser un mot de passe correct : les demandes font la queue (dans l'ordre
+    // d'arrivée) et le propriétaire passe à son tour.
+    let verdict = {
+        let _slot = state
+            .auth
+            .hash_slots
+            .acquire()
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Unavailable))?;
+        // Deuxième contrôle, une fois la place obtenue : des tentatives lancées en parallèle
+        // passent toutes le premier, mais celles qui attendaient voient l'attente décidée par
+        // les échecs des précédentes. Sans lui, la limite serait contournable en simultané.
+        check_not_locked(&state, ip)?;
+        let auth = state.auth.clone();
+        tokio::task::spawn_blocking(move || {
+            auth.accounts.verify(&request.username, &request.password)
+        })
         .await
-        .map_err(|_| ApiError::new(ErrorCode::Unavailable))?;
-    // Deuxième contrôle, une fois la place obtenue : des tentatives lancées en parallèle
-    // passent toutes le premier, mais celles qui attendaient voient l'attente décidée par les
-    // échecs des précédentes. Sans lui, la limite serait contournable en simultané.
-    check_not_locked(&state, ip)?;
-    let auth = state.auth.clone();
-    let verdict = tokio::task::spawn_blocking(move || {
-        auth.accounts.verify(&request.username, &request.password)
-    })
-    .await
-    .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?
+    };
     match verdict {
         Verdict::Valid(account_id) => {
             state.auth.limiter.record_success(ip);
@@ -280,6 +287,9 @@ async fn login(
         Verdict::Invalid => {
             let wait = state.auth.limiter.record_failure(ip);
             log::warn!("connexion refusée pour {ip} : identifiants incorrects");
+            // Petit délai avant de répondre (hors de la file des vérifications : il ne retarde
+            // personne d'autre) : un échec coûte un peu de temps à celui qui le provoque.
+            tokio::time::sleep(FAILURE_PAUSE).await;
             let mut error = ApiError::new(ErrorCode::InvalidCredentials);
             error.retry_after_s = wait.map(|w| w.as_secs().max(1));
             Err(error.into())

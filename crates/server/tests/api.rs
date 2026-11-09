@@ -944,3 +944,28 @@ fn method_and_size_errors_use_the_protocol_format() {
         assert_eq!(client.get("/api/state", &token).await.status, 200);
     });
 }
+
+/// Un échec de connexion coûte un petit délai : le débit d'une attaque est limité.
+#[test]
+fn failed_login_is_slightly_delayed() {
+    let dir = temp_dir("pause");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let start = std::time::Instant::now();
+        let bad = client.login_as(USER, "un-mauvais-mot-de-passe", 1).await;
+        assert_eq!(bad.code(), "invalid_credentials");
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            start.elapsed()
+        );
+        let start = std::time::Instant::now();
+        client.login().await;
+        assert!(
+            start.elapsed() < Duration::from_millis(250),
+            "{:?}",
+            start.elapsed()
+        );
+    });
+}
