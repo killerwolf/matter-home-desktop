@@ -87,6 +87,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>LSAppNapIsDisabled</key><true/>
   <key>NSAppSleepDisabled</key><true/>
   <key>NSHumanReadableCopyright</key><string>Licence MIT</string>
   <key>NSLocalNetworkUsageDescription</key>
