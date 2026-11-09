@@ -683,6 +683,9 @@ fn slow_client_is_dropped_without_blocking_others() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
+        // Le test porte sur la déconnexion d'un client dont la connexion est bloquée : il ne doit
+        // pas dépendre de la rafale de démarrage de la démo, qui saturerait la file de diffusion.
+        client.wait_startup_burst_over(&token).await;
         let mut slow = client.ws_slow(&token, 1).await.unwrap();
         let mut fast = client.ws(&token, 1).await.unwrap();
         for ws in [&mut slow, &mut fast] {

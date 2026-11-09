@@ -400,6 +400,38 @@ impl Client {
         resp.json()["token"].as_str().unwrap().to_string()
     }
 
+    /// Attend la fin de la rafale de démarrage de la démo (description des appareils, historique
+    /// simulé rejoué, états initiaux) : le dernier message de cette rafale est le mode
+    /// d'interrogation de la chambre. On attend aussi que le numéro du dernier événement ne
+    /// bouge plus pendant 400 ms (le battement de la démo n'émet qu'une poignée d'événements
+    /// toutes les 2 s). Sans cela, un WebSocket ouvert pendant la rafale reçoit des centaines
+    /// de messages d'un coup, prend du retard et peut être fermé (« client trop lent ») avant
+    /// même que le test ne commence.
+    pub async fn wait_startup_burst_over(&self, token: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut last_seq = None;
+        let mut stable_since = Instant::now();
+        loop {
+            let state = self.get("/api/state", token).await.json();
+            let seq = state["seq"].as_u64().unwrap();
+            let bedroom_polling = state["devices"].as_array().is_some_and(|d| {
+                d.iter()
+                    .any(|d| d["mode"]["mode"] == "polling" && d["device"]["node_id"].is_string())
+            });
+            if last_seq != Some(seq) {
+                last_seq = Some(seq);
+                stable_since = Instant::now();
+            } else if bedroom_polling && stable_since.elapsed() >= Duration::from_millis(400) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "la rafale de démarrage de la démo ne se termine pas"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Ouvre un WebSocket (`protocol` = version annoncée dans l'URL).
     pub async fn ws(&self, token: &str, protocol: u32) -> Result<WebSocketStream<Tls>, Resp> {
         let tcp = TcpStream::connect(self.addr).await.unwrap();
