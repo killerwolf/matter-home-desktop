@@ -2,6 +2,25 @@
 
 [← Retour au README](../README.md)
 
+## Se connecter au serveur
+
+Au premier lancement, l'application demande l'adresse du serveur (par exemple
+`192.168.1.20:8443` ou `mac-mini.local`), l'identifiant et le mot de passe du compte créé sur le
+serveur (`matter-home-server create-account`).
+
+1. L'application lit le certificat du serveur et affiche son **empreinte SHA-256**. Comparez-la à
+   celle affichée par le serveur à son lancement (ou par `matter-home-server fingerprint`), puis
+   cliquez **Approuver et se connecter**. Seul ce certificat sera accepté ensuite.
+2. Les fois suivantes, la connexion est automatique (jeton conservé, pas le mot de passe).
+   Si la session expire ou est révoquée, l'écran de connexion revient avec l'adresse remplie.
+3. Si l'empreinte change (serveur réinstallé, ou autre appareil qui se fait passer pour lui), la
+   connexion est **refusée** avec les deux empreintes affichées ; un geste explicite est nécessaire
+   pour approuver le nouveau certificat.
+
+Sans serveur, l'application affiche « DÉCONNECTÉ » et se reconnecte seule (attente de 1 s
+jusqu'à 30 s). Rien n'est affiché ni commandé tant que le serveur n'est pas joint.
+**Fichier → Se déconnecter** révoque le jeton et efface les informations de connexion.
+
 ## Appairer un appareil
 
 1. App **Maison** (iPhone, iPad ou Mac) → appui long sur l'appareil → **Réglages** (roue
@@ -48,9 +67,9 @@ connexion, injoignable avec la prochaine tentative), le niveau de sa pile, puis 
 par type de mesure :
 
 - **Thermomètre** : grande valeur, humidité, mode de réception (souscription ou interrogation
-  périodique), choix de la fenêtre (15 min, 1 h, tout l'historique), min / max / moyenne,
-  graphique, **Exporter en CSV** (fichier dans `~/Downloads`, colonnes `timestamp_unix`,
-  `datetime_local`, `temperature_c`, `humidity_pct`).
+  périodique), choix de la fenêtre (15 min, 1 h, 7 jours), min / max / moyenne,
+  graphique, **Exporter en CSV** (fichier produit par le serveur, enregistré à l'endroit que vous
+  choisissez, colonnes `timestamp_unix`, `datetime_local`, `temperature_c`, `humidity_pct`).
 - **Détecteur d'ouverture** : « Ouvert » ou « Fermé », depuis quand, nombre d'ouvertures sur
   la fenêtre, derniers changements.
 - **Prise** : puissance instantanée, état allumée / éteinte, compteur d'énergie de la prise,
@@ -88,18 +107,18 @@ Le nom et l'icône s'appliquent partout (liste, fiche, plan, automatisations).
 
 | Commande | Effet |
 |---|---|
-| `matter-home-desktop` | mode normal, avec vos appareils |
-| `matter-home-desktop --demo` | appareils simulés, aucune communication réseau |
+| `matter-home-desktop` | lance l'application et se connecte au serveur |
 | `matter-home-desktop --plan` | ouvre directement le plan de la maison |
 | `matter-home-desktop --rules` | ouvre directement les automatisations |
 | `matter-home-desktop --device X` | ouvre la fiche du premier appareil dont le nom contient X |
-| `matter-home-desktop --discover` | liste les appareils Matter visibles sur le réseau, puis quitte |
-| `RUST_LOG=debug matter-home-desktop` | journaux détaillés (`RUST_LOG=debug,matc=debug` pour le protocole) |
+| `RUST_LOG=debug matter-home-desktop` | journaux détaillés |
 
-Les options `--plan`, `--rules` et `--device` se combinent avec `--demo`.
+Les appareils simulés et le diagnostic mDNS sont des options du serveur :
+`matter-home-server --demo` (compte `demo`, mot de passe affiché une fois, adresse
+`127.0.0.1:8443`) et `matter-home-server --discover`.
 
 Avec l'application installée depuis le DMG, le programme se trouve dans le paquet :
 
 ```bash
-"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --demo --plan
+"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --plan
 ```

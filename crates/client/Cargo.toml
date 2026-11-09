@@ -24,7 +24,7 @@ env_logger = "0.11"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Réseau (étape 4), sans tokio : des fils d'exécution et des sockets bloquants, hors du fil de
+# Réseau, sans tokio : des fils d'exécution et des sockets bloquants, hors du fil de
 # l'interface. TLS en rustls avec ring (comme le serveur), sans aws-lc.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Analyse des réponses HTTP/1.1 (en-têtes). Les requêtes sont écrites à la main.

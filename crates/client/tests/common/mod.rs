@@ -156,6 +156,20 @@ impl Server {
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
     }
 
+    /// Attend la fin du processus (par exemple après un import : code 75).
+    pub fn wait_exit(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let child = self.child.as_mut()?;
+            if let Some(status) = child.try_wait().unwrap() {
+                self.child = None;
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
     /// Coupure brutale (comme un plantage ou une coupure de courant).
     pub fn kill(&mut self) {
         if let Some(mut child) = self.child.take() {

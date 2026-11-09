@@ -43,24 +43,23 @@ Branchée par `[patch.crates-io]` dans `Cargo.toml`, chaque modification est rep
 ## Threads et canaux
 
 ```
-┌──────────── thread UI (egui) ────────────┐        ┌──────── thread « matter-backend » (tokio) ────────┐
-│ ui/mod.rs     liste, appairage, journal  │ Command│ matter/mod.rs      commandes, appairage           │
-│ ui/plan.rs    plan de la maison          │──────▶ │ matter/node.rs     1 tâche par nœud : CASE,       │
-│ ui/rules.rs   automatisations            │        │                    description, souscription      │
-│ history.rs    tampons circulaires        │ ◀──────│ matter/discovery.rs cache mDNS                    │
-└──────────────────────────────────────────┘  Event │ automation.rs      moteur de règles               │
-                                                     └──────────┬────────────────────────────────────────┘
-                                                                │ mesures
-                                                     ┌──────────▼──────────┐
-                                                     │ thread history-writer│ history/<nœud>.jsonl
-                                                     └─────────────────────┘
+┌──────────── client (egui) ────────────┐   HTTPS + WebSocket    ┌──────── serveur (tokio) ────────────┐
+│ thread UI   ui/*   affiche, commande  │  (protocole.md)        │ net/      API, WebSocket, jetons    │
+│ matter-ws   net/ws.rs  état + events  │ ◀────────────────────▶ │ hub.rs    état complet, diffusion   │
+│ matter-http ×4  net/backend.rs  API   │                        │ matter/   1 tâche par nœud (CASE)   │
+└───────────────────────────────────────┘                        │ automation.rs  moteur de règles     │
+                                                                 │ history_store.rs  historique        │
+                                                                 └─────────────────────────────────────┘
 ```
 
-- L'interface ne fait **aucune** entrée/sortie réseau. Elle envoie des `Command` (canal tokio
-  non bloquant) et applique les `Event` (`std::sync::mpsc`) dans `App::logic`, appelé même
-  fenêtre masquée.
-- Chaque attente réseau est bornée : 60 s par requête, 150 s par connexion, 30 s par
-  commande. Un appareil endormi ne bloque ni l'interface ni les autres appareils.
+- L'interface ne fait **aucune** entrée/sortie réseau. Elle envoie ses demandes à `net::Backend`
+  (qui rend la main aussitôt) et lit les `net::Event` dans `App::logic`, appelé même fenêtre
+  masquée ; chaque événement réseau appelle `request_repaint`.
+- Le client garde seulement `model.rs` : l'état tel que le protocole le décrit (état complet,
+  puis événements). Les séries des graphiques (`series.rs`) sont lues à la demande et vidées à la
+  déconnexion.
+- Côté serveur, chaque attente réseau est bornée : 60 s par requête, 150 s par connexion, 30 s par
+  commande. Un appareil endormi ne bloque ni les autres appareils ni les clients.
 - `EventSink::with_tap` envoie une copie de chaque événement au moteur d'automatisations.
 - Les commandes On/Off passent par la session CASE déjà ouverte avec l'appareil, partagée
   avec la souscription (`Ctx::set_connection`).
@@ -122,7 +121,7 @@ commandes (`Command::SetCover`, actions des règles) passent par la session du p
 - Graphique de puissance en escalier, avec `allow_band(false)` : sinon egui_plot remplace les
   marches verticales par une bande remplie.
 - Historique : JSON Lines par appareil, rétention 7 jours, 5 Mo maximum
-  (`crates/server/src/history_store.rs`) ; l'interface garde 5000 points par mesure.
+  (`crates/server/src/history_store.rs`) ; le client lit jusqu'à 20 000 points par lecture, à la demande.
 
 ## Limites connues
 
@@ -159,15 +158,28 @@ crates/server/src/     serveur (Matter, règles, historique) : aucune dépendanc
   matter/setup_code.rs codes d'appairage (+ tests)
   matter/tlv.rs        décodeur TLV (+ tests)
   matter/convert.rs    décodage des mesures (+ tests)
-crates/client/src/     client (egui) : aucune dépendance matc ni serveur
+crates/client/src/     client (egui) : aucune dépendance matc, tokio ni serveur
+  lib.rs               cœur sans interface : net, model, series (testé contre le vrai serveur)
   main.rs              options de lancement, eframe
-  history.rs           tampon circulaire, fenêtres, statistiques, CSV (+ tests)
-  ui/mod.rs            fenêtre, appairage, liste, fiche, journal (+ tests)
+  model.rs             état affiché : appareils, dernières valeurs, exécutions de règles (+ tests)
+  series.rs            séries lues à la demande, fenêtres, statistiques (+ tests)
+  net/mod.rs           états de la liaison (Link) et événements (Event)
+  net/backend.rs       file de requêtes HTTPS (4 fils), connexion, déconnexion, jeton
+  net/ws.rs            WebSocket : état complet, numéros d'événements, reconnexion (+ tests)
+  net/tls.rs           TLS épinglé par empreinte SHA-256 (+ tests)
+  net/http.rs          client HTTP/1.1 minimal (+ tests)
+  net/store.rs         fichier de connexion en 0600 (+ tests)
+  net/error.rs         erreurs et phrases françaises par code (+ tests)
+  net/addr.rs          adresse du serveur saisie (+ tests)
+  ui/mod.rs            fenêtre, appairage, liste, fiche, journal, menu Fichier (+ tests)
+  ui/connect.rs        écran de connexion, confirmation de l'empreinte
+  ui/sync.rs          plan et règles : dernière modification gagnante (+ tests)
   ui/thermometer.rs    vue thermomètre
-  ui/sensors.rs        vues ouverture et prise (+ tests)
+  ui/sensors.rs        vues ouverture, prise, volet (+ tests)
   ui/plan.rs           plan de la maison (+ tests)
   ui/rules.rs          onglet Automatisations (+ test)
   ui/customize.rs      éditeur nom et icône
+crates/client/tests/   couche connexion contre le vrai matter-home-server --demo
 vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md

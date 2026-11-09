@@ -372,7 +372,9 @@ impl MatterApp {
             // Resynchronisation : on garde l'affichage, un nouvel état complet arrive aussitôt.
             Link::Resyncing => {}
             Link::Connected { server_version } => {
-                self.push_log(format!("Connecté au serveur (version {server_version})."));
+                if !self.connected() {
+                    self.push_log(format!("Connecté au serveur (version {server_version})."));
+                }
                 self.connect.connected();
             }
             Link::Reconnecting {

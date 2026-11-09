@@ -348,10 +348,16 @@ fn history_csv_and_plan_come_from_the_server() {
     });
 }
 
+/// Contrôleur minimal mais valide (même exemple que les tests du serveur).
+const CONTROLLER: &str = r#"{"version":1,"identity":{"fabric_id":1,"controller_node_id":2,
+    "ca_private_key":"0101010101010101010101010101010101010101010101010101010101010101","ca_cert_der":"bb","controller_private_key":"0101010101010101010101010101010101010101010101010101010101010101","controller_cert_der":"dd"},
+    "nodes":[{"node_id":7,"name":"Capteur"}]}"#;
+
 #[test]
-fn import_is_checked_in_two_steps_and_large_bodies_pass_the_tls_flush() {
+fn import_is_checked_first_then_applied_and_the_client_reconnects() {
     let dir = temp_dir("import");
-    let server = Server::start(&dir);
+    std::fs::write(dir.join("controller.json"), CONTROLLER).unwrap();
+    let mut server = Server::start(&dir);
     let mut client = TestClient::new(store_path(&dir));
     connect_first_time(&mut client, &server);
 
@@ -372,24 +378,49 @@ fn import_is_checked_in_two_steps_and_large_bodies_pass_the_tls_flush() {
         started.elapsed()
     );
     assert_eq!(err.api_code(), Some(ErrorCode::InvalidImport), "{err:?}");
+    assert!(err
+        .message()
+        .starts_with("Ce fichier n'est pas une sauvegarde"));
 
-    // Une sauvegarde valide : elle vient de l'export du serveur lui-même.
-    match client.call(Request::get("/api/export")) {
-        Ok(export) => {
-            let summary: ImportResponse = client
-                .call(Request {
-                    body: Body::Bytes(export.body.clone()),
-                    ..Request::new("POST", "/api/import?dry_run=1")
-                })
-                .unwrap()
-                .json()
-                .unwrap();
-            assert!(!summary.restarting);
-            assert!(summary.summary.devices >= 1);
-        }
-        // En démo il peut ne rien y avoir à exporter : le code est traduit.
-        Err(e) => assert_eq!(e.api_code(), Some(ErrorCode::NoData), "{e:?}"),
-    }
+    // Une vraie sauvegarde, celle que le serveur exporte lui-même.
+    let export = client.call(Request::get("/api/export")).unwrap();
+    assert!(export.body.len() > 100);
+
+    // 1. Vérification (dry_run) : un résumé, rien n'est engagé.
+    let check: ImportResponse = client
+        .call(Request {
+            body: Body::Bytes(export.body.clone()),
+            ..Request::new("POST", "/api/import?dry_run=1")
+        })
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(!check.restarting);
+    assert_eq!(check.summary.devices, 1);
+    assert!(!dir.join("import-en-attente.matterhome").exists());
+
+    // 2. Import réel : accepté, puis le serveur s'arrête (code 75) pour être relancé.
+    let applied: ImportResponse = client
+        .call(Request {
+            body: Body::Bytes(export.body),
+            ..Request::new("POST", "/api/import")
+        })
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(applied.restarting);
+    let status = server
+        .wait_exit(Duration::from_secs(20))
+        .expect("le serveur doit quitter");
+    assert_eq!(status.code(), Some(75));
+
+    // Le client voit la liaison tomber, puis se reconnecte tout seul quand le serveur revient.
+    client.wait_link(T, |l| matches!(l, Link::Reconnecting { .. }));
+    let _server = Server::start_on(&dir, &format!("127.0.0.1:{}", server.addr.port()));
+    client.wait_link(Duration::from_secs(90), |l| {
+        matches!(l, Link::Connected { .. })
+    });
+    client.wait_for(T, |e| matches!(e, Event::Snapshot(_)).then_some(()));
 }
 
 #[test]
@@ -565,4 +596,22 @@ fn events_arrive_in_unbroken_sequence_without_resync() {
         }
         _ => None,
     });
+}
+
+/// Le serveur ferme une connexion muette après 60 s sans signe de vie du client : le client doit
+/// répondre à ses pings (toutes les 20 s). La liaison doit donc survivre bien au-delà.
+#[test]
+fn the_link_survives_the_servers_pings_beyond_its_idle_limit() {
+    let dir = temp_dir("pings");
+    let server = Server::start(&dir);
+    let mut client = TestClient::new(store_path(&dir));
+    connect_first_time(&mut client, &server);
+    let until = std::time::Instant::now() + Duration::from_secs(75);
+    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        match client.events.recv_timeout(left) {
+            Ok(Event::Link(link)) => panic!("la liaison a changé d'état : {link:?}"),
+            Ok(Event::Snapshot(_)) => panic!("nouvel état complet inattendu"),
+            Ok(_) | Err(_) => {}
+        }
+    }
 }

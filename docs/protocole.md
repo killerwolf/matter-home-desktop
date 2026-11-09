@@ -159,6 +159,43 @@ import annoncé n'est jamais perdu en silence, ni appliqué par surprise plus ta
 `serveur/` (compte, sessions, certificat) n'est ni exporté ni remplacé, seulement copié : l'empreinte
 et le compte ne changent pas.
 
+## Côté client (`crates/client`)
+
+Le client n'a ni cache ni mode local : tout ce qu'il affiche vient du serveur, et il l'oublie à
+la déconnexion. Sa couche réseau (`crates/client/src/net/`) n'utilise pas tokio : des fils
+d'exécution et des sockets bloquants, hors du fil de l'interface, qui n'attend jamais le réseau.
+
+- **Première connexion** : le client fait la poignée de main TLS pour lire l'empreinte du
+  certificat, ferme sans rien envoyer, et la montre à l'utilisateur (qui la compare à celle du
+  serveur). Après approbation, la connexion suivante, la seule à porter le mot de passe, n'accepte
+  que ce certificat (la signature de la poignée de main est vérifiée pour de bon).
+- **Fichier de connexion** : adresse, empreinte et jeton, en 0600, dans
+  `dev.matter-home-desktop.MatterHomeClient/connexion.json` (jamais dans le dossier de données de la
+  v0.2.1). Jamais le mot de passe. Jeton expiré ou révoqué : retour à l'écran de connexion, adresse
+  et empreinte conservées.
+- **Empreinte changée** : connexion refusée, rien n'est envoyé, aucune reconnexion. Un geste
+  explicite (« Oublier l'ancien certificat », avec case à cocher) repasse par la confirmation.
+- **Version** : `GET /api/version` avant toute connexion ; un protocole différent donne un message
+  clair (« mettez à jour l'application ou le serveur »), sans boucle de reconnexion.
+- **Temps réel** : l'état complet remplace tout ; ensuite `seq` doit croître de 1. Un événement de
+  `seq` déjà vu est ignoré, un trou rouvre la connexion. Fermeture 1013 (client en retard) : simple
+  reconnexion, l'affichage reste. Autre coupure : « déconnecté » (les données sont effacées) et
+  nouvel essai après 1, 2, 4, 8, 16 puis 30 s. Une mesure plus ancienne que la valeur connue est
+  ignorée.
+- **Requêtes** : 4 au plus en même temps (une connexion chacune, `Connection: close`, `flush` du flux
+  TLS avant d'attendre la réponse), plus le WebSocket : bien sous les 16 connexions par adresse.
+- **Plan et règles** : un seul envoi en vol par document, modifications regroupées (400 ms de calme),
+  dernière modification gagnante. Si un autre client modifie pendant une édition locale, l'édition
+  est gardée et un bandeau propose d'afficher l'autre version.
+- **Historique** : lu à la demande quand une fiche s'ouvre ou que la fenêtre change (« 7 jours » est
+  le maximum que le serveur garde), complété par les mesures reçues, vidé à la déconnexion.
+- **Export et import** : le serveur produit le `.matterhome` et le CSV, le client les enregistre
+  avec le sélecteur de fichier (sauvegarde en 0600). Import : `?dry_run=1` pour le résumé, confirmation,
+  puis import réel ; le serveur redémarre et le client se reconnecte seul.
+- **Erreurs** : le client traduit chaque `code` en français (correspondance exhaustive : un nouveau
+  code oblige à écrire sa phrase) ; le mot de passe, le jeton et les codes d'appairage ne sont jamais
+  journalisés.
+
 ## Hors protocole pour l'instant
 
 Pas de pagination du journal des règles (200 entrées, en mémoire : perdu au redémarrage), pas

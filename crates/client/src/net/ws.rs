@@ -232,6 +232,7 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
     // 3. Flux : hello, état complet, événements.
     let mut last_heard = Instant::now();
     let mut greeted = false;
+    let mut announced_version: Option<String> = None;
     let mut expected_seq: Option<u64> = None;
     loop {
         if shared.generation() != generation {
@@ -277,13 +278,18 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
                             ));
                         }
                         greeted = true;
-                        shared.link(Link::Connected { server_version });
+                        announced_version = Some(server_version);
                     }
                     _ if !greeted => {
                         return Ended::Lost("le serveur n'a pas annoncé sa version".into())
                     }
                     ServerMessage::Snapshot(snapshot) => {
                         expected_seq = Some(snapshot.seq + 1);
+                        // « Connecté » n'est annoncé qu'avec l'état complet : l'interface ne
+                        // montre jamais une liste vide en attendant.
+                        if let Some(server_version) = announced_version.clone() {
+                            shared.link(Link::Connected { server_version });
+                        }
                         shared.emit(Event::Snapshot(snapshot));
                     }
                     ServerMessage::Event { seq, event } => {

@@ -22,6 +22,20 @@ Les téléchargements de chaque version sont sur la
   import, historique et CSV sont servis à la demande. Protocole décrit dans
   `docs/protocole.md`.
 - Options du serveur `--listen` et `--data-dir`.
+- **Client branché sur le serveur** (étape 4). Écran de connexion (adresse, identifiant, mot de
+  passe) ; à la première connexion l'empreinte SHA-256 du certificat est montrée puis épinglée,
+  une empreinte changée est refusée sans contournement silencieux. Le client ne garde plus aucune
+  donnée (seulement adresse, empreinte et jeton, en 0600, dans un dossier distinct de la v0.2.1) :
+  état complet puis événements numérotés, historique lu à la demande, reconnexion automatique,
+  « déconnecté » sans serveur. Appairage, volets, effacement d'historique, personnalisation, plan et
+  règles (dernière modification gagnante), export `.matterhome` et CSV, import en deux temps
+  (résumé puis confirmation) passent tous par le serveur ; notifications affichées dans
+  l'interface.
+
+### Corrigé
+
+- Test du serveur « client lent » : il attend la fin de la rafale de démarrage de la démo avant
+  d'ouvrir ses WebSockets (échec sporadique de la file de diffusion saturée).
 
 ## [0.2.1] - 2026-11-03
 
