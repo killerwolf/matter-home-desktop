@@ -82,6 +82,17 @@ impl ConnectScreen {
         self.message = Some((false, message));
     }
 
+    /// Oublier le certificat épinglé arrête la session : pas pendant qu'une connexion
+    /// (lecture de l'empreinte ou envoi du mot de passe) est en cours.
+    pub fn reset_allowed(&self) -> bool {
+        !matches!(self.stage, Stage::Probing | Stage::LoggingIn)
+    }
+
+    #[cfg(test)]
+    pub fn start_logging_in(&mut self) {
+        self.stage = Stage::LoggingIn;
+    }
+
     fn url_is_pinned(&self) -> bool {
         self.pinned_url
             .as_deref()
@@ -173,8 +184,13 @@ impl ConnectScreen {
         } else if self.pinned_url.is_some() {
             ui.small("Le certificat de ce serveur est déjà approuvé.");
             ui.add_space(6.0);
+            // Pas pendant la connexion : l'oubli arrêterait la session qui est en train de s'ouvrir.
             if ui
-                .small_button("Ce serveur a été réinstallé : oublier son certificat")
+                .add_enabled(
+                    self.reset_allowed(),
+                    egui::Button::new("Ce serveur a été réinstallé : oublier son certificat")
+                        .small(),
+                )
                 .clicked()
             {
                 backend.reset_pinned_certificate(self.pinned_url.clone());

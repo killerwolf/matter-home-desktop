@@ -9,6 +9,7 @@
 pub mod addr;
 mod backend;
 pub mod error;
+pub mod files;
 pub mod http;
 pub mod store;
 pub mod tls;
@@ -51,6 +52,9 @@ pub enum Link {
     },
     Connected {
         server_version: String,
+        /// Quel serveur : son adresse et l'empreinte de son certificat. Sert à ne jamais
+        /// envoyer à un autre serveur ce qui a été préparé pour celui-ci (brouillons, import).
+        server: String,
     },
     /// Le certificat présenté n'est pas celui qui a été approuvé. Aucune donnée n'est envoyée.
     CertificateChanged {
@@ -59,9 +63,7 @@ pub enum Link {
         found: String,
     },
     /// Le client et le serveur ne parlent pas la même version du protocole.
-    Incompatible {
-        message: String,
-    },
+    Incompatible { message: String },
 }
 
 /// Ce que le réseau remonte à l'interface.
@@ -72,10 +74,16 @@ pub enum Event {
     Snapshot(Box<Snapshot>),
     /// Événement suivant, numérotation continue garantie (voir `ws.rs`).
     Live(Box<WireEvent>),
-    /// Réponse à une requête de [`Backend::call`].
+    /// Réponse à une requête de [`Backend::call`] ou de [`Backend::download`] (dans ce cas, le
+    /// corps est vide : il est déjà écrit dans le fichier).
     Reply {
         id: u64,
         result: Result<Response, NetError>,
+    },
+    /// Fichier lu par [`Backend::read_file`].
+    FileRead {
+        id: u64,
+        result: Result<Arc<Vec<u8>>, NetError>,
     },
     /// Empreinte lue pendant une première connexion : à faire approuver par l'utilisateur.
     Probed {

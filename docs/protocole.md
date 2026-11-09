@@ -79,7 +79,7 @@ aux essais et aux tests.
 | `GET /api/devices/{id}/history` | historique à la demande (voir ci-dessous) |
 | `GET /api/devices/{id}/history.csv` | CSV température et humidité (même fenêtre, 7 jours par défaut) |
 | `DELETE /api/devices/{id}/history` | effacer l'historique (202) |
-| `GET`, `PUT /api/plan` | lire, remplacer le plan de la maison |
+| `GET`, `PUT /api/plan` | lire, remplacer le plan de la maison (au moins un étage : sinon `plan_without_floor`, 400) |
 | `GET`, `PUT /api/rules` | lire, remplacer les règles |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
@@ -89,7 +89,7 @@ aux essais et aux tests.
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
 effet (ou leur échec) arrive en événements. Les erreurs possibles : `not_found` (appareil ou
-règle inconnu), `bad_request`, `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
+règle inconnu), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
 (405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `invalid_import`
 (400), `unavailable`… Toute erreur, y compris 405 et 413, a le corps `{"error": {"code": …}}`.
 
@@ -135,7 +135,10 @@ clés privées du contrôleur en clair** : le canal est chiffré et authentifié
 
 `POST /api/import` valide **à fond** la sauvegarde : identité du contrôleur (clés et certificats
 lisibles), `maison.json` et `regles.json` (désérialisés, puis mêmes bornes que `PUT /api/plan` et
-`PUT /api/rules`). Une sauvegarde invalide est refusée (`invalid_import`, 400) sans rien écrire.
+`PUT /api/rules`). Une sauvegarde invalide est refusée (`invalid_import`, 400) sans rien écrire. Une vraie
+sauvegarde dont le plan n'a aucun étage (`floors: []`) n'est pas refusée : son plan est remplacé
+par le plan par défaut, avant d'être déposée (le même remplacement a lieu au chargement d'un
+`maison.json` sans étage).
 Sinon elle est déposée dans le dossier de données (`import-en-attente.matterhome`, créée en 0600,
 écriture atomique), la réponse est 202, puis le serveur s'arrête **avec le code 75** (non nul,
 pour qu'un launchd configuré pour ne relancer que les échecs le relance aussi). Un second import
@@ -171,8 +174,10 @@ d'exécution et des sockets bloquants, hors du fil de l'interface, qui n'attend 
   que ce certificat (la signature de la poignée de main est vérifiée pour de bon).
 - **Fichier de connexion** : adresse, empreinte et jeton, en 0600, dans
   `dev.matter-home-desktop.MatterHomeClient/connexion.json` (jamais dans le dossier de données de la
-  v0.2.1). Jamais le mot de passe. Jeton expiré ou révoqué : retour à l'écran de connexion, adresse
-  et empreinte conservées.
+  v0.2.1). Jamais le mot de passe. Jeton expiré ou révoqué, ou « Se déconnecter » : le jeton est
+  effacé (et révoqué sur le serveur), l'adresse et l'empreinte sont **conservées** ; un geste à part
+  (« oublier son certificat », indisponible pendant une connexion) efface aussi l'empreinte. Une
+  requête déjà en file au moment de la déconnexion ne part pas avec l'ancien jeton.
 - **Empreinte changée** : connexion refusée, rien n'est envoyé, aucune reconnexion. Un geste
   explicite (« Oublier l'ancien certificat », avec case à cocher) repasse par la confirmation.
 - **Version** : `GET /api/version` avant toute connexion ; un protocole différent donne un message
@@ -182,16 +187,37 @@ d'exécution et des sockets bloquants, hors du fil de l'interface, qui n'attend 
   reconnexion, l'affichage reste. Autre coupure : « déconnecté » (les données sont effacées) et
   nouvel essai après 1, 2, 4, 8, 16 puis 30 s. Une mesure plus ancienne que la valeur connue est
   ignorée.
+- **Échéances** : chaque lecture et écriture de la socket recalcule le temps restant avant une
+  échéance absolue (connexion + poignée de main TLS 8 s, requête entière selon sa nature, mise à
+  niveau WebSocket 10 s, état complet 30 s, 60 s au plus entre deux messages) : un serveur qui goutte
+  ses octets ne les allonge pas. Un fil réseau ne meurt jamais sans répondre (une panique devient une
+  erreur pour le demandeur, ou une « liaison perdue » avec nouvel essai pour le WebSocket).
+- **Journal** : l'en-tête `Authorization` n'est jamais écrit, même avec `RUST_LOG=trace`.
 - **Requêtes** : 4 au plus en même temps (une connexion chacune, `Connection: close`, `flush` du flux
   TLS avant d'attendre la réponse), plus le WebSocket : bien sous les 16 connexions par adresse.
-- **Plan et règles** : un seul envoi en vol par document, modifications regroupées (400 ms de calme),
-  dernière modification gagnante. Si un autre client modifie pendant une édition locale, l'édition
-  est gardée et un bandeau propose d'afficher l'autre version.
+- **Plan et règles** : un seul envoi en vol par document, modifications regroupées (400 ms de calme,
+  pas pendant un glisser), dernière modification gagnante. Si un autre client modifie pendant une
+  édition locale, l'édition est gardée, **rien n'est envoyé** et un bandeau propose d'afficher l'autre
+  version ou de garder la sienne. Un document que le serveur refuserait d'avance (action « Appeler une
+  URL » sans adresse valable) reste un brouillon visible, non envoyé. Un refus 400 garde le brouillon
+  avec le motif, sans le renvoyer tant qu'il ne change pas ; un autre refus 4xx revient à la version
+  du serveur ; un délai dépassé, un 503 ou une coupure gardent le document à envoyer (nouvel essai
+  après 3 s, doublé jusqu'à 30 s). Une coupure garde le brouillon : à la reprise il repart si le
+  serveur n'a pas changé entre-temps, sinon le bandeau prévient ; il est abandonné si c'est un autre
+  serveur, ou après une déconnexion. À la fermeture de la fenêtre, un dernier envoi borné (1,5 s)
+  part sans attendre les 400 ms. « Tester » une règle attend l'enregistrement de la dernière version.
 - **Historique** : lu à la demande quand une fiche s'ouvre ou que la fenêtre change (« 7 jours » est
   le maximum que le serveur garde), complété par les mesures reçues, vidé à la déconnexion.
 - **Export et import** : le serveur produit le `.matterhome` et le CSV, le client les enregistre
-  avec le sélecteur de fichier (sauvegarde en 0600). Import : `?dry_run=1` pour le résumé, confirmation,
+  avec le sélecteur de fichier (sauvegarde en 0600) ; l'écriture, et la lecture d'une sauvegarde à
+  importer (128 Mo au plus), se font dans les fils réseau, sans copie du contenu. Une sauvegarde ne
+  part que vers le serveur qui l'a validée (`dry_run`). Import : `?dry_run=1` pour le résumé, confirmation,
   puis import réel ; le serveur redémarre et le client se reconnecte seul.
+- **Notifications** : quand le client est ouvert, une règle qui notifie affiche un toast et une
+  notification macOS locale (titre et texte passés en arguments d'`osascript`, jamais dans son
+  script).
+- **Déconnexion** : le journal, les notifications affichées, le code d'appairage et toute fenêtre
+  en attente d'une réponse sont effacés avec les données.
 - **Erreurs** : le client traduit chaque `code` en français (correspondance exhaustive : un nouveau
   code oblige à écrire sa phrase) ; le mot de passe, le jeton et les codes d'appairage ne sont jamais
   journalisés.

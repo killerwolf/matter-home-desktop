@@ -7,7 +7,7 @@ use std::time::Instant;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use super::customize::{editor, DeviceEdit, EditResult};
-use super::sync::{Incoming, SyncState};
+use super::sync::{Failure, Incoming, SyncState};
 use super::Device;
 use protocol::format::{format_position, format_power, format_temperature};
 use protocol::home::{
@@ -86,8 +86,6 @@ pub struct PlanView {
     dirty: bool,
     /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
     sync: SyncState<HomePlan>,
-    /// Le pointeur est enfoncé (glisser en cours) : on n'envoie rien avant le relâchement.
-    holding: bool,
     confirm_delete_floor: bool,
     /// Brouillon du nom et de l'icône de l'appareil sélectionné.
     device_edit: Option<DeviceEdit>,
@@ -272,6 +270,13 @@ fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) ->
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// Ce qui empêche d'envoyer un plan : le serveur exige au moins un étage.
+fn plan_problem(plan: &HomePlan) -> Option<String> {
+    plan.floors
+        .is_empty()
+        .then(|| "le plan doit avoir au moins un étage".to_string())
+}
+
 impl PlanView {
     /// Plan vide : le vrai plan vient du serveur (état complet à la connexion).
     pub fn new() -> Self {
@@ -285,8 +290,7 @@ impl PlanView {
             drag: None,
             selection: None,
             dirty: false,
-            sync: SyncState::default(),
-            holding: false,
+            sync: SyncState::with_check(plan_problem),
             confirm_delete_floor: false,
             device_edit: None,
         }
@@ -309,6 +313,17 @@ impl PlanView {
         self.sync.mark_changed(Instant::now());
     }
 
+    /// Force un plan sans étage, comme si un état incohérent atteignait l'affichage (tests).
+    #[cfg(test)]
+    pub fn force_no_floor(&mut self) {
+        self.plan.floors.clear();
+    }
+
+    #[cfg(test)]
+    pub fn keep_mine(&mut self) {
+        self.sync.keep_mine(Instant::now());
+    }
+
     #[cfg(test)]
     pub fn has_remote_banner(&self) -> bool {
         self.sync.remote().is_some()
@@ -320,46 +335,117 @@ impl PlanView {
     }
 
     /// Plan reçu du serveur (état complet ou `plan_changed`). Une édition en cours n'est
-    /// jamais écrasée : voir `SyncState`.
-    pub fn on_server(&mut self, incoming: HomePlan) {
+    /// jamais écrasée : voir `SyncState`. Un plan sans étage est remplacé par le plan par
+    /// défaut : l'affichage suppose qu'il y en a toujours un.
+    pub fn on_server(&mut self, mut incoming: HomePlan) {
+        incoming.ensure_floor();
         if self.sync.on_server(incoming, &mut self.plan) == Incoming::Adopted {
-            self.floor = self.floor.min(self.plan.floors.len().saturating_sub(1));
             self.selection = None;
             self.device_edit = None;
             self.confirm_delete_floor = false;
         }
+        self.clamp_floor();
     }
 
-    /// Modification à envoyer maintenant, s'il y en a une.
-    pub fn poll_save(&self, now: Instant) -> Option<HomePlan> {
-        self.sync.due(now, self.holding, &self.plan)
+    /// L'étage affiché existe toujours (le plan a pu être remplacé par une autre version).
+    fn clamp_floor(&mut self) {
+        self.floor = self.floor.min(self.plan.floors.len().saturating_sub(1));
+    }
+
+    /// Modification à envoyer maintenant, s'il y en a une. `holding` : le pointeur est
+    /// enfoncé (glisser en cours), on n'envoie rien avant le relâchement.
+    pub fn poll_save(&self, now: Instant, holding: bool) -> Option<HomePlan> {
+        self.sync.due(now, holding, &self.plan)
+    }
+
+    /// Modification à envoyer sans attendre le délai de calme (fermeture de la fenêtre).
+    pub fn poll_save_now(&self) -> Option<HomePlan> {
+        self.sync.due_now(&self.plan)
     }
 
     pub fn sent(&mut self, request_id: u64, content: HomePlan) {
         self.sync.sent(request_id, content);
     }
 
-    pub fn saved(&mut self, request_id: u64, stored: Option<HomePlan>) {
+    pub fn saved(&mut self, request_id: u64, mut stored: Option<HomePlan>) {
+        if let Some(stored) = stored.as_mut() {
+            stored.ensure_floor();
+        }
         self.sync.on_saved(request_id, stored, &mut self.plan);
+        self.clamp_floor();
     }
 
-    /// Envoi refusé : retour à la version du serveur. `true` si c'était un envoi du plan.
-    pub fn rejected(&mut self, request_id: u64) -> bool {
-        let was_ours = self.sync.on_rejected(request_id, &mut self.plan);
-        if was_ours {
-            self.floor = self.floor.min(self.plan.floors.len().saturating_sub(1));
+    /// Envoi échoué. `true` si c'était un envoi du plan. Selon la panne, le brouillon reste
+    /// (refus du contenu, panne passagère) ou le plan revient à la version du serveur.
+    pub fn failed(&mut self, request_id: u64, failure: Failure, now: Instant) -> bool {
+        let reverted = matches!(failure, Failure::Rejected);
+        let was_ours = self
+            .sync
+            .on_failed(request_id, failure, now, &mut self.plan);
+        if was_ours && reverted {
             self.selection = None;
         }
+        self.clamp_floor();
         was_ours
+    }
+
+    /// La liaison est coupée : un brouillon est gardé pour la reprise, sinon tout est oublié.
+    pub fn suspend(&mut self, now: Instant) {
+        if !self.sync.suspend(now) {
+            self.reset();
+        }
+    }
+
+    /// Un envoi est à faire ou en vol (réveil de l'interface).
+    pub fn needs_tick(&self) -> bool {
+        self.dirty || self.sync.needs_tick(&self.plan)
+    }
+
+    /// Ce qu'il faut dire d'un plan qui n'est pas (encore) parti.
+    pub fn notice(&self) -> Option<String> {
+        self.sync.notice(&self.plan)
     }
 
     fn floor_mut(&mut self) -> &mut home::Floor {
         &mut self.plan.floors[self.floor]
     }
 
+    /// Garde de l'affichage : il y a au moins un étage, et l'étage affiché existe. Un plan sans
+    /// étage (jamais envoyé par ce serveur, mais l'interface ne doit pas en dépendre) est
+    /// signalé avec de quoi le réparer, au lieu de planter.
+    fn has_floor(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.plan.floors.is_empty() {
+            ui.colored_label(RED, "Le plan n'a aucun étage.");
+            if ui.button("Créer un étage").clicked() {
+                self.plan = HomePlan::default();
+                self.floor = 0;
+                self.sync.mark_changed(Instant::now());
+            }
+            return false;
+        }
+        self.clamp_floor();
+        true
+    }
+
+    /// Plan non envoyé (brouillon incomplet, refus du serveur, panne passagère).
+    fn draft_banner(&self, ui: &mut egui::Ui) {
+        let Some(text) = self.notice() else { return };
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(90, 50, 20))
+            .show(ui, |ui| {
+                ui.label(text);
+            });
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {
-        self.floor = self.floor.min(self.plan.floors.len() - 1);
+        if !self.has_floor(ui) {
+            return PlanAction::None;
+        }
         self.remote_banner(ui);
+        self.draft_banner(ui);
+        if !self.has_floor(ui) {
+            return PlanAction::None;
+        }
         self.toolbar(ui);
         ui.separator();
 
@@ -375,7 +461,6 @@ impl PlanView {
                 });
         }
         let action = self.canvas(ui, devices);
-        self.holding = ui.input(|i| i.pointer.any_down());
         if std::mem::take(&mut self.dirty) {
             self.sync.mark_changed(Instant::now());
         }

@@ -3,6 +3,7 @@
 //! par adresse, la file de requêtes (`session.rs`) en garde bien moins en même temps.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -18,12 +19,28 @@ const MAX_HEAD: usize = 64 * 1024;
 /// Longueur maximale d'une ligne de taille de morceau (`1A3F;extension`).
 const MAX_CHUNK_LINE: usize = 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Body {
     None,
     Json(Vec<u8>),
     /// Contenu brut (sauvegarde `.matterhome`, qui est du JSON).
     Bytes(Vec<u8>),
+    /// Contenu partagé, jamais copié : une sauvegarde lue une fois (jusqu'à 128 Mo) sert à la
+    /// vérification puis à l'import réel, sans que l'interface en garde un second exemplaire.
+    Shared(Arc<Vec<u8>>),
+}
+
+// Pas de `Debug` dérivé : une sauvegarde de plusieurs Mo (et ses clés) n'a rien à faire dans
+// un journal.
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Body::None => f.write_str("Body::None"),
+            Body::Json(b) => write!(f, "Body::Json({} octets)", b.len()),
+            Body::Bytes(b) => write!(f, "Body::Bytes({} octets)", b.len()),
+            Body::Shared(b) => write!(f, "Body::Shared({} octets)", b.len()),
+        }
+    }
 }
 
 /// Une requête à l'API. Le jeton est ajouté par l'envoyeur, jamais écrit ici.
@@ -132,6 +149,7 @@ pub fn exec(
     let body: &[u8] = match &request.body {
         Body::None => &[],
         Body::Json(b) | Body::Bytes(b) => b,
+        Body::Shared(b) => b,
     };
     let mut head = format!(
         "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: matter-home-desktop\r\nAccept: */*\r\nConnection: close\r\n",

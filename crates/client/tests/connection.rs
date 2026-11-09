@@ -348,6 +348,78 @@ fn history_csv_and_plan_come_from_the_server() {
     });
 }
 
+/// Les fichiers (export, CSV, sauvegarde à importer) sont écrits et lus par les fils réseau, pas
+/// par l'interface : le corps téléchargé va directement dans le fichier.
+#[test]
+fn files_are_written_and_read_by_the_network_threads() {
+    let dir = temp_dir("files");
+    let server = Server::start(&dir);
+    let mut client = TestClient::new(store_path(&dir));
+    connect_first_time(&mut client, &server);
+
+    let since = protocol::events::now_unix() - 3600.0;
+    let csv_path = format!("/api/devices/{LIVING}/history.csv?since={since}");
+    let target = dir.join("releve.csv");
+    let id = client
+        .backend
+        .download(Request::get(csv_path.clone()), target.clone(), false);
+    let reply = client.wait_for(T, |e| match e {
+        Event::Reply { id: got, result } if *got == id => Some(result.clone()),
+        _ => None,
+    });
+    assert!(
+        reply.unwrap().body.is_empty(),
+        "le corps est dans le fichier"
+    );
+    assert!(std::fs::read_to_string(&target)
+        .unwrap()
+        .starts_with("timestamp_unix"));
+
+    // Privé : en 0600 (la sauvegarde contient des clés).
+    let secret = dir.join("secret.matterhome");
+    let id = client
+        .backend
+        .download(Request::get(csv_path), secret.clone(), true);
+    client
+        .wait_for(T, |e| match e {
+            Event::Reply { id: got, result } if *got == id => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Une écriture impossible est une erreur lisible, pas un silence.
+    let id = client.backend.download(
+        Request::get("/api/state"),
+        dir.join("absent").join("x.json"),
+        false,
+    );
+    let reply = client.wait_for(T, |e| match e {
+        Event::Reply { id: got, result } if *got == id => Some(result.clone()),
+        _ => None,
+    });
+    assert!(matches!(reply, Err(NetError::Local(_))), "{reply:?}");
+
+    // Lecture : contenu partagé, plafond respecté, fichier absent signalé.
+    let backup = dir.join("a-importer.matterhome");
+    std::fs::write(&backup, vec![b'x'; 1000]).unwrap();
+    let mut read = |path: PathBuf, max: u64| {
+        let id = client.backend.read_file(path, max);
+        client.wait_for(T, |e| match e {
+            Event::FileRead { id: got, result } if *got == id => Some(result.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(read(backup.clone(), 2000).unwrap().len(), 1000);
+    assert!(matches!(read(backup, 10), Err(NetError::Local(m)) if m.contains("volumineux")));
+    assert!(read(dir.join("absent.matterhome"), 10).is_err());
+}
+
 /// Contrôleur minimal mais valide (même exemple que les tests du serveur).
 const CONTROLLER: &str = r#"{"version":1,"identity":{"fabric_id":1,"controller_node_id":2,
     "ca_private_key":"0101010101010101010101010101010101010101010101010101010101010101","ca_cert_der":"bb","controller_private_key":"0101010101010101010101010101010101010101010101010101010101010101","controller_cert_der":"dd"},

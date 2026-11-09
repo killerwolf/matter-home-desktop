@@ -334,7 +334,10 @@ fn connect_and_stream(shared: &Arc<Shared>, generation: u64, creds: &Creds) -> E
                         // montre jamais une liste vide en attendant.
                         if let Some(server_version) = announced_version.clone() {
                             connected_announced = true;
-                            shared.link(Link::Connected { server_version });
+                            shared.link(Link::Connected {
+                                server_version,
+                                server: creds.identity(),
+                            });
                         }
                         shared.emit(Event::Snapshot(snapshot));
                     }

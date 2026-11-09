@@ -5,6 +5,7 @@
 //! adresse (docs/protocole.md), et une requête = une connexion.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,6 +15,7 @@ use protocol::wire::{ErrorCode, LoginRequest, LoginResponse, VersionInfo, PROTOC
 
 use super::addr::ServerAddr;
 use super::error::NetError;
+use super::files;
 use super::http::{self, Request};
 use super::store::{Saved, Store};
 use super::tls::{self, normalize_fingerprint, Trust};
@@ -28,6 +30,13 @@ pub(super) struct Creds {
     pub addr: ServerAddr,
     pub fingerprint: String,
     pub token: String,
+}
+
+impl Creds {
+    /// Quel serveur : adresse et empreinte (jamais le jeton).
+    pub(super) fn identity(&self) -> String {
+        format!("{}#{}", self.addr.url(), self.fingerprint)
+    }
 }
 
 pub(super) struct Shared {
@@ -191,6 +200,22 @@ enum Job {
         creds: Creds,
         request: Request,
     },
+    /// Requête dont le corps de la réponse est écrit dans un fichier, hors du fil de l'interface.
+    Download {
+        id: u64,
+        generation: u64,
+        creds: Creds,
+        request: Request,
+        path: PathBuf,
+        /// Fichier en 0600 (la sauvegarde contient des clés privées).
+        private: bool,
+    },
+    /// Lecture d'un fichier choisi par l'utilisateur (sauvegarde à importer).
+    ReadFile {
+        id: u64,
+        path: PathBuf,
+        max: u64,
+    },
     Revoke {
         creds: Creds,
     },
@@ -330,6 +355,41 @@ impl Backend {
         id
     }
 
+    /// Quel serveur est joint (adresse et empreinte), s'il y a une session.
+    pub fn server_identity(&self) -> Option<String> {
+        self.shared.creds().map(|c| c.identity())
+    }
+
+    /// Comme [`Backend::call`], mais le corps de la réponse (export, CSV : plusieurs Mo) est
+    /// écrit dans `path` par le fil réseau. `Event::Reply` rend alors un corps vide, ou
+    /// l'erreur d'écriture.
+    pub fn download(&self, request: Request, path: PathBuf, private: bool) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        match self.shared.creds() {
+            Some(creds) => self.submit(Job::Download {
+                id,
+                generation: self.shared.generation(),
+                creds,
+                request,
+                path,
+                private,
+            }),
+            None => self.shared.emit(Event::Reply {
+                id,
+                result: Err(NetError::Unreachable("pas de connexion au serveur".into())),
+            }),
+        }
+        id
+    }
+
+    /// Lit un fichier (au plus `max` octets) dans un fil réseau. Réponse : `Event::FileRead`,
+    /// avec le contenu partagé (`Arc`) pour qu'il ne soit jamais copié.
+    pub fn read_file(&self, path: PathBuf, max: u64) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.submit(Job::ReadFile { id, path, max });
+        id
+    }
+
     /// Déconnexion : le jeton est révoqué auprès du serveur puis effacé d'ici. L'adresse et
     /// l'empreinte du certificat sont **conservées** : il suffit de ressaisir le mot de passe.
     /// Oublier le certificat est un autre geste ([`Backend::reset_pinned_certificate`]).
@@ -428,7 +488,11 @@ impl Job {
         match self {
             Job::Probe { .. } => Event::ProbeFailed(internal()),
             Job::Login { .. } | Job::LoginSaved { .. } => Event::LoginFailed(internal()),
-            Job::Call { id, .. } => Event::Reply {
+            Job::Call { id, .. } | Job::Download { id, .. } => Event::Reply {
+                id: *id,
+                result: Err(internal()),
+            },
+            Job::ReadFile { id, .. } => Event::FileRead {
                 id: *id,
                 result: Err(internal()),
             },
@@ -484,6 +548,51 @@ fn run(shared: &Arc<Shared>, job: Job) {
             }
             shared.emit(Event::Reply { id, result });
         }
+        Job::Download {
+            id,
+            generation,
+            creds,
+            request,
+            path,
+            private,
+        } => {
+            if shared.generation() != generation {
+                shared.emit(Event::Reply {
+                    id,
+                    result: Err(NetError::Unreachable("session fermée".into())),
+                });
+                return;
+            }
+            let result = http::exec(
+                &creds.addr,
+                &Trust::Pinned(creds.fingerprint.clone()),
+                Some(&creds.token),
+                &request,
+            )
+            .and_then(http::Response::into_result);
+            if result.as_ref().is_err_and(NetError::is_unauthorized) {
+                shared.token_rejected(generation);
+            }
+            // Le corps part dans le fichier, sans copie ; la réponse n'en garde que l'état.
+            let result = result.and_then(|mut response| {
+                let body = std::mem::take(&mut response.body);
+                files::write_file(&path, &body, private).map_err(|e| {
+                    NetError::Local(format!(
+                        "écriture impossible dans {} ({})",
+                        path.display(),
+                        e.kind()
+                    ))
+                })?;
+                Ok(response)
+            });
+            shared.emit(Event::Reply { id, result });
+        }
+        Job::ReadFile { id, path, max } => shared.emit(Event::FileRead {
+            id,
+            result: files::read_limited(&path, max)
+                .map(Arc::new)
+                .map_err(NetError::Local),
+        }),
         Job::Revoke { creds } => {
             let request = Request::new("POST", "/api/logout").with_timeout(Duration::from_secs(8));
             let revoked = http::exec(

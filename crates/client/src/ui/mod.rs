@@ -7,6 +7,7 @@
 
 mod connect;
 mod customize;
+mod notify;
 mod plan;
 mod rules;
 mod sensors;
@@ -15,14 +16,16 @@ mod thermometer;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
+use sync::Failure;
 
 pub use matter_home_client::model::Device;
 use matter_home_client::model::{Change, Model};
 use matter_home_client::net::error::api_message;
+use matter_home_client::net::files::MAX_BACKUP_BYTES;
 use matter_home_client::net::{Backend, Body, Event, Link, NetError, Request, Response};
 use matter_home_client::series::{metrics_for, needs_fetch, DeviceSeries, TimeWindow};
 use protocol::automation::CoverCommand;
@@ -75,9 +78,13 @@ enum Pending {
     Export {
         path: PathBuf,
     },
+    /// Lecture de la sauvegarde choisie, dans un fil réseau.
+    ReadBackup {
+        path: PathBuf,
+    },
     ImportCheck {
         path: PathBuf,
-        bytes: Vec<u8>,
+        bytes: Arc<Vec<u8>>,
     },
     ImportApply,
 }
@@ -94,7 +101,10 @@ enum DataDialog {
     ConfirmImport {
         path: PathBuf,
         summary: String,
-        bytes: Vec<u8>,
+        /// Lue une fois, partagée (jamais copiée) entre la vérification et l'import.
+        bytes: Arc<Vec<u8>>,
+        /// Le serveur qui a validé cette sauvegarde : elle ne part jamais vers un autre.
+        server: Option<String>,
     },
     /// Import accepté : le serveur redémarre pour l'appliquer.
     ImportStarted,
@@ -108,6 +118,8 @@ struct Toast {
 }
 
 const TOAST_LIFETIME: Duration = Duration::from_secs(20);
+/// Attente maximale des réponses du plan et des règles à la fermeture de la fenêtre.
+const EXIT_FLUSH: Duration = Duration::from_millis(1500);
 
 pub struct MatterApp {
     backend: Backend,
@@ -137,6 +149,15 @@ pub struct MatterApp {
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
     select_on_arrival: Option<String>,
     data_dialog: Option<DataDialog>,
+    /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
+    server: Option<String>,
+    /// Serveur auquel appartient un brouillon gardé pendant une coupure : s'il change, le
+    /// brouillon est abandonné plutôt qu'envoyé ailleurs.
+    draft_server: Option<String>,
+    /// Règle à tester dès que la dernière version des règles est enregistrée.
+    test_after_save: Option<u64>,
+    /// Notification macOS locale (remplacée dans les tests).
+    notifier: notify::Notifier,
 }
 
 impl MatterApp {
@@ -164,6 +185,10 @@ impl MatterApp {
             device_edit: None,
             select_on_arrival: None,
             data_dialog: None,
+            server: None,
+            draft_server: None,
+            test_after_save: None,
+            notifier: notify::system_notifier(),
         }
     }
 
@@ -213,6 +238,23 @@ impl MatterApp {
             return None;
         }
         let id = self.backend.call(request);
+        self.pending.insert(id, pending);
+        Some(id)
+    }
+
+    /// Comme [`MatterApp::request`], mais la réponse est écrite dans `dest` par le fil réseau.
+    fn download(
+        &mut self,
+        pending: Pending,
+        request: Request,
+        dest: PathBuf,
+        private: bool,
+    ) -> Option<u64> {
+        if !self.connected() {
+            self.push_log("Déconnecté : commande non envoyée.".into());
+            return None;
+        }
+        let id = self.backend.download(request, dest, private);
         self.pending.insert(id, pending);
         Some(id)
     }
@@ -271,7 +313,30 @@ impl MatterApp {
         );
     }
 
+    /// « Tester » exécute la règle **enregistrée sur le serveur** : si des modifications ne sont
+    /// pas encore parties, on les envoie d'abord et le test attend leur enregistrement. Sinon
+    /// il testerait la version d'avant la modification.
     fn test_rule(&mut self, id: u64) {
+        if !self.connected() {
+            self.push_log("Déconnecté : commande non envoyée.".into());
+            return;
+        }
+        if !self.rules.editing() {
+            self.test_rule_now(id);
+            return;
+        }
+        if let Some(why) = self.rules.blocked() {
+            self.show_error(format!(
+                "Test impossible : les modifications ne sont pas enregistrées ({why})."
+            ));
+            return;
+        }
+        self.test_after_save = Some(id);
+        self.rules.save_asap(Instant::now());
+        self.save_documents(Instant::now(), false);
+    }
+
+    fn test_rule_now(&mut self, id: u64) {
         self.command(
             "Test de la règle",
             Request::new("POST", format!("/api/rules/{id}/test")),
@@ -279,23 +344,61 @@ impl MatterApp {
     }
 
     /// Envoie le plan et les règles modifiés, au rythme décidé par `SyncState` (un envoi à la
-    /// fois, modifications regroupées).
-    fn save_documents(&mut self, now: Instant) {
-        if let Some(plan) = self.plan.poll_save(now) {
-            let body = TextIds(plan.clone());
-            if let Some(id) =
-                self.request(Pending::PlanSave, Request::json("PUT", "/api/plan", &body))
-            {
-                self.plan.sent(id, plan);
-            }
+    /// fois, modifications regroupées). `holding` : le pointeur est enfoncé (glisser en cours).
+    fn save_documents(&mut self, now: Instant, holding: bool) {
+        if let Some(plan) = self.plan.poll_save(now, holding) {
+            self.send_plan(plan);
         }
-        if let Some(rules) = self.rules.poll_save(now) {
-            let body = TextIds(rules.clone());
-            if let Some(id) = self.request(
-                Pending::RulesSave,
-                Request::json("PUT", "/api/rules", &body),
-            ) {
-                self.rules.sent(id, rules);
+        if let Some(rules) = self.rules.poll_save(now, holding) {
+            self.send_rules(rules);
+        }
+    }
+
+    fn send_plan(&mut self, plan: HomePlan) {
+        let body = TextIds(plan.clone());
+        if let Some(id) = self.request(Pending::PlanSave, Request::json("PUT", "/api/plan", &body))
+        {
+            self.plan.sent(id, plan);
+        }
+    }
+
+    fn send_rules(&mut self, rules: protocol::automation::RuleSet) {
+        let body = TextIds(rules.clone());
+        if let Some(id) = self.request(
+            Pending::RulesSave,
+            Request::json("PUT", "/api/rules", &body),
+        ) {
+            self.rules.sent(id, rules);
+        }
+    }
+
+    /// Fermeture de la fenêtre : envoie sans attendre le délai de calme ce qui n'est pas encore
+    /// parti, puis attend les réponses du plan et des règles pendant `cap` au plus. Au pire,
+    /// quelques instants de travail sont perdus ; la fenêtre ne reste jamais bloquée.
+    fn flush_on_exit(&mut self, cap: Duration) {
+        if !self.connected() {
+            return;
+        }
+        if let Some(plan) = self.plan.poll_save_now() {
+            self.send_plan(plan);
+        }
+        if let Some(rules) = self.rules.poll_save_now() {
+            self.send_rules(rules);
+        }
+        let waiting = |app: &MatterApp| {
+            app.pending
+                .values()
+                .any(|p| matches!(p, Pending::PlanSave | Pending::RulesSave))
+        };
+        let end = Instant::now() + cap;
+        while waiting(self) {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match self.events.recv_timeout(left) {
+                Ok(event) => self.on_event(event),
+                Err(_) => break,
             }
         }
     }
@@ -340,62 +443,107 @@ impl MatterApp {
 
     fn pump_network(&mut self) {
         while let Ok(event) = self.events.try_recv() {
-            match event {
-                Event::Link(link) => self.on_link(link),
-                Event::Snapshot(snapshot) => self.on_snapshot(*snapshot),
-                Event::Live(event) => self.on_live(*event),
-                Event::Reply { id, result } => self.on_reply(id, result),
-                Event::Probed { url, fingerprint } => self.connect.probed(url, fingerprint),
-                Event::ProbeFailed(e) | Event::LoginFailed(e) => {
-                    self.connect.failed(e.message());
-                }
-                Event::Notice(text) => self.push_log(text),
-            }
+            self.on_event(event);
         }
     }
 
-    /// Oublie tout ce qui venait du serveur.
-    fn clear_data(&mut self) {
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Link(link) => self.on_link(link),
+            Event::Snapshot(snapshot) => self.on_snapshot(*snapshot),
+            Event::Live(event) => self.on_live(*event),
+            Event::Reply { id, result } => self.on_reply(id, result),
+            Event::FileRead { id, result } => self.on_file_read(id, result),
+            Event::Probed { url, fingerprint } => self.connect.probed(url, fingerprint),
+            Event::ProbeFailed(e) | Event::LoginFailed(e) => {
+                self.connect.failed(e.message());
+            }
+            Event::Notice(text) => self.push_log(text),
+        }
+    }
+
+    /// Oublie tout ce qui venait du serveur : appareils, historique, journal, notifications,
+    /// code d'appairage, fenêtres en attente d'une réponse. `keep_drafts` : la liaison est
+    /// seulement coupée, le plan et les règles en cours d'édition sont gardés pour la reprise
+    /// (voir `SyncState::suspend`) ; sinon tout est effacé, brouillons compris, pour qu'ils ne
+    /// partent jamais vers un autre serveur.
+    fn clear_data(&mut self, keep_drafts: bool) {
         self.model.clear();
         self.series.clear();
         self.pending.clear();
-        self.plan.reset();
-        self.rules.reset();
+        let now = Instant::now();
+        if keep_drafts {
+            let had_draft = self.plan.editing() || self.rules.editing();
+            self.plan.suspend(now);
+            self.rules.suspend(now);
+            if had_draft && self.draft_server.is_none() {
+                self.draft_server = self.server.clone();
+            }
+        } else {
+            self.plan.reset();
+            self.rules.reset();
+            self.draft_server = None;
+        }
         self.pairing = Pairing::Idle;
+        self.code.clear();
         self.confirm_clear = None;
         self.device_edit = None;
         self.export_message = None;
+        self.log.clear();
+        self.toasts.clear();
+        self.error_banner = None;
+        self.test_after_save = None;
+        // Une vérification ou une confirmation d'import ne vaut que pour le serveur qui l'a
+        // faite : on les abandonne. Seul « import accepté » reste, il n'engage plus rien.
+        if !matches!(self.data_dialog, Some(DataDialog::ImportStarted)) {
+            self.data_dialog = None;
+        }
     }
 
     fn on_link(&mut self, link: Link) {
         match &link {
             // Resynchronisation : on garde l'affichage, un nouvel état complet arrive aussitôt.
             Link::Resyncing => {}
-            Link::Connected { server_version } => {
+            Link::Connected {
+                server_version,
+                server,
+            } => {
+                if self.server.as_ref().is_some_and(|known| known != server)
+                    || self.draft_server.as_ref().is_some_and(|d| d != server)
+                {
+                    // Un autre serveur que celui des brouillons et des fenêtres en cours.
+                    self.clear_data(false);
+                }
                 if !self.connected() {
                     self.push_log(format!("Connecté au serveur (version {server_version})."));
                 }
+                self.server = Some(server.clone());
+                self.draft_server = None;
                 self.connect.connected();
             }
             Link::Reconnecting {
                 reason, retry_in_s, ..
             } => {
+                self.clear_data(true);
+                // Après l'effacement du journal : c'est ce qu'il faut voir en premier.
                 self.push_log(format!(
                     "Liaison perdue : {reason} Nouvel essai dans {retry_in_s} s."
                 ));
-                self.clear_data();
             }
             Link::LoggedOut {
                 url,
                 pinned,
                 reason,
             } => {
-                self.clear_data();
+                self.clear_data(false);
+                self.server = None;
                 self.connect
                     .logged_out(url.clone(), *pinned, reason.clone());
             }
-            Link::Connecting | Link::CertificateChanged { .. } | Link::Incompatible { .. } => {
-                self.clear_data();
+            Link::Connecting => self.clear_data(true),
+            Link::CertificateChanged { .. } | Link::Incompatible { .. } => {
+                self.clear_data(false);
+                self.server = None;
             }
         }
         self.link = link;
@@ -408,6 +556,14 @@ impl MatterApp {
         self.rules.on_server(rules);
         if busy && matches!(self.pairing, Pairing::Idle) {
             self.pairing = Pairing::InProgress("Appairage en cours…".into());
+        } else if !busy
+            && matches!(self.pairing, Pairing::InProgress(_))
+            && !self.pending.values().any(|p| matches!(p, Pending::Pair))
+        {
+            // Le serveur ne fait plus d'appairage et la demande est partie : la fin a été
+            // manquée (resynchronisation). Sans cela, l'écran resterait figé sur « en cours ».
+            self.pairing = Pairing::Idle;
+            self.code.clear();
         }
         // Les séries lues avant ne tiennent plus compte de ce qui a pu se passer : relecture.
         for s in self.series.values_mut() {
@@ -477,9 +633,12 @@ impl MatterApp {
                 let text = api_message(code, detail.as_deref(), None, 0);
                 self.push_log(format!("Échec d'appairage : {text}"));
                 self.pairing = Pairing::Failed(text);
+                self.code.clear();
             }
             Change::Notification { title, message } => {
                 self.push_log(format!("Notification : {title} — {message}"));
+                // Client ouvert : une vraie notification du système en plus du toast.
+                (self.notifier)(&title, &message);
                 self.toasts.push(Toast {
                     title,
                     message,
@@ -528,6 +687,7 @@ impl MatterApp {
             Pending::Pair => {
                 if let Err(e) = result {
                     self.pairing = Pairing::Failed(e.message());
+                    self.code.clear();
                 }
             }
             Pending::ClearHistory(node_id) => match result {
@@ -543,11 +703,17 @@ impl MatterApp {
                     self.plan.saved(id, stored);
                 }
                 Err(e) => {
-                    if self.plan.rejected(id) {
-                        self.show_error(format!(
-                            "Le plan n'a pas été enregistré : {}",
-                            e.message()
-                        ));
+                    let failure = Failure::of(&e);
+                    let kept = !matches!(failure, Failure::Rejected);
+                    if self.plan.failed(id, failure, Instant::now()) {
+                        self.show_error(if kept {
+                            format!(
+                                "Le plan n'a pas été enregistré (brouillon gardé) : {}",
+                                e.message()
+                            )
+                        } else {
+                            format!("Le plan n'a pas été enregistré : {}", e.message())
+                        });
                     }
                 }
             },
@@ -558,58 +724,65 @@ impl MatterApp {
                         .ok()
                         .map(|p| p.0);
                     self.rules.saved(id, stored);
+                    // Les dernières modifications sont enregistrées : le test peut partir.
+                    if !self.rules.editing() {
+                        if let Some(rule) = self.test_after_save.take() {
+                            self.test_rule_now(rule);
+                        }
+                    }
                 }
                 Err(e) => {
-                    if self.rules.rejected(id) {
-                        self.show_error(format!(
-                            "Les règles n'ont pas été enregistrées : {}",
-                            e.message()
-                        ));
+                    let failure = Failure::of(&e);
+                    let kept = !matches!(failure, Failure::Rejected);
+                    if self.rules.failed(id, failure, Instant::now()) {
+                        self.test_after_save = None;
+                        self.show_error(if kept {
+                            format!(
+                                "Les règles n'ont pas été enregistrées (brouillon gardé) : {}",
+                                e.message()
+                            )
+                        } else {
+                            format!("Les règles n'ont pas été enregistrées : {}", e.message())
+                        });
                     }
                 }
             },
             Pending::Csv { path } => {
+                // Le fil réseau a écrit le fichier : ici il ne reste qu'à le dire.
                 self.export_message = Some(match result {
-                    Ok(r) => match write_file(&path, &r.body, false) {
-                        Ok(()) => (true, format!("CSV enregistré dans {}", path.display())),
-                        Err(e) => (false, format!("Export impossible : {e}")),
-                    },
+                    Ok(_) => (true, format!("CSV enregistré dans {}", path.display())),
                     Err(e) => (false, format!("Export impossible : {}", e.message())),
                 });
             }
             Pending::Export { path } => {
                 self.data_dialog = Some(match result {
-                    Ok(r) => match write_file(&path, &r.body, true) {
-                        Ok(()) => {
-                            self.push_log(format!("Export enregistré dans {}", path.display()));
-                            DataDialog::Message {
-                                ok: true,
-                                text: format!(
-                                    "Exporté dans {}\n\nCe fichier contient les clés privées de \
-                                     votre maison et les heures d'ouverture des portes : \
-                                     transférez-le par AirDrop ou clé USB, ne le partagez pas, et \
-                                     supprimez-le une fois l'import fait.",
-                                    path.display()
-                                ),
-                            }
+                    Ok(_) => {
+                        self.push_log(format!("Export enregistré dans {}", path.display()));
+                        DataDialog::Message {
+                            ok: true,
+                            text: format!(
+                                "Exporté dans {}\n\nCe fichier contient les clés privées de \
+                                 votre maison et les heures d'ouverture des portes : \
+                                 transférez-le par AirDrop ou clé USB, ne le partagez pas, et \
+                                 supprimez-le une fois l'import fait.",
+                                path.display()
+                            ),
                         }
-                        Err(e) => DataDialog::Message {
-                            ok: false,
-                            text: format!("Export impossible : {e}"),
-                        },
-                    },
+                    }
                     Err(e) => DataDialog::Message {
                         ok: false,
                         text: format!("Export impossible : {}", e.message()),
                     },
                 });
             }
+            Pending::ReadBackup { .. } => {}
             Pending::ImportCheck { path, bytes } => {
                 self.data_dialog = Some(match result.and_then(|r| r.json::<ImportResponse>()) {
                     Ok(r) => DataDialog::ConfirmImport {
                         path,
                         summary: describe_backup(&r.summary),
                         bytes,
+                        server: self.server.clone(),
                     },
                     Err(e) => DataDialog::Message {
                         ok: false,
@@ -647,8 +820,9 @@ impl MatterApp {
             return;
         };
         let request = Request::get("/api/export").with_timeout(Duration::from_secs(180));
+        // Le fichier est écrit (en 0600) par le fil réseau, pas par l'interface.
         if self
-            .request(Pending::Export { path: dest }, request)
+            .download(Pending::Export { path: dest.clone() }, request, dest, true)
             .is_some()
         {
             self.data_dialog = Some(DataDialog::Busy("Téléchargement de la sauvegarde…".into()));
@@ -664,18 +838,33 @@ impl MatterApp {
         else {
             return;
         };
-        let bytes = match read_backup(&path) {
+        if !self.connected() {
+            self.push_log("Déconnecté : commande non envoyée.".into());
+            return;
+        }
+        // La lecture (jusqu'à 128 Mo) se fait dans un fil réseau ; le contenu revient partagé.
+        let id = self.backend.read_file(path.clone(), MAX_BACKUP_BYTES);
+        self.pending.insert(id, Pending::ReadBackup { path });
+        self.data_dialog = Some(DataDialog::Busy("Lecture de la sauvegarde…".into()));
+    }
+
+    /// La sauvegarde choisie est lue : le serveur la valide (`dry_run`) avant toute confirmation.
+    fn on_file_read(&mut self, id: u64, result: Result<Arc<Vec<u8>>, NetError>) {
+        let Some(Pending::ReadBackup { path }) = self.pending.remove(&id) else {
+            return;
+        };
+        let bytes = match result {
             Ok(b) => b,
             Err(e) => {
                 self.data_dialog = Some(DataDialog::Message {
                     ok: false,
-                    text: format!("Import impossible : {e}"),
+                    text: format!("Import impossible : {}", e.message()),
                 });
                 return;
             }
         };
         let request = Request {
-            body: Body::Bytes(bytes.clone()),
+            body: Body::Shared(bytes.clone()),
             timeout: Duration::from_secs(180),
             ..Request::new("POST", "/api/import?dry_run=1")
         };
@@ -684,6 +873,8 @@ impl MatterApp {
             .is_some()
         {
             self.data_dialog = Some(DataDialog::Busy("Vérification de la sauvegarde…".into()));
+        } else {
+            self.data_dialog = None;
         }
     }
 
@@ -744,21 +935,36 @@ impl MatterApp {
                 }
             });
         if confirmed {
-            if let Some(DataDialog::ConfirmImport { bytes, .. }) = self.data_dialog.take() {
-                let request = Request {
-                    body: Body::Bytes(bytes),
-                    timeout: Duration::from_secs(180),
-                    ..Request::new("POST", "/api/import")
-                };
-                self.data_dialog = if self.request(Pending::ImportApply, request).is_some() {
-                    Some(DataDialog::Busy("Envoi de la sauvegarde…".into()))
-                } else {
-                    None
-                };
-            }
+            self.confirm_import();
         } else if close {
             self.data_dialog = None;
         }
+    }
+
+    /// « Importer » : envoie la sauvegarde vérifiée, mais seulement au serveur qui l'a vérifiée.
+    fn confirm_import(&mut self) {
+        let Some(DataDialog::ConfirmImport { bytes, server, .. }) = self.data_dialog.take() else {
+            return;
+        };
+        if server.is_none() || server != self.server {
+            self.data_dialog = Some(DataDialog::Message {
+                ok: false,
+                text: "Import annulé : le serveur n'est plus celui qui a vérifié cette \
+                       sauvegarde. Choisissez-la de nouveau."
+                    .into(),
+            });
+            return;
+        }
+        let request = Request {
+            body: Body::Shared(bytes),
+            timeout: Duration::from_secs(180),
+            ..Request::new("POST", "/api/import")
+        };
+        self.data_dialog = if self.request(Pending::ImportApply, request).is_some() {
+            Some(DataDialog::Busy("Envoi de la sauvegarde…".into()))
+        } else {
+            None
+        };
     }
 
     /// Export CSV d'un appareil : le serveur produit le fichier pour la fenêtre affichée.
@@ -790,9 +996,11 @@ impl MatterApp {
             self.window.start(now)
         );
         if self
-            .request(
-                Pending::Csv { path: dest },
+            .download(
+                Pending::Csv { path: dest.clone() },
                 Request::get(path).with_timeout(Duration::from_secs(120)),
+                dest,
+                false,
             )
             .is_some()
         {
@@ -1176,7 +1384,7 @@ impl MatterApp {
             ui.horizontal(|ui| {
                 ui.heading("Matter over Thread — contrôleur");
                 match &self.link {
-                    Link::Connected { server_version } => {
+                    Link::Connected { server_version, .. } => {
                         ui.label(
                             RichText::new(format!("● connecté · serveur {server_version}"))
                                 .small()
@@ -1282,44 +1490,6 @@ impl MatterApp {
     }
 }
 
-/// Écrit un fichier reçu du serveur. `private` : en 0600 (la sauvegarde contient des clés).
-fn write_file(path: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    use std::io::Write;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        if private {
-            options.mode(0o600);
-        }
-        let mut file = options.open(path)?;
-        if private {
-            // Un fichier écrasé garde ses anciens droits : on les resserre.
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(bytes)?;
-        file.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = private;
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(bytes)
-    }
-}
-
-/// Taille maximale d'une sauvegarde acceptée à l'import (le serveur a sa propre limite).
-const MAX_BACKUP_BYTES: u64 = 128 * 1024 * 1024;
-
-fn read_backup(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("fichier illisible ({})", e.kind()))?;
-    if meta.len() > MAX_BACKUP_BYTES {
-        return Err("fichier trop volumineux pour une sauvegarde Matter Home".into());
-    }
-    std::fs::read(path).map_err(|e| format!("fichier illisible ({})", e.kind()))
-}
-
 /// « 12 appareils, 7 pièces, 4 règles, sauvegarde du … ».
 fn describe_backup(s: &ImportSummary) -> String {
     let plural =
@@ -1373,11 +1543,15 @@ impl eframe::App for MatterApp {
     /// pas la fenêtre (recouverte ou réduite).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_network();
-        self.save_documents(Instant::now());
-        self.maintain_series();
+        self.tick(ctx, Instant::now());
         if self.plan_or_rules_pending() {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
+    }
+
+    /// Fermeture de la fenêtre : un dernier envoi borné de ce qui n'est pas encore parti.
+    fn on_exit(&mut self) {
+        self.flush_on_exit(EXIT_FLUSH);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1460,8 +1634,18 @@ impl eframe::App for MatterApp {
 }
 
 impl MatterApp {
+    /// Un passage de logique : envois en attente, lecture d'historique. « Souris enfoncée » est
+    /// relu ici à chaque passage (jamais gardé d'un dessin à l'autre) : un clic sur un onglet
+    /// pendant le délai de calme ne doit pas bloquer l'envoi pour toujours.
+    fn tick(&mut self, ctx: &egui::Context, now: Instant) {
+        let holding = ctx.input(|i| i.pointer.any_down());
+        self.save_documents(now, holding);
+        self.maintain_series();
+    }
+
+    /// Un envoi est à faire ou en vol : l'interface se réveille pour le déclencher à temps.
     fn plan_or_rules_pending(&self) -> bool {
-        self.plan.editing() || self.rules.editing()
+        self.plan.needs_tick() || self.rules.needs_tick()
     }
 }
 

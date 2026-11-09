@@ -6,9 +6,11 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, RichText};
 
 use super::plan::{glyph, icon_of};
-use super::sync::{Incoming, SyncState};
+use super::sync::{Failure, Incoming, SyncState};
 use super::{ago, Device};
-use protocol::automation::{Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger};
+use protocol::automation::{
+    is_webhook_url, Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger,
+};
 use protocol::events::{now_unix, MeasureKind};
 use protocol::wire::RuleRunView;
 
@@ -34,9 +36,22 @@ pub struct RulesView {
     confirm_delete: bool,
     /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
     sync: SyncState<RuleSet>,
-    /// Une zone de saisie est active : on envoie quand même (délai de calme), mais jamais
-    /// pendant un glisser.
-    holding: bool,
+}
+
+/// Ce qui empêche d'envoyer ces règles : le serveur refuse (400) une action « Appeler une URL »
+/// dont l'adresse n'est pas une adresse http(s) sans espace. Tant qu'elle est vide ou à moitié
+/// saisie, l'ensemble reste un brouillon visible, et rien ne part (ni ne revient en arrière).
+fn rules_problem(set: &RuleSet) -> Option<String> {
+    set.rules.iter().find_map(|rule| {
+        rule.actions.iter().find_map(|action| match action {
+            Action::Webhook { url, .. } if !is_webhook_url(url) => Some(format!(
+                "l'action « Appeler une URL » de la règle « {} » n'a pas d'adresse valable \
+                 (http:// ou https://, sans espace)",
+                rule.name
+            )),
+            _ => None,
+        })
+    })
 }
 
 /// Quel genre d'appareil un sélecteur doit proposer.
@@ -301,9 +316,37 @@ impl RulesView {
             set: RuleSet::default(),
             selected: None,
             confirm_delete: false,
-            sync: SyncState::default(),
-            holding: false,
+            sync: SyncState::with_check(rules_problem),
         }
+    }
+
+    /// Simule « + Nouvelle règle » puis une action « Appeler une URL » (tests).
+    #[cfg(test)]
+    pub fn add_webhook_rule(&mut self, url: &str) {
+        let id = self.set.next_id();
+        let mut rule = Rule::new(id);
+        rule.actions.push(Action::Webhook {
+            url: url.into(),
+            body: String::new(),
+        });
+        self.set.rules.push(rule);
+        self.sync.mark_changed(Instant::now());
+    }
+
+    /// Simule la saisie de l'adresse du webhook de la dernière règle (tests).
+    #[cfg(test)]
+    pub fn set_webhook_url(&mut self, url: &str) {
+        if let Some(Action::Webhook { url: u, .. }) =
+            self.set.rules.last_mut().and_then(|r| r.actions.last_mut())
+        {
+            *u = url.into();
+        }
+        self.sync.mark_changed(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub fn rule_count(&self) -> usize {
+        self.set.rules.len()
     }
 
     /// Une modification locale n'est pas encore arrivée au serveur.
@@ -334,8 +377,15 @@ impl RulesView {
         }
     }
 
-    pub fn poll_save(&self, now: Instant) -> Option<RuleSet> {
-        self.sync.due(now, self.holding, &self.set)
+    /// Modification à envoyer maintenant, s'il y en a une. `holding` : le pointeur est
+    /// enfoncé (glisser en cours), on n'envoie rien avant le relâchement.
+    pub fn poll_save(&self, now: Instant, holding: bool) -> Option<RuleSet> {
+        self.sync.due(now, holding, &self.set)
+    }
+
+    /// Modification à envoyer sans attendre le délai de calme (fermeture de la fenêtre).
+    pub fn poll_save_now(&self) -> Option<RuleSet> {
+        self.sync.due_now(&self.set)
     }
 
     pub fn sent(&mut self, request_id: u64, content: RuleSet) {
@@ -346,13 +396,41 @@ impl RulesView {
         self.sync.on_saved(request_id, stored, &mut self.set);
     }
 
-    /// Envoi refusé : retour à la version du serveur. `true` si c'était un envoi des règles.
-    pub fn rejected(&mut self, request_id: u64) -> bool {
-        let was_ours = self.sync.on_rejected(request_id, &mut self.set);
+    /// Envoi échoué. `true` si c'était un envoi des règles. Selon la panne, le brouillon reste
+    /// (refus du contenu, panne passagère) ou les règles reviennent à la version du serveur.
+    pub fn failed(&mut self, request_id: u64, failure: Failure, now: Instant) -> bool {
+        let was_ours = self.sync.on_failed(request_id, failure, now, &mut self.set);
         if was_ours {
             self.fix_selection();
         }
         was_ours
+    }
+
+    /// La liaison est coupée : un brouillon est gardé pour la reprise, sinon tout est oublié.
+    pub fn suspend(&mut self, now: Instant) {
+        if !self.sync.suspend(now) {
+            self.reset();
+        }
+    }
+
+    /// Un envoi est à faire ou en vol (réveil de l'interface).
+    pub fn needs_tick(&self) -> bool {
+        self.sync.needs_tick(&self.set)
+    }
+
+    /// Ce qu'il faut dire de règles qui ne sont pas (encore) parties.
+    pub fn notice(&self) -> Option<String> {
+        self.sync.notice(&self.set)
+    }
+
+    /// Pourquoi les règles affichées ne peuvent pas être enregistrées telles quelles.
+    pub fn blocked(&self) -> Option<String> {
+        self.sync.blocked(&self.set)
+    }
+
+    /// Enregistrer sans attendre le délai de calme (avant de tester une règle).
+    pub fn save_asap(&mut self, now: Instant) {
+        self.sync.save_asap(now);
     }
 
     pub fn show(
@@ -375,6 +453,7 @@ impl RulesView {
         });
         ui.small("Les règles s'exécutent sur le serveur, tant qu'il tourne.");
         self.remote_banner(ui);
+        self.draft_banner(ui);
         ui.separator();
 
         egui::Panel::bottom("rules_journal")
@@ -467,11 +546,20 @@ impl RulesView {
                 });
         });
 
-        self.holding = ui.input(|i| i.pointer.any_down());
         if changed {
             self.sync.mark_changed(Instant::now());
         }
         action
+    }
+
+    /// Règles non envoyées (brouillon incomplet, refus du serveur, panne passagère).
+    fn draft_banner(&self, ui: &mut egui::Ui) {
+        let Some(text) = self.notice() else { return };
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(90, 50, 20))
+            .show(ui, |ui| {
+                ui.label(text);
+            });
     }
 
     /// Un autre client a modifié les règles pendant que nous les éditions.
