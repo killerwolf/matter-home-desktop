@@ -79,11 +79,11 @@ const LIVENESS_EVERY: Duration = Duration::from_secs(60);
 /// 32 caractères.
 pub(crate) const ETIQUETTE_FABRIC_SERVEUR: &str = "Matter Home Serveur";
 const _: () = assert!(ETIQUETTE_FABRIC_SERVEUR.len() <= 32);
-/// Attente avant de toucher à l'étiquette, une fois la souscription établie (ou l'interrogation
-/// périodique lancée) : la session s'installe d'abord.
+/// Attente avant de toucher à l'étiquette, une fois la souscription établie : la session
+/// s'installe d'abord.
 const FABRIC_LABEL_DELAY: Duration = Duration::from_secs(10);
-/// Nombre maximal d'essais (lecture puis écriture) par appareil et par processus ; seuls les
-/// échecs de transport ou de délai sont retentés.
+/// Nombre maximal d'essais (lecture puis écriture) par appareil et par processus. Sont retentés :
+/// entrée introuvable, lecture en échec, réponse illisible, échec de transport ou de délai.
 const FABRIC_LABEL_MAX_ATTEMPTS: u32 = 3;
 /// Délai total (lecture puis écriture) de l'étiquette ; au-delà, on y renonce jusqu'à la
 /// prochaine connexion.
@@ -460,7 +460,8 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
     let routes = Routes::of(&node);
     let paths = tracked_paths(&node);
     if paths.is_empty() {
-        return alongside_fabric_label(ctx, node_id, conn, liveness_loop(ctx, node_id, conn)).await;
+        // Aucune souscription ici (rien à suivre) : pas d'étiquette de fabric.
+        return liveness_loop(ctx, node_id, conn).await;
     }
     match subscribe(ctx, &routes, conn, &paths).await {
         Ok(max_interval) => {
@@ -490,7 +491,8 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
                     every_s: POLL_EVERY.as_secs(),
                 },
             );
-            alongside_fabric_label(ctx, node_id, conn, poll_loop(ctx, &routes, conn, &paths)).await
+            // Souscription impossible : pas d'étiquette de fabric non plus.
+            poll_loop(ctx, &routes, conn, &paths).await
         }
     }
 }
@@ -1063,7 +1065,8 @@ enum LabelReply {
     /// Étiquette acceptée.
     Accepted,
     /// Refus définitif : statut du NOCResponse (ex. LabelConflict) ou statut IM
-    /// (ex. UNSUPPORTED_COMMAND, UNSUPPORTED_ACCESS). Réessayer ne changerait rien.
+    /// (ex. UNSUPPORTED_COMMAND, UNSUPPORTED_ACCESS, BUSY). Tout statut IM est traité comme définitif
+    /// pour ce processus, volontairement, pour pécher par moins de trafic vers l'appareil.
     Refused(String),
 }
 
@@ -1129,8 +1132,9 @@ fn parse_update_label_reply(opcode: u8, payload: &[u8]) -> Result<LabelReply> {
 /// - `write` l'écrit : `Ok` pour une réponse (acceptée ou refusée), `Err` pour un échec de
 ///   transport ou de délai.
 /// - Sont définitifs pour ce processus : étiquette posée ou déjà bonne, refus de l'appareil
-///   (NOCResponse ou statut IM). Seuls les échecs de transport ou de délai sont retentés, 3 fois
-///   au plus par appareil.
+///   (NOCResponse ou tout statut IM, BUSY compris, par choix : moins de trafic). Sont retentés :
+///   entrée introuvable, lecture en échec, réponse illisible, échec de transport ou de délai ;
+///   3 essais au total par appareil et par processus.
 async fn ensure_fabric_label<R, RF, W, WF>(
     done: &FabricLabels,
     node_id: u64,
@@ -1217,24 +1221,28 @@ async fn fabric_label(ctx: &Ctx, node_id: u64, conn: &Connection) {
     .await;
 }
 
-/// Exécute `main` en lui adjoignant `side` (travail annexe qui ne se termine jamais d'après
-/// `main`) dans la même tâche : si la tâche est abandonnée (oubli de l'appareil), `side` est
-/// abandonné avec elle, sans rien laisser tourner derrière.
+/// Exécute `main` en lui adjoignant `side` (travail annexe) dans la même tâche : si la tâche est
+/// abandonnée (oubli de l'appareil), `side` est abandonné avec elle, sans rien laisser tourner
+/// derrière. Quand `side` se termine, il se range (`pending`) et `main` continue seul ; s'il
+/// panique, la panique est journalisée et il se range de même : elle ne touche pas `main`.
 async fn run_alongside<T>(
     main: impl std::future::Future<Output = T>,
     side: impl std::future::Future<Output = ()>,
 ) -> T {
+    use futures_util::FutureExt;
     tokio::select! {
         out = main => out,
         () = async {
-            side.await;
+            if std::panic::AssertUnwindSafe(side).catch_unwind().await.is_err() {
+                log::error!("travail annexe en panique : abandonné, la session continue");
+            }
             std::future::pending::<()>().await;
         } => unreachable!("pending ne se termine pas"),
     }
 }
 
-/// Étiquette de fabric pendant `main` (écoute, interrogation ou veille), dans la même tâche que
-/// la session : jamais avant que la souscription soit établie, et arrêtée avec elle.
+/// Étiquette de fabric pendant `main` (l'écoute de la souscription), dans la même tâche que la
+/// session : appelée seulement une fois la souscription établie, et arrêtée avec elle.
 async fn alongside_fabric_label<T>(
     ctx: &Ctx,
     node_id: u64,
@@ -1760,6 +1768,34 @@ mod tests {
             dropped.load(std::sync::atomic::Ordering::SeqCst),
             "le travail annexe doit être abandonné avec la tâche"
         );
+    }
+
+    #[tokio::test]
+    async fn side_finishing_first_does_not_affect_main() {
+        let out = run_alongside(
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                7
+            },
+            async {},
+        )
+        .await;
+        assert_eq!(out, 7);
+    }
+
+    #[tokio::test]
+    async fn panicking_side_does_not_stop_main() {
+        let out = run_alongside(
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                7
+            },
+            async {
+                panic!("panique voulue du test");
+            },
+        )
+        .await;
+        assert_eq!(out, 7);
     }
 
     #[tokio::test]

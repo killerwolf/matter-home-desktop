@@ -35,12 +35,14 @@ Les téléchargements de chaque version sont sur la
   (commande UpdateFabricLabel), pour qu'Apple Maison l'affiche dans « Services connectés » à côté du
   numéro de fabricant « 101 ». Sans réappairage ni action : appareils déjà appairés et nouveaux,
   à la première connexion. Purement cosmétique : elle ne démarre qu'une fois la souscription
-  établie, dans la même tâche que la session (donc arrêtée avec elle, y compris quand l'appareil est
-  oublié) ; elle n'influe ni sur l'état de l'appareil ni sur sa souscription ni sur un appairage.
-  Les appareils sur pile sont ménagés : lecture de l'étiquette d'abord, écriture seulement si elle
-  diffère (jamais si la lecture échoue), et plus aucun essai tant que le serveur tourne une fois
-  l'étiquette posée ou refusée par l'appareil ; seuls les échecs de transport sont retentés, 3 fois
-  au plus.
+  établie (jamais en interrogation périodique ni sans souscription), dans la même tâche que la
+  session (donc arrêtée avec elle, y compris quand l'appareil est oublié) ; une panique dans ce
+  travail est journalisée sans toucher à la session ; elle n'influe ni sur l'état de l'appareil ni
+  sur sa souscription ni sur un appairage. Les appareils sur pile sont ménagés : lecture de
+  l'étiquette d'abord, écriture seulement si elle diffère (jamais si la lecture échoue), et plus
+  aucun essai tant que le serveur tourne une fois l'étiquette posée ou refusée par l'appareil (tout
+  statut IM, BUSY compris, vaut refus définitif : moins de trafic) ; entrée introuvable, lecture
+  en échec, réponse illisible et échecs de transport sont retentés, 3 essais au total par appareil.
 
 ## [1.0.0] - 2026-11-09
 
