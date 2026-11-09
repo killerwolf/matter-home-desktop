@@ -4,6 +4,7 @@
 //! L'interface (egui) est dans le binaire `matter-home-desktop`. Cette bibliothèque existe
 //! pour que la couche réseau soit testée contre le vrai serveur (`tests/`), sans fenêtre.
 
+pub mod logging;
 pub mod model;
 pub mod net;
 pub mod series;
