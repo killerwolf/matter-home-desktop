@@ -427,14 +427,57 @@ impl PlanView {
         true
     }
 
-    /// Plan non envoyé (brouillon incomplet, refus du serveur, panne passagère).
-    fn draft_banner(&self, ui: &mut egui::Ui) {
+    /// Plan non envoyé (brouillon incomplet, refus du serveur, panne passagère), avec de quoi
+    /// en sortir : revenir à la version du serveur.
+    fn draft_banner(&mut self, ui: &mut egui::Ui) {
         let Some(text) = self.notice() else { return };
+        let mut revert = false;
         egui::Frame::group(ui.style())
             .fill(Color32::from_rgb(90, 50, 20))
             .show(ui, |ui| {
-                ui.label(text);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(text);
+                    revert = ui
+                        .add_enabled(
+                            self.sync.can_revert(),
+                            egui::Button::new("Revenir à la version du serveur"),
+                        )
+                        .on_hover_text("Abandonne vos modifications non enregistrées du plan.")
+                        .on_disabled_hover_text(
+                            "Un envoi est en cours : réessayez dans un instant.",
+                        )
+                        .clicked();
+                });
             });
+        if revert {
+            self.revert_to_server();
+        }
+    }
+
+    /// Abandonne le brouillon : le plan affiché redevient celui du serveur. `false` si c'est
+    /// impossible pour l'instant (envoi en cours, liaison coupée).
+    pub fn revert_to_server(&mut self) -> bool {
+        if !self.sync.revert(&mut self.plan) {
+            return false;
+        }
+        self.dirty = false;
+        self.selection = None;
+        self.device_edit = None;
+        self.confirm_delete_floor = false;
+        self.plan.ensure_floor();
+        self.clamp_floor();
+        true
+    }
+
+    /// Pourquoi le plan affiché ne peut pas être enregistré tel quel (rien ne partira avant
+    /// que l'utilisateur agisse), s'il y a lieu.
+    pub fn blocked(&self) -> Option<String> {
+        self.sync.blocked(&self.plan)
+    }
+
+    /// Un autre client a modifié le plan pendant l'édition : un choix attend.
+    pub fn conflict_pending(&self) -> bool {
+        self.sync.remote().is_some()
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {

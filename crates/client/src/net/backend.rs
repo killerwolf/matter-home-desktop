@@ -107,9 +107,13 @@ impl Shared {
     }
 
     /// Efface le jeton du fichier de connexion en gardant l'adresse et l'empreinte. Rend
-    /// l'adresse conservée. Si le fichier ne peut pas être réécrit, il est supprimé : un jeton
-    /// révoqué ne doit jamais rester sur le disque pour repartir au lancement suivant.
-    fn forget_token(&self, creds: Option<&Creds>) -> Option<String> {
+    /// l'adresse conservée et, si le fichier n'a pas pu être mis à jour, **ce qui a échoué** :
+    /// l'appelant le met dans la raison de la déconnexion (un `Notice` émis juste avant
+    /// `LoggedOut` serait effacé avec le journal). Si le fichier ne peut pas être réécrit, il est
+    /// supprimé : un jeton révoqué ne doit jamais rester sur le disque pour repartir au lancement
+    /// suivant.
+    fn forget_token(&self, creds: Option<&Creds>) -> (Option<String>, Option<String>) {
+        let mut problems: Vec<String> = Vec::new();
         let kept = match creds {
             Some(c) => Some(Saved {
                 url: c.addr.url(),
@@ -126,18 +130,18 @@ impl Shared {
         };
         let Some(kept) = kept else {
             if let Err(e) = self.store.delete() {
-                self.emit(Event::Notice(e.message()));
+                problems.push(e.message());
             }
-            return None;
+            return (None, join_problems(problems));
         };
         if let Err(e) = self.store.save(&kept) {
-            self.emit(Event::Notice(e.message()));
+            problems.push(e.message());
             if let Err(e) = self.store.delete() {
-                self.emit(Event::Notice(e.message()));
+                problems.push(e.message());
             }
-            return None;
+            return (None, join_problems(problems));
         }
-        Some(kept.url)
+        (Some(kept.url), None)
     }
 
     /// Le serveur ne reconnaît plus le jeton : on l'oublie (l'adresse et l'empreinte restent)
@@ -158,6 +162,7 @@ impl Shared {
         let creds = self.creds();
         self.set_creds(None);
         let url = creds.as_ref().map(|c| c.addr.url());
+        let mut reason = "Votre session a expiré ou a été révoquée : reconnectez-vous.".to_string();
         if let Some(c) = creds {
             let kept = Saved {
                 url: c.addr.url(),
@@ -165,18 +170,28 @@ impl Shared {
                 token: None,
             };
             if let Err(e) = self.store.save(&kept) {
-                self.emit(Event::Notice(e.message()));
+                reason.push(' ');
+                reason.push_str(&e.message());
+                reason.push_str(" L'ancien jeton, déjà refusé, y est peut-être resté.");
             }
         }
         log::info!("jeton refusé par le serveur : retour à l'écran de connexion");
         self.link(Link::LoggedOut {
             url,
             pinned: true,
-            reason: Some(
-                "Votre session a expiré ou a été révoquée : reconnectez-vous.".to_string(),
-            ),
+            reason: Some(reason),
         });
     }
+}
+
+/// Les échecs d'écriture du fichier de connexion, en un texte pour l'écran de connexion.
+fn join_problems(problems: Vec<String>) -> Option<String> {
+    (!problems.is_empty()).then(|| {
+        format!(
+            "{} Le jeton de la session précédente est peut-être resté dans ce fichier.",
+            problems.join(" ")
+        )
+    })
 }
 
 enum Job {
@@ -391,11 +406,11 @@ impl Backend {
     pub fn logout(&self) {
         let creds = self.shared.creds();
         self.shared.stop_session();
-        let url = self.shared.forget_token(creds.as_ref());
+        let (url, problem) = self.shared.forget_token(creds.as_ref());
         self.shared.link(Link::LoggedOut {
             pinned: url.is_some(),
             url,
-            reason: None,
+            reason: problem,
         });
         if let Some(creds) = creds {
             self.submit(Job::Revoke { creds });
@@ -406,13 +421,11 @@ impl Backend {
     /// confirmation de l'empreinte. Geste explicite, jamais automatique.
     pub fn reset_pinned_certificate(&self, url: Option<String>) {
         self.shared.stop_session();
-        if let Err(e) = self.shared.store.delete() {
-            self.shared.emit(Event::Notice(e.message()));
-        }
+        let reason = self.shared.store.delete().err().map(|e| e.message());
         self.shared.link(Link::LoggedOut {
             url,
             pinned: false,
-            reason: None,
+            reason,
         });
     }
 
@@ -763,6 +776,60 @@ mod tests {
         ] {
             guarded(&shared, job, |_, _| panic!("panique voulue par le test"));
             assert!(check(&rx.try_recv().unwrap()));
+        }
+    }
+
+    /// Un fichier de connexion qu'on ne peut pas mettre à jour n'est pas signalé par une
+    /// `Notice` (effacée avec le journal par `LoggedOut`) : la raison de la déconnexion le dit,
+    /// et l'écran de connexion l'affiche.
+    #[test]
+    fn a_connection_file_that_cannot_be_updated_is_named_in_the_logout_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        let store = temp_store("logout-fail");
+        let fingerprint = tls::fingerprint_of(b"un certificat");
+        store
+            .save(&Saved {
+                url: "https://127.0.0.1:1".into(),
+                fingerprint,
+                token: Some("jeton-secret".into()),
+            })
+            .unwrap();
+        let dir = store.path().parent().unwrap().to_path_buf();
+        // Dossier en lecture seule : ni réécriture, ni suppression. (Sans effet pour root.)
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let restore = || std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        if std::fs::write(dir.join("sonde"), b"").is_ok() {
+            restore().unwrap();
+            return;
+        }
+        let (backend, rx) = Backend::start(store.clone(), Arc::new(|| {}));
+        backend.logout();
+        let mut notices = 0;
+        let mut reason = None;
+        while let Ok(event) = rx.recv_timeout(Duration::from_secs(10)) {
+            match event {
+                Event::Notice(_) => notices += 1,
+                Event::Link(Link::LoggedOut { reason: r, .. }) => {
+                    reason = r;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        backend.reset_pinned_certificate(None);
+        let second = wait_link(&rx, |l| matches!(l, Link::LoggedOut { .. }));
+        restore().unwrap();
+        let reason = reason.expect("la raison doit dire ce qui a échoué");
+        assert!(
+            reason.contains("Impossible") && reason.contains("jeton"),
+            "{reason}"
+        );
+        assert_eq!(notices, 0, "pas de Notice juste avant LoggedOut");
+        match second {
+            Link::LoggedOut {
+                reason: Some(r), ..
+            } => assert!(r.contains("Impossible de supprimer"), "{r}"),
+            other => panic!("{other:?}"),
         }
     }
 

@@ -64,6 +64,25 @@ impl ConnectScreen {
         self.confirm_reset = false;
     }
 
+    /// Un message à montrer sur les écrans qui ne passent pas par `logged_out` (certificat
+    /// changé, versions incompatibles) : ce que le retour à l'écran de connexion a fait perdre.
+    /// `None` efface le message précédent.
+    pub fn note(&mut self, text: Option<String>) {
+        self.message = text.map(|t| (false, t));
+    }
+
+    #[cfg(test)]
+    pub fn message_text(&self) -> Option<&str> {
+        self.message.as_ref().map(|(_, t)| t.as_str())
+    }
+
+    fn show_message(&self, ui: &mut egui::Ui) {
+        if let Some((ok, text)) = &self.message {
+            ui.colored_label(if *ok { GREEN } else { RED }, text);
+            ui.add_space(8.0);
+        }
+    }
+
     /// Connexion réussie : plus rien à garder.
     pub fn connected(&mut self) {
         self.password.clear();
@@ -114,8 +133,14 @@ impl ConnectScreen {
                         url,
                         expected,
                         found,
-                    } => self.certificate_changed(ui, backend, url, expected, found),
-                    Link::Incompatible { message } => Self::incompatible(ui, backend, message),
+                    } => {
+                        self.show_message(ui);
+                        self.certificate_changed(ui, backend, url, expected, found);
+                    }
+                    Link::Incompatible { message } => {
+                        self.show_message(ui);
+                        Self::incompatible(ui, backend, message);
+                    }
                     _ => self.form(ui, backend),
                 });
             });

@@ -1250,3 +1250,232 @@ fn a_new_connection_attempt_does_not_erase_the_journal() {
         "les données, elles, sont bien effacées"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fermeture de la fenêtre, brouillons perdus, indicateur global, retour au serveur
+// ---------------------------------------------------------------------------
+
+/// Sans brouillon, ou avec un brouillon complet (il part à la fermeture) : on ferme sans question.
+#[test]
+fn closing_asks_nothing_when_nothing_would_be_lost() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    assert_eq!(f.app.on_close_requested(), CloseDecision::Allow);
+    f.app.rules.add_webhook_rule("https://exemple.fr/ok");
+    assert_eq!(f.app.on_close_requested(), CloseDecision::Allow);
+    assert!(f.app.close_prompt.is_none());
+}
+
+/// Ce qui ne peut pas partir (adresse incomplète, liaison coupée, choix « modifié ailleurs »
+/// en attente) est signalé avant de fermer ; la seconde demande passe, « Rester » annule.
+#[test]
+fn closing_asks_before_losing_a_draft_that_cannot_be_sent() {
+    // Webhook incomplet.
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.rules.add_webhook_rule("");
+    let CloseDecision::Ask(text) = f.app.on_close_requested() else {
+        panic!("la question devait être posée");
+    };
+    assert!(
+        text.contains("les règles") && text.contains("adresse"),
+        "{text}"
+    );
+    assert_eq!(f.app.close_prompt.as_deref(), Some(text.as_str()));
+    // Il insiste : la fenêtre ne reste jamais bloquée (Cmd+Q ne passe de toute façon pas ici).
+    assert_eq!(f.app.on_close_requested(), CloseDecision::Allow);
+    // « Rester » : la question disparaît, la prochaine demande la repose.
+    f.app.close_prompt = None;
+    assert!(matches!(f.app.on_close_requested(), CloseDecision::Ask(_)));
+    // Dès qu'il n'y a plus rien à perdre, la question disparaît d'elle-même.
+    f.app.rules.set_webhook_url("https://exemple.fr/ok");
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(Default::default(), |ui| {
+        f.app.close_prompt_window(&ui.ctx().clone());
+    });
+    output.textures_delta.clear();
+    assert!(f.app.close_prompt.is_none());
+
+    // Liaison coupée avec un brouillon gardé.
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.plan.edit_name("Étage A");
+    disconnect(&mut f);
+    let CloseDecision::Ask(text) = f.app.on_close_requested() else {
+        panic!("liaison coupée : la question devait être posée");
+    };
+    assert!(
+        text.contains("le plan") && text.contains("liaison"),
+        "{text}"
+    );
+
+    // Un autre client a modifié pendant l'édition : rien ne part tant qu'on n'a pas choisi.
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.plan.edit_name("Mon étage");
+    let mut other = HomePlan::default();
+    other.floors[0].name = "Étage d'un autre".into();
+    f.live(WireEvent::PlanChanged {
+        plan: TextIds(other),
+    });
+    assert!(f.app.plan.conflict_pending());
+    let CloseDecision::Ask(text) = f.app.on_close_requested() else {
+        panic!("conflit : la question devait être posée");
+    };
+    assert!(text.contains("le plan"), "{text}");
+}
+
+/// Un brouillon incomplet ou un choix en attente se voit depuis toutes les vues, et l'on peut
+/// sortir d'un brouillon de règles en revenant à la version du serveur.
+#[test]
+fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    assert!(f.app.sync_alerts().is_empty());
+    f.app.view = View::Devices;
+    f.app.rules.add_webhook_rule("");
+    let alerts = f.app.sync_alerts();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0].view, View::Rules);
+    assert!(alerts[0].label.contains("Règles"), "{alerts:?}");
+    assert!(alerts[0].detail.contains("adresse"), "{alerts:?}");
+
+    // Revenir à la version du serveur : le brouillon disparaît, l'indicateur aussi.
+    assert!(f.app.rules.revert_to_server());
+    assert_eq!(f.app.rules.rule_count(), 0);
+    assert!(!f.app.rules.editing());
+    assert!(f.app.sync_alerts().is_empty());
+    // Et rien ne repart tout seul.
+    f.app
+        .save_documents(Instant::now() + Duration::from_secs(5), false);
+    assert!(f.app.pending.is_empty());
+
+    // Plan modifié ailleurs pendant l'édition.
+    f.app.plan.edit_name("Mon étage");
+    let mut other = HomePlan::default();
+    other.floors[0].name = "Étage d'un autre".into();
+    f.live(WireEvent::PlanChanged {
+        plan: TextIds(other),
+    });
+    let alerts = f.app.sync_alerts();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(
+        (alerts[0].view, alerts[0].label.as_str()),
+        (View::Plan, "⚠ Plan modifiés ailleurs")
+    );
+    assert!(f.app.plan.revert_to_server());
+    assert_eq!(f.app.plan.show_name(), "Étage d'un autre");
+    assert!(f.app.sync_alerts().is_empty());
+
+    // Hors ligne avec un brouillon gardé : indiqué aussi.
+    f.app.plan.edit_name("Hors ligne");
+    disconnect(&mut f);
+    let alerts = f.app.sync_alerts();
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.view == View::Plan && a.detail.contains("coupée")),
+        "{alerts:?}"
+    );
+    // Sans version du serveur connue, on ne peut pas revenir en arrière.
+    assert!(!f.app.plan.revert_to_server());
+    assert_eq!(f.app.plan.show_name(), "Hors ligne");
+}
+
+/// Pas de retour en arrière pendant un envoi : sa réponse réécrirait le document.
+#[test]
+fn dropping_a_draft_is_refused_while_an_upload_is_in_flight() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.rules.add_webhook_rule("https://exemple.fr/ok");
+    f.app
+        .save_documents(Instant::now() + Duration::from_secs(5), false);
+    assert!(pending_of(&f, |p| matches!(p, Pending::RulesSave)).is_some());
+    assert!(!f.app.rules.revert_to_server());
+    assert_eq!(f.app.rules.rule_count(), 1);
+}
+
+/// Un retour à l'écran de connexion qui abandonne un brouillon le dit, sur chaque écran.
+#[test]
+fn leaving_for_the_login_screen_says_what_was_dropped() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.rules.add_webhook_rule("");
+    f.app.plan.edit_name("Autre nom");
+    f.send(Event::Link(Link::LoggedOut {
+        url: Some("https://127.0.0.1:8443".into()),
+        pinned: true,
+        reason: Some("Votre session a expiré.".into()),
+    }));
+    f.app.pump_network();
+    let message = f.app.connect.message_text().expect("un message");
+    assert!(
+        message.contains("Votre session a expiré.")
+            && message.contains("du plan et des règles")
+            && message.contains("abandonnées"),
+        "{message}"
+    );
+    assert!(!f.app.rules.editing() && !f.app.plan.editing());
+
+    // Certificat changé : même dire.
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.rules.add_webhook_rule("");
+    f.send(Event::Link(Link::CertificateChanged {
+        url: "https://127.0.0.1:8443".into(),
+        expected: "AA".into(),
+        found: "BB".into(),
+    }));
+    f.app.pump_network();
+    let message = f.app.connect.message_text().expect("un message");
+    assert!(
+        message.contains("des règles") && message.contains("abandonnées"),
+        "{message}"
+    );
+
+    // Rien à perdre : pas de message inventé.
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.send(Event::Link(Link::CertificateChanged {
+        url: "https://127.0.0.1:8443".into(),
+        expected: "AA".into(),
+        found: "BB".into(),
+    }));
+    f.app.pump_network();
+    assert_eq!(f.app.connect.message_text(), None);
+}
+
+/// Dessin réel (sans fenêtre) de la barre du haut, des bandeaux et de la question de fermeture
+/// avec des brouillons en attente : ne panique pas, et le bouton de retour est bien là.
+#[test]
+fn the_draft_widgets_draw_without_a_window() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.rules.add_webhook_rule("");
+    f.app.plan.edit_name("Brouillon");
+    let CloseDecision::Ask(_) = f.app.on_close_requested() else {
+        panic!("question attendue");
+    };
+    let ctx = egui::Context::default();
+    for view in [View::Devices, View::Plan, View::Rules] {
+        f.app.view = view;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            f.app.top_bar(ui);
+            match view {
+                View::Plan => {
+                    let _ = f.app.plan.show(ui, &f.app.model.devices);
+                }
+                View::Rules => {
+                    let _ = f
+                        .app
+                        .rules
+                        .show(ui, &f.app.model.devices, &f.app.model.rule_runs);
+                }
+                View::Devices => {}
+            }
+            f.app.close_prompt_window(&ui.ctx().clone());
+        });
+        output.textures_delta.clear();
+    }
+    assert!(f.app.close_prompt.is_some());
+}

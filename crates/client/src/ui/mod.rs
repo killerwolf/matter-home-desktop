@@ -45,11 +45,22 @@ pub struct ViewRequests {
     pub export_csv: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Devices,
     Plan,
     Rules,
+}
+
+impl View {
+    /// Nom de l'onglet.
+    fn title(self) -> &'static str {
+        match self {
+            View::Devices => "Appareils",
+            View::Plan => "Plan de la maison",
+            View::Rules => "Automatisations",
+        }
+    }
 }
 
 enum Pairing {
@@ -158,6 +169,29 @@ pub struct MatterApp {
     test_after_save: Option<u64>,
     /// Notification macOS locale (remplacée dans les tests).
     notifier: notify::Notifier,
+    /// Fermeture de la fenêtre demandée alors que des modifications seraient perdues : ce
+    /// qui serait perdu, tant que la question est posée. Une seconde demande de fermeture
+    /// pendant la question la laisse passer : la fenêtre ne reste jamais bloquée.
+    close_prompt: Option<String>,
+}
+
+/// Réponse à une demande de fermeture de la fenêtre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloseDecision {
+    /// Rien ne serait perdu (ou ce qui reste part à la fermeture) : la fenêtre se ferme.
+    Allow,
+    /// Des modifications seraient perdues : on demande d'abord, texte = ce qui serait perdu.
+    Ask(String),
+}
+
+/// Un brouillon ou un choix en attente, montré en permanence dans la barre du haut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncAlert {
+    view: View,
+    /// Court, pour la barre.
+    label: String,
+    /// Complet, au survol.
+    detail: String,
 }
 
 impl MatterApp {
@@ -189,6 +223,7 @@ impl MatterApp {
             draft_server: None,
             test_after_save: None,
             notifier: notify::system_notifier(),
+            close_prompt: None,
         }
     }
 
@@ -376,6 +411,11 @@ impl MatterApp {
     /// parti, puis attend les réponses du plan et des règles pendant `cap` au plus. Au pire,
     /// quelques instants de travail sont perdus ; la fenêtre ne reste jamais bloquée.
     fn flush_on_exit(&mut self, cap: Duration) {
+        // Cmd+Q (« terminate: » de macOS) arrive ici sans passer par la demande de fermeture de la
+        // fenêtre, donc sans question possible : au moins le journal garde la trace.
+        if let Some(lost) = self.unsaved_on_exit() {
+            log::warn!("fermeture avec des modifications non enregistrées : {lost}");
+        }
         if !self.connected() {
             return;
         }
@@ -400,6 +440,128 @@ impl MatterApp {
                 Ok(event) => self.on_event(event),
                 Err(_) => break,
             }
+        }
+    }
+
+    /// Ce que l'on perdrait en quittant maintenant, malgré l'envoi borné de `flush_on_exit` :
+    /// des modifications qui ne peuvent pas partir (liaison coupée, adresse de webhook incomplète,
+    /// refus du serveur, choix « modifié ailleurs » en attente). Un brouillon complet, lui, part
+    /// à la fermeture : rien à demander.
+    fn unsaved_on_exit(&self) -> Option<String> {
+        let mut lost: Vec<String> = Vec::new();
+        for (name, editing, blocked) in [
+            ("le plan", self.plan.editing(), self.plan.blocked()),
+            ("les règles", self.rules.editing(), self.rules.blocked()),
+        ] {
+            if !editing {
+                continue;
+            }
+            if !self.connected() {
+                lost.push(format!("{name} (la liaison avec le serveur est coupée)"));
+            } else if let Some(why) = blocked {
+                lost.push(format!("{name} ({why})"));
+            }
+        }
+        (!lost.is_empty()).then(|| lost.join(" ; "))
+    }
+
+    /// Demande de fermeture de la fenêtre : on pose la question s'il reste des modifications
+    /// qui seraient perdues. Une seconde demande pendant la question est une insistance : elle
+    /// passe.
+    fn on_close_requested(&mut self) -> CloseDecision {
+        if self.close_prompt.is_some() {
+            return CloseDecision::Allow;
+        }
+        match self.unsaved_on_exit() {
+            Some(lost) => {
+                self.close_prompt = Some(lost.clone());
+                CloseDecision::Ask(lost)
+            }
+            None => CloseDecision::Allow,
+        }
+    }
+
+    /// Brouillons et choix en attente, pour la barre du haut : visibles depuis toutes les vues.
+    fn sync_alerts(&self) -> Vec<SyncAlert> {
+        let mut alerts = Vec::new();
+        for (view, name, editing, conflict, notice) in [
+            (
+                View::Plan,
+                "Plan",
+                self.plan.editing(),
+                self.plan.conflict_pending(),
+                self.plan.notice(),
+            ),
+            (
+                View::Rules,
+                "Règles",
+                self.rules.editing(),
+                self.rules.conflict_pending(),
+                self.rules.notice(),
+            ),
+        ] {
+            if conflict {
+                alerts.push(SyncAlert {
+                    view,
+                    label: format!("⚠ {name} modifiés ailleurs"),
+                    detail: format!(
+                        "Un autre client a modifié cette partie pendant votre édition : \
+                         choisissez quelle version garder (onglet « {} »).",
+                        view.title()
+                    ),
+                });
+            } else if let Some(detail) = notice {
+                alerts.push(SyncAlert {
+                    view,
+                    label: format!("⚠ {name} non enregistrés"),
+                    detail,
+                });
+            } else if editing && !self.connected() {
+                alerts.push(SyncAlert {
+                    view,
+                    label: format!("⚠ {name} non enregistrés"),
+                    detail: "La liaison avec le serveur est coupée : vos modifications sont \
+                             gardées et repartiront à la reconnexion."
+                        .into(),
+                });
+            }
+        }
+        alerts
+    }
+
+    /// Question posée à la fermeture de la fenêtre.
+    fn close_prompt_window(&mut self, ctx: &egui::Context) {
+        // Plus rien à perdre (la liaison est revenue, le brouillon est parti) : plus de question.
+        if self.close_prompt.is_some() && self.unsaved_on_exit().is_none() {
+            self.close_prompt = None;
+        }
+        let Some(lost) = self.close_prompt.clone() else {
+            return;
+        };
+        let (mut quit, mut stay) = (false, false);
+        egui::Window::new("Modifications non enregistrées")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(format!("Ces modifications seraient perdues : {lost}."));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Rester").clicked() {
+                        stay = true;
+                    }
+                    if ui.button("Quitter sans enregistrer").clicked() {
+                        quit = true;
+                    }
+                });
+            });
+        if stay {
+            self.close_prompt = None;
+        }
+        if quit {
+            // La demande de fermeture qui en découle trouve la question encore posée : elle passe.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -505,6 +667,25 @@ impl MatterApp {
         }
     }
 
+    /// Ce que dit l'écran de connexion quand un retour à cet écran abandonne des modifications
+    /// non enregistrées (jeton expiré, certificat changé, autre serveur, déconnexion). À lire
+    /// **avant** `clear_data`, qui les efface.
+    fn lost_drafts_text(&self) -> Option<String> {
+        let mut what = Vec::new();
+        if self.plan.editing() {
+            what.push("du plan");
+        }
+        if self.rules.editing() {
+            what.push("des règles");
+        }
+        (!what.is_empty()).then(|| {
+            format!(
+                "Vos modifications non enregistrées {} ont été abandonnées.",
+                what.join(" et ")
+            )
+        })
+    }
+
     fn on_link(&mut self, link: Link) {
         match &link {
             // Resynchronisation : on garde l'affichage, un nouvel état complet arrive aussitôt.
@@ -517,7 +698,11 @@ impl MatterApp {
                     || self.draft_server.as_ref().is_some_and(|d| d != server)
                 {
                     // Un autre serveur que celui des brouillons et des fenêtres en cours.
+                    let lost = self.lost_drafts_text();
                     self.clear_data(false, true);
+                    if let Some(lost) = lost {
+                        self.push_log(format!("Autre serveur : {lost}"));
+                    }
                 }
                 if !self.connected() {
                     self.push_log(format!("Connecté au serveur (version {server_version})."));
@@ -540,15 +725,21 @@ impl MatterApp {
                 pinned,
                 reason,
             } => {
+                let lost = self.lost_drafts_text();
                 self.clear_data(false, true);
                 self.server = None;
-                self.connect
-                    .logged_out(url.clone(), *pinned, reason.clone());
+                let reason = match (reason.clone(), lost) {
+                    (Some(r), Some(l)) => Some(format!("{r} {l}")),
+                    (r, l) => r.or(l),
+                };
+                self.connect.logged_out(url.clone(), *pinned, reason);
             }
             Link::Connecting => self.clear_data(true, false),
             Link::CertificateChanged { .. } | Link::Incompatible { .. } => {
+                let lost = self.lost_drafts_text();
                 self.clear_data(false, true);
                 self.server = None;
+                self.connect.note(lost);
             }
         }
         self.link = link;
@@ -1411,9 +1602,23 @@ impl MatterApp {
                 }
                 ui.separator();
                 if self.connected() {
-                    ui.selectable_value(&mut self.view, View::Devices, "Appareils");
-                    ui.selectable_value(&mut self.view, View::Plan, "Plan de la maison");
-                    ui.selectable_value(&mut self.view, View::Rules, "Automatisations");
+                    ui.selectable_value(&mut self.view, View::Devices, View::Devices.title());
+                    ui.selectable_value(&mut self.view, View::Plan, View::Plan.title());
+                    ui.selectable_value(&mut self.view, View::Rules, View::Rules.title());
+                }
+                // Un brouillon ou un choix en attente reste visible depuis toutes les vues.
+                for alert in self.sync_alerts() {
+                    let text = RichText::new(&alert.label)
+                        .small()
+                        .strong()
+                        .color(Color32::from_rgb(235, 150, 40));
+                    let clicked = ui
+                        .add(egui::Button::new(text).frame(false))
+                        .on_hover_text(&alert.detail)
+                        .clicked();
+                    if clicked && self.connected() {
+                        self.view = alert.view;
+                    }
                 }
             });
             if let Some((at, text)) = &self.error_banner {
@@ -1562,6 +1767,11 @@ impl eframe::App for MatterApp {
     /// pas la fenêtre (recouverte ou réduite).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_network();
+        if ctx.input(|i| i.viewport().close_requested())
+            && matches!(self.on_close_requested(), CloseDecision::Ask(_))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.tick(ctx, Instant::now());
         if self.plan_or_rules_pending() {
             ctx.request_repaint_after(Duration::from_millis(150));
@@ -1590,6 +1800,7 @@ impl eframe::App for MatterApp {
         self.top_bar(ui);
         self.toasts_ui(&ui.ctx().clone());
         self.data_dialog_window(&ui.ctx().clone());
+        self.close_prompt_window(&ui.ctx().clone());
 
         egui::Panel::bottom("log")
             .resizable(true)

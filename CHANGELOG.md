@@ -43,6 +43,16 @@ Les téléchargements de chaque version sont sur la
 
 - Test du serveur « client lent » : il attend la fin de la rafale de démarrage de la démo avant
   d'ouvrir ses WebSockets (échec sporadique de la file de diffusion saturée).
+- Client : plus de perte silencieuse de modifications. La fermeture de la fenêtre demande
+  confirmation (« Rester » / « Quitter sans enregistrer ») quand un brouillon ne peut pas partir
+  (adresse de webhook incomplète, liaison coupée, version d'un autre client en attente) ; un
+  brouillon ou un choix en attente se voit dans la barre du haut depuis toutes les vues, avec un
+  bouton « Revenir à la version du serveur » (règles et plan). Un jeton expiré, un certificat
+  changé ou un changement de serveur qui abandonne un brouillon le dit sur l'écran de connexion,
+  avec l'échec éventuel d'effacement du fichier de connexion. Les notifications du système passent
+  par un seul fil et une file bornée : une rafale ne lance plus un processus par notification,
+  le surplus est remplacé par un résumé. Cmd+Q ne passe pas par la demande de fermeture de la
+  fenêtre (macOS), donc sans question : l'envoi borné à la sortie reste le filet.
 
 ## [0.2.1] - 2026-11-03
 

@@ -44,6 +44,13 @@ L'action « Appeler une URL » fait un GET, ou un POST si un corps est saisi (en
 s'il commence par `{`, en texte sinon). Seules les adresses `http://` et `https://` sont
 acceptées ; délai maximal de 10 s. Pratique pour IFTTT, ntfy, Slack, Home Assistant…
 
+Une règle **activée** doit avoir une adresse complète : tant qu'elle est vide ou à moitié saisie,
+l'ensemble des règles reste un brouillon (bandeau orange, et « ⚠ Règles non enregistrées » dans la
+barre du haut) et rien n'est envoyé au serveur. Le bouton « Revenir à la version du serveur »
+abandonne ce brouillon. Une règle **désactivée** peut garder une adresse incomplète ; c'est aussi
+ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
+[migration.md](migration.md)).
+
 ## Quand une règle se déclenche
 
 - **Anti-rafale** : « pas plus d'une exécution toutes les N minutes » (1 min par défaut).

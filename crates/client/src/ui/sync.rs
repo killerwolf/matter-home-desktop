@@ -377,6 +377,34 @@ impl<T: Clone + PartialEq> SyncState<T> {
         true
     }
 
+    /// Peut-on abandonner le brouillon pour la version du serveur ? Non sans version connue
+    /// (liaison coupée), ni pendant un envoi : sa réponse réécrirait le document affiché.
+    pub fn can_revert(&self) -> bool {
+        self.server.is_some() && self.in_flight.is_none()
+    }
+
+    /// « Revenir à la version du serveur » : abandonne le brouillon (incomplet, refusé, en attente
+    /// d'un nouvel essai, ou en conflit avec l'autre client) et affiche la dernière version connue
+    /// du serveur. `false` (rien n'est touché) si [`SyncState::can_revert`] est faux.
+    pub fn revert(&mut self, local: &mut T) -> bool {
+        if !self.can_revert() {
+            return false;
+        }
+        if let Some(server) = &self.server {
+            *local = server.clone();
+        }
+        self.dirty = false;
+        self.changed_at = None;
+        self.remote = None;
+        self.refused = None;
+        self.not_before = None;
+        self.retries = 0;
+        self.waiting = None;
+        self.base = None;
+        self.maybe_sent = None;
+        true
+    }
+
     /// Bandeau « modifié ailleurs » → « Afficher sa version ».
     pub fn accept_remote(&mut self, local: &mut T) {
         if let Some(remote) = self.remote.take() {
@@ -409,6 +437,51 @@ mod tests {
 
     fn t0() -> Instant {
         Instant::now()
+    }
+
+    #[test]
+    fn reverting_drops_every_kind_of_draft_and_never_races_an_upload() {
+        let mut s = SyncState::<String>::with_check(url_must_be_filled);
+        let mut doc = "serveur http".to_string();
+        s.on_server(doc.clone(), &mut doc);
+        // Brouillon incomplet.
+        doc = "brouillon".into();
+        s.mark_changed(t0());
+        assert!(s.notice(&doc).is_some() && s.editing());
+        assert!(s.revert(&mut doc));
+        assert_eq!(doc, "serveur http");
+        assert!(!s.editing() && s.notice(&doc).is_none());
+        // En conflit avec un autre client : la version de l'autre est oubliée aussi.
+        doc = "ma version http".into();
+        s.mark_changed(t0());
+        assert_eq!(
+            s.on_server("autre http".into(), &mut doc),
+            Incoming::Conflict
+        );
+        assert!(s.remote().is_some());
+        assert!(s.revert(&mut doc));
+        assert_eq!(doc, "autre http", "la dernière version du serveur");
+        assert!(s.remote().is_none() && !s.editing());
+        // Refusé par le serveur.
+        doc = "refusé http".into();
+        s.mark_changed(t0());
+        s.sent(7, doc.clone());
+        // Un envoi est en vol : sa réponse réécrirait le document, on ne revient pas.
+        assert!(!s.can_revert() && !s.revert(&mut doc));
+        assert_eq!(doc, "refusé http");
+        s.on_failed(7, Failure::Refused("non".into()), t0(), &mut doc);
+        assert!(s.revert(&mut doc));
+        assert_eq!(doc, "autre http");
+        assert!(!s.editing());
+        // Sans version du serveur (liaison coupée) : impossible.
+        let mut cut = SyncState::<String>::default();
+        let mut text = "a".to_string();
+        cut.on_server("a".into(), &mut text);
+        text = "b".into();
+        cut.mark_changed(t0());
+        cut.suspend(t0());
+        assert!(!cut.can_revert() && !cut.revert(&mut text));
+        assert_eq!(text, "b");
     }
 
     #[test]
