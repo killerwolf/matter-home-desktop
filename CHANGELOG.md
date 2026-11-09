@@ -34,11 +34,13 @@ Les téléchargements de chaque version sont sur la
 - **Étiquette de fabric « Matter Home Serveur »** : le serveur l'écrit sur chaque appareil
   (commande UpdateFabricLabel), pour qu'Apple Maison l'affiche dans « Services connectés » à côté du
   numéro de fabricant « 101 ». Sans réappairage ni action : appareils déjà appairés et nouveaux,
-  à la première connexion. Purement cosmétique : tâche à part, avec son délai, qui n'influe ni sur
-  l'état de l'appareil ni sur sa souscription ni sur un appairage ; un échec est journalisé et
-  retenté à la connexion suivante. Les appareils sur pile sont ménagés : lecture de l'étiquette
-  d'abord, écriture seulement si elle diffère, et plus aucun essai tant que le serveur tourne une
-  fois l'étiquette en place.
+  à la première connexion. Purement cosmétique : elle ne démarre qu'une fois la souscription
+  établie, dans la même tâche que la session (donc arrêtée avec elle, y compris quand l'appareil est
+  oublié) ; elle n'influe ni sur l'état de l'appareil ni sur sa souscription ni sur un appairage.
+  Les appareils sur pile sont ménagés : lecture de l'étiquette d'abord, écriture seulement si elle
+  diffère (jamais si la lecture échoue), et plus aucun essai tant que le serveur tourne une fois
+  l'étiquette posée ou refusée par l'appareil ; seuls les échecs de transport sont retentés, 3 fois
+  au plus.
 
 ## [1.0.0] - 2026-11-09
 

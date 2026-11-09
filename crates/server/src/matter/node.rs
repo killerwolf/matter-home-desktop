@@ -23,7 +23,7 @@ use super::convert::{
     cover_open_percent_from_tlv, energy_kwh_from_tlv, humidity_from_tlv, open_from_tlv,
     power_w_from_tlv, temperature_from_tlv,
 };
-use super::tlv::{parse_report_data, parse_subscribe_response_max_interval, Value};
+use super::tlv::{decode, parse_report_data, parse_subscribe_response_max_interval, Value};
 use super::{Ctx, Interview};
 use crate::events::{now_unix, Event, MeasureKind, NodeStatus, ReportingMode, StateKind};
 use crate::persistence::{StoredBridgedDevice, StoredNode, TrackedEndpoints, INTERVIEW_VERSION};
@@ -79,8 +79,12 @@ const LIVENESS_EVERY: Duration = Duration::from_secs(60);
 /// 32 caractères.
 pub(crate) const ETIQUETTE_FABRIC_SERVEUR: &str = "Matter Home Serveur";
 const _: () = assert!(ETIQUETTE_FABRIC_SERVEUR.len() <= 32);
-/// Attente avant d'écrire l'étiquette : la souscription passe d'abord.
-const FABRIC_LABEL_DELAY: Duration = Duration::from_secs(20);
+/// Attente avant de toucher à l'étiquette, une fois la souscription établie (ou l'interrogation
+/// périodique lancée) : la session s'installe d'abord.
+const FABRIC_LABEL_DELAY: Duration = Duration::from_secs(10);
+/// Nombre maximal d'essais (lecture puis écriture) par appareil et par processus ; seuls les
+/// échecs de transport ou de délai sont retentés.
+const FABRIC_LABEL_MAX_ATTEMPTS: u32 = 3;
 /// Délai total (lecture puis écriture) de l'étiquette ; au-delà, on y renonce jusqu'à la
 /// prochaine connexion.
 const FABRIC_LABEL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -127,14 +131,10 @@ pub(crate) async fn supervise(
         // Connexion partagée avec les automatisations (commandes envoyées pendant l'écoute).
         let conn = Arc::new(conn);
         ctx.set_connection(node_id, Some(conn.clone()));
-        // Étiquette de fabric : tâche à part, purement cosmétique. Elle ne touche ni à l'état
-        // du nœud ni à la session, et s'arrête avec elle.
-        let label_task = tokio::spawn(fabric_label_task(ctx.clone(), node_id, conn.clone()));
         let err = match run_session(&ctx, node_id, &conn).await {
             Ok(()) => anyhow!("session terminée"),
             Err(e) => e,
         };
-        label_task.abort();
         ctx.set_connection(node_id, None);
         log::info!("nœud {node_id:016X} : {err:#}");
         wait_retry(&ctx, node_id, &wake, format!("{err:#}"), &mut retry).await;
@@ -460,7 +460,7 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
     let routes = Routes::of(&node);
     let paths = tracked_paths(&node);
     if paths.is_empty() {
-        return liveness_loop(ctx, node_id, conn).await;
+        return alongside_fabric_label(ctx, node_id, conn, liveness_loop(ctx, node_id, conn)).await;
     }
     match subscribe(ctx, &routes, conn, &paths).await {
         Ok(max_interval) => {
@@ -471,7 +471,9 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
                     max_interval_s: max_interval,
                 },
             );
-            listen(ctx, &routes, conn, max_interval).await
+            // L'étiquette de fabric ne démarre qu'une fois la souscription obtenue.
+            alongside_fabric_label(ctx, node_id, conn, listen(ctx, &routes, conn, max_interval))
+                .await
         }
         Err(e) => {
             log::warn!(
@@ -488,7 +490,7 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
                     every_s: POLL_EVERY.as_secs(),
                 },
             );
-            poll_loop(ctx, &routes, conn, &paths).await
+            alongside_fabric_label(ctx, node_id, conn, poll_loop(ctx, &routes, conn, &paths)).await
         }
     }
 }
@@ -989,24 +991,52 @@ async fn liveness_loop(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()>
     }
 }
 
-/// Appareils dont l'étiquette de fabric est déjà bonne, pour la durée du processus : une
-/// fois posée (ou constatée), on n'y touche plus, pour ne pas réveiller les appareils sur pile.
+/// État de l'étiquette de fabric, pour la durée du processus : appareils réglés (étiquette posée,
+/// constatée ou refusée de façon définitive) et nombre d'essais déjà faits pour les autres. Une
+/// fois réglé, ou le plafond d'essais atteint, on n'y touche plus, pour ne pas réveiller les
+/// appareils sur pile.
 #[derive(Default)]
-pub(crate) struct FabricLabels(std::sync::Mutex<HashSet<u64>>);
+pub(crate) struct FabricLabels(std::sync::Mutex<FabricLabelState>);
+
+#[derive(Default)]
+struct FabricLabelState {
+    done: HashSet<u64>,
+    attempts: HashMap<u64, u32>,
+}
 
 impl FabricLabels {
+    fn state(&self) -> std::sync::MutexGuard<'_, FabricLabelState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(test)]
     fn is_done(&self, node_id: u64) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(&node_id)
+        self.state().done.contains(&node_id)
     }
 
     fn mark_done(&self, node_id: u64) {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(node_id);
+        self.state().done.insert(node_id);
+    }
+
+    /// Faut-il encore essayer ? (ni réglé, ni plafond atteint)
+    fn may_try(&self, node_id: u64) -> bool {
+        let state = self.state();
+        !state.done.contains(&node_id)
+            && state.attempts.get(&node_id).copied().unwrap_or(0) < FABRIC_LABEL_MAX_ATTEMPTS
+    }
+
+    /// Compte un essai ; `false` si on n'a plus le droit d'essayer.
+    fn begin_attempt(&self, node_id: u64) -> bool {
+        let mut state = self.state();
+        if state.done.contains(&node_id) {
+            return false;
+        }
+        let n = state.attempts.entry(node_id).or_insert(0);
+        if *n >= FABRIC_LABEL_MAX_ATTEMPTS {
+            return false;
+        }
+        *n += 1;
+        true
     }
 }
 
@@ -1027,10 +1057,80 @@ fn our_fabric_label(fabrics: &Value, node_id: u64) -> Option<String> {
         })
 }
 
-/// Pose l'étiquette de fabric sur l'appareil, une seule fois par processus et par appareil.
-/// Strictement cosmétique : aucune erreur n'en sort, tout échec est seulement journalisé et
-/// l'essai recommence à la prochaine connexion. `read` donne l'étiquette actuelle de notre
-/// fabric, `write` l'écrit.
+/// Réponse de l'appareil à UpdateFabricLabel.
+#[derive(Debug, PartialEq)]
+enum LabelReply {
+    /// Étiquette acceptée.
+    Accepted,
+    /// Refus définitif : statut du NOCResponse (ex. LabelConflict) ou statut IM
+    /// (ex. UNSUPPORTED_COMMAND, UNSUPPORTED_ACCESS). Réessayer ne changerait rien.
+    Refused(String),
+}
+
+const NOC_STATUS_LABEL_CONFLICT: u64 = 0x0A;
+
+/// Décode la réponse à UpdateFabricLabel (opcode et payload bruts du message).
+///
+/// La commande répond par un NOCResponse, donc un `CommandDataIB` (tag 0 de l'InvokeResponseIB)
+/// dont les champs (tag 1) portent : 0 = StatusCode, 1 = FabricIndex, 2 = DebugText. Un refus
+/// au niveau de l'Interaction Model arrive à la place en `CommandStatusIB` (tag 1) avec un
+/// StatusIB (tag 1, champ 0), ou en StatusResponse (opcode 0x01, champ 0). On ne passe pas par
+/// `invoke_request2` de matc, qui ne lit que le CommandStatusIB.
+fn parse_update_label_reply(opcode: u8, payload: &[u8]) -> Result<LabelReply> {
+    let root = decode(payload).context("réponse illisible")?;
+    if opcode == Ph::INTERACTION_OPCODE_STATUS_RESP {
+        let status = root
+            .field(0)
+            .and_then(Value::as_u64)
+            .context("StatusResponse sans statut")?;
+        return Ok(match status {
+            0 => LabelReply::Accepted,
+            s => LabelReply::Refused(format!("statut IM {s:#04x}")),
+        });
+    }
+    if opcode != Ph::INTERACTION_OPCODE_INVOKE_RESP {
+        bail!("réponse inattendue (opcode {opcode:#x})");
+    }
+    let response = root
+        .field(1)
+        .and_then(|list| list.items().first().map(|(_, v)| v))
+        .context("InvokeResponse vide")?;
+    if let Some(command_data) = response.field(0) {
+        let status = command_data
+            .path(&[1, 0])
+            .and_then(Value::as_u64)
+            .context("NOCResponse sans StatusCode")?;
+        return Ok(match status {
+            0 => LabelReply::Accepted,
+            NOC_STATUS_LABEL_CONFLICT => {
+                LabelReply::Refused("NOCResponse : LabelConflict (étiquette déjà prise)".into())
+            }
+            s => LabelReply::Refused(format!("NOCResponse : statut {s}")),
+        });
+    }
+    if let Some(command_status) = response.field(1) {
+        let status = command_status
+            .path(&[1, 0])
+            .and_then(Value::as_u64)
+            .context("CommandStatusIB sans statut")?;
+        return Ok(match status {
+            0 => LabelReply::Accepted,
+            s => LabelReply::Refused(format!("statut IM {s:#04x}")),
+        });
+    }
+    bail!("InvokeResponseIB ni CommandDataIB ni CommandStatusIB")
+}
+
+/// Pose l'étiquette de fabric sur l'appareil. Strictement cosmétique : aucune erreur n'en sort,
+/// tout échec est seulement journalisé.
+///
+/// - `read` donne l'étiquette actuelle de notre fabric. Si la lecture échoue ou ne trouve pas
+///   notre entrée, on n'écrit pas : on s'arrête pour cette session (l'essai est compté).
+/// - `write` l'écrit : `Ok` pour une réponse (acceptée ou refusée), `Err` pour un échec de
+///   transport ou de délai.
+/// - Sont définitifs pour ce processus : étiquette posée ou déjà bonne, refus de l'appareil
+///   (NOCResponse ou statut IM). Seuls les échecs de transport ou de délai sont retentés, 3 fois
+///   au plus par appareil.
 async fn ensure_fabric_label<R, RF, W, WF>(
     done: &FabricLabels,
     node_id: u64,
@@ -1042,63 +1142,106 @@ async fn ensure_fabric_label<R, RF, W, WF>(
     R: FnOnce() -> RF,
     RF: std::future::Future<Output = Result<Option<String>>>,
     W: FnOnce() -> WF,
-    WF: std::future::Future<Output = Result<()>>,
+    WF: std::future::Future<Output = Result<LabelReply>>,
 {
-    if done.is_done(node_id) {
+    if !done.may_try(node_id) {
         return;
     }
     tokio::time::sleep(delay).await;
+    if !done.begin_attempt(node_id) {
+        return;
+    }
     let attempt = timeout(limit, async {
         match read().await {
-            Ok(Some(current)) if current == ETIQUETTE_FABRIC_SERVEUR => return Ok(false),
-            Ok(_) => {}
-            Err(e) => log::debug!("nœud {node_id:016X} : étiquette de fabric illisible : {e:#}"),
+            Ok(Some(current)) if current == ETIQUETTE_FABRIC_SERVEUR => return Ok(None),
+            Ok(Some(_)) => {}
+            Ok(None) => bail!("notre entrée est introuvable dans les fabrics de l'appareil"),
+            Err(e) => bail!("étiquette de fabric illisible : {e:#}"),
         }
-        write().await.map(|()| true)
+        write().await.map(Some)
     })
     .await;
     match attempt {
-        Ok(Ok(true)) => {
+        Ok(Ok(Some(LabelReply::Accepted))) => {
             log::info!("nœud {node_id:016X} : étiquette de fabric « {ETIQUETTE_FABRIC_SERVEUR} » écrite");
             done.mark_done(node_id);
         }
-        Ok(Ok(false)) => done.mark_done(node_id),
+        Ok(Ok(None)) => done.mark_done(node_id),
+        Ok(Ok(Some(LabelReply::Refused(why)))) => {
+            log::info!(
+                "nœud {node_id:016X} : étiquette de fabric refusée par l'appareil ({why}) ; plus d'essai jusqu'au redémarrage du serveur"
+            );
+            done.mark_done(node_id);
+        }
         Ok(Err(e)) => log::info!(
-            "nœud {node_id:016X} : étiquette de fabric non écrite ({e:#}) ; nouvel essai à la prochaine connexion"
+            "nœud {node_id:016X} : étiquette de fabric non écrite ({e:#}) ; nouvel essai à une prochaine connexion (3 au plus)"
         ),
         Err(_) => log::info!(
-            "nœud {node_id:016X} : étiquette de fabric non écrite (délai dépassé) ; nouvel essai à la prochaine connexion"
+            "nœud {node_id:016X} : étiquette de fabric non écrite (délai dépassé) ; nouvel essai à une prochaine connexion (3 au plus)"
         ),
     }
 }
 
-async fn fabric_label_task(ctx: Arc<Ctx>, node_id: u64, conn: Arc<Connection>) {
+/// Étiquette de fabric d'un appareil, par lecture puis UpdateFabricLabel sur la session.
+async fn fabric_label(ctx: &Ctx, node_id: u64, conn: &Connection) {
     ensure_fabric_label(
         &ctx.fabric_labels,
         node_id,
         FABRIC_LABEL_DELAY,
         FABRIC_LABEL_TIMEOUT,
         || async {
-            let fabrics =
-                read_attr(&conn, 0, CLUSTER_OPERATIONAL_CREDENTIALS, ATTR_FABRICS).await?;
+            let fabrics = read_attr(conn, 0, CLUSTER_OPERATIONAL_CREDENTIALS, ATTR_FABRICS).await?;
             Ok(our_fabric_label(&fabrics, node_id))
         },
         || async {
-            use matc::clusters::codec::operational_credential_cluster::{
-                update_fabric_label, NodeOperationalCertStatus,
+            use matc::clusters::codec::operational_credential_cluster::encode_update_fabric_label;
+            use matc::clusters::defs::{
+                CLUSTER_ID_OPERATIONAL_CREDENTIALS,
+                CLUSTER_OPERATIONAL_CREDENTIALS_CMD_ID_UPDATEFABRICLABEL as CMD_UPDATE_FABRIC_LABEL,
             };
-            let response =
-                update_fabric_label(&conn, 0, ETIQUETTE_FABRIC_SERVEUR.to_string()).await?;
-            match response.status_code {
-                Some(NodeOperationalCertStatus::Ok) => Ok(()),
-                other => bail!(
-                    "statut {other:?} {}",
-                    response.debug_text.unwrap_or_default()
-                ),
+            let payload = encode_update_fabric_label(ETIQUETTE_FABRIC_SERVEUR.to_string())?;
+            let msg = conn
+                .invoke_request(
+                    0,
+                    CLUSTER_ID_OPERATIONAL_CREDENTIALS,
+                    CMD_UPDATE_FABRIC_LABEL,
+                    &payload,
+                )
+                .await?;
+            if let Some(sr) = &msg.status_report_info {
+                bail!("rapport de statut {sr:?}");
             }
+            parse_update_label_reply(msg.protocol_header.opcode, &msg.payload)
         },
     )
     .await;
+}
+
+/// Exécute `main` en lui adjoignant `side` (travail annexe qui ne se termine jamais d'après
+/// `main`) dans la même tâche : si la tâche est abandonnée (oubli de l'appareil), `side` est
+/// abandonné avec elle, sans rien laisser tourner derrière.
+async fn run_alongside<T>(
+    main: impl std::future::Future<Output = T>,
+    side: impl std::future::Future<Output = ()>,
+) -> T {
+    tokio::select! {
+        out = main => out,
+        () = async {
+            side.await;
+            std::future::pending::<()>().await;
+        } => unreachable!("pending ne se termine pas"),
+    }
+}
+
+/// Étiquette de fabric pendant `main` (écoute, interrogation ou veille), dans la même tâche que
+/// la session : jamais avant que la souscription soit établie, et arrêtée avec elle.
+async fn alongside_fabric_label<T>(
+    ctx: &Ctx,
+    node_id: u64,
+    conn: &Connection,
+    main: impl std::future::Future<Output = T>,
+) -> T {
+    run_alongside(main, fabric_label(ctx, node_id, conn)).await
 }
 
 #[cfg(test)]
@@ -1452,26 +1595,21 @@ mod tests {
             &self,
             done: &FabricLabels,
             current: Result<Option<String>, &'static str>,
-            write_ok: bool,
-            limit: Duration,
+            write: Result<LabelReply, &'static str>,
         ) {
             use std::sync::atomic::Ordering::SeqCst;
             ensure_fabric_label(
                 done,
                 1,
                 Duration::ZERO,
-                limit,
+                LIMIT,
                 || async {
                     self.reads.fetch_add(1, SeqCst);
                     current.map_err(|e| anyhow!(e))
                 },
                 || async {
                     self.writes.fetch_add(1, SeqCst);
-                    if write_ok {
-                        Ok(())
-                    } else {
-                        bail!("statut refusé")
-                    }
+                    write.map_err(|e| anyhow!(e))
                 },
             )
             .await;
@@ -1479,20 +1617,43 @@ mod tests {
     }
 
     const LIMIT: Duration = Duration::from_secs(5);
+    const ACCEPTED: Result<LabelReply, &str> = Ok(LabelReply::Accepted);
+
+    fn refused() -> Result<LabelReply, &'static str> {
+        Ok(LabelReply::Refused("LabelConflict".into()))
+    }
 
     #[tokio::test]
     async fn fabric_label_is_written_once_per_device() {
         let done = FabricLabels::default();
         let fake = FakeLabel::default();
-        fake.run(&done, Ok(Some("101".into())), true, LIMIT).await;
+        fake.run(&done, Ok(Some("101".into())), ACCEPTED).await;
         assert_eq!(fake.counts(), (1, 1));
         // Deuxième connexion : plus aucun trafic.
-        fake.run(&done, Ok(Some("101".into())), true, LIMIT).await;
+        fake.run(&done, Ok(Some("101".into())), ACCEPTED).await;
         assert_eq!(fake.counts(), (1, 1));
-        // Un autre appareil a son propre compteur.
-        let other = FabricLabels::default();
-        fake.run(&other, Ok(None), true, LIMIT).await;
-        assert_eq!(fake.counts(), (2, 2));
+        // Un autre appareil (autre identifiant) a son propre état dans le même FabricLabels.
+        let (reads, writes) = (
+            std::sync::atomic::AtomicUsize::new(0),
+            std::sync::atomic::AtomicUsize::new(0),
+        );
+        ensure_fabric_label(
+            &done,
+            2,
+            Duration::ZERO,
+            LIMIT,
+            || async {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(String::new()))
+            },
+            || async {
+                writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(LabelReply::Accepted)
+            },
+        )
+        .await;
+        assert_eq!((reads.into_inner(), writes.into_inner()), (1, 1));
+        assert!(done.is_done(1) && done.is_done(2));
     }
 
     #[tokio::test]
@@ -1500,25 +1661,55 @@ mod tests {
         let done = FabricLabels::default();
         let fake = FakeLabel::default();
         let current = Some(ETIQUETTE_FABRIC_SERVEUR.to_string());
-        fake.run(&done, Ok(current), true, LIMIT).await;
+        fake.run(&done, Ok(current), ACCEPTED).await;
         assert_eq!(fake.counts(), (1, 0), "lue, déjà bonne, pas d'écriture");
         assert!(done.is_done(1));
     }
 
     #[tokio::test]
-    async fn failed_label_is_silent_and_retried_at_next_connection() {
+    async fn failed_read_does_not_write() {
         let done = FabricLabels::default();
         let fake = FakeLabel::default();
-        // Lecture et écriture en échec : rien ne remonte, l'appareil n'est pas marqué.
-        fake.run(&done, Err("pas de réponse"), false, LIMIT).await;
-        assert_eq!(fake.counts(), (1, 1));
+        fake.run(&done, Err("pas de réponse"), ACCEPTED).await;
+        assert_eq!(fake.counts(), (1, 0), "lecture en échec : aucune écriture");
         assert!(!done.is_done(1));
-        // Prochaine connexion : nouvel essai, qui réussit.
-        fake.run(&done, Ok(None), true, LIMIT).await;
-        assert_eq!(fake.counts(), (2, 2));
+        // Notre entrée introuvable : pas d'écriture non plus.
+        fake.run(&done, Ok(None), ACCEPTED).await;
+        assert_eq!(fake.counts(), (2, 0));
+        assert!(!done.is_done(1));
+        // Reprise plus tard : la lecture réussit, l'écriture passe.
+        fake.run(&done, Ok(Some(String::new())), ACCEPTED).await;
+        assert_eq!(fake.counts(), (3, 1));
         assert!(done.is_done(1));
-        fake.run(&done, Ok(None), true, LIMIT).await;
-        assert_eq!(fake.counts(), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn refusal_is_final_for_this_process() {
+        let done = FabricLabels::default();
+        let fake = FakeLabel::default();
+        fake.run(&done, Ok(Some(String::new())), refused()).await;
+        assert_eq!(fake.counts(), (1, 1));
+        assert!(done.is_done(1));
+        // Plus aucun trafic aux connexions suivantes.
+        fake.run(&done, Ok(Some(String::new())), ACCEPTED).await;
+        assert_eq!(fake.counts(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn transport_failures_are_capped_at_three_attempts() {
+        let done = FabricLabels::default();
+        let fake = FakeLabel::default();
+        for _ in 0..FABRIC_LABEL_MAX_ATTEMPTS {
+            fake.run(&done, Ok(Some(String::new())), Err("pas de réponse"))
+                .await;
+        }
+        assert_eq!(fake.counts(), (3, 3));
+        assert!(!done.is_done(1));
+        // Quatrième connexion : plafond atteint, plus aucun trafic, même si l'appareil répondrait.
+        fake.run(&done, Ok(Some(String::new())), ACCEPTED).await;
+        assert_eq!(fake.counts(), (3, 3));
+        // Les autres appareils ne sont pas touchés par ce plafond.
+        assert!(done.may_try(2));
     }
 
     #[tokio::test]
@@ -1530,14 +1721,176 @@ mod tests {
             1,
             Duration::ZERO,
             Duration::from_millis(30),
-            || async { Ok(None) },
+            || async { Ok(Some(String::new())) },
             || async {
                 tokio::time::sleep(Duration::from_secs(30)).await;
-                Ok(())
+                Ok(LabelReply::Accepted)
             },
         )
         .await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(!done.is_done(1));
+        assert!(
+            done.may_try(1),
+            "un délai dépassé est retenté (2 essais restants)"
+        );
+    }
+
+    /// Témoin : passe à `true` quand la future qui le porte est abandonnée.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn label_work_stops_when_the_supervising_task_is_aborted() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = DropFlag(dropped.clone());
+        let task = tokio::spawn(run_alongside(std::future::pending::<()>(), async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        }));
+        tokio::task::yield_now().await;
+        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        task.abort();
+        let _ = task.await;
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "le travail annexe doit être abandonné avec la tâche"
+        );
+    }
+
+    #[tokio::test]
+    async fn main_result_is_returned_and_side_work_ends_with_it() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = DropFlag(dropped.clone());
+        let out = run_alongside(async { 7 }, async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert_eq!(out, 7);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Encode comme matc : InvokeResponseMessage { 1: [ InvokeResponseIB { ... } ], 0xFF: 10 }.
+    /// `ib` écrit le contenu de l'InvokeResponseIB.
+    fn invoke_response(ib: impl FnOnce(&mut matc::tlv::TlvBuffer)) -> Vec<u8> {
+        let mut t = matc::tlv::TlvBuffer::new();
+        t.write_anon_struct().unwrap();
+        t.write_bool(0, false).unwrap(); // SuppressResponse
+        t.write_array(1).unwrap();
+        t.write_anon_struct().unwrap(); // InvokeResponseIB
+        ib(&mut t);
+        t.write_struct_end().unwrap();
+        t.write_struct_end().unwrap(); // fin du tableau
+        t.write_uint8(0xff, 10).unwrap();
+        t.write_struct_end().unwrap();
+        t.data
+    }
+
+    fn command_path(t: &mut matc::tlv::TlvBuffer, command: u32) {
+        t.write_list(0).unwrap();
+        t.write_uint16(0, 0).unwrap();
+        t.write_uint32(1, 0x3E).unwrap();
+        t.write_uint32(2, command).unwrap();
+        t.write_struct_end().unwrap();
+    }
+
+    /// NOCResponse (commande 0x08) dans un CommandDataIB.
+    fn noc_response(status: u8) -> Vec<u8> {
+        invoke_response(|t| {
+            t.write_struct(0).unwrap(); // CommandDataIB
+            command_path(t, 0x08);
+            t.write_struct(1).unwrap(); // champs
+            t.write_uint8(0, status).unwrap(); // StatusCode
+            t.write_uint8(1, 1).unwrap(); // FabricIndex
+            t.write_struct_end().unwrap();
+            t.write_struct_end().unwrap();
+        })
+    }
+
+    /// Refus IM dans un CommandStatusIB.
+    fn command_status(status: u8) -> Vec<u8> {
+        invoke_response(|t| {
+            t.write_struct(1).unwrap(); // CommandStatusIB
+            command_path(t, 0x09);
+            t.write_struct(1).unwrap(); // StatusIB
+            t.write_uint8(0, status).unwrap();
+            t.write_struct_end().unwrap();
+            t.write_struct_end().unwrap();
+        })
+    }
+
+    const INVOKE_RESP: u8 = Ph::INTERACTION_OPCODE_INVOKE_RESP;
+
+    #[test]
+    fn noc_response_ok_is_a_success() {
+        let payload = noc_response(0);
+        assert_eq!(
+            parse_update_label_reply(INVOKE_RESP, &payload).unwrap(),
+            LabelReply::Accepted
+        );
+        // Même chemin que celui de matc pour AddNOC ([1,0,0,1,0]) : on lit bien le StatusCode.
+        let item = matc::tlv::decode_tlv(&payload).unwrap();
+        assert_eq!(item.get_int(&[1, 0, 0, 1, 0]), Some(0));
+        // L'ancien chemin (CommandStatusIB) n'y est pas : c'était la source du faux échec.
+        assert!(item.get(&[1, 0, 1, 1]).is_none());
+    }
+
+    #[test]
+    fn noc_response_label_conflict_is_a_final_refusal() {
+        let reply = parse_update_label_reply(INVOKE_RESP, &noc_response(10)).unwrap();
+        assert!(
+            matches!(&reply, LabelReply::Refused(m) if m.contains("LabelConflict")),
+            "{reply:?}"
+        );
+        let other = parse_update_label_reply(INVOKE_RESP, &noc_response(5)).unwrap();
+        assert!(matches!(other, LabelReply::Refused(m) if m.contains("statut 5")));
+    }
+
+    #[test]
+    fn im_status_errors_are_final_refusals() {
+        // 0x81 UNSUPPORTED_COMMAND, 0x7E UNSUPPORTED_ACCESS.
+        for status in [0x81u8, 0x7E] {
+            let reply = parse_update_label_reply(INVOKE_RESP, &command_status(status)).unwrap();
+            assert!(
+                matches!(&reply, LabelReply::Refused(m) if m.contains(&format!("{status:#04x}"))),
+                "{reply:?}"
+            );
+        }
+        // Un succès IM nu reste un succès.
+        assert_eq!(
+            parse_update_label_reply(INVOKE_RESP, &command_status(0)).unwrap(),
+            LabelReply::Accepted
+        );
+        // StatusResponse (message d'erreur de l'IM, sans InvokeResponse).
+        let mut t = matc::tlv::TlvBuffer::new();
+        t.write_anon_struct().unwrap();
+        t.write_uint8(0, 0x85).unwrap();
+        t.write_uint8(0xff, 10).unwrap();
+        t.write_struct_end().unwrap();
+        let reply = parse_update_label_reply(Ph::INTERACTION_OPCODE_STATUS_RESP, &t.data).unwrap();
+        assert!(matches!(reply, LabelReply::Refused(m) if m.contains("0x85")));
+    }
+
+    #[test]
+    fn malformed_replies_are_errors_not_refusals() {
+        assert!(parse_update_label_reply(INVOKE_RESP, &[0x15, 0x18]).is_err());
+        assert!(parse_update_label_reply(INVOKE_RESP, &[0x15]).is_err());
+        assert!(
+            parse_update_label_reply(Ph::INTERACTION_OPCODE_REPORT_DATA, &[0x15, 0x18]).is_err()
+        );
+        // NOCResponse sans StatusCode.
+        let no_status = invoke_response(|t| {
+            t.write_struct(0).unwrap();
+            command_path(t, 0x08);
+            t.write_struct(1).unwrap();
+            t.write_struct_end().unwrap();
+            t.write_struct_end().unwrap();
+        });
+        assert!(parse_update_label_reply(INVOKE_RESP, &no_status).is_err());
     }
 }
