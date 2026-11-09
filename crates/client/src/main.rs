@@ -24,6 +24,7 @@ Usage :
   matter-home-desktop --plan      ouvre directement le plan de la maison
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
+  matter-home-desktop --version   affiche la version
   matter-home-desktop --help      affiche cette aide
 
 Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
@@ -38,6 +39,10 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("matter-home-desktop {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     // `--device` attend une valeur : on la met de côté avant de vérifier les options.

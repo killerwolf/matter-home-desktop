@@ -930,14 +930,14 @@ mod tests {
     }
 
     fn backup_text(dir: &Path) -> String {
-        let key = "01".repeat(32);
+        let state = persistence::StoredState {
+            version: 1,
+            identity: crate::matter::certs::test_identity(&"01".repeat(32)),
+            nodes: Vec::new(),
+        };
         std::fs::write(
             dir.join(persistence::FILE_NAME),
-            format!(
-                r#"{{"version":1,"identity":{{"fabric_id":1,"controller_node_id":2,
-                "ca_private_key":"{key}","ca_cert_der":"bb","controller_private_key":"{key}",
-                "controller_cert_der":"dd"}},"nodes":[]}}"#
-            ),
+            serde_json::to_string(&state).unwrap(),
         )
         .unwrap();
         backup::export_to_string(dir).unwrap().0

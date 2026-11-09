@@ -49,6 +49,47 @@ pub fn generate_identity() -> Result<ControllerIdentity> {
     })
 }
 
+/// Identité d'essai dont les deux clés sont `key_hex` (une clé P-256 valide) et dont les
+/// certificats sont de vrais certificats DER signés par cette clé.
+#[cfg(test)]
+pub(crate) fn test_identity(key_hex: &str) -> ControllerIdentity {
+    // Mémorisée : les certificats portent une date et une signature aléatoire, et les tests
+    // comparent des fichiers octet pour octet.
+    static CACHE: std::sync::Mutex<Vec<(String, ControllerIdentity)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((_, id)) = cache.iter().find(|(k, _)| k == key_hex) {
+        return id.clone();
+    }
+    let id = build_test_identity(key_hex);
+    cache.push((key_hex.to_string(), id.clone()));
+    id
+}
+
+#[cfg(test)]
+fn build_test_identity(key_hex: &str) -> ControllerIdentity {
+    let key = decode_key(key_hex).unwrap();
+    let cert = |node_id: u64, ca: bool| {
+        matc::cert_x509::encode_x509(
+            &key.public_key().to_sec1_bytes(),
+            node_id,
+            1,
+            CA_NODE_ID,
+            &key,
+            ca,
+        )
+        .unwrap()
+    };
+    ControllerIdentity {
+        fabric_id: 1,
+        controller_node_id: 2,
+        ca_private_key: key_hex.into(),
+        ca_cert_der: hex::encode(cert(CA_NODE_ID, true)),
+        controller_private_key: key_hex.into(),
+        controller_cert_der: hex::encode(cert(2, false)),
+    }
+}
+
 /// `CertManager` servi depuis l'identité chargée du JSON.
 pub struct JsonCertManager {
     fabric_id: u64,
@@ -75,6 +116,18 @@ impl JsonCertManager {
             ctrl_cert: hex::decode(&id.controller_cert_der)
                 .context("certificat du contrôleur invalide")?,
         })
+    }
+
+    /// Les deux certificats DER se décodent (comme le fera le contrôleur) : une sauvegarde dont
+    /// le contenu hexadécimal est valide mais n'est pas un certificat est refusée à l'import,
+    /// pas à la première connexion à un appareil.
+    pub fn check_certificates(&self) -> Result<()> {
+        let ca_public = self.ca_key.public_key().to_sec1_bytes();
+        matc::cert_matter::convert_x509_bytes_to_matter(&self.ca_cert, &ca_public)
+            .context("certificat racine illisible")?;
+        matc::cert_matter::convert_x509_bytes_to_matter(&self.ctrl_cert, &ca_public)
+            .context("certificat du contrôleur illisible")?;
+        Ok(())
     }
 
     fn check_user(&self, id: u64) -> Result<()> {
@@ -122,5 +175,21 @@ mod tests {
         assert_eq!(cm.get_ca_public_key().unwrap().len(), 65);
         assert!(cm.get_user_cert(id.controller_node_id).is_ok());
         assert!(cm.get_user_key(999).is_err());
+        cm.check_certificates().unwrap();
+    }
+
+    #[test]
+    fn garbage_certificates_are_refused() {
+        for field in ["ca", "controller"] {
+            let mut id = generate_identity().unwrap();
+            // Du texte hexadécimal valide, mais pas un certificat DER.
+            if field == "ca" {
+                id.ca_cert_der = "deadbeefcafe".into();
+            } else {
+                id.controller_cert_der = "00".repeat(40);
+            }
+            let cm = JsonCertManager::from_identity(&id).unwrap();
+            assert!(cm.check_certificates().is_err(), "{field}");
+        }
     }
 }

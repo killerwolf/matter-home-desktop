@@ -295,18 +295,32 @@ fn history_csv_and_plan_come_from_the_server() {
     let mut client = TestClient::new(store_path(&dir));
     connect_first_time(&mut client, &server);
 
+    // Les points de l'historique du mode démo sont écrits en tâche de fond : on les attend avec
+    // un délai borné plutôt que de supposer qu'ils sont déjà là à la première lecture.
     let since = protocol::events::now_unix() - 3600.0;
-    let history: HistoryResponse = client
-        .call(Request::get(format!(
-            "/api/devices/{LIVING}/history?since={since}&metrics=temperature,humidity"
-        )))
-        .unwrap()
-        .json()
-        .unwrap();
-    assert!(history
-        .points
-        .iter()
-        .any(|p| p.metric == Metric::Temperature));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let history: HistoryResponse = loop {
+        let history: HistoryResponse = client
+            .call(Request::get(format!(
+                "/api/devices/{LIVING}/history?since={since}&metrics=temperature,humidity"
+            )))
+            .unwrap()
+            .json()
+            .unwrap();
+        if history
+            .points
+            .iter()
+            .any(|p| p.metric == Metric::Temperature)
+        {
+            break history;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "aucun point de température après 20 s : {} point(s)",
+            history.points.len()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
     assert!(history.points.windows(2).all(|w| w[0].at <= w[1].at));
 
     let csv = client

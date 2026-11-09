@@ -178,11 +178,13 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
     let state: StoredState =
         serde_json::from_str(controller).map_err(|_| Invalid(format!("{FILE_NAME} illisible")))?;
     if strict {
-        JsonCertManager::from_identity(&state.identity).map_err(|e| {
-            Invalid(format!(
-                "{FILE_NAME} : identité du contrôleur invalide ({e})"
-            ))
-        })?;
+        JsonCertManager::from_identity(&state.identity)
+            .and_then(|cm| cm.check_certificates())
+            .map_err(|e| {
+                Invalid(format!(
+                    "{FILE_NAME} : identité du contrôleur invalide ({e:#})"
+                ))
+            })?;
     }
 
     let plan = bundle
@@ -325,8 +327,22 @@ fn read_bundle(path: &Path) -> Result<(Bundle, Summary)> {
     Ok(parse(&text)?)
 }
 
+/// Dossier parent de `dir`, jamais vide : « . » pour un chemin relatif d'un seul élément
+/// (`Path::new("donnees").parent()` est `""`, que le système ne sait pas ouvrir).
+fn parent_of(dir: &Path) -> &Path {
+    match dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}
+
 /// Synchronise un dossier sur le disque (ses entrées : créations, renommages).
 fn sync_dir(dir: &Path) -> Result<()> {
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
     std::fs::File::open(dir)
         .and_then(|d| d.sync_all())
         .with_context(|| format!("synchronisation de {}", dir.display()))
@@ -533,11 +549,11 @@ fn prepare(
     remove_tree(partial).map_err(io("nettoyage du dossier partiel"))?;
     remove_tree(complete).map_err(io("nettoyage du dossier d'un import précédent"))?;
     std::fs::create_dir(partial).map_err(io("création du dossier partiel"))?;
-    if let Ok(meta) = std::fs::metadata(dir) {
-        // Mêmes droits que le dossier de données actuel.
-        std::fs::set_permissions(partial, meta.permissions())
-            .map_err(io("droits du dossier partiel"))?;
-    }
+    // Le dossier de données contient les clés privées : 0700 dans tous les cas, quels que
+    // soient les droits de l'ancien dossier (ou son absence).
+    #[cfg(unix)]
+    std::fs::set_permissions(partial, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .map_err(io("droits du dossier partiel"))?;
     for (i, (rel, text)) in bundle.files.iter().enumerate() {
         write_new_private(&partial.join(rel), text.as_bytes()).map_err(ApplyError::Transient)?;
         checkpoint(hook, &format!("fichier-{i}"))?;
@@ -554,7 +570,7 @@ fn prepare(
     checkpoint(hook, "construit")?;
     // Le renommage est le marqueur « complet ».
     std::fs::rename(partial, complete).map_err(io("publication du nouveau dossier"))?;
-    sync_dir(dir.parent().unwrap_or(Path::new("."))).map_err(ApplyError::Transient)?;
+    sync_dir(parent_of(dir)).map_err(ApplyError::Transient)?;
     checkpoint(hook, "publie")
 }
 
@@ -565,7 +581,7 @@ fn apply_with(dir: &Path, hook: Hook<'_>) -> Result<(Summary, PathBuf), ApplyErr
             Ok(invalid) => ApplyError::Invalid(invalid.0),
             Err(io) => ApplyError::Transient(io),
         })?;
-    let parent = dir.parent().unwrap_or(Path::new("."));
+    let parent = parent_of(dir);
     let partial = sibling(dir, PARTIAL_SUFFIX).map_err(ApplyError::Transient)?;
     let complete = sibling(dir, NEW_SUFFIX).map_err(ApplyError::Transient)?;
     let backup = sibling(
@@ -644,7 +660,7 @@ fn apply_with(dir: &Path, hook: Hook<'_>) -> Result<(Summary, PathBuf), ApplyErr
 pub fn recover(dir: &Path) -> Result<Option<String>> {
     let partial = sibling(dir, PARTIAL_SUFFIX)?;
     let complete = sibling(dir, NEW_SUFFIX)?;
-    let parent = dir.parent().unwrap_or(Path::new("."));
+    let parent = parent_of(dir);
     if !dir.exists() && complete.exists() {
         std::fs::rename(&complete, dir).with_context(|| {
             format!(
@@ -715,9 +731,35 @@ pub fn recover(dir: &Path) -> Result<Option<String>> {
         log::warn!("reste d'un import à nettoyer : {}", partial.display());
     }
     // Ici, soit `dir` a son identité, soit le dossier complet n'en a pas (jamais construit
-    // ainsi) : c'est un reste d'un import qui n'a pas eu lieu.
-    if dir.exists() && !dir.join(PENDING).exists() {
-        let _ = remove_tree(&complete);
+    // ainsi) : c'est un reste d'un import qui n'a pas eu lieu (typiquement : on y a renoncé en
+    // supprimant la sauvegarde en attente). Il porte une copie des clés de la sauvegarde : on le
+    // met de côté sous un nom parlant au lieu de le supprimer, c'est à l'utilisateur de le jeter.
+    if dir.exists() && !dir.join(PENDING).exists() && complete.exists() {
+        let aside = sibling(
+            dir,
+            &format!(
+                ".import-abandonne-{}",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ),
+        )?;
+        return match std::fs::rename(&complete, &aside) {
+            Ok(()) => {
+                let _ = sync_dir(parent);
+                Ok(Some(format!(
+                    "Import abandonné : le dossier préparé pour lui est conservé dans {} \
+                     (il contient une copie des clés de la sauvegarde ; supprimez-le quand \
+                     vous n'en avez plus besoin).",
+                    aside.display()
+                )))
+            }
+            Err(e) => {
+                log::warn!(
+                    "reste d'un import abandonné non déplacé ({e}) : {}",
+                    complete.display()
+                );
+                Ok(None)
+            }
+        };
     }
     Ok(None)
 }
@@ -735,6 +777,109 @@ pub fn recovery_needed(dir: &Path) -> bool {
 /// Chemin de la sauvegarde mise en attente dans `dir`.
 pub fn pending_path(dir: &Path) -> PathBuf {
     dir.join(PENDING)
+}
+
+/// Ce qui attend dans `dir`, comparé au fichier `src` qu'on veut importer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingKind {
+    /// Rien n'est en attente.
+    None,
+    /// La sauvegarde en attente a exactement le contenu de `src` : un import de ce fichier a été
+    /// interrompu (avant ou pendant l'échange), il peut être repris.
+    SameFile,
+    /// Une autre sauvegarde (import demandé par l'API, ou d'un autre fichier), ou illisible.
+    Other,
+}
+
+/// Compare la sauvegarde en attente de `dir` (s'il y en a une) au fichier `src`.
+pub fn pending_kind(dir: &Path, src: &Path) -> Result<PendingKind> {
+    let pending = dir.join(PENDING);
+    if !pending.exists() {
+        return Ok(PendingKind::None);
+    }
+    let (wanted, _) = read_bundle(src)?;
+    Ok(match read_bundle(&pending) {
+        Ok((staged, _)) if staged.files == wanted.files => PendingKind::SameFile,
+        _ => PendingKind::Other,
+    })
+}
+
+/// Abandonne un import en attente : retire la sauvegarde mise de côté, puis met de côté le dossier
+/// préparé « …import-nouveau » (reste d'un import interrompu) sous « …import-abandonne-<date> ».
+/// L'appelant tient le verrou d'instance et a déjà repris un échange interrompu ([`recover`]).
+/// Rend ce qui a été fait, en phrases.
+pub fn abandon(dir: &Path) -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    let pending = dir.join(PENDING);
+    if pending.exists() {
+        std::fs::remove_file(&pending)
+            .with_context(|| format!("suppression de {}", pending.display()))?;
+        done.push(format!(
+            "Sauvegarde en attente retirée ({}).",
+            pending.display()
+        ));
+    }
+    if let Some(note) = recover(dir)? {
+        done.push(note);
+    }
+    Ok(done)
+}
+
+/// L'identité Matter d'un dossier ou d'une sauvegarde, pour la comparer avant un import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityBrief {
+    pub fabric_id: u64,
+    /// Un libellé par appareil : « nom (0xidentifiant) ».
+    pub nodes: Vec<String>,
+}
+
+impl IdentityBrief {
+    fn of(state: &StoredState) -> Self {
+        Self {
+            fabric_id: state.identity.fabric_id,
+            nodes: state
+                .nodes
+                .iter()
+                .map(|n| {
+                    let name = n.custom_name.as_deref().unwrap_or(&n.name);
+                    format!("{name} ({:#x})", n.node_id)
+                })
+                .collect(),
+        }
+    }
+
+    /// « fabric 0x1234, 3 appareil(s) : a (0x1), b (0x2), c (0x3) ».
+    pub fn describe(&self) -> String {
+        let nodes = if self.nodes.is_empty() {
+            "aucun nœud appairé".to_string()
+        } else {
+            format!("{} nœud(s) : {}", self.nodes.len(), self.nodes.join(", "))
+        };
+        format!("fabric {:#x}, {nodes}", self.fabric_id)
+    }
+}
+
+/// Identité portée par le fichier `src` (une sauvegarde valide).
+pub fn identity_in_file(src: &Path) -> Result<IdentityBrief> {
+    let (bundle, _) = read_bundle(src)?;
+    let text = bundle
+        .files
+        .get(FILE_NAME)
+        .with_context(|| format!("{FILE_NAME} manque dans la sauvegarde"))?;
+    let state: StoredState = serde_json::from_str(text).context("identité illisible")?;
+    Ok(IdentityBrief::of(&state))
+}
+
+/// Identité du dossier de données `dir` : `None` s'il n'a pas de `controller.json`, une erreur
+/// s'il est illisible (le doute profite à la prudence : l'appelant ne doit rien écraser).
+pub fn identity_in_dir(dir: &Path) -> Result<Option<IdentityBrief>> {
+    let path = dir.join(FILE_NAME);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let state = crate::persistence::load(&path)?
+        .with_context(|| format!("{} a disparu", path.display()))?;
+    Ok(Some(IdentityBrief::of(&state)))
 }
 
 /// Issue de [`apply_loop`].
@@ -818,9 +963,12 @@ fn apply_pending_with(dir: &Path, hook: Hook<'_>) -> Result<Option<String>> {
                 "l'import en attente n'a pas pu être appliqué après {APPLY_ATTEMPTS} essais ; \
                  les données actuelles sont intactes et la sauvegarde reste en attente dans {p}. \
                  Pour réessayer : corrigez la cause (espace disque, droits) et relancez le \
-                 serveur. Pour y renoncer : supprimez ce fichier (rm '{p}'), puis relancez le \
-                 serveur, qui démarrera avec les données actuelles",
-                p = pending.display()
+                 serveur. Pour y renoncer : arrêtez le service, lancez « matter-home-server \
+                 import --abandon --data-dir {d} » (il retire ce fichier, {p}, et met de côté \
+                 le dossier préparé « …{NEW_SUFFIX} » en « …import-abandonne-… »), puis \
+                 relancez le service, qui démarrera avec les données actuelles",
+                p = pending.display(),
+                d = dir.display()
             )))
         }
     }
@@ -851,22 +999,32 @@ pub fn import_file(dir: &Path, src: &Path) -> Result<Imported> {
 fn import_file_with(dir: &Path, src: &Path, hook: Hook<'_>) -> Result<Imported> {
     let text =
         std::fs::read_to_string(src).with_context(|| format!("lecture de {}", src.display()))?;
-    let resumed = recover(dir)?;
-    if dir.join(PENDING).exists() {
-        bail!(
-            "une sauvegarde est déjà en attente dans {} (import demandé par l'API ?). Lancez le \
-             serveur pour qu'il l'applique, ou supprimez ce fichier pour y renoncer",
-            dir.join(PENDING).display()
-        );
+    // Validation complète avant la moindre écriture.
+    let (bundle, staged) = parse(&text)?;
+    let mut notes: Vec<String> = Vec::new();
+    notes.extend(recover(dir)?);
+    let pending = dir.join(PENDING);
+    if pending.exists() {
+        // Une sauvegarde identique à ce fichier : l'import précédent a été coupé après la mise de
+        // côté. On le reprend là où il en était. Toute autre sauvegarde n'est pas à nous.
+        let same = read_bundle(&pending).is_ok_and(|(b, _)| b.files == bundle.files);
+        if !same {
+            bail!(
+                "une autre sauvegarde est déjà en attente dans {p} (import demandé par l'API, ou \
+                 import d'un autre fichier interrompu). Lancez le serveur pour qu'il l'applique, \
+                 ou renoncez-y avec « matter-home-server import --abandon --data-dir {d} »",
+                p = pending.display(),
+                d = dir.display()
+            );
+        }
+        notes.push("Import interrompu de ce même fichier : il est repris.".into());
+    } else {
+        if !dir.exists() {
+            crate::persistence::ensure_private_dir(dir)?;
+        }
+        stage_import_text(dir, &text).map_err(|e| anyhow!("{e}"))?;
     }
-    if !dir.exists() {
-        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
-        #[cfg(unix)]
-        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .with_context(|| format!("droits de {}", dir.display()))?;
-    }
-    // Validation complète avant la moindre écriture, puis mise de côté et application.
-    let staged = stage_import_text(dir, &text).map_err(|e| anyhow!("{e}"))?;
+    let resumed = (!notes.is_empty()).then(|| notes.join(" "));
     match apply_loop(dir, hook) {
         Ok(Applied::Done(mut summary, previous)) => Ok(Imported {
             // La sauvegarde en attente est déjà réparée : les noms viennent de la validation.
@@ -902,10 +1060,12 @@ mod tests {
     const KEY: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
     fn controller(name: &str) -> String {
+        let id = crate::matter::certs::test_identity(KEY);
         format!(
             r#"{{"version":1,"identity":{{"fabric_id":1,"controller_node_id":2,
-            "ca_private_key":"{KEY}","ca_cert_der":"bb","controller_private_key":"{KEY}",
-            "controller_cert_der":"dd"}},"nodes":[{{"node_id":7,"name":"{name}"}}]}}"#
+            "ca_private_key":"{KEY}","ca_cert_der":"{}","controller_private_key":"{KEY}",
+            "controller_cert_der":"{}"}},"nodes":[{{"node_id":7,"name":"{name}"}}]}}"#,
+            id.ca_cert_der, id.controller_cert_der
         )
     }
 
@@ -1669,21 +1829,40 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
-    /// Un dossier qui a son identité garde la sienne : un dossier complet resté là est un reste.
+    /// Un dossier qui a son identité garde la sienne : un dossier complet resté là (on a renoncé
+    /// à l'import) est mis de côté sous « …import-abandonne-… », jamais supprimé.
     #[test]
-    fn a_leftover_complete_dir_is_dropped_when_the_data_dir_has_its_identity() {
+    fn a_leftover_complete_dir_is_set_aside_not_deleted() {
         let base = temp("leftover");
         let dir = sample_dir(&base);
         let (_, complete) = marker_names(&dir);
         std::fs::create_dir_all(&complete).unwrap();
         std::fs::write(complete.join(FILE_NAME), controller("Autre")).unwrap();
         assert!(!recovery_needed(&dir));
-        assert!(recover(&dir).unwrap().is_none());
+        let note = recover(&dir).unwrap().expect("l'abandon est signalé");
+        assert!(note.contains("import-abandonne"), "{note}");
         assert!(!complete.exists());
         assert_eq!(
             std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
             controller("Capteur")
         );
+        let aside: Vec<_> = std::fs::read_dir(&base)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains(".import-abandonne-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(aside[0].path().join(FILE_NAME)).unwrap(),
+            controller("Autre"),
+            "le contenu est intact"
+        );
+        // Une deuxième reprise n'a plus rien à faire.
+        assert!(recover(&dir).unwrap().is_none());
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -1801,9 +1980,160 @@ mod tests {
         let pending = dir.join(PENDING);
         assert!(
             text.contains("Pour y renoncer")
-                && text.contains(&format!("rm '{}'", pending.display())),
+                && text.contains("import --abandon")
+                && text.contains(&dir.display().to_string())
+                && text.contains(&pending.display().to_string())
+                && text.contains("import-abandonne"),
             "{text}"
         );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Renoncer : la sauvegarde en attente est retirée et le dossier complet déjà préparé est
+    /// mis de côté ; les données actuelles ne bougent pas.
+    #[test]
+    fn abandoning_removes_the_pending_import_and_sets_the_prepared_dir_aside() {
+        let base = temp("abandon");
+        let dir = sample_dir(&base);
+        // Coupure juste après la publication du dossier complet, avant l'échange.
+        stage_import_text(&dir, &bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+        let before_pending = tree(&dir);
+        let e = apply_pending_with(&dir, &mut |step| {
+            if step == "publie" {
+                Fault::Crash
+            } else {
+                Fault::None
+            }
+        });
+        assert!(e.is_err());
+        let (_, complete) = marker_names(&dir);
+        assert!(complete.exists(), "dossier complet laissé par la coupure");
+        let done = abandon(&dir).unwrap();
+        assert!(done.iter().any(|l| l.contains("retirée")), "{done:?}");
+        assert!(
+            done.iter().any(|l| l.contains("import-abandonne")),
+            "{done:?}"
+        );
+        assert!(!complete.exists() && !dir.join(PENDING).exists());
+        // Les données actuelles sont celles d'avant (plus la sauvegarde retirée).
+        let mut expected = before_pending;
+        expected.remove(PENDING);
+        assert_eq!(tree(&dir), expected);
+        // Rien à abandonner ensuite.
+        assert!(abandon(&dir).unwrap().is_empty());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// `import` relancé après une coupure qui a laissé la sauvegarde en attente : il reprend
+    /// l'import de ce même fichier ; un autre fichier ou une sauvegarde de l'API est refusé.
+    #[test]
+    fn rerunning_import_resumes_the_interrupted_one() {
+        let base = temp("resume");
+        let dir = sample_dir(&base);
+        let text = bundle_text(&[(FILE_NAME, controller("Importé"))]);
+        let src = base.join("a.matterhome");
+        std::fs::write(&src, &text).unwrap();
+        for step in ["fichier-0", "construit", "publie", "ecarte"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            let dir = sample_dir(&base);
+            // Première tentative coupée net à ce point de contrôle.
+            assert!(import_file_with(&dir, &src, &mut |s| {
+                if s == step {
+                    Fault::Crash
+                } else {
+                    Fault::None
+                }
+            })
+            .is_err());
+            let kind = pending_kind(&dir, &src).unwrap();
+            // Après « ecarte », D est absent : `recover` (premier geste de toute commande) le
+            // remet en place ; avant, la sauvegarde est restée en attente.
+            if dir.exists() {
+                assert_eq!(kind, PendingKind::SameFile, "{step}");
+            }
+            let done = import_file(&dir, &src).unwrap_or_else(|e| panic!("{step} : {e:#}"));
+            assert_eq!(
+                std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
+                controller("Importé"),
+                "{step}"
+            );
+            assert!(done.resumed.is_some(), "{step} : la reprise est signalée");
+            assert!(!dir.join(PENDING).exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Une autre sauvegarde en attente (API, autre fichier) n'est pas reprise.
+        let dir = sample_dir(&base);
+        let other = bundle_text(&[(FILE_NAME, controller("Autre"))]);
+        stage_import_text(&dir, &other).unwrap();
+        assert_eq!(pending_kind(&dir, &src).unwrap(), PendingKind::Other);
+        let err = import_file(&dir, &src).unwrap_err().to_string();
+        assert!(err.contains("import --abandon"), "{err}");
+        assert!(dir.join(PENDING).exists(), "rien n'a été touché");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
+            controller("Capteur")
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Le dossier de données issu d'un import est en 0700, quels que soient les droits de
+    /// l'ancien, et un chemin relatif d'un seul élément fonctionne (parent « . »).
+    #[test]
+    fn the_new_data_dir_is_private_and_relative_paths_work() {
+        let base = temp("mode");
+        let dir = sample_dir(&base);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let src = base.join("a.matterhome");
+        std::fs::write(&src, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+        import_file(&dir, &src).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        // Dossier absent : créé en 0700 aussi.
+        let fresh = base.join("neuf");
+        import_file(&fresh, &src).unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(parent_of(Path::new("donnees")), Path::new("."));
+        assert_eq!(parent_of(Path::new("/donnees")), Path::new("/"));
+        sync_dir(Path::new("")).unwrap();
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn identities_are_described_for_the_confirmation() {
+        let base = temp("brief");
+        let dir = sample_dir(&base);
+        let src = base.join("a.matterhome");
+        let mut other = controller("Salon").replace("\"fabric_id\":1", "\"fabric_id\":255");
+        other = other.replace("\"node_id\":7", "\"node_id\":16");
+        std::fs::write(&src, bundle_text(&[(FILE_NAME, other)])).unwrap();
+        let here = identity_in_dir(&dir).unwrap().unwrap();
+        let there = identity_in_file(&src).unwrap();
+        assert_eq!(here.fabric_id, 1);
+        assert_eq!(there.fabric_id, 255);
+        assert_eq!(there.nodes, vec!["Salon (0x10)".to_string()]);
+        assert!(
+            there.describe().contains("fabric 0xff"),
+            "{}",
+            there.describe()
+        );
+        assert!(identity_in_dir(&base.join("absent")).unwrap().is_none());
+        std::fs::write(dir.join(FILE_NAME), "pas du json").unwrap();
+        assert!(identity_in_dir(&dir).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_backup_whose_certificates_are_not_der_is_refused() {
+        let base = temp("der");
+        let good = controller("X");
+        let bad = good.replace(
+            &crate::matter::certs::test_identity(KEY).ca_cert_der,
+            "deadbeef",
+        );
+        assert_ne!(good, bad);
+        let err = inspect_text(&bundle_text(&[(FILE_NAME, bad)])).unwrap_err();
+        assert!(err.0.contains("certificat racine illisible"), "{err}");
+        assert!(inspect_text(&bundle_text(&[(FILE_NAME, good)])).is_ok());
         std::fs::remove_dir_all(base).unwrap();
     }
 }

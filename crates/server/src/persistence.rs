@@ -172,6 +172,45 @@ pub fn set_data_dir(dir: PathBuf) -> bool {
     DATA_DIR_OVERRIDE.set(dir).is_ok()
 }
 
+/// Rend `text` (valeur de `--data-dir`) absolu, sans exiger que le dossier existe. Un chemin
+/// relatif (`donnees`, `donnees/`) n'aurait pas de dossier parent exploitable : l'import renomme
+/// le dossier de données et synchronise son parent, ce qui échouait sur un chemin vide.
+pub fn absolute_data_dir(text: &str) -> Result<PathBuf> {
+    if text.is_empty() {
+        bail!("--data-dir attend un chemin non vide");
+    }
+    std::path::absolute(text).with_context(|| format!("chemin de données invalide : {text}"))
+}
+
+/// Crée `dir` (et ses parents) s'il manque, puis le met en 0700 : il contient les clés privées.
+pub fn ensure_private_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .with_context(|| format!("droits de {}", dir.display()))?;
+    Ok(())
+}
+
+/// Dossier voisin « <dir>.avant-import-<date> » (laissé par un import) qui porte une identité
+/// Matter, le plus récent d'abord.
+pub fn previous_identity_neighbour(dir: &Path) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_string_lossy().into_owned();
+    let parent = match dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let prefix = format!("{name}.avant-import-");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+        .filter(|p| p.join(FILE_NAME).is_file())
+        .collect();
+    found.sort();
+    found.pop()
+}
+
 fn current_dir() -> PathBuf {
     if let Some(dir) = DATA_DIR_OVERRIDE.get() {
         return dir.clone();
@@ -247,6 +286,23 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
 /// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
 /// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
 pub fn check_fresh_start(dir: &Path) -> Result<()> {
+    // Un import a mis de côté un dossier qui portait une identité (« …avant-import-… »), et le
+    // dossier de données n'en a plus : démarrer ici créerait une nouvelle fabric alors que
+    // l'identité existe quelque part. Refus, même si `dir` est vide.
+    if let Some(previous) = previous_identity_neighbour(dir) {
+        bail!(
+            "{FILE_NAME} est introuvable dans {} alors que le dossier voisin {} en contient un \
+             (laissé par un import). Démarrer ainsi créerait une nouvelle fabric : les appareils \
+             appairés ne seraient plus reconnus. Arrêtez le service, puis remettez la bonne \
+             identité en place : déplacez {} de côté et renommez {} en {}. Pour repartir de zéro \
+             malgré tout, déplacez ce dossier voisin ailleurs.",
+            dir.display(),
+            previous.display(),
+            dir.display(),
+            previous.display(),
+            dir.display()
+        );
+    }
     let mut found = Vec::new();
     for name in ["maison.json", "regles.json"] {
         if dir.join(name).exists() {
@@ -488,6 +544,61 @@ mod tests {
         let err = check_fresh_start(&base).unwrap_err().to_string();
         assert!(err.contains("history/"), "{err}");
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Un dossier « …avant-import-… » qui porte une identité interdit de repartir de zéro,
+    /// même si le dossier de données est vide ou absent.
+    #[test]
+    fn refuses_fresh_identity_when_a_previous_import_folder_has_one() {
+        let base = std::env::temp_dir().join(format!("mhd-neighbour-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("donnees");
+        std::fs::create_dir_all(&data).unwrap();
+        // Un voisin sans identité, ou d'un autre nom, ne bloque rien.
+        std::fs::create_dir_all(base.join("donnees.avant-import-20261101-100000")).unwrap();
+        std::fs::create_dir_all(base.join("autre.avant-import-20261101-100000")).unwrap();
+        std::fs::write(
+            base.join("autre.avant-import-20261101-100000")
+                .join(FILE_NAME),
+            "{}",
+        )
+        .unwrap();
+        assert!(check_fresh_start(&data).is_ok());
+        // Un voisin avec identité bloque, dossier vide ou absent.
+        let previous = base.join("donnees.avant-import-20261102-100000");
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::write(previous.join(FILE_NAME), "{}").unwrap();
+        let refused = |data: &Path| {
+            let err = check_fresh_start(data).unwrap_err().to_string();
+            assert!(
+                err.contains("avant-import-20261102-100000") && err.contains("nouvelle fabric"),
+                "{err}"
+            );
+        };
+        refused(&data);
+        std::fs::remove_dir_all(&data).unwrap();
+        refused(&data);
+        // Avec une identité dans le dossier de données, la question ne se pose plus.
+        assert_eq!(
+            previous_identity_neighbour(&data).as_deref(),
+            Some(previous.as_path())
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn data_dir_option_is_made_absolute() {
+        for text in ["donnees", "donnees/", "./donnees", "a/b/donnees/"] {
+            let dir = absolute_data_dir(text).unwrap();
+            assert!(dir.is_absolute(), "{text} -> {}", dir.display());
+            assert!(dir.parent().is_some_and(|p| !p.as_os_str().is_empty()));
+            assert_eq!(dir.file_name().unwrap(), "donnees", "{text}");
+        }
+        assert_eq!(
+            absolute_data_dir("/tmp/x/donnees").unwrap(),
+            PathBuf::from("/tmp/x/donnees")
+        );
+        assert!(absolute_data_dir("").is_err());
     }
 
     #[test]

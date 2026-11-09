@@ -404,7 +404,11 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
     let refused = run(&data, &["import", file_arg], Stdio::null());
     assert_eq!(refused.code, Some(1), "{}", refused.text);
     assert!(refused.text.contains("--yes"), "{}", refused.text);
-    assert!(refused.text.contains("ARRÊTÉE"), "{}", refused.text);
+    assert!(
+        refused.text.contains("y compris celui-ci"),
+        "{}",
+        refused.text
+    );
     assert!(!data.join("controller.json").exists());
     assert!(
         siblings(&data).iter().all(|n| n == "donnees.lock"),
@@ -437,9 +441,10 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
     assert!(t.contains("6 automatisation(s)"), "{t}");
     assert!(t.contains("sauvegarde du 2026-11-09"), "{t}");
     assert!(
-        t.contains("ARRÊTÉE"),
-        "rappel : application de bureau arrêtée\n{t}"
+        t.contains("TOUS vos Mac, y compris celui-ci") && t.contains("données les plus récentes"),
+        "rappel : v0.2.1 arrêtée partout\n{t}"
     );
+    assert!(t.contains("Identité de la sauvegarde : fabric"), "{t}");
     assert!(t.contains("3 règles désactivée(s)"), "{t}");
     for name in &fx.drafts {
         assert!(t.contains(&format!("« {name} »")), "{name} dans {t}");
@@ -624,6 +629,16 @@ fn create_account_after_an_interrupted_import_resumes_it_first() {
     std::fs::rename(&data, &complete).unwrap();
     assert!(!data.exists());
 
+    // `fingerprint` ne ment pas : il dit qu'un import attend d'être repris.
+    let fp = run(&data, &["fingerprint"], Stdio::null());
+    assert_eq!(fp.code, Some(1), "{}", fp.text);
+    assert!(
+        fp.text.contains("import interrompu") && !fp.text.contains("jamais été lancé"),
+        "{}",
+        fp.text
+    );
+    assert!(!data.exists(), "fingerprint ne touche à rien");
+
     let (status, text) = create_account(&data, "autre", "un-autre-mot-de-passe", &["--replace"]);
     assert!(status.success(), "{text}");
     assert!(!complete.exists(), "la reprise doit avoir eu lieu");
@@ -638,4 +653,307 @@ fn create_account_after_an_interrupted_import_resumes_it_first() {
         siblings(&data)
     );
     std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Lance le binaire avec des arguments bruts, dans `cwd`, avec un HOME factice.
+fn run_raw(cwd: &Path, args: &[&str]) -> Run {
+    let out = Command::new(BIN)
+        .args(args)
+        .current_dir(cwd)
+        .env("HOME", cwd.join("home"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    Run {
+        code: out.status.code(),
+        text: format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    }
+}
+
+/// `--data-dir donnees` ou `donnees/` (chemin relatif d'un seul élément) : le parent est « . »,
+/// que le système ne sait pas synchroniser. Le chemin est rendu absolu.
+#[test]
+fn a_relative_data_dir_works_with_or_without_a_trailing_slash() {
+    let fx = fixture();
+    for (tag, arg) in [("rel", "donnees"), ("rel-slash", "donnees/")] {
+        let (base, data) = workspace(tag);
+        let file = base.join("sauvegarde.matterhome");
+        std::fs::write(&file, &fx.bundle).unwrap();
+        // Un compte d'abord, pour qu'il y ait un dossier existant à mettre de côté.
+        let r = run_raw(&base, &["fingerprint", "--data-dir", arg]);
+        assert_eq!(r.code, Some(1), "{}", r.text);
+        let done = run_raw(
+            &base,
+            &["import", file.to_str().unwrap(), "--yes", "--data-dir", arg],
+        );
+        assert_eq!(done.code, Some(0), "{arg} : {}", done.text);
+        assert!(done.text.contains(base.to_str().unwrap()), "{}", done.text);
+        assert_eq!(tree(&data)["controller.json"], fx.controller.as_bytes());
+        // Deuxième import, cette fois sur un dossier existant : mis de côté, sans erreur de
+        // synchronisation d'un chemin vide.
+        let again = run_raw(
+            &base,
+            &["import", file.to_str().unwrap(), "--yes", "--data-dir", arg],
+        );
+        assert_eq!(again.code, Some(0), "{arg} : {}", again.text);
+        assert!(
+            siblings(&data).iter().any(|n| n.contains("avant-import")),
+            "{:?}",
+            siblings(&data)
+        );
+        assert_eq!(mode(&data), 0o700);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+}
+
+/// `--yes` seul ne remplace pas une identité différente : les deux fabrics et les nœuds sont
+/// affichés, il faut `--replace-identity`, et rien n'est écrasé sans lui.
+#[test]
+fn a_different_identity_needs_replace_identity_even_with_yes() {
+    let first = fixture();
+    let second = fixture();
+    let (base, data) = workspace("migration-identity");
+    let (f1, f2) = (base.join("un.matterhome"), base.join("deux.matterhome"));
+    std::fs::write(&f1, &first.bundle).unwrap();
+    std::fs::write(&f2, &second.bundle).unwrap();
+    let r = run(
+        &data,
+        &["import", f1.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(r.code, Some(0), "{}", r.text);
+    let before = tree(&data);
+
+    let refused = run(
+        &data,
+        &["import", f2.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(refused.code, Some(1), "{}", refused.text);
+    let t = &refused.text;
+    assert!(t.contains("--replace-identity"), "{t}");
+    assert!(t.contains("Identité de la sauvegarde : fabric 0x"), "{t}");
+    assert!(
+        t.contains("Identité actuelle du dossier : fabric 0x"),
+        "{t}"
+    );
+    assert!(
+        t.contains("Capteur d'ouverture") || t.contains("Porte d'entrée"),
+        "{t}"
+    );
+    let fabric_of = |fx: &Fixture| {
+        let state: persistence::StoredState = serde_json::from_str(&fx.controller).unwrap();
+        format!("{:#x}", state.identity.fabric_id)
+    };
+    assert!(
+        t.contains(&fabric_of(&first)) && t.contains(&fabric_of(&second)),
+        "{t}"
+    );
+    assert_eq!(tree(&data), before, "rien n'est écrasé sans l'option");
+    assert_eq!(
+        siblings(&data)
+            .iter()
+            .filter(|n| n.contains("avant-import"))
+            .count(),
+        1
+    );
+
+    // La même identité se réimporte avec --yes seul.
+    let same = run(
+        &data,
+        &["import", f1.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(same.code, Some(0), "{}", same.text);
+    assert!(same.text.contains("Même fabric"), "{}", same.text);
+
+    // Avec l'option dédiée, l'identité est remplacée (l'ancien dossier est conservé).
+    let done = run(
+        &data,
+        &[
+            "import",
+            f2.to_str().unwrap(),
+            "--yes",
+            "--replace-identity",
+        ],
+        Stdio::null(),
+    );
+    assert_eq!(done.code, Some(0), "{}", done.text);
+    assert_eq!(tree(&data)["controller.json"], second.controller.as_bytes());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Relancer `import` reprend un import interrompu de ce même fichier ; une autre sauvegarde en
+/// attente est refusée ; `import --abandon` y renonce et met de côté le dossier préparé.
+#[test]
+fn import_resumes_the_same_file_and_can_abandon_another() {
+    let fx = fixture();
+    let (base, data) = workspace("migration-resume");
+    let file = base.join("sauvegarde.matterhome");
+    std::fs::write(&file, &fx.bundle).unwrap();
+    let r = run(
+        &data,
+        &["import", file.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(r.code, Some(0), "{}", r.text);
+
+    // Coupure juste après la mise de côté de la sauvegarde : elle est restée en attente.
+    backup::stage_import_text(&data, &fx.bundle).unwrap();
+    let resumed = run(
+        &data,
+        &["import", file.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(resumed.code, Some(0), "{}", resumed.text);
+    assert!(resumed.text.contains("repris"), "{}", resumed.text);
+    assert!(!data.join("import-en-attente.matterhome").exists());
+
+    // Une autre sauvegarde (celle de l'API, par exemple) n'est pas la nôtre : refus clair.
+    let other = fixture();
+    backup::stage_import_text(&data, &other.bundle).unwrap();
+    let refused = run(
+        &data,
+        &["import", file.to_str().unwrap(), "--yes"],
+        Stdio::null(),
+    );
+    assert_eq!(refused.code, Some(1), "{}", refused.text);
+    assert!(refused.text.contains("--abandon"), "{}", refused.text);
+    assert!(
+        refused.text.contains("import-abandonne"),
+        "{}",
+        refused.text
+    );
+    assert!(data.join("import-en-attente.matterhome").exists());
+
+    // Dossier complet déjà préparé, comme après une coupure : renoncer le met de côté.
+    let complete = data.with_file_name("donnees.import-nouveau");
+    std::fs::create_dir_all(&complete).unwrap();
+    std::fs::write(complete.join("controller.json"), &other.controller).unwrap();
+    let before = tree(&data);
+    let r = run(&data, &["import", "--abandon"], Stdio::null());
+    assert_eq!(r.code, Some(0), "{}", r.text);
+    assert!(
+        r.text.contains("retirée") && r.text.contains("import-abandonne"),
+        "{}",
+        r.text
+    );
+    assert!(!complete.exists());
+    let aside: Vec<String> = siblings(&data)
+        .into_iter()
+        .filter(|n| n.contains("import-abandonne"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{:?}", siblings(&data));
+    let kept = data.with_file_name(&aside[0]).join("controller.json");
+    assert_eq!(std::fs::read(kept).unwrap(), other.controller.as_bytes());
+    let mut expected = before;
+    expected.remove("import-en-attente.matterhome");
+    assert_eq!(
+        tree(&data),
+        expected,
+        "les données actuelles ne bougent pas"
+    );
+    // Rien à abandonner ensuite ; un fichier avec --abandon est une erreur d'usage.
+    let r = run(&data, &["import", "--abandon"], Stdio::null());
+    assert_eq!(r.code, Some(0));
+    assert!(r.text.contains("rien à abandonner"), "{}", r.text);
+    let r = run(
+        &data,
+        &["import", "--abandon", file.to_str().unwrap()],
+        Stdio::null(),
+    );
+    assert_eq!(r.code, Some(2), "{}", r.text);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Installation neuve : `init` crée l'identité (jamais par accident), et refuse quand une
+/// identité existe, quand des données existent sans identité, ou quand un import en a laissé une
+/// à côté. `--require-identity` refuse de démarrer sans identité (code 78), journal à droits 0600.
+#[test]
+fn init_and_require_identity_never_create_a_fabric_by_accident() {
+    let fx = fixture();
+    let (base, data) = workspace("migration-init");
+
+    // Pas d'identité : le service refuse de démarrer (avant tout réseau), code 78, et le dit
+    // dans son journal.
+    let log = base.join("logs").join("server.log");
+    let r = run_raw(
+        &base,
+        &[
+            "--require-identity",
+            "--listen",
+            "127.0.0.1:0",
+            "--data-dir",
+            data.to_str().unwrap(),
+            "--log-file",
+            log.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(r.code, Some(78), "{}", r.text);
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        logged.contains("aucune identité Matter") && logged.contains("init"),
+        "{logged}"
+    );
+    assert_eq!(mode(&log), 0o600);
+    assert_eq!(mode(log.parent().unwrap()), 0o700);
+    assert!(!data.join("controller.json").exists(), "rien n'a été créé");
+
+    // `--require-identity` avec `--demo` n'a pas de sens.
+    let r = run_raw(&base, &["--demo", "--require-identity"]);
+    assert_eq!(r.code, Some(2), "{}", r.text);
+
+    // Un voisin « avant-import » avec une identité interdit `init`.
+    let neighbour = data.with_file_name("donnees.avant-import-20261101-120000");
+    std::fs::create_dir_all(&neighbour).unwrap();
+    std::fs::write(neighbour.join("controller.json"), &fx.controller).unwrap();
+    let r = run(&data, &["init"], Stdio::null());
+    assert_eq!(r.code, Some(1), "{}", r.text);
+    assert!(
+        r.text.contains("nouvelle fabric") && r.text.contains("avant-import"),
+        "{}",
+        r.text
+    );
+    assert!(!data.join("controller.json").exists());
+    std::fs::remove_dir_all(&neighbour).unwrap();
+
+    // Des données sans identité l'interdisent aussi.
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("maison.json"), "{}").unwrap();
+    let r = run(&data, &["init"], Stdio::null());
+    assert_eq!(r.code, Some(1), "{}", r.text);
+    assert!(r.text.contains("maison.json"), "{}", r.text);
+    std::fs::remove_file(data.join("maison.json")).unwrap();
+
+    // Une installation neuve : identité créée, dossier en 0700, fichier en 0600.
+    let r = run(&data, &["init"], Stdio::null());
+    assert_eq!(r.code, Some(0), "{}", r.text);
+    assert!(r.text.contains("create-account"), "{}", r.text);
+    assert_eq!(mode(&data), 0o700);
+    assert_eq!(mode(&data.join("controller.json")), 0o600);
+    let state = persistence::load(&data.join("controller.json"))
+        .unwrap()
+        .unwrap();
+    JsonCertManager::from_identity(&state.identity).unwrap();
+    // Une seconde fois : rien n'est refait.
+    let before = tree(&data);
+    let r = run(&data, &["init"], Stdio::null());
+    assert_eq!(r.code, Some(1), "{}", r.text);
+    assert!(r.text.contains("existe déjà"), "{}", r.text);
+    assert_eq!(tree(&data), before);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn the_server_announces_its_version() {
+    let r = run_raw(&std::env::temp_dir(), &["--version"]);
+    assert_eq!(r.code, Some(0));
+    assert_eq!(
+        r.text.trim(),
+        format!("matter-home-server {}", env!("CARGO_PKG_VERSION"))
+    );
 }

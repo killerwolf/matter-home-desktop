@@ -161,9 +161,13 @@ adresse incomplète (`PUT /api/rules` l'accepte, bornes de taille comprises) : e
 jamais, et l'appel du webhook revérifie l'adresse, même pour `POST /api/rules/{id}/test`. Dès qu'on
 la réactive, l'adresse doit être complète.
 
-**Import en ligne de commande**, serveur arrêté : `matter-home-server import FICHIER [--yes]` (voir
-[migration.md](migration.md)). Même validation, même application atomique ; il prend le verrou
-d'instance, applique tout de suite puis quitte, sans jamais démarrer Matter ni le réseau.
+**Import en ligne de commande**, serveur arrêté : `matter-home-server import FICHIER [--yes]
+[--replace-identity]` (voir [migration.md](migration.md)). Même validation (les deux certificats
+DER sont décodés), même application atomique ; il prend le verrou d'instance, applique tout de
+suite puis quitte, sans jamais démarrer Matter ni le réseau. Relancé après une coupure avec le même
+fichier, il reprend l'import resté en attente ; une fabric différente de celle du dossier n'est
+remplacée qu'avec `--replace-identity`. `import --abandon` retire la sauvegarde en attente et met
+de côté le dossier préparé `D.import-nouveau` sous `D.import-abandonne-<date>` (jamais supprimé).
 
 **Application au lancement suivant**, atomique et reprise après coupure : le nouveau dossier est
 construit à côté du dossier de données `D` (`D.import-partiel` : fichiers créés en 0600 et
