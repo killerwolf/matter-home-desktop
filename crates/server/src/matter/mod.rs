@@ -53,6 +53,8 @@ pub(crate) struct Ctx {
     connections: Mutex<HashMap<u64, Arc<Connection>>>,
     /// Appareils que leur pont déclare injoignables (attribut Reachable).
     bridge_unreachable: Mutex<HashSet<u64>>,
+    /// Appareils dont l'étiquette de fabric est déjà posée (voir `node::ensure_fabric_label`).
+    fabric_labels: node::FabricLabels,
     state: Mutex<StoredState>,
     state_path: PathBuf,
 }
@@ -616,6 +618,7 @@ async fn run(
         history,
         connections: Mutex::new(HashMap::new()),
         bridge_unreachable: Mutex::new(HashSet::new()),
+        fabric_labels: Default::default(),
         state: Mutex::new(state),
         state_path,
     });

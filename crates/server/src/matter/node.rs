@@ -32,6 +32,7 @@ const CLUSTER_ON_OFF: u32 = 0x0006;
 const CLUSTER_DESCRIPTOR: u32 = 0x001D;
 const CLUSTER_BASIC_INFORMATION: u32 = 0x0028;
 const CLUSTER_POWER_SOURCE: u32 = 0x002F;
+const CLUSTER_OPERATIONAL_CREDENTIALS: u32 = 0x003E;
 const CLUSTER_BRIDGED_BASIC: u32 = 0x0039;
 const CLUSTER_BOOLEAN_STATE: u32 = 0x0045;
 const CLUSTER_ELECTRICAL_POWER: u32 = 0x0090;
@@ -53,6 +54,8 @@ const ATTR_REACHABLE: u32 = 0x0011;
 const ATTR_COVER_OPERATIONAL_STATUS: u32 = 0x000A;
 const ATTR_COVER_CURRENT_LIFT: u32 = 0x000E;
 const ATTR_FEATURE_MAP: u32 = 0xFFFC;
+/// Operational Credentials / Fabrics.
+const ATTR_FABRICS: u32 = 0x0001;
 /// Power Source : bit « BAT » de la FeatureMap (alimentation par pile).
 const POWER_SOURCE_FEATURE_BATTERY: u64 = 0x2;
 /// Window Covering : bit « PA_LF » (Position Aware Lift) de la FeatureMap.
@@ -71,6 +74,16 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(150);
 const POLL_EVERY: Duration = Duration::from_secs(30);
 const LIVENESS_EVERY: Duration = Duration::from_secs(60);
+/// Nom du contrôleur écrit comme étiquette de fabric sur chaque appareil : l'écran « Services
+/// connectés » d'Apple Maison l'affiche à côté du numéro de fabricant brut. Limite Matter :
+/// 32 caractères.
+pub(crate) const ETIQUETTE_FABRIC_SERVEUR: &str = "Matter Home Serveur";
+const _: () = assert!(ETIQUETTE_FABRIC_SERVEUR.len() <= 32);
+/// Attente avant d'écrire l'étiquette : la souscription passe d'abord.
+const FABRIC_LABEL_DELAY: Duration = Duration::from_secs(20);
+/// Délai total (lecture puis écriture) de l'étiquette ; au-delà, on y renonce jusqu'à la
+/// prochaine connexion.
+const FABRIC_LABEL_TIMEOUT: Duration = Duration::from_secs(90);
 const RETRY_MIN: u64 = 5;
 const RETRY_MAX: u64 = 120;
 
@@ -114,10 +127,14 @@ pub(crate) async fn supervise(
         // Connexion partagée avec les automatisations (commandes envoyées pendant l'écoute).
         let conn = Arc::new(conn);
         ctx.set_connection(node_id, Some(conn.clone()));
+        // Étiquette de fabric : tâche à part, purement cosmétique. Elle ne touche ni à l'état
+        // du nœud ni à la session, et s'arrête avec elle.
+        let label_task = tokio::spawn(fabric_label_task(ctx.clone(), node_id, conn.clone()));
         let err = match run_session(&ctx, node_id, &conn).await {
             Ok(()) => anyhow!("session terminée"),
             Err(e) => e,
         };
+        label_task.abort();
         ctx.set_connection(node_id, None);
         log::info!("nœud {node_id:016X} : {err:#}");
         wait_retry(&ctx, node_id, &wake, format!("{err:#}"), &mut retry).await;
@@ -972,6 +989,118 @@ async fn liveness_loop(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()>
     }
 }
 
+/// Appareils dont l'étiquette de fabric est déjà bonne, pour la durée du processus : une
+/// fois posée (ou constatée), on n'y touche plus, pour ne pas réveiller les appareils sur pile.
+#[derive(Default)]
+pub(crate) struct FabricLabels(std::sync::Mutex<HashSet<u64>>);
+
+impl FabricLabels {
+    fn is_done(&self, node_id: u64) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&node_id)
+    }
+
+    fn mark_done(&self, node_id: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(node_id);
+    }
+}
+
+/// Étiquette de notre entrée dans l'attribut Fabrics (le fabric dont le NodeID est `node_id`).
+/// `None` si l'entrée est introuvable ; chaîne vide si elle n'a pas d'étiquette.
+fn our_fabric_label(fabrics: &Value, node_id: u64) -> Option<String> {
+    fabrics
+        .items()
+        .iter()
+        .map(|(_, entry)| entry)
+        .find(|entry| entry.field(4).and_then(Value::as_u64) == Some(node_id))
+        .map(|entry| {
+            entry
+                .field(5)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        })
+}
+
+/// Pose l'étiquette de fabric sur l'appareil, une seule fois par processus et par appareil.
+/// Strictement cosmétique : aucune erreur n'en sort, tout échec est seulement journalisé et
+/// l'essai recommence à la prochaine connexion. `read` donne l'étiquette actuelle de notre
+/// fabric, `write` l'écrit.
+async fn ensure_fabric_label<R, RF, W, WF>(
+    done: &FabricLabels,
+    node_id: u64,
+    delay: Duration,
+    limit: Duration,
+    read: R,
+    write: W,
+) where
+    R: FnOnce() -> RF,
+    RF: std::future::Future<Output = Result<Option<String>>>,
+    W: FnOnce() -> WF,
+    WF: std::future::Future<Output = Result<()>>,
+{
+    if done.is_done(node_id) {
+        return;
+    }
+    tokio::time::sleep(delay).await;
+    let attempt = timeout(limit, async {
+        match read().await {
+            Ok(Some(current)) if current == ETIQUETTE_FABRIC_SERVEUR => return Ok(false),
+            Ok(_) => {}
+            Err(e) => log::debug!("nœud {node_id:016X} : étiquette de fabric illisible : {e:#}"),
+        }
+        write().await.map(|()| true)
+    })
+    .await;
+    match attempt {
+        Ok(Ok(true)) => {
+            log::info!("nœud {node_id:016X} : étiquette de fabric « {ETIQUETTE_FABRIC_SERVEUR} » écrite");
+            done.mark_done(node_id);
+        }
+        Ok(Ok(false)) => done.mark_done(node_id),
+        Ok(Err(e)) => log::info!(
+            "nœud {node_id:016X} : étiquette de fabric non écrite ({e:#}) ; nouvel essai à la prochaine connexion"
+        ),
+        Err(_) => log::info!(
+            "nœud {node_id:016X} : étiquette de fabric non écrite (délai dépassé) ; nouvel essai à la prochaine connexion"
+        ),
+    }
+}
+
+async fn fabric_label_task(ctx: Arc<Ctx>, node_id: u64, conn: Arc<Connection>) {
+    ensure_fabric_label(
+        &ctx.fabric_labels,
+        node_id,
+        FABRIC_LABEL_DELAY,
+        FABRIC_LABEL_TIMEOUT,
+        || async {
+            let fabrics =
+                read_attr(&conn, 0, CLUSTER_OPERATIONAL_CREDENTIALS, ATTR_FABRICS).await?;
+            Ok(our_fabric_label(&fabrics, node_id))
+        },
+        || async {
+            use matc::clusters::codec::operational_credential_cluster::{
+                update_fabric_label, NodeOperationalCertStatus,
+            };
+            let response =
+                update_fabric_label(&conn, 0, ETIQUETTE_FABRIC_SERVEUR.to_string()).await?;
+            match response.status_code {
+                Some(NodeOperationalCertStatus::Ok) => Ok(()),
+                other => bail!(
+                    "statut {other:?} {}",
+                    response.debug_text.unwrap_or_default()
+                ),
+            }
+        },
+    )
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1276,5 +1405,139 @@ mod tests {
             msg.contains("échec") && msg.contains("introuvable en mDNS"),
             "{msg}"
         );
+    }
+
+    fn fabric_entry(node: u64, label: Option<&str>) -> (Option<u32>, Value) {
+        let mut fields = vec![
+            (Some(3), Value::Unsigned(1)),
+            (Some(4), Value::Unsigned(node)),
+        ];
+        if let Some(l) = label {
+            fields.push((Some(5), Value::Str(l.into())));
+        }
+        (None, Value::Container(fields))
+    }
+
+    #[test]
+    fn our_fabric_label_picks_the_entry_of_our_node() {
+        let list = Value::Container(vec![
+            fabric_entry(7, Some("Autre contrôleur")),
+            fabric_entry(42, Some("Matter Home Serveur")),
+        ]);
+        assert_eq!(
+            our_fabric_label(&list, 42).as_deref(),
+            Some("Matter Home Serveur")
+        );
+        assert_eq!(
+            our_fabric_label(&list, 7).as_deref(),
+            Some("Autre contrôleur")
+        );
+        assert_eq!(our_fabric_label(&list, 1), None);
+        let empty = Value::Container(vec![fabric_entry(42, None)]);
+        assert_eq!(our_fabric_label(&empty, 42).as_deref(), Some(""));
+    }
+
+    /// Faux appareil pour l'étiquette : compte les lectures et écritures.
+    #[derive(Default)]
+    struct FakeLabel {
+        reads: std::sync::atomic::AtomicUsize,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+    impl FakeLabel {
+        fn counts(&self) -> (usize, usize) {
+            use std::sync::atomic::Ordering::SeqCst;
+            (self.reads.load(SeqCst), self.writes.load(SeqCst))
+        }
+        async fn run(
+            &self,
+            done: &FabricLabels,
+            current: Result<Option<String>, &'static str>,
+            write_ok: bool,
+            limit: Duration,
+        ) {
+            use std::sync::atomic::Ordering::SeqCst;
+            ensure_fabric_label(
+                done,
+                1,
+                Duration::ZERO,
+                limit,
+                || async {
+                    self.reads.fetch_add(1, SeqCst);
+                    current.map_err(|e| anyhow!(e))
+                },
+                || async {
+                    self.writes.fetch_add(1, SeqCst);
+                    if write_ok {
+                        Ok(())
+                    } else {
+                        bail!("statut refusé")
+                    }
+                },
+            )
+            .await;
+        }
+    }
+
+    const LIMIT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn fabric_label_is_written_once_per_device() {
+        let done = FabricLabels::default();
+        let fake = FakeLabel::default();
+        fake.run(&done, Ok(Some("101".into())), true, LIMIT).await;
+        assert_eq!(fake.counts(), (1, 1));
+        // Deuxième connexion : plus aucun trafic.
+        fake.run(&done, Ok(Some("101".into())), true, LIMIT).await;
+        assert_eq!(fake.counts(), (1, 1));
+        // Un autre appareil a son propre compteur.
+        let other = FabricLabels::default();
+        fake.run(&other, Ok(None), true, LIMIT).await;
+        assert_eq!(fake.counts(), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn correct_label_is_not_rewritten() {
+        let done = FabricLabels::default();
+        let fake = FakeLabel::default();
+        let current = Some(ETIQUETTE_FABRIC_SERVEUR.to_string());
+        fake.run(&done, Ok(current), true, LIMIT).await;
+        assert_eq!(fake.counts(), (1, 0), "lue, déjà bonne, pas d'écriture");
+        assert!(done.is_done(1));
+    }
+
+    #[tokio::test]
+    async fn failed_label_is_silent_and_retried_at_next_connection() {
+        let done = FabricLabels::default();
+        let fake = FakeLabel::default();
+        // Lecture et écriture en échec : rien ne remonte, l'appareil n'est pas marqué.
+        fake.run(&done, Err("pas de réponse"), false, LIMIT).await;
+        assert_eq!(fake.counts(), (1, 1));
+        assert!(!done.is_done(1));
+        // Prochaine connexion : nouvel essai, qui réussit.
+        fake.run(&done, Ok(None), true, LIMIT).await;
+        assert_eq!(fake.counts(), (2, 2));
+        assert!(done.is_done(1));
+        fake.run(&done, Ok(None), true, LIMIT).await;
+        assert_eq!(fake.counts(), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn stuck_label_gives_up_after_its_own_timeout() {
+        let done = FabricLabels::default();
+        let started = std::time::Instant::now();
+        ensure_fabric_label(
+            &done,
+            1,
+            Duration::ZERO,
+            Duration::from_millis(30),
+            || async { Ok(None) },
+            || async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!done.is_done(1));
     }
 }

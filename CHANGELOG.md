@@ -31,6 +31,14 @@ Les téléchargements de chaque version sont sur la
 - `scripts/bundle-server-app.sh` : `.app` universelle signée « ad hoc » (macOS 10.15 / 11.0
   minimum) et `MatterHomeServer-<version>-universal.dmg`, construits et publiés par la CI.
   L'archive en ligne de commande reste, comme option avancée.
+- **Étiquette de fabric « Matter Home Serveur »** : le serveur l'écrit sur chaque appareil
+  (commande UpdateFabricLabel), pour qu'Apple Maison l'affiche dans « Services connectés » à côté du
+  numéro de fabricant « 101 ». Sans réappairage ni action : appareils déjà appairés et nouveaux,
+  à la première connexion. Purement cosmétique : tâche à part, avec son délai, qui n'influe ni sur
+  l'état de l'appareil ni sur sa souscription ni sur un appairage ; un échec est journalisé et
+  retenté à la connexion suivante. Les appareils sur pile sont ménagés : lecture de l'étiquette
+  d'abord, écriture seulement si elle diffère, et plus aucun essai tant que le serveur tourne une
+  fois l'étiquette en place.
 
 ## [1.0.0] - 2026-11-09
 
