@@ -467,7 +467,7 @@ impl MatterApp {
     /// seulement coupée, le plan et les règles en cours d'édition sont gardés pour la reprise
     /// (voir `SyncState::suspend`) ; sinon tout est effacé, brouillons compris, pour qu'ils ne
     /// partent jamais vers un autre serveur.
-    fn clear_data(&mut self, keep_drafts: bool) {
+    fn clear_data(&mut self, keep_drafts: bool, wipe_texts: bool) {
         self.model.clear();
         self.series.clear();
         self.pending.clear();
@@ -489,9 +489,14 @@ impl MatterApp {
         self.confirm_clear = None;
         self.device_edit = None;
         self.export_message = None;
-        self.log.clear();
-        self.toasts.clear();
-        self.error_banner = None;
+        // Le journal et les notifications partent avec la liaison, pas à chaque nouvel essai de
+        // connexion (`Link::Connecting`) : ils porteraient sinon la raison de la coupure et les
+        // avis du moteur (« la session reste ouverte, mais… ») pendant une fraction de seconde.
+        if wipe_texts {
+            self.log.clear();
+            self.toasts.clear();
+            self.error_banner = None;
+        }
         self.test_after_save = None;
         // Une vérification ou une confirmation d'import ne vaut que pour le serveur qui l'a
         // faite : on les abandonne. Seul « import accepté » reste, il n'engage plus rien.
@@ -512,7 +517,7 @@ impl MatterApp {
                     || self.draft_server.as_ref().is_some_and(|d| d != server)
                 {
                     // Un autre serveur que celui des brouillons et des fenêtres en cours.
-                    self.clear_data(false);
+                    self.clear_data(false, true);
                 }
                 if !self.connected() {
                     self.push_log(format!("Connecté au serveur (version {server_version})."));
@@ -524,7 +529,7 @@ impl MatterApp {
             Link::Reconnecting {
                 reason, retry_in_s, ..
             } => {
-                self.clear_data(true);
+                self.clear_data(true, true);
                 // Après l'effacement du journal : c'est ce qu'il faut voir en premier.
                 self.push_log(format!(
                     "Liaison perdue : {reason} Nouvel essai dans {retry_in_s} s."
@@ -535,14 +540,14 @@ impl MatterApp {
                 pinned,
                 reason,
             } => {
-                self.clear_data(false);
+                self.clear_data(false, true);
                 self.server = None;
                 self.connect
                     .logged_out(url.clone(), *pinned, reason.clone());
             }
-            Link::Connecting => self.clear_data(true),
+            Link::Connecting => self.clear_data(true, false),
             Link::CertificateChanged { .. } | Link::Incompatible { .. } => {
-                self.clear_data(false);
+                self.clear_data(false, true);
                 self.server = None;
             }
         }

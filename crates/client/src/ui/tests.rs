@@ -1211,3 +1211,30 @@ fn forgetting_the_certificate_is_not_offered_while_logging_in() {
     screen.start_logging_in();
     assert!(!screen.reset_allowed());
 }
+
+/// Un nouvel essai de connexion n'efface pas le journal : l'avis du moteur et la raison de la
+/// coupure restent lisibles.
+#[test]
+fn a_new_connection_attempt_does_not_erase_the_journal() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    disconnect(&mut f);
+    f.send(Event::Notice("La session reste ouverte, mais…".into()));
+    f.send(Event::Link(Link::Connecting));
+    f.app.pump_network();
+    let lines = f
+        .app
+        .log
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        lines.contains("Liaison perdue") && lines.contains("La session reste ouverte"),
+        "{lines}"
+    );
+    assert!(
+        f.app.model.devices.is_empty(),
+        "les données, elles, sont bien effacées"
+    );
+}

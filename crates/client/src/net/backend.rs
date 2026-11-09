@@ -355,11 +355,6 @@ impl Backend {
         id
     }
 
-    /// Quel serveur est joint (adresse et empreinte), s'il y a une session.
-    pub fn server_identity(&self) -> Option<String> {
-        self.shared.creds().map(|c| c.identity())
-    }
-
     /// Comme [`Backend::call`], mais le corps de la réponse (export, CSV : plusieurs Mo) est
     /// écrit dans `path` par le fil réseau. `Event::Reply` rend alors un corps vide, ou
     /// l'erreur d'écriture.
