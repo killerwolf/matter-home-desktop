@@ -204,6 +204,9 @@ fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
     if let Some(ms) = env_number("MATTER_HOME_TEST_WRITE_TIMEOUT_MS") {
         config.client_write_timeout = Duration::from_millis(ms);
     }
+    if let Some(ms) = env_number("MATTER_HOME_TEST_BODY_IDLE_MS") {
+        config.body_idle_timeout = Duration::from_millis(ms);
+    }
     let server = match Server::start(config) {
         Ok(server) => server,
         Err(e) => {

@@ -32,6 +32,8 @@ pub struct ServerConfig {
     pub broadcast_capacity: usize,
     /// Délai d'écriture vers un client avant de le déconnecter.
     pub client_write_timeout: Duration,
+    /// Délai sans octet reçu sur le corps d'une requête avant de l'abandonner.
+    pub body_idle_timeout: Duration,
 }
 
 impl ServerConfig {
@@ -42,6 +44,7 @@ impl ServerConfig {
             demo,
             broadcast_capacity: 256,
             client_write_timeout: Duration::from_secs(10),
+            body_idle_timeout: crate::net::BODY_IDLE_TIMEOUT,
         }
     }
 }
@@ -124,6 +127,7 @@ impl Server {
             NetConfig {
                 listen: config.listen,
                 client_write_timeout: config.client_write_timeout,
+                body_idle_timeout: config.body_idle_timeout,
             },
             hub.clone(),
             auth,

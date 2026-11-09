@@ -1,12 +1,15 @@
 //! Réseau : HTTPS (axum derrière rustls) pour la connexion et les requêtes, WebSocket pour
 //! le temps réel. Une boucle d'acceptation TLS minimale pilote hyper : pas de socket sans
-//! chiffrement, délais sur la poignée de main et sur les en-têtes, nombre de connexions borné.
+//! chiffrement, délais sur la poignée de main, les en-têtes et le corps, nombre de connexions
+//! borné au total et par adresse.
 
+mod body;
 mod routes;
 mod ws;
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -25,6 +28,11 @@ use crate::security::sessions::SessionStore;
 
 /// Connexions simultanées au plus ; au-delà, les nouvelles sont fermées aussitôt.
 const MAX_CONNECTIONS: usize = 128;
+/// Connexions simultanées au plus pour une même adresse : une machine du réseau ne peut pas
+/// occuper à elle seule toutes les places.
+const MAX_CONNECTIONS_PER_IP: usize = 16;
+/// Délai sans recevoir d'octet du corps d'une requête avant de l'abandonner (`request_timeout`).
+pub const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 /// WebSockets ouverts en même temps au plus.
 const MAX_WEBSOCKETS: usize = 32;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,6 +46,8 @@ pub struct NetConfig {
     pub listen: SocketAddr,
     /// Délai d'écriture d'un message vers un client WebSocket avant de le déconnecter.
     pub client_write_timeout: Duration,
+    /// Délai sans octet reçu sur le corps d'une requête.
+    pub body_idle_timeout: Duration,
 }
 
 /// Ce que partagent les gestionnaires de requêtes.
@@ -48,6 +58,7 @@ pub struct AppState {
     pub shutdown: watch::Receiver<bool>,
     pub ws_slots: Arc<Semaphore>,
     pub client_write_timeout: Duration,
+    pub body_idle_timeout: Duration,
 }
 
 /// Compte, sessions et limitation des tentatives.
@@ -98,6 +109,7 @@ pub fn start(
         shutdown: shutdown_rx.clone(),
         ws_slots: Arc::new(Semaphore::new(MAX_WEBSOCKETS)),
         client_write_timeout: config.client_write_timeout,
+        body_idle_timeout: config.body_idle_timeout,
     };
     let router = routes::router(state);
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -112,6 +124,7 @@ pub fn start(
         router,
         shutdown_rx,
         connections.clone(),
+        Arc::new(PerIp::default()),
     ));
     Ok(NetServer {
         addr,
@@ -127,6 +140,7 @@ async fn accept_loop(
     router: axum::Router,
     mut shutdown: watch::Receiver<bool>,
     connections: Arc<Semaphore>,
+    per_ip: Arc<PerIp>,
 ) {
     loop {
         let (stream, peer) = tokio::select! {
@@ -145,11 +159,17 @@ async fn accept_loop(
             drop(stream);
             continue;
         };
+        // Plafond par adresse, avant même la poignée de main TLS.
+        let Some(ip_guard) = per_ip.try_acquire(peer.ip()) else {
+            drop(stream);
+            continue;
+        };
         let acceptor = acceptor.clone();
         let router = router.clone();
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let _ip_guard = ip_guard;
             let _ = stream.set_nodelay(true);
             let tls = match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
                 Ok(Ok(tls)) => tls,
@@ -180,6 +200,47 @@ async fn accept_loop(
     }
 }
 
+/// Connexions ouvertes par adresse.
+#[derive(Default)]
+struct PerIp {
+    counts: Mutex<HashMap<IpAddr, usize>>,
+}
+
+/// Une place prise pour une adresse ; rendue (et l'entrée retirée à zéro) à la fermeture.
+struct IpGuard {
+    owner: Arc<PerIp>,
+    ip: IpAddr,
+}
+
+impl PerIp {
+    fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<IpGuard> {
+        // Une adresse IPv4 reçue sur une socket IPv6 est la même machine.
+        let ip = ip.to_canonical();
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(ip).or_insert(0);
+        if *count >= MAX_CONNECTIONS_PER_IP {
+            return None;
+        }
+        *count += 1;
+        Some(IpGuard {
+            owner: self.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for IpGuard {
+    fn drop(&mut self) {
+        let mut counts = self.owner.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = counts.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.ip);
+            }
+        }
+    }
+}
+
 impl NetServer {
     /// Arrête l'écoute, laisse les requêtes en cours se terminer (au plus quelques secondes)
     /// puis libère le runtime.
@@ -206,5 +267,30 @@ impl Drop for NetServer {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connections_are_capped_per_address_and_released() {
+        let per_ip = Arc::new(PerIp::default());
+        let a: IpAddr = "192.168.1.10".parse().unwrap();
+        let b: IpAddr = "192.168.1.11".parse().unwrap();
+        let mut held: Vec<_> = (0..MAX_CONNECTIONS_PER_IP)
+            .map(|_| per_ip.try_acquire(a).expect("sous le plafond"))
+            .collect();
+        assert!(per_ip.try_acquire(a).is_none(), "17e connexion refusée");
+        // Une autre adresse n'est pas touchée, ni la même adresse écrite en IPv6.
+        assert!(per_ip.try_acquire(b).is_some());
+        let mapped: IpAddr = "::ffff:192.168.1.10".parse().unwrap();
+        assert!(per_ip.try_acquire(mapped).is_none());
+        // Une place rendue est réutilisable ; à zéro l'entrée disparaît.
+        held.pop();
+        assert!(per_ip.try_acquire(a).is_some());
+        held.clear();
+        assert!(per_ip.counts.lock().unwrap().get(&a).is_none());
     }
 }

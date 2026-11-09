@@ -73,13 +73,16 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(JSON_LIMIT))
         .layer(middleware::map_response(harden))
         .layer(middleware::map_response(json_errors))
-        .layer(middleware::from_fn(deadline))
+        .layer(middleware::from_fn_with_state(state.clone(), deadline))
         .with_state(state)
 }
 
 /// Durée maximale d'une requête (corps compris) : un client qui envoie au compte-gouttes ne
 /// retient pas une connexion indéfiniment. Sans effet sur un WebSocket, qui vit après la réponse 101.
-async fn deadline(request: Request, next: Next) -> Response {
+async fn deadline(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    // Le corps a aussi son délai d'inactivité (15 s) : voir `body`.
+    let request =
+        request.map(|body| Body::new(super::body::IdleBody::new(body, state.body_idle_timeout)));
     match tokio::time::timeout(REQUEST_DEADLINE, next.run(request)).await {
         Ok(response) => response,
         Err(_) => ApiErr(ApiError::with_detail(
@@ -189,7 +192,9 @@ impl<S: Send + Sync> FromRequest<S> for ApiBytes {
             .await
             .map(ApiBytes)
             .map_err(|rejection| {
-                if rejection.into_response().status() == StatusCode::PAYLOAD_TOO_LARGE {
+                if super::body::is_idle_timeout(&rejection) {
+                    ApiErr(ApiError::new(ErrorCode::RequestTimeout))
+                } else if rejection.into_response().status() == StatusCode::PAYLOAD_TOO_LARGE {
                     ApiErr(ApiError::new(ErrorCode::PayloadTooLarge))
                 } else {
                     ApiErr(ApiError::new(ErrorCode::BadRequest))
