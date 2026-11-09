@@ -442,30 +442,65 @@ pub fn render(template: &str, f: &Firing) -> String {
         .replace("{regle}", &f.rule.name)
 }
 
+/// Une adresse de webhook acceptable : http(s) seulement, sans espace ni caractère de contrôle.
+pub fn is_webhook_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Arguments de `curl` pour un webhook. Rien ici n'est interprété par curl comme une option ou
+/// un fichier :
+/// - `-q` en tout premier ignore `~/.curlrc` (il ne serait pas lu s'il venait après) ;
+/// - `--data-raw` envoie le corps tel quel (`--data-binary` lirait un fichier du Mac si le
+///   corps commençait par `@`) ;
+/// - l'adresse suit `--url` (jamais lue comme une option) et `-g` désactive les `{}` et `[]` ;
+/// - seuls http et https, y compris après une redirection (qui n'est de toute façon pas suivie).
+fn curl_args(url: &str, body: &str) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-q",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "-m",
+        "10",
+        "--proto",
+        "=http,https",
+        "--proto-redir",
+        "=http,https",
+        "-g",
+    ]
+    .map(String::from)
+    .to_vec();
+    if !body.is_empty() {
+        let content_type = if body.trim_start().starts_with('{') {
+            "application/json"
+        } else {
+            "text/plain"
+        };
+        args.extend([
+            "-X".to_string(),
+            "POST".to_string(),
+            "-H".to_string(),
+            format!("Content-Type: {content_type}"),
+            "--data-raw".to_string(),
+            body.to_string(),
+        ]);
+    }
+    args.extend(["--url".to_string(), url.to_string()]);
+    args
+}
+
 /// Appel HTTP via `curl` (présent sur macOS), arguments passés sans shell.
 async fn webhook(url: String, body: String) -> Result<String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        bail!("adresse invalide (http:// ou https:// attendu)");
+    if !is_webhook_url(&url) {
+        bail!("adresse invalide (http:// ou https:// attendu, sans espace)");
     }
     let output = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-sS", "-o", "/dev/null", "-w", "%{http_code}", "-m", "10"]);
-        if !body.is_empty() {
-            let content_type = if body.trim_start().starts_with('{') {
-                "application/json"
-            } else {
-                "text/plain"
-            };
-            cmd.args([
-                "-X",
-                "POST",
-                "-H",
-                &format!("Content-Type: {content_type}"),
-                "--data-binary",
-                &body,
-            ]);
-        }
-        cmd.arg(&url).output()
+        std::process::Command::new("curl")
+            .args(curl_args(&url, &body))
+            .output()
     })
     .await??;
     let code = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -605,6 +640,76 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::events::NodeInfo;
+
+    #[test]
+    fn curl_ignores_curlrc_and_never_reads_files() {
+        let args = curl_args("http://127.0.0.1/", "@/etc/hosts");
+        assert_eq!(args[0], "-q", "-q doit être le premier argument");
+        assert!(args.contains(&"--data-raw".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("--data-binary")
+            || a == "-K"
+            || a == "--config"
+            || a == "-d"
+            || a == "--data"));
+        assert!(args.windows(2).any(|w| w == ["--proto", "=http,https"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--proto-redir", "=http,https"]));
+        // L'adresse suit toujours `--url`, même si elle ressemble à une option.
+        let args = curl_args("http://a/ -K /etc/passwd", "");
+        assert_eq!(args[args.len() - 2], "--url");
+        assert!(!is_webhook_url("http://a/ -K /etc/passwd"));
+        assert!(!is_webhook_url("-K http://a/"));
+        assert!(!is_webhook_url("file:///etc/passwd"));
+        assert!(!is_webhook_url("http://a/\nb"));
+        assert!(!is_webhook_url("http://a/\u{0}b"));
+        assert!(is_webhook_url("https://exemple.fr/a?b=1"));
+    }
+
+    /// Un corps qui commence par `@` part tel quel : curl ne lit pas le fichier désigné.
+    #[test]
+    fn webhook_body_starting_with_at_is_sent_literally() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("mhd-webhook-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, "CONTENU-SECRET-DU-MAC").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut received = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                received.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&received).contains("@/") && received.ends_with(b"txt") {
+                    break;
+                }
+            }
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            String::from_utf8_lossy(&received).into_owned()
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let body = format!("@{}", secret.display());
+        let code = runtime
+            .block_on(webhook(format!("http://127.0.0.1:{port}/"), body.clone()))
+            .unwrap();
+        assert_eq!(code, "200");
+        let request = server.join().unwrap();
+        assert!(request.contains(&body), "{request}");
+        assert!(!request.contains("CONTENU-SECRET-DU-MAC"), "{request}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn clock(now: f64, minute_of_day: u32) -> Clock {
         Clock {

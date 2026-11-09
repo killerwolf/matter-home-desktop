@@ -68,9 +68,9 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
                 Action::Webhook { url, body } => {
                     check_len(url, MAX_URL, "adresse")?;
                     check_len(body, MAX_BODY, "corps de requête")?;
-                    if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    if !crate::automation::is_webhook_url(url) {
                         return Err(bad(
-                            "adresse de webhook invalide (http:// ou https:// attendu)",
+                            "adresse de webhook invalide (http:// ou https:// attendu, sans espace)",
                         ));
                     }
                 }
@@ -148,6 +148,13 @@ mod tests {
             body: String::new(),
         }];
         assert!(rules(&set).is_err());
+        for bad_url in ["http://a/ -K /etc/passwd", "http://a/\nb", "-K http://a"] {
+            set.rules[0].actions = vec![Action::Webhook {
+                url: bad_url.into(),
+                body: String::new(),
+            }];
+            assert!(rules(&set).is_err(), "{bad_url:?}");
+        }
         set.rules[0].actions = vec![Action::Delay { seconds: 99_999 }];
         assert!(rules(&set).is_err());
         let mut p = HomePlan::default();
