@@ -31,10 +31,25 @@ Le serveur génère au premier lancement un certificat auto-signé (`serveur/tls
 en 0600), le garde d'un lancement à l'autre, affiche et journalise son **empreinte SHA-256**
 (`matter-home-server fingerprint` la redonne). Le client la mémorise à la première connexion
 et refuse tout autre certificat. Le compte unique se crée sur le serveur
-(`create-account`) ; le mot de passe est haché en argon2id. Après 5 échecs depuis une adresse
-(20 au total), la connexion est mise en attente 30 s, doublée à chaque échec (15 min au plus) :
-`too_many_attempts` (HTTP 429, `Retry-After`). Un jeton est aléatoire (256 bits), stocké haché,
-expire après 30 jours sans usage (180 jours au plus) et se révoque (`POST /api/logout`).
+(`create-account`) ; le mot de passe est haché en argon2id. Après 5 échecs depuis une adresse,
+la connexion de **cette adresse** est mise en attente 30 s, doublée à chaque échec (15 min au
+plus) : `too_many_attempts` (HTTP 429, `Retry-After`). Il n'y a **pas** de blocage global : une
+attaque répartie sur plusieurs adresses ne peut pas enfermer le propriétaire dehors. Elle est
+seulement ralentie : une seule vérification de mot de passe à la fois pour tout le serveur
+(les demandes font la queue dans l'ordre d'arrivée) et 250 ms de pause avant la réponse à un
+échec. Un jeton est aléatoire (256 bits), stocké haché, expire après 30 jours sans usage
+(180 jours au plus) et se révoque (`POST /api/logout`).
+
+**Limites de connexion** : 128 connexions en tout, 16 au plus par adresse IP (les suivantes sont
+fermées sans réponse), poignée de main TLS en 10 s, en-têtes en 10 s, et **15 s sans recevoir
+un octet du corps** d'une requête (réponse `request_timeout`, HTTP 408 ; le délai repart à zéro
+à chaque morceau reçu, un gros import régulier passe). Une requête entière dure 120 s au plus.
+
+**Écrire en TLS** : un client qui écrit une requête (surtout un corps volumineux) doit appeler
+`flush` sur son flux TLS avant d'attendre la réponse. Les bibliothèques asynchrones (par exemple
+tokio-rustls) gardent la fin des données dans un tampon qui ne part que sur `flush` ou à la
+lecture suivante ; sans lui, le serveur attend la suite du corps jusqu'à son délai (408 après
+15 s) pendant que le client attend la réponse.
 
 ## Essayer sans appareil
 
@@ -70,10 +85,13 @@ aux essais et aux tests.
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
 | `GET /api/export` | sauvegarde `.matterhome` (**clés privées en clair**) |
 | `POST /api/import` | corps = fichier `.matterhome` ; 202, puis le serveur quitte (code 75) |
+| `POST /api/import?dry_run=1` | même corps ; inspecte sans rien engager : 200 avec le résumé (voir ci-dessous) |
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
 effet (ou leur échec) arrive en événements. Les erreurs possibles : `not_found` (appareil ou
-règle inconnu), `bad_request`, `pairing_busy`, `payload_too_large`, `unavailable`…
+règle inconnu), `bad_request`, `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
+(405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `invalid_import`
+(400), `unavailable`… Toute erreur, y compris 405 et 413, a le corps `{"error": {"code": …}}`.
 
 ### Historique
 
@@ -94,6 +112,9 @@ Aucun message ne part du client (ses commandes passent par l'API). Le serveur en
    l'**état complet** (description, état de liaison et dernière valeur de chaque grandeur ; pas
    de séries, qui se lisent en historique) ;
 3. `{"type": "event", "seq": N+1, "event": {"type": "reading", …}}` pour chaque changement.
+   Une mesure plus ancienne que la dernière retenue pour cet appareil (historique rejoué au
+   démarrage du serveur) n'est ni retenue ni diffusée : le serveur ne numérote que ce qu'il
+   envoie, `seq` n'a pas de trou.
 
 Événements (`event.type`) : `device_updated`, `device_removed`, `status`, `seen`, `mode`,
 `reading` (mesure ou état), `cover_motion`, `rule_run`, `pairing_progress`, `pairing_done`,
@@ -110,12 +131,33 @@ rien, notifications comprises : le serveur n'a pas de file d'attente pour les ab
 
 `GET /api/export` renvoie le fichier `.matterhome` (appareils, plan, règles, historique, **et les
 clés privées du contrôleur en clair** : le canal est chiffré et authentifié, le fichier doit
-être gardé comme un secret). `POST /api/import` valide la sauvegarde, la met de côté, répond
-202 puis le serveur s'arrête **avec le code 75** (non nul, pour qu'un launchd configuré pour ne
-relancer que les échecs le relance aussi). Au lancement suivant, il applique l'import, garde
-les anciennes données dans un dossier voisin `…avant-import-<date>`, et reprend. Le dossier
-`serveur/` (compte, sessions, certificat) n'est ni exporté ni remplacé : l'empreinte et le
-compte ne changent pas.
+être gardé comme un secret).
+
+`POST /api/import` valide **à fond** la sauvegarde : identité du contrôleur (clés et certificats
+lisibles), `maison.json` et `regles.json` (désérialisés, puis mêmes bornes que `PUT /api/plan` et
+`PUT /api/rules`). Une sauvegarde invalide est refusée (`invalid_import`, 400) sans rien écrire.
+Sinon elle est déposée dans le dossier de données (`import-en-attente.matterhome`, créée en 0600,
+écriture atomique), la réponse est 202, puis le serveur s'arrête **avec le code 75** (non nul,
+pour qu'un launchd configuré pour ne relancer que les échecs le relance aussi). Un second import
+pendant ce temps est refusé : `import_pending` (409).
+
+**Inspecter sans importer** : `POST /api/import?dry_run=1` (même corps) fait les mêmes contrôles et
+répond 200 `{"summary": {"created": "2026-11-09T10:00:00+01:00", "devices": 12, "rooms": 7,
+"rules": 4, "history_files": 12, "has_plan": true, "has_rules": true}, "restarting": false}`
+sans rien écrire ni arrêter le serveur. Le client l'appelle pour montrer « 12 appareils, 7 pièces,
+4 règles, sauvegarde du … » avant de demander confirmation, puis refait l'appel sans `dry_run`.
+
+**Application au lancement suivant**, atomique et reprise après coupure : le nouveau dossier est
+construit à côté du dossier de données `D` (`D.import-partiel` : fichiers créés en 0600 et
+synchronisés, copie de `serveur/`), renommé en `D.import-nouveau` (c'est le marqueur « complet »),
+puis `D` devient `D.avant-import-<date>` et `D.import-nouveau` devient `D`. Au démarrage, le
+serveur reprend un échange coupé entre ces deux renommages (`D` absent, `D.import-nouveau`
+présent) et nettoie les restes des autres étapes ; il ne crée jamais de dossier ni d'identité à
+la place. Un échec passager (disque, droits) remet tout en place, garde la sauvegarde en attente
+et, après trois essais, **empêche le serveur de démarrer** en le disant dans le journal (un
+import annoncé n'est jamais perdu en silence, ni appliqué par surprise plus tard). Le dossier
+`serveur/` (compte, sessions, certificat) n'est ni exporté ni remplacé, seulement copié : l'empreinte
+et le compte ne changent pas.
 
 ## Hors protocole pour l'instant
 
