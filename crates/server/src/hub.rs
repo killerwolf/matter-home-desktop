@@ -208,8 +208,11 @@ impl Hub {
         let wire = WireEvent::from_event(event, &|s| self.scrubber.clean(s));
         {
             let mut st = self.lock();
-            self.aggregate(&mut st, event);
-            if let Some(wire) = wire {
+            // Une mesure écartée (plus ancienne que la dernière retenue : historique rejoué au
+            // démarrage) n'est pas diffusée non plus : le client ne verrait pas la valeur
+            // reculer, alors que l'état complet, lui, ne la contient pas.
+            let retained = self.aggregate(&mut st, event);
+            if let (true, Some(wire)) = (retained, wire) {
                 self.publish(&mut st, wire);
             }
         }
@@ -222,7 +225,8 @@ impl Hub {
         }
     }
 
-    fn aggregate(&self, st: &mut HubState, event: &Event) {
+    /// Retient l'événement dans l'état. `false` : il est écarté et ne doit pas être diffusé.
+    fn aggregate(&self, st: &mut HubState, event: &Event) -> bool {
         match event {
             Event::Node(info) => match st.devices.get_mut(&info.node_id) {
                 Some(d) => d.info = info.clone(),
@@ -255,7 +259,7 @@ impl Hub {
                 at,
             } => {
                 if let Some(d) = st.devices.get_mut(node_id) {
-                    d.set_latest(Metric::from(*kind), *value, *at);
+                    return d.set_latest(Metric::from(*kind), *value, *at);
                 }
             }
             Event::State {
@@ -270,12 +274,11 @@ impl Hub {
                         .latest
                         .get(&metric)
                         .is_none_or(|(old, _)| (*old != 0.0) != *value);
-                    if d.set_latest(metric, f64::from(u8::from(*value)), *at)
-                        && *kind == StateKind::Open
-                        && changed
-                    {
+                    let retained = d.set_latest(metric, f64::from(u8::from(*value)), *at);
+                    if retained && *kind == StateKind::Open && changed {
                         d.open_since = Some(*at);
                     }
+                    return retained;
                 }
             }
             Event::CoverMotion { node_id, motion } => {
@@ -307,6 +310,7 @@ impl Hub {
             | Event::Info(_)
             | Event::Fatal(_) => {}
         }
+        true
     }
 
     /// Numérote et diffuse un événement. Sans abonné, on ne le sérialise même pas.
@@ -836,9 +840,46 @@ mod tests {
         assert_eq!((t.value, t.at), (21.0, 100.0));
         // `open_since` = premier passage à « ouvert », pas le dernier rapport identique.
         assert_eq!(d.open_since, Some(120.0));
-        assert_eq!(snap.seq, 6);
+        // La mesure écartée (historique rejoué) n'a pas été diffusée : pas de numéro consommé.
+        assert_eq!(snap.seq, 5);
         hub.apply(&Event::NodeRemoved(7));
         assert!(hub.current_snapshot().devices.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Les mesures rejouées au démarrage, plus anciennes que la dernière retenue, ne sont pas
+    /// diffusées : l'état complet ne les contient pas non plus.
+    #[test]
+    fn discarded_replayed_measurements_are_not_broadcast() {
+        let dir = temp("replay");
+        let (hub, _rx) = hub_with(&dir, 16);
+        hub.apply(&node(7));
+        let mut sub = hub.subscribe();
+        hub.apply(&temperature(7, 21.0, 100.0));
+        hub.apply(&temperature(7, 15.0, 50.0)); // rejouée : plus ancienne
+        hub.apply(&Event::State {
+            node_id: 7,
+            kind: StateKind::Open,
+            value: true,
+            at: 200.0,
+        });
+        hub.apply(&Event::State {
+            node_id: 7,
+            kind: StateKind::Open,
+            value: false,
+            at: 150.0, // rejouée : plus ancienne
+        });
+        let mut seen = Vec::new();
+        while let Ok(text) = sub.rx.try_recv() {
+            let ServerMessage::Event { seq, event } = serde_json::from_str(&text).unwrap() else {
+                panic!()
+            };
+            seen.push((seq, serde_json::to_value(&event).unwrap()));
+        }
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[0].0 + 1, seen[1].0, "pas de trou dans les numéros");
+        assert_eq!(seen[0].1["value"], 21.0);
+        assert_eq!(seen[1].1["value"], 1.0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
