@@ -3,8 +3,17 @@
 Reprendre les appareils, le plan, les automatisations et l'historique de l'application de bureau
 v0.2.1 sur le serveur, **avec la même identité Matter : aucun appareil à réappairer**.
 
-Pour installer le serveur lui-même (service qui démarre avec le Mac), voir
-[installation-serveur.md](installation-serveur.md). Cette page ne parle que des données.
+Pour installer le serveur lui-même, voir [installation-serveur.md](installation-serveur.md). Cette
+page ne parle que des données.
+
+> **Avec l'application Matter Home Server (le plus simple)** : à la première ouverture, la fenêtre
+> de configuration propose **Reprendre une sauvegarde** : choisissez le fichier `.matterhome`
+> (étape 1 ci-dessous), l'application montre son contenu et compare l'identité du fichier à celle
+> du dossier, vous confirmez, puis vous créez le compte. Les mêmes gardes que la ligne de commande
+> s'appliquent (jamais d'identité remplacée sans votre accord explicite, import atomique, reprise
+> après une coupure). Les étapes 4 à 6 ci-dessous ne concernent que la ligne de commande.
+> **Venez-vous du service launchd ?** `./uninstall.sh` (vos données restent), puis ouvrez
+> l'application : elle démarre directement.
 
 > **Jamais deux instances avec la même identité** (la v0.2.1 et le serveur, ou deux serveurs) :
 > leurs abonnements se chassent, les règles s'exécutent deux fois et `controller.json` peut être

@@ -7,9 +7,120 @@ réseau (un ancien Mac fait très bien l'affaire). Il parle à vos appareils Mat
 automatisations et garde les données. Le **client** (l'application « Matter Home Desktop »)
 s'y connecte, depuis ce Mac ou depuis un autre.
 
-Cette page explique tout pas à pas, sans supposer que vous programmez. Vous aurez besoin de
-l'application **Terminal** (dans Applications → Utilitaires) : on y tape des commandes ; copiez-
-collez-les une par une.
+Le plus simple : **l'application « Matter Home Server »**. Elle se glisse dans Applications,
+vit dans la barre de menus en haut de l'écran et contient le serveur. Tout se règle dans une
+petite fenêtre : **jamais de Terminal, jamais de mot de passe administrateur**. L'archive en ligne
+de commande (service launchd) reste disponible plus bas, comme option avancée.
+
+## Méthode simple : l'application Matter Home Server
+
+### Installer
+
+1. Sur la [page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest),
+   téléchargez `MatterHomeServer-<version>-universal.dmg` (macOS 10.15 ou plus récent sur Mac
+   Intel, macOS 11 ou plus récent sur Apple Silicon).
+2. Ouvrez le DMG et glissez **Matter Home Server** dans **Applications**.
+3. Ouvrez l'application. L'application n'est pas signée avec un certificat Apple payant : si macOS
+   la refuse (« endommagée » ou « développeur non identifié »), ouvrez Réglages Système →
+   Confidentialité et sécurité, descendez jusqu'au message sur Matter Home Server et cliquez sur
+   **Ouvrir quand même** (sur les macOS plus anciens, clic droit sur l'application → **Ouvrir**) ;
+   en dernier recours, une seule commande dans le Terminal :
+   `xattr -cr "/Applications/Matter Home Server.app"`.
+4. Une petite maison apparaît dans la barre de menus (pas d'icône dans le Dock). Au premier
+   lancement, macOS demande l'accès au **réseau local** : acceptez.
+
+### Première configuration (une seule fois)
+
+Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fenêtre s'ouvre :
+
+1. **Reprendre une sauvegarde** (fichier `.matterhome`, exporté depuis la v0.2.1 ou depuis un
+   autre serveur) : l'application affiche le contenu du fichier et la comparaison des identités.
+   Cochez que l'ancienne application est arrêtée partout, puis confirmez. Aucun appareil à
+   réappairer. L'application ne remplace **jamais** une identité Matter différente sans que vous
+   l'ayez demandé explicitement, et ne crée **jamais** une identité sans que vous ayez choisi
+   « Créer une nouvelle maison ».
+   Ou **Créer une nouvelle maison**, pour une première installation sans aucun appareil.
+2. **Créer le compte** : un identifiant et un mot de passe (10 caractères au minimum), saisis
+   deux fois.
+3. L'écran de fin donne **l'adresse du serveur** (`https://nom-du-mac.local:8443`) et
+   **l'empreinte du certificat** : dans le client, saisissez l'adresse, comparez l'empreinte
+   affichée avec celle-ci, puis connectez-vous.
+
+Si l'identité et le compte existent déjà (par exemple parce que vous avez déjà utilisé le serveur
+sur ce Mac), l'application démarre directement le serveur, sans rien demander ni importer.
+
+### Le menu de la barre de menus
+
+L'icône change de forme : maison pleine (en marche), maison creuse (démarrage), maison avec un
+point d'exclamation (problème ou configuration à terminer). Le menu montre l'état (« En marche ·
+12 appareils sur 13 en ligne »), les appareils injoignables, l'adresse du serveur, « Copier
+l'adresse », « Copier l'empreinte du certificat », « Ouvrir le journal », « Ouvrir à la
+connexion », « Compte et réglages… » et « Quitter ». Quitter demande confirmation : les
+automatismes s'arrêtent tant que l'application n'est pas rouverte.
+
+### Ouvrir à la connexion, ouverture de session automatique
+
+L'application se relance toute seule à l'ouverture de votre session (case « Ouvrir à la
+connexion », cochée par défaut à la fin de la configuration) et après un plantage. Cela passe par
+un fichier dans `~/Library/LaunchAgents`, sans droits administrateur. Mais l'application ne peut
+démarrer qu'**une fois votre session ouverte**. Pour un Mac qui redémarre sans personne devant :
+
+1. Réglages Système → Utilisateurs et groupes → **Ouvrir la session automatiquement** : choisissez
+   votre compte (macOS demande votre mot de passe, c'est un réglage à faire vous-même ; il est
+   indisponible si FileVault est activé).
+2. Ce Mac doit rester **allumé et branché**, de préférence en **Ethernet**.
+
+### Veille, capot ouvert, secteur
+
+Tant que l'application tourne, elle empêche le Mac de se mettre en veille tout seul (l'écran peut
+s'éteindre). Elle ne peut rien contre un **portable dont on ferme le capot** : il s'endort alors
+quoi que l'on fasse, sauf s'il est branché sur secteur avec un écran externe. Laissez le **capot
+ouvert** et le Mac **sur secteur**. Réglages Système → Batterie (ou Économiseur d'énergie) →
+« Empêcher la mise en veille automatique lorsque l'écran est éteint » aide sur un Mac de bureau,
+mais c'est un réglage à faire vous-même.
+
+### Quand l'application ne démarre pas le serveur
+
+Elle le dit dans le menu (et dans « Compte et réglages… ») et ne démarre rien, plutôt que de
+risquer deux serveurs sur les mêmes données :
+
+- **Le service installé au Terminal tient les données** (fichier
+  `/Library/LaunchDaemons/dev.matter-home-desktop.server.plist`) : voir « Passer du service à
+  l'application » ci-dessous.
+- **Un autre serveur lancé à la main** : arrêtez-le, l'application démarre alors toute seule.
+- **L'ancienne application de bureau v0.2 est ouverte** : elle ne prend pas le verrou, donc
+  l'application ne peut pas savoir si elle utilise les données. Fermez-la (sur tous vos Mac),
+  le serveur démarre tout seul.
+- **Matter Home Server est déjà ouvert** : une seconde ouverture ne fait rien, cherchez l'icône.
+
+### Passer du service launchd à l'application
+
+Si vous aviez installé le serveur avec l'archive (service launchd) : dans le Terminal, dans le
+dossier de l'archive, lancez `./uninstall.sh` (vos données et vos journaux restent en place), puis
+ouvrez l'application **Matter Home Server**. Elle reconnaît l'identité et le compte existants
+(même dossier de données, `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`)
+et démarre directement. Le certificat du serveur reste le même : le client n'a rien à refaire.
+
+### Où sont les choses
+
+- Journal : menu « Ouvrir le journal » (`~/Library/Logs/Matter Home Server/serveur.log`).
+- Données : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`.
+- Ouverture à la connexion : `~/Library/LaunchAgents/dev.matter-home-desktop.server-app.plist`.
+
+### Essayer sans appareil (démo)
+
+`"/Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app" --demo --data-dir
+~/essai-demo --listen 127.0.0.1:0` : appareils simulés, aucun trafic réseau, aucune ouverture à la
+connexion (le compte « demo » et son mot de passe sont affichés dans le Terminal).
+
+---
+
+## Option avancée : l'archive en ligne de commande (service launchd)
+
+Réservée à qui préfère le Terminal : le serveur sans interface, installé comme service qui démarre
+avec le Mac, **sans session ouverte**. Ne l'utilisez pas en même temps que l'application sur le
+même Mac. Cette partie explique tout pas à pas ; vous aurez besoin de l'application **Terminal**
+(dans Applications → Utilitaires) : on y tape des commandes ; copiez-collez-les une par une.
 
 > **Une seule instance à la fois.** Ne lancez jamais deux serveurs, ni la v0.2.1 de l'application
 > en même temps que le serveur, avec la même identité Matter : leurs abonnements se chassent, les

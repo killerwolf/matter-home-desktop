@@ -10,6 +10,28 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **Matter Home Server**, le serveur en application de la barre de menus (`crates/server-app`) :
+  un DMG à glisser dans Applications, une icône en haut de l'écran (sans icône dans le Dock), toute
+  la configuration dans une petite fenêtre, **jamais de Terminal ni de mot de passe
+  administrateur**. Le serveur tourne dans le processus de l'application. Le menu montre l'état
+  (« En marche · 12 appareils sur 13 en ligne »), les appareils injoignables, l'adresse du serveur
+  et l'empreinte du certificat à copier, le journal, « Ouvrir à la connexion » et « Quitter »
+  (avec confirmation). Fenêtre de première configuration : reprise d'une sauvegarde `.matterhome`
+  (résumé, comparaison des identités, confirmation) ou nouvelle maison, puis compte ; mêmes gardes
+  que `import`, `init` et `create-account`, désormais partagées dans la bibliothèque du serveur
+  (`setup`). Démarrage direct quand l'identité et le compte existent déjà.
+- **Cohabitation** : l'application ne démarre pas le serveur et l'explique si un autre serveur,
+  le service launchd installé ou la v0.2.x de l'application de bureau tient les données ; une seule
+  instance de l'application. Le verrou d'instance contient maintenant le numéro du processus.
+- **Ouverture à la connexion** sans droits administrateur (LaunchAgent d'utilisateur, relance
+  après plantage, pas de boucle), et **veille** empêchée tant que le serveur tourne
+  (`caffeinate`) ; le capot fermé reste hors de portée.
+- `scripts/bundle-server-app.sh` : `.app` universelle signée « ad hoc » (macOS 10.15 / 11.0
+  minimum) et `MatterHomeServer-<version>-universal.dmg`, construits et publiés par la CI.
+  L'archive en ligne de commande reste, comme option avancée.
+
 ## [1.0.0] - 2026-11-09
 
 Version 1 : l'application est séparée en deux parties, **sans aucun cloud**. Le **serveur**

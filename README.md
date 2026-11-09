@@ -75,13 +75,22 @@ les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md). Deux fichiers
 
 ### 1. Le serveur, sur le Mac qui reste allumé
 
-`matter-home-server-<version>-macos.tar.gz` : le programme (arm64 et Intel, macOS 10.15 minimum
+**Le plus simple : `MatterHomeServer-<version>-universal.dmg`**, l'application « Matter Home
+Server » (macOS 10.15 minimum sur Intel, 11 sur Apple Silicon). Glissez-la dans **Applications**
+et ouvrez-la : une icône apparaît dans la barre de menus, et une petite fenêtre guide la première
+configuration (reprendre une sauvegarde ou créer une nouvelle maison, puis le compte). **Pas de
+Terminal, pas de mot de passe administrateur.** Elle s'ouvre à la connexion et empêche la veille ;
+voir [docs/installation-serveur.md](docs/installation-serveur.md) (ouverture de session
+automatique, capot ouvert, secteur).
+
+**Option avancée : l'archive en ligne de commande**, `matter-home-server-<version>-macos.tar.gz` : le programme (arm64 et Intel, macOS 10.15 minimum
 sur Intel, 11 sur Apple Silicon), `install.sh`, `uninstall.sh` et un fichier de service launchd.
 `install.sh` l'installe comme service qui démarre avec le Mac, relancé s'il plante, sous votre
 compte (jamais root). Il ne touche jamais seul à la veille ni au pare-feu : il affiche les
 commandes à lancer. Avant de lancer quoi que ce soit, retirez la quarantaine :
 `xattr -dr com.apple.quarantine <dossier de l'archive>`. **Guide pas à pas, pour non-développeurs :
-[docs/installation-serveur.md](docs/installation-serveur.md).**
+[docs/installation-serveur.md](docs/installation-serveur.md).** Pour passer du service à l'application :
+`./uninstall.sh` (vos données restent), puis ouvrez Matter Home Server.
 
 Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
 **[docs/migration.md](docs/migration.md)**.
