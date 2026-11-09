@@ -574,7 +574,8 @@ impl Controller {
             self.state.lock().unwrap_or_else(|e| e.into_inner()).phase == Phase::NeedsSetup;
         match cmd {
             Cmd::Quit => self.finish_and_exit(0),
-            Cmd::Retry => return Some(Next::Reboot),
+            // Un `Retry` tardif ne relance jamais `Server::start` sur un serveur qui tourne.
+            Cmd::Retry if retry_allowed(self.server.is_some()) => return Some(Next::Reboot),
             Cmd::Import {
                 file,
                 replace_identity,
@@ -631,6 +632,10 @@ impl Controller {
         // Un succès ouvre la suite (compte, puis démarrage) ; un échec laisse l'écran tel quel.
         ok.then_some(Next::Reboot)
     }
+}
+
+fn retry_allowed(server_running: bool) -> bool {
+    !server_running
 }
 
 fn health_of(server: &Server) -> Health {
@@ -719,6 +724,12 @@ fn ensure_demo_account(data_dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_retry_never_restarts_a_running_server() {
+        assert!(!retry_allowed(true));
+        assert!(retry_allowed(false));
+    }
 
     #[test]
     fn exit_codes_never_loop() {
