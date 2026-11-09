@@ -64,8 +64,10 @@ ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
 
 ## Limites
 
-- Les règles ne s'exécutent que **tant que l'application est ouverte**.
-- Les notifications partent vers les clients connectés au serveur ; un client fermé ne reçoit rien (étape 4 du découpage : l'affichage côté client n'est pas encore branché).
+- Les règles sont exécutées par **le serveur**, en continu, même quand aucun client n'est ouvert.
+  Elles s'arrêtent si le serveur s'arrête (Mac en veille, service arrêté).
+- Les notifications partent vers les clients connectés au serveur et s'affichent dans leur
+  interface ; un client fermé ne reçoit rien.
 - Pas encore de déclencheur « appui sur un bouton » (BILRESA…).
 
 ## Sauvegarde

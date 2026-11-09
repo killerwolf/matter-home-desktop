@@ -21,7 +21,12 @@
 #                      commande système n'est lancée. Avec cette option, HOME doit lui aussi
 #                      être dans ce dossier
 #   --donnees DOSSIER  dossier de données du serveur (défaut : celui de l'utilisateur, le même
-#                      que celui de l'import, ~/Library/Application Support/...)
+#                      que celui de l'import, ~/Library/Application Support/...). Lors d'une
+#                      mise à jour, le dossier du service déjà installé est repris et ne peut
+#                      pas être changé ici (désinstallez d'abord)
+#   --ignorer-application-ouverte
+#                      n'arrête pas l'installation si « matter-home-desktop » est ouvert (à
+#                      n'utiliser que si c'est le client de la version 1, pas la v0.2.1)
 #   --oui              ne demande aucune confirmation
 #   --demarrer         démarre le service à la fin sans le demander (s'il peut démarrer)
 #   --ne-pas-demarrer  ne démarre pas le service et ne pose pas la question
@@ -42,6 +47,9 @@ PREFIX="${MH_PREFIX:-}"
 DATA_DIR=""
 ASSUME_YES=0
 START="ask"
+IGNORE_APP=0
+# Commande qui cherche un processus par son nom (remplaçable pour les essais).
+PGREP="${MH_PGREP:-pgrep}"
 
 say() { printf '%s\n' "$*"; }
 title() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -58,6 +66,7 @@ while [ $# -gt 0 ]; do
     --oui) ASSUME_YES=1 ;;
     --demarrer) START="yes" ;;
     --ne-pas-demarrer) START="no" ;;
+    --ignorer-application-ouverte) IGNORE_APP=1 ;;
     --aide|-h|--help) usage; exit 0 ;;
     *) die "option inconnue : $1 (voir --aide)" ;;
   esac
@@ -88,9 +97,30 @@ BIN_FINAL="/usr/local/bin/$BIN_NAME"
 PLIST_FINAL="/Library/LaunchDaemons/$LABEL.plist"
 BIN_DEST="$PREFIX$BIN_FINAL"
 PLIST_DEST="$PREFIX$PLIST_FINAL"
-[ -n "$DATA_DIR" ] || DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
-case "$DATA_DIR" in /*) ;; *) die "--donnees doit être un chemin absolu" ;; esac
-DATA_DIR="${DATA_DIR%/}"
+PLISTBUDDY=/usr/libexec/PlistBuddy
+DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+# Mise à jour : le dossier de données du service déjà installé fait foi, jamais celui qu'on
+# déduirait de HOME ou d'une option : le service ne doit pas être redirigé vers un autre dossier.
+INSTALLED_DATA_DIR=""
+if [ -f "$PLIST_DEST" ] \
+  && [ "$($PLISTBUDDY -c 'Print :ProgramArguments:1' "$PLIST_DEST" 2>/dev/null || true)" = "--data-dir" ]; then
+  INSTALLED_DATA_DIR="$($PLISTBUDDY -c 'Print :ProgramArguments:2' "$PLIST_DEST" 2>/dev/null || true)"
+fi
+if [ -n "$DATA_DIR" ]; then
+  case "$DATA_DIR" in /*) ;; *) die "--donnees doit être un chemin absolu" ;; esac
+  DATA_DIR="${DATA_DIR%/}"
+  if [ -n "$INSTALLED_DATA_DIR" ] && [ "$DATA_DIR" != "${INSTALLED_DATA_DIR%/}" ]; then
+    die "le service installé utilise déjà un autre dossier de données :
+  $INSTALLED_DATA_DIR
+Ce script ne redirige jamais un service existant vers un autre dossier (ce serait une autre identité Matter). Pour changer de dossier, désinstallez d'abord (./uninstall.sh), puis réinstallez."
+  fi
+elif [ -n "$INSTALLED_DATA_DIR" ]; then
+  DATA_DIR="${INSTALLED_DATA_DIR%/}"
+  DATA_DIR_FROM_SERVICE=1
+else
+  DATA_DIR="$DEFAULT_DATA_DIR"
+fi
+DATA_DIR_FROM_SERVICE="${DATA_DIR_FROM_SERVICE:-0}"
 LOG_DIR="$USER_HOME/Library/Logs/MatterHomeServer"
 LOG_FILE="$LOG_DIR/server.log"
 FALLBACK_LOG="$LOG_DIR/launchd.log"
@@ -157,6 +187,14 @@ sedrep() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 # ---- 1. le binaire ---------------------------------------------------------
 
 title "Matter Home — installation du serveur"
+
+# La v0.2.1 (même nom de programme que le client) ne prend pas le verrou du serveur : ouverte sur
+# ce Mac avec les mêmes données, elle chasserait le serveur (deux instances, une même identité).
+if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x matter-home-desktop >/dev/null 2>&1; then
+  die "l'application « Matter Home Desktop » est ouverte sur ce Mac.
+Si c'est la v0.2.1 (l'ancienne application, avec ses appareils), elle doit être QUITTÉE avant d'installer le serveur : ne lancez jamais deux instances avec la même identité Matter. Quittez-la (Cmd+Q) puis relancez ./install.sh.
+Si c'est le client de la version 1 (il ne pilote rien lui-même), relancez avec --ignorer-application-ouverte."
+fi
 [ "$DRY" = "1" ] && say "(mode à blanc : rien n'est écrit, aucune commande système n'est lancée)"
 [ -n "$PREFIX" ] && say "(préfixe d'essai : $PREFIX — aucune commande système n'est lancée)"
 
@@ -178,6 +216,7 @@ fi
 
 title "2. Le dossier de données"
 say "  $DATA_DIR"
+[ "$DATA_DIR_FROM_SERVICE" = "1" ] && say "  (dossier repris du service déjà installé : il ne change pas)"
 HAS_IDENTITY=0
 HAS_ACCOUNT=0
 if [ -f "$DATA_DIR/controller.json" ]; then
@@ -190,7 +229,7 @@ else
   else
     say "  Le dossier n'existe pas encore : ce script ne le crée pas à vide."
   fi
-  say "  Le service est lancé avec --require-identity : il refusera de démarrer (code 78) tant"
+  say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
   say "  que vous n'aurez pas, avec ce même compte utilisateur :"
   say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
   say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
@@ -246,6 +285,11 @@ say "  plutil -lint : OK"
 title "5. Journaux"
 user_step mkdir -p "$LOG_DIR"
 user_step chmod 700 "$LOG_DIR"
+# Le journal de secours ne reçoit presque rien (le journal normal tourne tout seul) : une
+# rotation simple à chaque installation suffit s'il a grossi.
+if [ -f "$FALLBACK_LOG" ] && [ "$(wc -c < "$FALLBACK_LOG")" -gt 1048576 ]; then
+  user_step mv -f "$FALLBACK_LOG" "$FALLBACK_LOG.1"
+fi
 for f in "$LOG_FILE" "$FALLBACK_LOG"; do
   user_step touch "$f"
   user_step chmod 600 "$f"
@@ -328,6 +372,14 @@ else
 fi
 say "    Si FileVault est activé, après un redémarrage le service ne démarre qu'une fois le Mac"
 say "    déverrouillé (mot de passe à saisir à l'écran) : prévoyez-le après chaque redémarrage."
+echo
+say "  Réseau local — Réglages Système → Confidentialité et sécurité → Réseau local :"
+say "    le client (Matter Home Desktop) doit y être activé : macOS le demande à son premier"
+say "    lancement, acceptez, sinon il ne voit rien. Pour le serveur, regardez si"
+say "    « matter-home-server » apparaît dans cette liste et laissez-le activé ; un programme"
+say "    lancé en service n'affiche pas de fenêtre de demande, et ce réglage n'a pas pu être"
+say "    vérifié sur tous les macOS (si le serveur ne voit aucun appareil, c'est la première chose"
+say "    à regarder, avec le pare-feu)."
 echo
 say "  Réseau : préférez l'Ethernet au Wi-Fi ; au premier démarrage, le service attend que le réseau"
 say "  soit prêt. Une adresse fixe (réservation sur la box) ou un nom en .local évite de"

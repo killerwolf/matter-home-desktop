@@ -808,8 +808,52 @@ pub fn pending_kind(dir: &Path, src: &Path) -> Result<PendingKind> {
 /// préparé « …import-nouveau » (reste d'un import interrompu) sous « …import-abandonne-<date> ».
 /// L'appelant tient le verrou d'instance et a déjà repris un échange interrompu ([`recover`]).
 /// Rend ce qui a été fait, en phrases.
+///
+/// Si l'import a été coupé entre ses deux renommages (`dir` absent, ou recréé sans identité,
+/// alors que le dossier préparé est complet), il est réellement abandonné : les anciennes données
+/// (« …avant-import-<date> » le plus récent, où l'import les avait mises de côté) reprennent la
+/// place de `dir`, et le dossier préparé est mis de côté.
 pub fn abandon(dir: &Path) -> Result<Vec<String>> {
     let mut done = Vec::new();
+    let complete = sibling(dir, NEW_SUFFIX)?;
+    if !dir.join(FILE_NAME).exists()
+        && !dir.join(PENDING).exists()
+        && complete.join(FILE_NAME).exists()
+    {
+        let previous = newest_previous(dir)?.with_context(|| {
+            format!(
+                "l'import a été coupé en plein échange et aucun dossier « …avant-import-… » \
+                 n'est là pour remettre les anciennes données en place : impossible de \
+                 l'abandonner. Relancez « matter-home-server import FICHIER » pour le terminer \
+                 (le dossier préparé est {})",
+                complete.display()
+            )
+        })?;
+        if dir.exists() {
+            let aside = sibling(
+                dir,
+                &format!(
+                    ".sans-identite-{}",
+                    chrono::Local::now().format("%Y%m%d-%H%M%S")
+                ),
+            )?;
+            std::fs::rename(dir, &aside)
+                .with_context(|| format!("mise de côté de {}", dir.display()))?;
+            done.push(format!(
+                "Dossier recréé sans identité mis de côté : {}.",
+                aside.display()
+            ));
+        }
+        std::fs::rename(&previous, dir)
+            .with_context(|| format!("remise en place de {}", previous.display()))?;
+        sync_dir(parent_of(dir))?;
+        done.push(format!(
+            "Import coupé en plein échange : les anciennes données ({}) sont remises en place \
+             dans {}.",
+            previous.display(),
+            dir.display()
+        ));
+    }
     let pending = dir.join(PENDING);
     if pending.exists() {
         std::fs::remove_file(&pending)
@@ -823,6 +867,21 @@ pub fn abandon(dir: &Path) -> Result<Vec<String>> {
         done.push(note);
     }
     Ok(done)
+}
+
+/// Le plus récent des dossiers « <dir>.avant-import-<date> » qui porte une identité.
+fn newest_previous(dir: &Path) -> Result<Option<PathBuf>> {
+    let name = dir.file_name().context("dossier de données sans nom")?;
+    let prefix = format!("{}.avant-import-", name.to_string_lossy());
+    let mut found: Vec<PathBuf> = std::fs::read_dir(parent_of(dir))
+        .with_context(|| format!("lecture de {}", parent_of(dir).display()))?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+        .filter(|p| p.join(FILE_NAME).is_file())
+        .collect();
+    found.sort();
+    Ok(found.pop())
 }
 
 /// L'identité Matter d'un dossier ou d'une sauvegarde, pour la comparer avant un import.
@@ -2036,6 +2095,57 @@ mod tests {
         assert_eq!(tree(&dir), expected);
         // Rien à abandonner ensuite.
         assert!(abandon(&dir).unwrap().is_empty());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Renoncer après une coupure entre les deux renommages : les anciennes données reprennent
+    /// leur place (ce que dit le message), le dossier préparé est mis de côté, rien n'est perdu.
+    #[test]
+    fn abandoning_after_a_cut_between_the_renames_restores_the_old_data() {
+        for recreated in [false, true] {
+            let base = temp(if recreated {
+                "abandon-swap-2"
+            } else {
+                "abandon-swap"
+            });
+            let dir = sample_dir(&base);
+            stage_import_text(&dir, &bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+            let before = tree(&dir);
+            assert!(apply_pending_with(&dir, &mut |step| {
+                if step == "ecarte" {
+                    Fault::Crash
+                } else {
+                    Fault::None
+                }
+            })
+            .is_err());
+            assert!(!dir.exists(), "coupé entre les deux renommages");
+            if recreated {
+                // `create-account` a recréé un dossier sans identité entre-temps.
+                std::fs::create_dir_all(dir.join(SERVER_DIR)).unwrap();
+            }
+            let done = abandon(&dir).unwrap();
+            let text = done.join(" | ");
+            assert!(text.contains("remises en place"), "{text}");
+            assert!(text.contains("import-abandonne"), "{text}");
+            // Les données d'origine sont revenues, avec la sauvegarde retirée.
+            let mut expected = before;
+            expected.remove(PENDING);
+            assert_eq!(tree(&dir), expected);
+            let (_, complete) = marker_names(&dir);
+            assert!(!complete.exists());
+            assert!(abandon(&dir).unwrap().is_empty());
+            std::fs::remove_dir_all(base).unwrap();
+        }
+        // Sans dossier « …avant-import-… » : on ne ment pas, on explique.
+        let base = temp("abandon-swap-none");
+        let dir = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        let (_, complete) = marker_names(&dir);
+        std::fs::create_dir_all(&complete).unwrap();
+        std::fs::write(complete.join(FILE_NAME), controller("Autre")).unwrap();
+        let err = format!("{:#}", abandon(&dir).unwrap_err());
+        assert!(err.contains("impossible de l'abandonner"), "{err}");
+        assert!(complete.exists(), "rien n'a été touché");
         std::fs::remove_dir_all(base).unwrap();
     }
 

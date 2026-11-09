@@ -36,16 +36,17 @@ collez-les une par une.
    cd ~/Downloads/matter-home-server-*-macos
    ```
 
-Le dossier contient le programme **`matter-home-server`**, `install.sh`, `uninstall.sh`, un gabarit
-de fichier de service et un court `LISEZMOI.txt`.
+4. **Toujours, avant de lancer quoi que ce soit**, retirez le blocage de macOS sur les fichiers
+   téléchargés :
 
-Si macOS refuse d'ouvrir le programme (« développeur non identifié ») : c'est normal, il n'est pas
-signé avec un certificat Apple payant. `install.sh` retire lui-même ce blocage ; pour les
-commandes de l'étape 2 avant l'installation, lancez une fois :
+   ```bash
+   xattr -dr com.apple.quarantine .
+   ```
 
-```bash
-xattr -dr com.apple.quarantine .
-```
+Le programme n'est pas signé avec un certificat Apple payant : sans cette commande, macOS refuse
+de l'ouvrir (« développeur non identifié » ou « endommagé »), y compris pour les commandes de
+l'étape 2. Le dossier contient le programme **`matter-home-server`**, `install.sh`, `uninstall.sh`,
+un gabarit de fichier de service et un court `LISEZMOI.txt`.
 
 ## 2. Les données : reprendre la v0.2.1, ou partir de zéro
 
@@ -132,6 +133,12 @@ droits et affiche les commandes. À lancer dans le Terminal, une fois :
   le service ne démarre qu'une fois le Mac déverrouillé (mot de passe saisi à l'écran). Prévoyez de
   le faire après chaque redémarrage, ou laissez FileVault désactivé si le Mac est dans un endroit
   sûr.
+- **Réseau local** (Réglages Système → Confidentialité et sécurité → Réseau local) : le **client**
+  doit y être activé (macOS le demande au premier lancement : acceptez, sinon il ne voit rien).
+  Pour le **serveur**, regardez si « matter-home-server » figure dans cette liste et laissez-le
+  activé. Un programme lancé en service n'affiche pas de fenêtre de demande, et ce réglage n'a pas
+  pu être vérifié sur tous les macOS : si le serveur ne voit aucun appareil, c'est avec le pare-feu
+  la première chose à regarder.
 - **Adresse** : réservez une adresse fixe à ce Mac dans votre box, ou utilisez son nom en
   `.local` (Réglages Système → Général → Partage → nom local), pour ne pas la changer dans le client.
 
@@ -157,7 +164,7 @@ Si elles sont identiques, acceptez : le client ne fera plus confiance qu'à ce c
 | Le fichier de service | `/Library/LaunchDaemons/dev.matter-home-desktop.server.plist` |
 | Vos données | `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop` |
 | Le journal | `~/Library/Logs/MatterHomeServer/server.log` (3 anciens fichiers gardés, droits restreints) |
-| Journal de secours | `~/Library/Logs/MatterHomeServer/launchd.log` |
+| Journal de secours | `~/Library/Logs/MatterHomeServer/launchd.log` (presque vide : seulement ce qui s'affiche avant l'ouverture du journal normal ; `install.sh` le met de côté s'il dépasse 1 Mo) |
 
 Dans le Terminal, `matter-home-server --version` donne la version. Pour suivre ce que fait le
 serveur en direct : `tail -f ~/Library/Logs/MatterHomeServer/server.log` (Ctrl-C pour quitter).
@@ -180,15 +187,19 @@ sudo launchctl print system/dev.matter-home-desktop.server | head -20
 dit s'il tourne ; et pour qu'il **ne démarre plus avec le Mac** :
 `sudo launchctl disable system/dev.matter-home-desktop.server` (`enable` pour annuler).
 
-**Avant toute commande qui touche aux données** (`import`, `create-account`, `init`), arrêtez le
-service : ces commandes refusent de tourner tant qu'un serveur tient les données.
+**Avant `import` ou `init`**, arrêtez le service : ces commandes refusent de tourner tant qu'un
+serveur tient les données. `create-account` fonctionne service lancé (le compte est pris en compte
+tout de suite ; avec `--replace`, les sessions ouvertes sont fermées : redémarrez ensuite le
+service). Lancez toutes ces commandes sous votre compte, **sans `sudo`** : elles refusent de
+tourner en root, pour ne pas laisser dans vos données des fichiers que le service ne pourrait
+plus lire.
 
 ## Ça ne démarre pas
 
 Regardez la fin du journal : `tail -30 ~/Library/Logs/MatterHomeServer/server.log`.
 
-- **« aucune identité Matter … »** (le service redémarre toutes les 30 secondes) : le dossier de
-  données n'a pas encore d'identité. Reprenez vos données (`import`) ou faites `init`, avec **le
+- **« aucune identité Matter … »** (le service redémarre toutes les 30 secondes ; le serveur ne
+  crée jamais d'identité tout seul) : le dossier de données n'a pas encore d'identité. Reprenez vos données (`import`) ou faites `init`, avec **le
   même compte utilisateur** que l'installation, puis relancez.
 - **« un autre serveur Matter Home utilise déjà ces données »** : une autre instance tourne (un
   serveur lancé à la main dans un Terminal, ou la v0.2.1 ?). Arrêtez-la : jamais deux instances.
@@ -201,8 +212,14 @@ D'autres cas : [depannage.md](depannage.md).
 
 ## Mettre à jour
 
-Téléchargez la nouvelle archive, ouvrez-la, et relancez `./install.sh` depuis son dossier : le
-service est arrêté, remplacé puis relancé. Vos données ne sont pas touchées.
+Téléchargez la nouvelle archive, ouvrez-la, retirez la quarantaine (`xattr -dr
+com.apple.quarantine .`) et relancez `./install.sh` depuis son dossier : le service est arrêté,
+remplacé puis relancé. Il reprend le dossier de données du service déjà installé (jamais un
+autre) ; vos données ne sont pas touchées.
+
+`install.sh` refuse de continuer si l'application « Matter Home Desktop » est ouverte sur ce Mac :
+si c'est la v0.2.1, quittez-la (jamais deux instances avec la même identité) ; si c'est le client
+de la version 1, ajoutez `--ignorer-application-ouverte`.
 
 ## Désinstaller
 

@@ -1,6 +1,7 @@
 //! Serveur Matter Home, sans fenêtre.
 //!
-//! - `matter-home-server`                : mode normal (réseau réel)
+//! - `matter-home-server`                : mode normal (réseau réel) ; refuse de démarrer sans
+//!   identité Matter (jamais de nouvelle fabric par accident)
 //! - `matter-home-server --demo`         : appareils simulés, dossier de données temporaire
 //! - `matter-home-server --discover`     : diagnostic en ligne de commande (mDNS)
 //! - `matter-home-server create-account` : crée le compte unique (mot de passe demandé sans écho)
@@ -35,7 +36,9 @@ matter-home-server — serveur Matter Home (sans fenêtre)
 
 Usage :
   matter-home-server [--listen ADRESSE:PORT] [--data-dir DOSSIER]
-                                 lance le serveur (réseau réel)
+                                 lance le serveur (réseau réel). Refuse de démarrer si le dossier
+                                 de données n'a pas d'identité Matter (code 78) : il n'en crée
+                                 jamais une tout seul, voir « init » et « import »
   matter-home-server --demo      lance le serveur avec des appareils simulés, dans un
                                  dossier temporaire (écoute sur 127.0.0.1:8443)
   matter-home-server --discover  liste les nœuds Matter vus en mDNS puis quitte
@@ -75,13 +78,13 @@ Usage :
 
 Options : --listen accepte « adresse:port » ou un simple port (défaut : 0.0.0.0:8443, ou
 127.0.0.1:8443 avec --demo). --data-dir remplace le dossier de données standard (un chemin
-relatif est rendu absolu). --require-identity (service) : refuse de démarrer si le dossier de
-données n'a pas d'identité Matter, au lieu d'en créer une nouvelle ; jamais avec --demo.
---log-file CHEMIN écrit le journal dans ce fichier (0600, rotation à 5 Mo, 3 anciens fichiers)
+relatif est rendu absolu). --require-identity est accepté sans effet (c'est le comportement
+par défaut hors --demo). import, init, create-account et le serveur refusent de tourner en
+root (sudo). --log-file CHEMIN écrit le journal dans ce fichier (0600, rotation à 5 Mo, 3 anciens fichiers)
 au lieu de la sortie d'erreur.
 
 Codes de sortie : 0 arrêt demandé, 1 erreur, 2 usage, 75 import à appliquer (relancer),
-78 identité Matter absente avec --require-identity (importez ou « init »).
+78 identité Matter absente (importez ou « init »).
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
 /// Sortie après un import de sauvegarde par l'API (EX_TEMPFAIL) : non nul, pour qu'un
@@ -126,12 +129,39 @@ fn main() -> ExitCode {
     // on journalise puis on quitte, le superviseur relancera.
     install_panic_hook();
     match args.first().map(String::as_str) {
-        Some("create-account") => run_create_account(&args[1..]),
+        Some("create-account") => refuse_root("« create-account »")
+            .map_or_else(|c| c, |()| run_create_account(&args[1..])),
         Some("fingerprint") => run_fingerprint(&args[1..]),
-        Some("init") => run_init(&args[1..]),
-        Some("import") => run_import(&args[1..]),
+        Some("init") => refuse_root("« init »").map_or_else(|c| c, |()| run_init(&args[1..])),
+        Some("import") => refuse_root("« import »").map_or_else(|c| c, |()| run_import(&args[1..])),
         _ => run_server(&args),
     }
+}
+
+extern "C" {
+    fn geteuid() -> u32;
+}
+
+/// Le processus tourne en root (ou le simule, pour les tests : `MATTER_HOME_TEST_FAKE_ROOT`).
+fn running_as_root() -> bool {
+    // SAFETY : `geteuid` n'a ni argument ni effet de bord.
+    let real = unsafe { geteuid() == 0 };
+    real || std::env::var_os("MATTER_HOME_TEST_FAKE_ROOT").is_some()
+}
+
+/// `import`, `init`, `create-account` et le serveur écrivent dans le dossier de données de
+/// l'utilisateur : lancés en root (sudo), ils y laisseraient des fichiers qui lui appartiennent,
+/// illisibles ensuite par le service (qui tourne sous le compte de l'utilisateur).
+fn refuse_root(what: &str) -> Result<(), ExitCode> {
+    if !running_as_root() {
+        return Ok(());
+    }
+    eprintln!(
+        "Refus : {what} ne se lance pas en root ni avec sudo. Il écrirait dans le dossier de \
+         données des fichiers qui appartiennent à root, que le service (qui tourne sous votre \
+         compte) ne pourrait plus lire. Relancez la même commande sous votre compte, sans sudo."
+    );
+    Err(ExitCode::FAILURE)
 }
 
 fn usage_error(message: &str) -> ExitCode {
@@ -181,7 +211,9 @@ fn run_server(args: &[String]) -> ExitCode {
     let mut args = args.to_vec();
     let demo = take_flag(&mut args, "--demo");
     let discover_only = take_flag(&mut args, "--discover");
-    let require_identity = take_flag(&mut args, "--require-identity");
+    // Accepté sans effet : refuser de créer une identité est désormais le comportement par défaut
+    // (les plist de la 1.0.0-rc le passaient encore).
+    let _legacy_require_identity = take_flag(&mut args, "--require-identity");
     let data_dir_arg = match take_value(&mut args, "--data-dir") {
         Ok(Some(v)) => match parse_data_dir(&v) {
             Ok(dir) => Some(dir),
@@ -200,8 +232,10 @@ fn run_server(args: &[String]) -> ExitCode {
     if discover_only {
         return discover();
     }
-    if demo && require_identity {
-        return usage_error("--require-identity n'a pas de sens avec --demo");
+    if !demo {
+        if let Err(code) = refuse_root("le serveur") {
+            return code;
+        }
     }
     let listen = match listen_arg.as_deref().map(parse_listen) {
         Some(Ok(addr)) => addr,
@@ -254,7 +288,8 @@ fn run_server(args: &[String]) -> ExitCode {
         }
     };
 
-    if require_identity {
+    // Hors démo, jamais de nouvelle identité Matter par accident : seule « init » en crée une.
+    if !demo {
         if let Err(code) = require_identity_in(&data_dir) {
             return code;
         }
@@ -266,9 +301,9 @@ fn run_server(args: &[String]) -> ExitCode {
     code
 }
 
-/// `--require-identity` : le dossier de données doit déjà porter une identité Matter lisible.
-/// Sans cette option, le serveur en créerait une nouvelle au premier démarrage ; un service ne
-/// doit jamais le faire par accident (mauvais dossier, `HOME` différent, données déplacées).
+/// Hors démo, le dossier de données doit déjà porter une identité Matter lisible : le serveur n'en
+/// crée jamais une nouvelle au premier démarrage (mauvais dossier, `HOME` différent, données
+/// déplacées : tous les appareils appairés seraient oubliés). Seule « init » en crée une.
 fn require_identity_in(data_dir: &std::path::Path) -> Result<(), ExitCode> {
     match backup::identity_in_dir(data_dir) {
         Ok(Some(identity)) => {
@@ -281,7 +316,7 @@ fn require_identity_in(data_dir: &std::path::Path) -> Result<(), ExitCode> {
         }
         Ok(None) => {
             log::error!(
-                "aucune identité Matter dans {} (--require-identity) : le serveur ne démarre pas, \
+                "aucune identité Matter dans {} : le serveur ne démarre pas, \
                  pour ne pas créer une nouvelle fabric. Importez votre sauvegarde avec \
                  « matter-home-server import FICHIER.matterhome », ou, pour une installation \
                  neuve sans sauvegarde, « matter-home-server init » (voir docs/installation-serveur.md).",
@@ -571,15 +606,18 @@ fn run_import(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let Some(file) = file else {
+        // Pas de reprise d'abord : après une coupure entre les deux renommages, « abandonner »
+        // remet les anciennes données en place au lieu de terminer l'import.
+        persistence::migrate_legacy_data_dir();
+        return run_abandon(&persistence::data_dir());
+    };
     let data_dir = match prologue(false) {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("{e:#}");
             return ExitCode::FAILURE;
         }
-    };
-    let Some(file) = file else {
-        return run_abandon(&data_dir);
     };
     match backup::pending_kind(&data_dir, &file) {
         Ok(backup::PendingKind::None) => {}
@@ -750,6 +788,16 @@ fn run_init(args: &[String]) -> ExitCode {
         }
     };
     let state_path = data_dir.join(persistence::FILE_NAME);
+    if backup::pending_path(&data_dir).exists() || backup::recovery_needed(&data_dir) {
+        eprintln!(
+            "Un import est en attente ou interrompu dans {} : « init » ne crée pas de nouvelle \
+             identité par-dessus. Relancez « matter-home-server import FICHIER » (ou démarrez le \
+             serveur) pour le terminer, ou renoncez-y avec « matter-home-server import \
+             --abandon ».",
+            data_dir.display()
+        );
+        return ExitCode::FAILURE;
+    }
     if state_path.exists() {
         eprintln!(
             "Une identité Matter existe déjà dans {} : « init » ne fait rien. (Pour reprendre \

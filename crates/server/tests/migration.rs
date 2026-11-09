@@ -884,7 +884,6 @@ fn init_and_require_identity_never_create_a_fabric_by_accident() {
     let r = run_raw(
         &base,
         &[
-            "--require-identity",
             "--listen",
             "127.0.0.1:0",
             "--data-dir",
@@ -903,9 +902,29 @@ fn init_and_require_identity_never_create_a_fabric_by_accident() {
     assert_eq!(mode(log.parent().unwrap()), 0o700);
     assert!(!data.join("controller.json").exists(), "rien n'a été créé");
 
-    // `--require-identity` avec `--demo` n'a pas de sens.
-    let r = run_raw(&base, &["--demo", "--require-identity"]);
-    assert_eq!(r.code, Some(2), "{}", r.text);
+    // Le même refus sans option (le comportement par défaut), et avec l'ancienne option, qui
+    // reste acceptée sans effet.
+    for extra in [&[][..], &["--require-identity"][..]] {
+        let mut args = vec![
+            "--listen",
+            "127.0.0.1:0",
+            "--data-dir",
+            data.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let r = run_raw(&base, &args);
+        assert_eq!(r.code, Some(78), "{extra:?} : {}", r.text);
+    }
+    assert!(!data.exists(), "rien n'a été créé");
+
+    // Un import en attente interdit `init`.
+    std::fs::create_dir_all(&data).unwrap();
+    backup::stage_import_text(&data, &fx.bundle).unwrap();
+    let r = run(&data, &["init"], Stdio::null());
+    assert_eq!(r.code, Some(1), "{}", r.text);
+    assert!(r.text.contains("import est en attente"), "{}", r.text);
+    assert!(!data.join("controller.json").exists());
+    std::fs::remove_dir_all(&data).unwrap();
 
     // Un voisin « avant-import » avec une identité interdit `init`.
     let neighbour = data.with_file_name("donnees.avant-import-20261101-120000");
@@ -956,4 +975,53 @@ fn the_server_announces_its_version() {
         r.text.trim(),
         format!("matter-home-server {}", env!("CARGO_PKG_VERSION"))
     );
+}
+
+/// Jamais en root : `import`, `init`, `create-account` et le serveur refusent (root simulé par
+/// la variable d'essai), sans toucher à rien ; `fingerprint` et `--version` restent possibles.
+#[test]
+fn write_commands_and_the_server_refuse_to_run_as_root() {
+    let fx = fixture();
+    let (base, data) = workspace("migration-root");
+    let file = base.join("sauvegarde.matterhome");
+    std::fs::write(&file, &fx.bundle).unwrap();
+    let as_root = |args: &[&str]| {
+        let out = Command::new(BIN)
+            .args(args)
+            .arg("--data-dir")
+            .arg(&data)
+            .env("HOME", base.join("home"))
+            .env("MATTER_HOME_TEST_FAKE_ROOT", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    for args in [
+        vec!["import", file.to_str().unwrap(), "--yes"],
+        vec!["import", "--abandon"],
+        vec!["init"],
+        vec!["create-account", "--username", "x", "--password-stdin"],
+        vec!["--listen", "127.0.0.1:0"],
+    ] {
+        let (code, text) = as_root(&args);
+        assert_eq!(code, Some(1), "{args:?} : {text}");
+        assert!(
+            text.contains("root") && text.contains("sans sudo"),
+            "{args:?} : {text}"
+        );
+    }
+    assert!(
+        !data.exists() && siblings(&data).is_empty(),
+        "rien n'a été créé"
+    );
+    // La démo n'écrit pas dans le dossier de l'utilisateur : pas concernée (non lancée ici).
+    std::fs::remove_dir_all(base).unwrap();
 }

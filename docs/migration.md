@@ -22,10 +22,14 @@ Pour installer le serveur lui-même (service qui démarre avec le Mac), voir
    venez d'exporter.
 3. **Copier le fichier** sur le Mac du serveur (AirDrop, clé USB), dans un endroit que vous
    supprimerez ensuite.
-4. **Créer le compte** sur le Mac du serveur, dans le Terminal :
-   `matter-home-server create-account --username NOM`
+4. **Créer le compte** sur le Mac du serveur, dans le Terminal, depuis le dossier de l'archive
+   décompressée (là où se trouve le programme, après `xattr -dr com.apple.quarantine .`, voir
+   [installation-serveur.md](installation-serveur.md)) :
+   `./matter-home-server create-account --username NOM`
+   (une fois le service installé, le programme est aussi dans `/usr/local/bin` : la commande s'écrit
+   alors sans `./`)
 5. **Importer** (le serveur, ou le service, ne doit pas tourner) :
-   `matter-home-server import ~/chemin/matter-home-2026-11-09.matterhome`
+   `./matter-home-server import ~/chemin/matter-home-2026-11-09.matterhome`
    La commande vérifie le fichier, affiche le résumé (appareils, pièces, règles, date), **l'identité
    du fichier et celle du dossier** (numéro de fabric et liste des appareils), rappelle d'arrêter la
    v0.2.1 partout et demande confirmation (`--yes` pour ne pas la demander). Elle applique l'import
@@ -43,12 +47,12 @@ celui de l'utilisateur qui l'a installé : lancez ces commandes avec ce même ut
 ## Installation neuve, sans sauvegarde : `init`
 
 Si vous partez de zéro (aucune v0.2.1, aucun appareil à reprendre), le serveur ne crée **jamais**
-tout seul une identité Matter : le service est lancé avec `--require-identity` et refuse de
+tout seul une identité Matter (hors `--demo`) : il refuse de
 démarrer (code 78) tant que le dossier n'en a pas. Créez-la une fois, explicitement :
 
 ```bash
-matter-home-server init
-matter-home-server create-account --username NOM
+./matter-home-server init
+./matter-home-server create-account --username NOM
 ```
 
 `init` refuse de rien faire si une identité existe déjà, si des données (plan, règles, historique)
@@ -83,7 +87,15 @@ dans ces cas, créer une nouvelle fabric ferait oublier tous vos appareils.
   retire la sauvegarde en attente (`import-en-attente.matterhome`) **et** met de côté le dossier
   déjà préparé « …import-nouveau » sous le nom « …import-abandonne-<date> » (il contient une copie
   des clés de la sauvegarde : supprimez-le quand vous n'en avez plus besoin). Les données actuelles
-  ne sont pas touchées. Supprimer à la main le fichier en attente a le même effet au lancement
+  ne sont pas touchées. **Si l'import avait été coupé en plein échange** (le dossier de données
+  absent, ou recréé sans identité, alors que « …import-nouveau » existe), `--abandon` remet les
+  **anciennes** données en place depuis le dossier « …avant-import-<date> » le plus récent et le
+  dit (« Import coupé en plein échange : les anciennes données … sont remises en place ») ; s'il n'y
+  a aucun dossier « …avant-import-… », il refuse et explique pourquoi plutôt que de prétendre avoir
+  abandonné.
+- **Pas en root** : `import`, `init`, `create-account` et le serveur refusent de tourner avec
+  `sudo` ou en root (ils laisseraient dans vos données des fichiers que le service ne pourrait
+  plus lire). Lancez-les sous votre compte. Supprimer à la main le fichier en attente a le même effet au lancement
   suivant (le dossier préparé est alors aussi mis de côté, jamais effacé).
 - **Serveur qui ne démarre plus** après un import demandé par l'API (« n'a pas pu être appliqué après
   3 essais ») : corrigez la cause (espace disque, droits) ; pour renoncer à l'import, lancez

@@ -13,8 +13,10 @@ Contenu de cette archive
   LISEZMOI.txt                                ce fichier
 
 Installer, en bref (dans l'application Terminal, sur le Mac du serveur)
-  1. Décompresser l'archive (double-clic), puis :
+  1. Décompresser l'archive (double-clic), puis, TOUJOURS en premier, avant de lancer quoi que
+     ce soit (macOS bloque les programmes téléchargés) :
        cd ~/Downloads/matter-home-server-*-macos
+       xattr -dr com.apple.quarantine .
   2. Reprendre vos données de la v0.2.1 (ou, installation neuve : ./matter-home-server init) :
        ./matter-home-server import ~/chemin/matter-home-AAAA-MM-JJ.matterhome
        ./matter-home-server create-account --username NOM
@@ -22,6 +24,9 @@ Installer, en bref (dans l'application Terminal, sur le Mac du serveur)
        ./install.sh
      (essai sans rien modifier : ./install.sh --a-blanc)
   4. Lancer vous-même les commandes de veille et de pare-feu que le script affiche.
+
+Réglages Confidentialité et sécurité → Réseau local : activez le client (macOS le demande à son
+premier lancement) et regardez si « matter-home-server » est dans la liste.
 
 Un seul serveur à la fois : ne lancez jamais deux serveurs, ni la v0.2.1, avec la même identité
 Matter (leurs abonnements se chassent, les règles s'exécutent deux fois).

@@ -26,6 +26,8 @@ PKG="$(echo "$WORK"/archive/matter-home-server-*-macos)"
 BIN="$PKG/matter-home-server"
 
 PREFIX="$WORK/racine"
+# Jamais le vrai pgrep : l'état réel du Mac ne doit pas décider du résultat de l'essai.
+export MH_PGREP=/usr/bin/false
 export HOME="$PREFIX/home"
 mkdir -p "$HOME"
 DATA="$HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
@@ -82,23 +84,49 @@ PB=/usr/libexec/PlistBuddy
 [ "$($PB -c 'Print :ProgramArguments:0' "$PLIST")" = "/usr/local/bin/matter-home-server" ] || fail "binaire"
 [ "$($PB -c 'Print :ProgramArguments:1' "$PLIST")" = "--data-dir" ] || fail "--data-dir"
 [ "$($PB -c 'Print :ProgramArguments:2' "$PLIST")" = "$DATA" ] || fail "dossier de données du plist"
-[ "$($PB -c 'Print :ProgramArguments:3' "$PLIST")" = "--require-identity" ] || fail "--require-identity"
-[ "$($PB -c 'Print :ProgramArguments:4' "$PLIST")" = "--log-file" ] || fail "--log-file"
+[ "$($PB -c 'Print :ProgramArguments:3' "$PLIST")" = "--log-file" ] || fail "--log-file"
 [ "$(mode "$LOGS")" = "700" ] || fail "droits du dossier des journaux"
 [ "$(mode "$LOGS/server.log")" = "600" ] || fail "droits de server.log"
 [ "$(mode "$LOGS/launchd.log")" = "600" ] || fail "droits de launchd.log"
 [ ! -e "$DATA" ] || fail "le dossier de données ne doit jamais être créé à vide"
-ok "binaire, plist (UserName, KeepAlive, require-identity), journaux restreints ; données non créées"
+ok "binaire, plist (UserName, KeepAlive), journaux restreints ; données non créées"
 
 echo "Le service avec ses vrais arguments, sur un dossier factice, refuse de démarrer sans identité"
 set +e
-"$INSTALLED" --data-dir "$DATA" --require-identity --listen 127.0.0.1:0 --log-file "$LOGS/server.log"
+"$INSTALLED" --data-dir "$DATA" --listen 127.0.0.1:0 --log-file "$LOGS/server.log"
 CODE=$?
 set -e
 [ "$CODE" = "78" ] || fail "code de sortie $CODE au lieu de 78"
 grep -q "aucune identité Matter" "$LOGS/server.log" || fail "message absent du journal"
 [ ! -e "$DATA/controller.json" ] || fail "une identité a été créée"
 ok "code 78, rien créé"
+
+echo "Application ouverte : refusée (faux pgrep)"
+FAKE_PGREP="$WORK/pgrep-ouvert"
+printf '#!/bin/sh\necho 4242\nexit 0\n' > "$FAKE_PGREP"
+chmod +x "$FAKE_PGREP"
+if OUT="$(MH_PGREP="$FAKE_PGREP" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"; then
+  fail "l'application ouverte doit faire refuser l'installation"
+fi
+contains "$OUT" "v0.2.1"
+contains "$OUT" "QUITTÉE"
+MH_PGREP="$FAKE_PGREP" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --ignorer-application-ouverte >/dev/null 2>&1 \
+  || fail "--ignorer-application-ouverte"
+ok "refus clair, contournement explicite"
+
+echo "Mise à jour : le dossier du service installé est repris, jamais un autre"
+OTHER_HOME="$PREFIX/autre-home"
+mkdir -p "$OTHER_HOME"
+OUT="$(HOME="$OTHER_HOME" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"
+contains "$OUT" "$DATA"
+contains "$OUT" "repris du service déjà installé"
+case "$OUT" in *"$OTHER_HOME/Library/Application Support"*) fail "le service aurait changé de dossier" ;; esac
+if HOME="$OTHER_HOME" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --donnees "$OTHER_HOME/ailleurs" >/dev/null 2>&1; then
+  fail "--donnees vers un autre dossier doit être refusé pour un service installé"
+fi
+HOME="$OTHER_HOME" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --donnees "$DATA" >/dev/null 2>&1 \
+  || fail "--donnees identique à celui du service doit passer"
+ok "dossier du service conservé, changement refusé"
 
 echo "Réinstallation avec une identité (mise à jour)"
 "$INSTALLED" init --data-dir "$DATA" >/dev/null

@@ -35,12 +35,18 @@ réappairer un seul appareil : [docs/migration.md](docs/migration.md). Installat
   quand c'est possible sans droits et affichent les commandes à lancer vous-même. Modes
   `--a-blanc` et `--prefixe` pour les essayer sans rien modifier. `uninstall.sh` ne supprime
   jamais les données sauf `--supprimer-donnees`, avec sa propre confirmation.
-- Serveur : `--require-identity` (refuse de démarrer sans identité Matter, code 78, au lieu d'en
-  créer une nouvelle ; mis dans le service), sous-commande `init` (installation neuve sans
-  sauvegarde, explicite), `--log-file` (journal en 0600 avec rotation à 5 Mo), `--version` (aussi
+- Serveur : refuse de démarrer sans identité Matter (code 78, hors `--demo`) au lieu d'en créer
+  une nouvelle par accident ; `--require-identity` reste accepté sans effet. Sous-commande `init`
+  (installation neuve sans sauvegarde, seule façon de créer une identité). `import`, `init`,
+  `create-account` et le serveur refusent de tourner en root, `--log-file` (journal en 0600 avec rotation à 5 Mo), `--version` (aussi
   sur le client).
+- Import par l'API : une sauvegarde d'une autre identité (fabric) que celle du serveur est refusée
+  (`identity_mismatch`, 409) sans `replace_identity=1` ; le client le dit clairement et demande une
+  confirmation séparée. `install.sh` reprend le dossier de données du service installé, et
+  refuse de continuer si l'application « Matter Home Desktop » (v0.2.1) est ouverte.
 - `import --abandon` : renoncer à un import en attente ou interrompu ; `import --replace-identity` :
-  seul moyen de remplacer une identité (fabric) différente de celle du dossier.
+  seul moyen de remplacer une identité (fabric) différente de celle du dossier. Après une coupure
+  en plein échange, `--abandon` remet les anciennes données en place.
 - **Serveur : API réseau sécurisée** (étape 3 du découpage client-serveur). HTTPS (certificat
   auto-signé créé au premier lancement, empreinte SHA-256 affichée et journalisée) et
   WebSocket pour le temps réel ; compte unique créé en ligne de commande

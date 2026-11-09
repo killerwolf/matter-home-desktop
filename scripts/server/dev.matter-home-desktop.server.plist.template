@@ -12,8 +12,8 @@
   <string>__LABEL__</string>
 
   <!-- Le dossier de données est donné explicitement : le service ne dépend pas de HOME.
-       L'option require-identity évite toute nouvelle identité Matter par accident (code 78
-       sans identité : « matter-home-server import » ou « init » d'abord).
+       Le serveur ne crée jamais une nouvelle identité Matter par accident : sans identité dans
+       ce dossier il sort avec le code 78 (« matter-home-server import » ou « init » d'abord).
        L'option log-file écrit un journal à droits restreints, avec rotation (5 Mo, 3 anciens
        fichiers). -->
   <key>ProgramArguments</key>
@@ -21,7 +21,6 @@
     <string>__BINARY__</string>
     <string>--data-dir</string>
     <string>__DATA_DIR__</string>
-    <string>--require-identity</string>
     <string>--log-file</string>
     <string>__LOG_FILE__</string>
   </array>

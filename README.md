@@ -79,7 +79,8 @@ les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md). Deux fichiers
 sur Intel, 11 sur Apple Silicon), `install.sh`, `uninstall.sh` et un fichier de service launchd.
 `install.sh` l'installe comme service qui démarre avec le Mac, relancé s'il plante, sous votre
 compte (jamais root). Il ne touche jamais seul à la veille ni au pare-feu : il affiche les
-commandes à lancer. **Guide pas à pas, pour non-développeurs :
+commandes à lancer. Avant de lancer quoi que ce soit, retirez la quarantaine :
+`xattr -dr com.apple.quarantine <dossier de l'archive>`. **Guide pas à pas, pour non-développeurs :
 [docs/installation-serveur.md](docs/installation-serveur.md).**
 
 Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
@@ -95,7 +96,10 @@ Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
 (environ 13 Mo). Ouvrez-le et glissez **Matter Home Desktop** dans **Applications**. Au
 lancement, saisissez l'adresse du serveur, l'identifiant et le mot de passe ; la première fois,
 le client affiche l'empreinte du certificat du serveur (à comparer avec `matter-home-server
-fingerprint`) puis ne fait confiance qu'à lui. Le client n'a besoin de voir que le serveur ;
+fingerprint`) puis ne fait confiance qu'à lui. Au premier lancement, macOS demande l'accès au
+**réseau local** : acceptez (Réglages Système → Confidentialité et sécurité → Réseau local),
+sans quoi le client ne voit rien. Le même réglage concerne le serveur : voir le guide
+d'installation. Le client n'a besoin de voir que le serveur ;
 c'est le serveur qui doit être sur le même réseau local que vos HomePod (ou autres routeurs de
 bordure Thread).
 
