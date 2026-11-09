@@ -364,17 +364,48 @@ pub fn acquire_instance_lock(path: &Path) -> Result<std::fs::File> {
         .open(path)
         .with_context(|| format!("ouverture de {}", path.display()))?;
     match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => bail!(
-            "un autre serveur Matter Home utilise déjà ces \
-             données (verrou {}). Arrêtez-le avant de lancer celui-ci. (L'application de bureau v0.2 ne prend pas ce verrou : \
-             ne la lancez pas en même temps.)",
-            path.display()
-        ),
+        Ok(()) => {
+            // Le numéro du processus, pour que celui qui trouve le verrou pris sache qui le tient.
+            // Un échec d'écriture n'empêche rien : c'est une information, pas le verrou.
+            use std::io::Write;
+            let _ = file.set_len(0);
+            let _ = (&file).write_all(format!("{}\n", std::process::id()).as_bytes());
+            Ok(file)
+        }
+        Err(TryLockError::WouldBlock) => Err(LockHeld {
+            path: path.to_path_buf(),
+        }
+        .into()),
         Err(TryLockError::Error(e)) => {
             Err(e).with_context(|| format!("verrou de {}", path.display()))
         }
     }
+}
+
+/// Le verrou d'instance est tenu par un autre processus.
+#[derive(Debug, Clone)]
+pub struct LockHeld {
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for LockHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "un autre serveur Matter Home utilise déjà ces \
+             données (verrou {}). Arrêtez-le avant de lancer celui-ci. (L'application de bureau v0.2 ne prend pas ce verrou : \
+             ne la lancez pas en même temps.)",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for LockHeld {}
+
+/// Numéro du processus qui tient le verrou `path`, s'il l'a écrit (le serveur et l'application
+/// de la barre de menus le font ; une version plus ancienne non).
+pub fn lock_holder_pid(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 pub fn state_path() -> PathBuf {
@@ -609,6 +640,9 @@ mod tests {
         let first = acquire_instance_lock(&path).unwrap();
         let err = acquire_instance_lock(&path).unwrap_err().to_string();
         assert!(err.contains("utilise déjà"), "{err}");
+        let held = acquire_instance_lock(&path).unwrap_err();
+        assert!(held.downcast_ref::<LockHeld>().is_some());
+        assert_eq!(lock_holder_pid(&path), Some(std::process::id()));
         // Le verrou tombe avec le fichier (arrêt ou plantage du premier serveur).
         drop(first);
         assert!(acquire_instance_lock(&path).is_ok());

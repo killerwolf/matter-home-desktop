@@ -162,19 +162,31 @@ impl Server {
         &self.hub
     }
 
+    /// Une erreur fatale ou un import à appliquer sont-ils survenus ? (Sans attendre.)
+    pub fn poll(&self) -> Option<Outcome> {
+        if self.fatal.load(Ordering::Relaxed) {
+            return Some(Outcome::Fatal);
+        }
+        if self.hub.exit_reason() == Some(ExitReason::ImportStaged) {
+            return Some(Outcome::ImportStaged);
+        }
+        None
+    }
+
     /// Attend un arrêt demandé (`stop` devient vrai), une erreur fatale ou un import à appliquer.
     pub fn wait(&self, stop: &AtomicBool) -> Outcome {
         loop {
             if stop.load(Ordering::Relaxed) {
                 return Outcome::Stopped;
             }
-            if self.fatal.load(Ordering::Relaxed) {
-                return Outcome::Fatal;
-            }
-            if self.hub.exit_reason() == Some(ExitReason::ImportStaged) {
-                // Laisse partir la réponse de l'API avant de couper les connexions.
-                std::thread::sleep(Duration::from_millis(500));
-                return Outcome::ImportStaged;
+            match self.poll() {
+                Some(Outcome::ImportStaged) => {
+                    // Laisse partir la réponse de l'API avant de couper les connexions.
+                    std::thread::sleep(Duration::from_millis(500));
+                    return Outcome::ImportStaged;
+                }
+                Some(other) => return other,
+                None => {}
             }
             std::thread::sleep(Duration::from_millis(100));
         }

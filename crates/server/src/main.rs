@@ -87,12 +87,9 @@ Codes de sortie : 0 arrêt demandé, 1 erreur, 2 usage, 75 import à appliquer (
 78 identité Matter absente (importez ou « init »).
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
-/// Sortie après un import de sauvegarde par l'API (EX_TEMPFAIL) : non nul, pour qu'un
-/// superviseur configuré pour ne relancer que les échecs relance aussi le serveur.
-const EXIT_IMPORT_STAGED: u8 = 75;
-
-/// `--require-identity` sans identité Matter dans le dossier de données (EX_CONFIG).
-const EXIT_NO_IDENTITY: u8 = 78;
+use matter_home_server::setup::{
+    self, EXIT_IMPORT_STAGED, EXIT_NO_IDENTITY, OTHER_INSTANCES_REMINDER,
+};
 
 const DEFAULT_PORT: u16 = 8443;
 
@@ -334,25 +331,8 @@ fn require_identity_in(data_dir: &std::path::Path) -> Result<(), ExitCode> {
     }
 }
 
-/// Ce que toute commande qui touche au dossier de données fait d'abord, verrou d'instance pris :
-/// reprendre un import interrompu entre ses deux renommages (le dossier de données est alors
-/// absent, ou recréé sans identité) avant la migration de l'ancien dossier, qui pourrait
-/// sinon s'installer à sa place, et avant tout chargement ou toute création de compte qui
-/// créerait une identité. `apply` : applique aussi l'import mis en attente par l'API (le
-/// serveur seulement ; la sous-commande `import` refuse un import en attente).
-/// Rend le dossier de données à utiliser.
 fn prologue(apply: bool) -> anyhow::Result<PathBuf> {
-    let mut notes: Vec<String> = Vec::new();
-    notes.extend(backup::recover(&persistence::current_data_dir())?);
-    // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
-    notes.extend(persistence::migrate_legacy_data_dir());
-    if apply {
-        notes.extend(backup::apply_pending(&persistence::data_dir())?);
-    }
-    for m in &notes {
-        log::warn!("{m}");
-    }
-    Ok(persistence::data_dir())
+    setup::prologue(apply)
 }
 
 fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
@@ -572,12 +552,6 @@ fn read_password(from_stdin: bool) -> Result<String, String> {
     Ok(first)
 }
 
-/// Rappel affiché avant d'appliquer un import, et repris dans `docs/migration.md`.
-const OTHER_INSTANCES_REMINDER: &str = "Rappel : arrêtez la v0.2.1 sur TOUS vos Mac, y compris \
-celui-ci (elle ne prend pas le verrou d'instance : rien ne l'empêche de tourner en même temps). \
-Deux instances avec la même identité Matter se chassent (abonnements, règles exécutées deux \
-fois). Partez du Mac qui détient les données les plus récentes.";
-
 /// `import FICHIER [--yes] [--replace-identity] [--data-dir DOSSIER]` et
 /// `import --abandon [--data-dir DOSSIER]` : voir `docs/migration.md`.
 fn run_import(args: &[String]) -> ExitCode {
@@ -697,44 +671,37 @@ fn check_identities(
     file: &std::path::Path,
     replace_identity: bool,
 ) -> Result<(), ExitCode> {
-    let incoming = match backup::identity_in_file(file) {
-        Ok(i) => i,
+    use setup::IdentityState;
+    let comparison = match setup::compare_identities(data_dir, file) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("{e:#}");
             return Err(ExitCode::FAILURE);
         }
     };
-    println!("Identité de la sauvegarde : {}", incoming.describe());
-    let differs = match backup::identity_in_dir(data_dir) {
-        Ok(None) => {
-            println!("Identité actuelle du dossier : aucune (rien n'est remplacé).");
-            false
+    println!(
+        "Identité de la sauvegarde : {}",
+        comparison.incoming.describe()
+    );
+    match &comparison.current {
+        IdentityState::Missing => {
+            println!("Identité actuelle du dossier : aucune (rien n'est remplacé).")
         }
-        Ok(Some(current)) => {
+        IdentityState::Present(current) => {
             println!("Identité actuelle du dossier : {}", current.describe());
-            if current.fabric_id == incoming.fabric_id {
+            if !comparison.differs {
                 println!("Même fabric : les appareils appairés restent reconnus.");
-                false
-            } else {
-                true
             }
         }
-        Err(e) => {
-            println!("Identité actuelle du dossier : illisible ({e:#}).");
-            true
+        IdentityState::Unreadable(e) => {
+            println!("Identité actuelle du dossier : illisible ({e}).")
         }
-    };
-    if differs && !replace_identity {
-        eprintln!(
-            "Refusé : la fabric de la sauvegarde est différente de celle de ce dossier. Importer \
-             remplacerait l'identité Matter : les appareils appairés avec l'identité actuelle ne \
-             seraient plus reconnus (il faudrait les réappairer). Rien n'a été modifié. Si c'est \
-             bien voulu (l'ancien dossier est conservé dans « …avant-import-… »), relancez avec \
-             --replace-identity (--yes ne suffit pas)."
-        );
+    }
+    if let Err(message) = setup::check_replace_allowed(&comparison, replace_identity) {
+        eprintln!("{message}");
         return Err(ExitCode::FAILURE);
     }
-    if differs {
+    if comparison.differs {
         println!("--replace-identity : l'identité actuelle sera remplacée par celle du fichier.");
     }
     Ok(())
@@ -787,37 +754,7 @@ fn run_init(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let state_path = data_dir.join(persistence::FILE_NAME);
-    if backup::pending_path(&data_dir).exists() || backup::recovery_needed(&data_dir) {
-        eprintln!(
-            "Un import est en attente ou interrompu dans {} : « init » ne crée pas de nouvelle \
-             identité par-dessus. Relancez « matter-home-server import FICHIER » (ou démarrez le \
-             serveur) pour le terminer, ou renoncez-y avec « matter-home-server import \
-             --abandon ».",
-            data_dir.display()
-        );
-        return ExitCode::FAILURE;
-    }
-    if state_path.exists() {
-        eprintln!(
-            "Une identité Matter existe déjà dans {} : « init » ne fait rien. (Pour reprendre \
-             d'autres données, utilisez « import ».)",
-            data_dir.display()
-        );
-        return ExitCode::FAILURE;
-    }
-    let result = persistence::check_fresh_start(&data_dir)
-        .and_then(|()| persistence::ensure_private_dir(&data_dir))
-        .and_then(|()| {
-            let state = persistence::StoredState {
-                version: 1,
-                identity: matter::certs::generate_identity()?,
-                nodes: Vec::new(),
-            };
-            persistence::save(&state_path, &state)?;
-            Ok(state.identity.fabric_id)
-        });
-    match result {
+    match setup::init_identity(&data_dir) {
         Ok(fabric) => {
             println!(
                 "Identité Matter créée dans {} (fabric {fabric:#x}). Aucun appareil n'est encore \
@@ -828,7 +765,7 @@ fn run_init(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{e:#}");
+            eprintln!("{e}");
             ExitCode::FAILURE
         }
     }

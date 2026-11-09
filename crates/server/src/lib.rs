@@ -15,6 +15,7 @@ pub mod net;
 pub mod persistence;
 pub mod scrub;
 pub mod security;
+pub mod setup;
 pub mod validate;
 
 use std::sync::mpsc;
