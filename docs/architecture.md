@@ -144,7 +144,9 @@ crates/protocol/src/   types partagés (serde seul : ni egui ni matc)
   automation.rs        modèle des règles : déclencheurs, conditions, actions
   format.rs            formatage français des mesures
 crates/server/src/     serveur (Matter, règles, historique) : aucune dépendance egui
-  main.rs              binaire matter-home-server : --demo, --discover, journaux, arrêt propre
+  main.rs              binaire matter-home-server : --demo, --discover, init, import, --require-identity,
+                       --log-file, journaux, arrêt propre
+  logfile.rs           journal 0600 à rotation par taille (--log-file, service launchd)
   events.rs            EventSink (émetteur d'événements, sans interface)
   persistence.rs       fichiers JSON, dossier de données, garde-fou controller.json (+ tests)
   history_store.rs     historique sur disque : ajout, relecture, rétention (+ tests)

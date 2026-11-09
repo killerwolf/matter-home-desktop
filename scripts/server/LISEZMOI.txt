@@ -1,0 +1,35 @@
+Matter Home - serveur (macOS)
+=============================
+
+Le serveur pilote vos appareils Matter et garde les données ; il tourne en tâche de fond sur
+un Mac qui reste allumé. Le client (application « Matter Home Desktop ») s'y connecte.
+
+Contenu de cette archive
+  matter-home-server                          le programme (signature « ad hoc »)
+  install.sh                                  installe le service qui démarre avec le Mac
+  uninstall.sh                                le désinstalle (sans jamais effacer vos données)
+  dev.matter-home-desktop.server.plist.template   gabarit du fichier de service (launchd)
+  VERSION                                     version et architectures du binaire
+  LISEZMOI.txt                                ce fichier
+
+Installer, en bref (dans l'application Terminal, sur le Mac du serveur)
+  1. Décompresser l'archive (double-clic), puis :
+       cd ~/Downloads/matter-home-server-*-macos
+  2. Reprendre vos données de la v0.2.1 (ou, installation neuve : ./matter-home-server init) :
+       ./matter-home-server import ~/chemin/matter-home-AAAA-MM-JJ.matterhome
+       ./matter-home-server create-account --username NOM
+  3. Installer le service :
+       ./install.sh
+     (essai sans rien modifier : ./install.sh --a-blanc)
+  4. Lancer vous-même les commandes de veille et de pare-feu que le script affiche.
+
+Un seul serveur à la fois : ne lancez jamais deux serveurs, ni la v0.2.1, avec la même identité
+Matter (leurs abonnements se chassent, les règles s'exécutent deux fois).
+
+Arrêter le service :   sudo launchctl bootout system/dev.matter-home-desktop.server
+Démarrer le service :  sudo launchctl bootstrap system /Library/LaunchDaemons/dev.matter-home-desktop.server.plist
+Le programme installé : /usr/local/bin/matter-home-server
+Journal :              ~/Library/Logs/MatterHomeServer/server.log
+
+Guide complet : docs/installation-serveur.md dans le dépôt
+https://github.com/killerwolf/matter-home-desktop

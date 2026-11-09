@@ -10,8 +10,37 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-09
+
+Version 1 : l'application est séparée en deux parties, **sans aucun cloud**. Le **serveur**
+tourne en continu sur un Mac du réseau local (service launchd, sans fenêtre) : il pilote les
+appareils Matter, exécute les automatisations et garde les données. Le **client** (l'application
+de bureau) affiche et commande, sans stocker de données. Reprise des données de la v0.2.1 sans
+réappairer un seul appareil : [docs/migration.md](docs/migration.md). Installation du serveur :
+[docs/installation-serveur.md](docs/installation-serveur.md).
+
 ### Ajouté
 
+- **Mise en paquet** (étape 6). Chaque version publie le DMG du client et une archive du serveur,
+  `matter-home-server-<version>-macos.tar.gz` : binaire universel (arm64 et x86_64), signé « ad
+  hoc », compilé pour un ancien Mac (macOS 10.15 minimum pour Intel), avec `install.sh`,
+  `uninstall.sh`, le gabarit du service launchd et une doc courte. `scripts/package-server.sh`
+  la fabrique.
+- **Service launchd** (LaunchDaemon, `dev.matter-home-desktop.server`) : démarre avec le Mac sans
+  session ouverte, sous le compte de l'utilisateur qui l'installe (jamais root), relancé quand
+  il sort en erreur (plantage, import appliqué, code 75) avec un délai de 30 s. `install.sh` et
+  `uninstall.sh` (en français) retirent la quarantaine, demandent `sudo` seulement pour les
+  gestes qui en ont besoin, valident le fichier avec `plutil -lint`, affichent l'empreinte du
+  certificat, et ne règlent jamais la veille ni le pare-feu en silence : ils vérifient l'état
+  quand c'est possible sans droits et affichent les commandes à lancer vous-même. Modes
+  `--a-blanc` et `--prefixe` pour les essayer sans rien modifier. `uninstall.sh` ne supprime
+  jamais les données sauf `--supprimer-donnees`, avec sa propre confirmation.
+- Serveur : `--require-identity` (refuse de démarrer sans identité Matter, code 78, au lieu d'en
+  créer une nouvelle ; mis dans le service), sous-commande `init` (installation neuve sans
+  sauvegarde, explicite), `--log-file` (journal en 0600 avec rotation à 5 Mo), `--version` (aussi
+  sur le client).
+- `import --abandon` : renoncer à un import en attente ou interrompu ; `import --replace-identity` :
+  seul moyen de remplacer une identité (fabric) différente de celle du dossier.
 - **Serveur : API réseau sécurisée** (étape 3 du découpage client-serveur). HTTPS (certificat
   auto-signé créé au premier lancement, empreinte SHA-256 affichée et journalisée) et
   WebSocket pour le temps réel ; compte unique créé en ligne de commande
@@ -39,8 +68,28 @@ Les téléchargements de chaque version sont sur la
   (résumé puis confirmation) passent tous par le serveur ; notifications affichées dans
   l'interface.
 
+### Modifié
+
+- Import (`matter-home-server import`) : le rappel dit d'arrêter la v0.2.1 sur **tous** les Mac,
+  y compris celui-ci (elle ne prend pas le verrou d'instance), et de partir du Mac qui détient
+  les données les plus récentes. Il affiche l'identité du fichier et celle du dossier. Le dossier
+  de données est toujours en 0700. Les certificats DER de la sauvegarde sont décodés à la
+  validation.
+- Un dossier préparé par un import auquel on a renoncé est mis de côté
+  (`…import-abandonne-<date>`) au lieu d'être supprimé.
+
 ### Corrigé
 
+- Relancer `import` après une coupure reprend l'import du même fichier au lieu de répondre
+  « import demandé par l'API ? » ; un autre fichier en attente est refusé avec la marche à suivre.
+- `--data-dir donnees` ou `donnees/` (chemin relatif) échouait à la synchronisation du dossier
+  parent : le chemin est rendu absolu.
+- `import --yes` ne remplace plus une identité Matter différente : il faut `--replace-identity`.
+- Le serveur refuse de créer une nouvelle identité si un dossier `…avant-import-…` voisin en
+  porte une.
+- `fingerprint` pendant la reprise d'un import dit qu'un import attend d'être repris, au lieu de
+  « le serveur n'a jamais été lancé ? ».
+- Test du client : les points d'historique sont attendus avec un délai borné.
 - Test du serveur « client lent » : il attend la fin de la rafale de démarrage de la démo avant
   d'ouvrir ses WebSockets (échec sporadique de la file de diffusion saturée).
 - Client : plus de perte silencieuse de modifications. La fermeture de la fenêtre demande

@@ -86,8 +86,12 @@ sans connexion au serveur.
 
 - **Sauvegarde** : le menu d'export ci-dessus, ou copiez le dossier. Le fichier le plus précieux est
   `controller.json` : sans lui, il faut réappairer tous les appareils.
-- **Repartir de zéro** : supprimez `controller.json`. Une nouvelle identité est créée au
-  lancement suivant ; pensez à retirer l'ancienne des appareils dans l'app Maison.
+- **Repartir de zéro** : arrêtez le service, déplacez (ou supprimez) le dossier de données, puis
+  lancez `matter-home-server init` et recréez le compte (`create-account`). Le serveur ne crée
+  jamais une nouvelle identité tout seul (le service est lancé avec `--require-identity`), et
+  `init` refuse tant que des données ou un dossier « …avant-import-… » portant une identité
+  traînent à côté. Pensez à retirer l'ancienne identité des appareils dans l'app Maison. Voir
+  [installation-serveur.md](installation-serveur.md).
 
 ## Ancien nom
 

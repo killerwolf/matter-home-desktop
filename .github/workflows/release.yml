@@ -48,6 +48,14 @@ jobs:
       - name: Build the app bundle
         run: scripts/bundle.sh
 
+      # Même chose pour l'archive du serveur, puis ses scripts d'installation essayés sur un
+      # préfixe factice (aucune commande système lancée sur le runner).
+      - name: Build the server package
+        run: scripts/package-server.sh
+
+      - name: Try install.sh and uninstall.sh on a fake prefix
+        run: scripts/test-server-package.sh
+
   build:
     name: Build & Publish macOS (universal)
     runs-on: macos-latest
@@ -95,6 +103,14 @@ jobs:
       - name: Build the DMG
         run: scripts/bundle.sh --dmg
 
+      # Binaire universel (les deux cibles sont installées), macOS 10.15 minimum côté Intel,
+      # signature ad hoc : dist/matter-home-server-<version>-macos.tar.gz.
+      - name: Build the server archive
+        run: scripts/package-server.sh
+
+      - name: Try install.sh and uninstall.sh on a fake prefix
+        run: scripts/test-server-package.sh
+
       - name: Determine release channel
         id: channel
         run: |
@@ -118,7 +134,8 @@ jobs:
             NOTES=(--notes "")
           fi
 
-          gh release create "${GITHUB_REF_NAME}" dist/*.dmg \
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/*.dmg dist/matter-home-server-*-macos.tar.gz dist/matter-home-server-*-macos.tar.gz.sha256 \
             --title "${GITHUB_REF_NAME}" \
             ${{ steps.channel.outputs.prerelease }} \
             "${NOTES[@]}"
@@ -127,6 +144,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: matter-home-desktop-mac
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/matter-home-server-*-macos.tar.gz
+            dist/matter-home-server-*-macos.tar.gz.sha256
           retention-days: 30
           if-no-files-found: ignore

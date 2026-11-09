@@ -23,8 +23,10 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
 
 Le dépôt est un workspace Cargo de trois crates : `crates/protocol` (types partagés),
 `crates/server` (Matter, règles, historique ; binaire `matter-home-server`, sans fenêtre) et
-`crates/client` (interface egui ; binaire `matter-home-desktop`). Version 1 en cours : le client
-n'est pas encore branché sur le serveur et affiche « déconnecté ».
+`crates/client` (interface egui ; binaire `matter-home-desktop`, branché sur le serveur).
+`scripts/bundle.sh --dmg` fabrique le DMG du client, `scripts/package-server.sh` l'archive du
+serveur (`scripts/server/` : `install.sh`, `uninstall.sh`, gabarit launchd) ; les scripts
+d'installation s'essaient avec `--a-blanc` ou `--prefixe` (voir `scripts/test-server-package.sh`).
 
 ```bash
 cargo build --workspace

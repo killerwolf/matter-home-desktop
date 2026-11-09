@@ -3,9 +3,19 @@
 [![Build](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml/badge.svg)](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml)
 [![Dernière version](https://img.shields.io/github/v/release/killerwolf/matter-home-desktop)](https://github.com/killerwolf/matter-home-desktop/releases/latest)
 
-Application de bureau pour macOS qui pilote et observe vos appareils **Matter** (Thread ou
-Wi-Fi) déjà installés dans Apple Maison : mesures en direct, plan de la maison,
-automatisations. Elle s'ajoute comme un contrôleur de plus ; tout reste en local, sans cloud.
+Pilote et observe vos appareils **Matter** (Thread ou Wi-Fi) déjà installés dans Apple Maison :
+mesures en direct, plan de la maison, automatisations. Il s'ajoute comme un contrôleur de plus ;
+tout reste en local, sans cloud.
+
+**Depuis la version 1, l'application est en deux parties :**
+
+| | Rôle | Où |
+|---|---|---|
+| **Serveur** (`matter-home-server`) | Tourne en continu, sans fenêtre, sur un Mac du réseau local (un ancien Mac convient). Il pilote les appareils, exécute les automatisations, garde les données et l'historique. | Service macOS qui démarre avec le Mac |
+| **Client** (« Matter Home Desktop ») | L'application avec fenêtre : elle affiche et commande, sans stocker de données. On y saisit l'adresse du serveur, un identifiant et un mot de passe. | N'importe quel Mac du réseau |
+
+Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un seul compte, aucun cloud.
+Vous venez de la v0.2.1 ? [Reprenez vos données](docs/migration.md) sans réappairer un seul appareil.
 
 <table>
   <tr>
@@ -57,19 +67,37 @@ des routeurs de bordure Thread HomePod. La prise en charge des ponts et des vole
 spécification Matter (Window Covering, Bridged Device Basic Information) ; elle n'a pas
 encore été vérifiée avec une TaHoma réelle : les retours sont bienvenus.
 
-## Télécharger
+## Installation
 
 Téléchargez la dernière version sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest) ;
-les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md).
+les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md). Deux fichiers, un par partie :
 
-Un seul fichier, `MatterHomeDesktop-<version>-universal.dmg`, pour **macOS 12 et plus**, sur
-les Mac Apple Silicon comme Intel (environ 13 Mo). Ouvrez-le et glissez
-**Matter Home Desktop** dans **Applications**.
+### 1. Le serveur, sur le Mac qui reste allumé
 
-Le Mac doit être sur le même réseau local que vos HomePod (ou autres routeurs de bordure
-Thread). Au premier lancement, macOS demande l'accès au **réseau local** : acceptez, sans
-quoi l'application ne voit aucun appareil.
+`matter-home-server-<version>-macos.tar.gz` : le programme (arm64 et Intel, macOS 10.15 minimum
+sur Intel, 11 sur Apple Silicon), `install.sh`, `uninstall.sh` et un fichier de service launchd.
+`install.sh` l'installe comme service qui démarre avec le Mac, relancé s'il plante, sous votre
+compte (jamais root). Il ne touche jamais seul à la veille ni au pare-feu : il affiche les
+commandes à lancer. **Guide pas à pas, pour non-développeurs :
+[docs/installation-serveur.md](docs/installation-serveur.md).**
+
+Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
+**[docs/migration.md](docs/migration.md)**.
+
+> **Ne lancez jamais deux instances** (deux serveurs, ou la v0.2.1 avec le serveur) avec la même
+> identité Matter : leurs abonnements se chassent et les règles s'exécutent deux fois. Arrêtez la
+> v0.2.1 sur tous vos Mac avant de démarrer le serveur.
+
+### 2. Le client, sur le Mac où vous regardez
+
+`MatterHomeDesktop-<version>-universal.dmg`, pour **macOS 12 et plus**, Apple Silicon comme Intel
+(environ 13 Mo). Ouvrez-le et glissez **Matter Home Desktop** dans **Applications**. Au
+lancement, saisissez l'adresse du serveur, l'identifiant et le mot de passe ; la première fois,
+le client affiche l'empreinte du certificat du serveur (à comparer avec `matter-home-server
+fingerprint`) puis ne fait confiance qu'à lui. Le client n'a besoin de voir que le serveur ;
+c'est le serveur qui doit être sur le même réseau local que vos HomePod (ou autres routeurs de
+bordure Thread).
 
 ### Premier lancement : « Matter Home Desktop est endommagé »
 
@@ -85,11 +113,14 @@ Ouvrez ensuite l'application normalement. C'est à refaire après chaque nouvell
 
 ### Essayer sans appareil
 
-Le **mode démo** simule thermomètres, porte, prise et automatisations :
+Le **mode démo** du serveur simule thermomètres, porte, prise, volets et automatisations (dossier
+temporaire, écoute sur `127.0.0.1:8443`, compte « demo » dont le mot de passe est affiché) :
 
 ```bash
-"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --demo
+matter-home-server --demo
 ```
+
+Lancez le client et connectez-le à `https://127.0.0.1:8443`.
 
 ### Compiler depuis les sources
 
@@ -100,10 +131,12 @@ git clone https://github.com/killerwolf/matter-home-desktop.git && cd matter-hom
 ```
 
 ```bash
-scripts/bundle.sh --dmg
+scripts/bundle.sh --dmg          # le client : dist/MatterHomeDesktop-<version>-<arch>.dmg
+scripts/package-server.sh        # le serveur : dist/matter-home-server-<version>-macos.tar.gz
 ```
 
-L'application et le DMG sont créés dans `dist/`. Plus de détails dans
+Les deux sont créés dans `dist/` (universels quand les deux cibles Apple sont installées avec
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`). Plus de détails dans
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Ajouter un appareil
@@ -125,21 +158,26 @@ Trois onglets en haut de la fenêtre :
 - **Automatisations** : « + Nouvelle règle », puis choisissez Quand, Si et Alors. Le bouton
   « ▶ Tester » exécute la règle tout de suite.
 
-Les règles ne s'exécutent que **tant que l'application est ouverte**.
+Les règles sont exécutées par **le serveur**, en continu, même quand aucun client n'est ouvert :
+les notifications sont envoyées aux clients connectés (un client fermé n'en reçoit pas).
 
 ## Vos données
 
-Tout reste sur votre Mac, dans
+Tout reste sur le Mac du **serveur**, dans
 `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/` : identité du
-contrôleur, appareils, plan, règles et 7 jours d'historique des mesures. Rien n'est envoyé
-ailleurs, sauf les webhooks que vous configurez vous-même. Détails :
+contrôleur, appareils, plan, règles, 7 jours d'historique des mesures, compte et certificat du
+serveur. Le client ne garde que l'adresse du serveur, l'empreinte du certificat et un jeton de
+session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous-même. Détails :
 [docs/donnees.md](docs/donnees.md).
 
 ## Limites
 
 - Projet personnel, en cours d'évolution, testé uniquement sur macOS.
 - L'application ne vérifie pas que les appareils sont certifiés Matter.
-- Pas encore de déclencheur « appui sur un bouton », ni de mode service sans fenêtre.
+- Pas encore de déclencheur « appui sur un bouton ». Pas de serveur Linux, d'accès à distance ni
+  de comptes multiples (hors version 1).
+- Le serveur n'est pas signé avec un certificat Apple payant (signature « ad hoc ») : le pare-feu
+  macOS demande une autorisation manuelle, voir le guide d'installation.
 - Certains capteurs sur pile s'appairent difficilement : voir
   [docs/depannage.md](docs/depannage.md).
 
@@ -147,6 +185,8 @@ ailleurs, sauf les webhooks que vous configurez vous-même. Détails :
 
 | | |
 |---|---|
+| [Installer le serveur](docs/installation-serveur.md) | service launchd pas à pas, veille, pare-feu, arrêter, désinstaller |
+| [Migrer la v0.2.1](docs/migration.md) | reprendre ses données sans réappairer, installation neuve, reprise après coupure |
 | [Guide d'utilisation](docs/utilisation.md) | fiches des appareils, nom et icône, export CSV, options de lancement |
 | [Plan de la maison](docs/plan.md) | dessin, couleurs, sauvegarde |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
