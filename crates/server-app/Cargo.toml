@@ -1,0 +1,26 @@
+[package]
+name = "matter-home-server-app"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.90"
+description = "Matter Home Server : le serveur Matter Home en application de barre de menus (macOS)"
+license.workspace = true
+
+[lib]
+name = "matter_home_server_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "matter-home-server-app"
+path = "src/main.rs"
+
+[dependencies]
+matter-home-server = { path = "../server" }
+protocol = { path = "../protocol" }
+eframe = "0.37"
+rfd = "0.17.2"
+tray-icon = "=0.26.1"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+winit = "0.30"
