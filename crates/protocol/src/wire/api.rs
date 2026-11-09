@@ -167,6 +167,29 @@ pub struct ImportSummary {
 pub struct ImportResponse {
     pub summary: ImportSummary,
     pub restarting: bool,
+    /// Les identités Matter en jeu : celle de la sauvegarde et celle du serveur. Toujours
+    /// présent côté serveur ; absent d'un serveur plus ancien.
+    #[serde(default)]
+    pub identity: Option<ImportIdentity>,
+}
+
+/// Identité Matter (fabric) d'une sauvegarde ou du serveur. Le numéro de fabric est du texte
+/// hexadécimal (`0x…`), comme les autres identifiants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentityInfo {
+    pub fabric_id: String,
+    /// Appareils appairés avec cette identité (nœuds et appareils pontés).
+    pub devices: usize,
+}
+
+/// Comparaison des identités d'un import. `differs` : la sauvegarde porte une autre fabric que le
+/// serveur (ou celle du serveur est illisible) ; l'import réel exige alors `replace_identity=1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportIdentity {
+    pub incoming: IdentityInfo,
+    /// `None` : le serveur n'a pas (encore) d'identité, rien n'est remplacé.
+    pub current: Option<IdentityInfo>,
+    pub differs: bool,
 }
 
 /// Type de contenu de l'export `.matterhome` (JSON). Il contient des clés privées en clair.

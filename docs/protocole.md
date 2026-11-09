@@ -84,13 +84,13 @@ aux essais et aux tests.
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
 | `GET /api/export` | sauvegarde `.matterhome` (**clés privées en clair**) |
-| `POST /api/import` | corps = fichier `.matterhome` ; 202, puis le serveur quitte (code 75) |
+| `POST /api/import` | corps = fichier `.matterhome` ; 202, puis le serveur quitte (code 75). Une autre identité Matter est refusée (`identity_mismatch`, 409) sans `?replace_identity=1` |
 | `POST /api/import?dry_run=1` | même corps ; inspecte sans rien engager : 200 avec le résumé (voir ci-dessous) |
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
 effet (ou leur échec) arrive en événements. Les erreurs possibles : `not_found` (appareil ou
 règle inconnu), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
-(405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `invalid_import`
+(405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `identity_mismatch` (409), `invalid_import`
 (400), `unavailable`… Toute erreur, y compris 405 et 413, a le corps `{"error": {"code": …}}`.
 
 ### Historique
@@ -147,9 +147,22 @@ pendant ce temps est refusé : `import_pending` (409).
 **Inspecter sans importer** : `POST /api/import?dry_run=1` (même corps) fait les mêmes contrôles et
 répond 200 `{"summary": {"created": "2026-11-09T10:00:00+01:00", "devices": 12, "rooms": 7,
 "rules": 4, "history_files": 12, "has_plan": true, "has_rules": true,
-"disabled_rules": ["Alerte porte"]}, "restarting": false}`
+"disabled_rules": ["Alerte porte"]}, "restarting": false, "identity": {"incoming":
+{"fabric_id": "0xff", "devices": 3}, "current": {"fabric_id": "0x1", "devices": 1}, "differs": true}}`
 sans rien écrire ni arrêter le serveur. Le client l'appelle pour montrer « 12 appareils, 7 pièces,
 4 règles, sauvegarde du … » avant de demander confirmation, puis refait l'appel sans `dry_run`.
+
+**Garde-fou d'identité** : l'import par l'API compare le numéro de fabric de la sauvegarde à celui du
+serveur (comme `import --replace-identity` en ligne de commande). `identity` donne les deux
+identités (`fabric_id` en texte hexadécimal, nombre d'appareils ; `current` est absent si le serveur
+n'a pas encore d'identité) et `differs` vaut `true` quand elles diffèrent, ou quand celle du serveur
+est illisible. Dans ce cas, `POST /api/import` sans `replace_identity=1` est refusé avec le code
+stable `identity_mismatch` (409) : rien n'est écrit, le serveur ne s'arrête pas. Le client prévient
+clairement dans son dialogue et n'ajoute `replace_identity=1` qu'après une confirmation séparée
+(« Remplacer l'identité du serveur… » puis « Oui, remplacer l'identité et importer »). Les
+appareils appairés avec l'ancienne identité ne seraient plus reconnus ; l'ancien dossier reste
+conservé dans « …avant-import-<date> ». Les valeurs acceptées de `dry_run` et `replace_identity` :
+`1`, `true`, `0`, `false`.
 
 **Règles à webhook incomplet** (`disabled_rules`) : la v0.2.1 enregistrait des règles dont l'adresse
 de l'action « Appeler une URL » était vide, sans `http` ou avec un espace, alors que `PUT /api/rules`

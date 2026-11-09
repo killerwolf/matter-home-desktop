@@ -1109,6 +1109,8 @@ fn disconnecting_forgets_the_journal_the_toasts_the_code_and_the_dialogs_in_prog
         summary: "1 appareil".into(),
         bytes: Arc::new(vec![1, 2, 3]),
         server: f.app.server.clone(),
+        identity_warning: None,
+        replace_armed: false,
     });
     f.send(Event::Link(Link::LoggedOut {
         url: None,
@@ -1130,10 +1132,12 @@ fn a_backup_is_only_sent_to_the_server_that_checked_it() {
         summary: "résumé".into(),
         bytes: bytes.clone(),
         server,
+        identity_warning: None,
+        replace_armed: false,
     };
     // Validée par un autre serveur : refus, rien n'est envoyé.
     f.app.data_dialog = Some(confirm(Some("https://autre:8443#CC".into())));
-    f.app.confirm_import();
+    f.app.confirm_import(false);
     assert!(pending_of(&f, |p| matches!(p, Pending::ImportApply)).is_none());
     assert!(matches!(
         f.app.data_dialog,
@@ -1141,7 +1145,7 @@ fn a_backup_is_only_sent_to_the_server_that_checked_it() {
     ));
     // Validée par ce serveur : elle part, sans copie du contenu.
     f.app.data_dialog = Some(confirm(f.app.server.clone()));
-    f.app.confirm_import();
+    f.app.confirm_import(false);
     assert!(pending_of(&f, |p| matches!(p, Pending::ImportApply)).is_some());
 }
 
@@ -1478,4 +1482,62 @@ fn the_draft_widgets_draw_without_a_window() {
         output.textures_delta.clear();
     }
     assert!(f.app.close_prompt.is_some());
+}
+
+fn identity(differs: bool) -> ImportIdentity {
+    ImportIdentity {
+        incoming: IdentityInfo {
+            fabric_id: "0xff".into(),
+            devices: 3,
+        },
+        current: Some(IdentityInfo {
+            fabric_id: "0x1".into(),
+            devices: 1,
+        }),
+        differs,
+    }
+}
+
+/// Une sauvegarde d'une autre identité Matter prévient clairement, ne part jamais sans une
+/// confirmation séparée, et n'envoie `replace_identity=1` qu'alors.
+#[test]
+fn a_different_identity_is_only_sent_after_a_separate_confirmation() {
+    let warning = describe_identity_warning(&identity(true)).expect("avertissement");
+    assert!(
+        warning.contains("0xff") && warning.contains("0x1") && warning.contains("3 appareils"),
+        "{warning}"
+    );
+    assert!(warning.contains("réappairer"), "{warning}");
+    assert!(describe_identity_warning(&identity(false)).is_none());
+
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    let confirm = |armed: bool, server: Option<String>| DataDialog::ConfirmImport {
+        path: PathBuf::from("/tmp/x.matterhome"),
+        summary: "résumé".into(),
+        bytes: Arc::new(vec![b'{', b'}']),
+        server,
+        identity_warning: Some(warning.clone()),
+        replace_armed: armed,
+    };
+    let sent = |f: &Fixture| pending_of(f, |p| matches!(p, Pending::ImportApply)).is_some();
+    // Le bouton ordinaire (sans confirmation) ne fait rien partir.
+    f.app.data_dialog = Some(confirm(false, f.app.server.clone()));
+    f.app.confirm_import(false);
+    assert!(!sent(&f));
+    assert!(matches!(
+        f.app.data_dialog,
+        Some(DataDialog::Message { ok: false, .. })
+    ));
+    // Même `replace_identity` sans que la confirmation séparée ait été affichée : rien.
+    f.app.data_dialog = Some(confirm(false, f.app.server.clone()));
+    f.app.confirm_import(true);
+    assert!(!sent(&f));
+    // Après la confirmation séparée : l'import part avec replace_identity=1.
+    f.app.data_dialog = Some(confirm(true, f.app.server.clone()));
+    f.app.confirm_import(true);
+    assert!(sent(&f));
+    // Le chemin demandé : l'option n'existe que pour ce cas.
+    assert_eq!(import_path(true), "/api/import?replace_identity=1");
+    assert_eq!(import_path(false), "/api/import");
 }

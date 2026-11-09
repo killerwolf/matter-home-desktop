@@ -624,6 +624,75 @@ fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
     });
 }
 
+/// L'import par l'API ne contourne pas le garde-fou d'identité : une autre fabric est refusée
+/// (`identity_mismatch`, 409) sans `replace_identity=1`, et le dry_run montre les deux identités.
+#[test]
+fn the_api_import_refuses_a_different_identity_unless_asked() {
+    let dir = temp_dir("identity-guard");
+    let controller_of = |id: &matter_home_server::persistence::ControllerIdentity, nodes: usize| {
+        let nodes: Vec<_> = (0..nodes)
+            .map(|i| json!({"node_id": 7 + i, "name": format!("Capteur {i}")}))
+            .collect();
+        json!({"version": 1, "identity": id, "nodes": nodes}).to_string()
+    };
+    let current = matter_home_server::matter::certs::generate_identity().unwrap();
+    let other = matter_home_server::matter::certs::generate_identity().unwrap();
+    std::fs::write(dir.join("controller.json"), controller_of(&current, 1)).unwrap();
+    let bundle_of = |id, nodes| {
+        json!({
+            "format": "matter-home-desktop-sauvegarde", "version": 1,
+            "created": "2026-11-09T09:15:00+01:00",
+            "files": {"controller.json": controller_of(id, nodes)},
+        })
+        .to_string()
+    };
+    let (same, different) = (bundle_of(&current, 2), bundle_of(&other, 3));
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        macro_rules! post {
+            ($path:expr, $body:expr) => {
+                client.request("POST", $path, Some(&token), Some($body.as_bytes()))
+            };
+        }
+
+        // dry_run : les deux identités, nombre d'appareils compris.
+        let r = post!("/api/import?dry_run=1", different).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let id = &r.json()["identity"];
+        assert_eq!(id["differs"], true, "{id}");
+        assert_eq!(
+            id["incoming"]["fabric_id"],
+            format!("{:#x}", other.fabric_id)
+        );
+        assert_eq!(id["incoming"]["devices"], 3);
+        assert_eq!(
+            id["current"]["fabric_id"],
+            format!("{:#x}", current.fabric_id)
+        );
+        assert_eq!(id["current"]["devices"], 1);
+        let r = post!("/api/import?dry_run=1", same).await;
+        assert_eq!(r.json()["identity"]["differs"], false);
+
+        // L'import réel est refusé, avec un code stable, sans rien mettre de côté.
+        let r = post!("/api/import", different).await;
+        assert_eq!(r.status, 409, "{}", r.text());
+        assert_eq!(r.code(), "identity_mismatch");
+        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+        let r = post!("/api/import?replace_identity=0", different).await;
+        assert_eq!(r.code(), "identity_mismatch");
+        let r = post!("/api/import?replace_identity=peut-etre", different).await;
+        assert_eq!(r.status, 400, "{}", r.text());
+
+        // La même identité passe sans option ; une autre, avec l'option explicite seulement.
+        let r = post!("/api/import?replace_identity=1", different).await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        assert!(dir.join("import-en-attente.matterhome").exists());
+    });
+}
+
 #[test]
 fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
     let dir = temp_dir("notify");

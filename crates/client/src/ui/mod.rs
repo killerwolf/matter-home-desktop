@@ -32,8 +32,8 @@ use protocol::automation::CoverCommand;
 use protocol::events::now_unix;
 use protocol::home::{HomePlan, Symbol};
 use protocol::wire::{
-    CoverRequest, CustomizeRequest, HistoryResponse, ImportResponse, ImportSummary, PairRequest,
-    Snapshot, TextIds, WireEvent, WireStatus, HISTORY_MAX_LIMIT,
+    CoverRequest, CustomizeRequest, HistoryResponse, IdentityInfo, ImportIdentity, ImportResponse,
+    ImportSummary, PairRequest, Snapshot, TextIds, WireEvent, WireStatus, HISTORY_MAX_LIMIT,
 };
 
 /// Ce que les vues d'un appareil demandent à l'application (elles ne parlent pas au réseau).
@@ -116,6 +116,12 @@ enum DataDialog {
         bytes: Arc<Vec<u8>>,
         /// Le serveur qui a validé cette sauvegarde : elle ne part jamais vers un autre.
         server: Option<String>,
+        /// Avertissement quand la sauvegarde porte une autre identité Matter que le serveur :
+        /// l'import ne part alors qu'après une confirmation séparée (`replace_armed`) et avec
+        /// `replace_identity=1`.
+        identity_warning: Option<String>,
+        /// La confirmation séparée de remplacement d'identité est affichée.
+        replace_armed: bool,
     },
     /// Import accepté : le serveur redémarre pour l'appliquer.
     ImportStarted,
@@ -980,6 +986,8 @@ impl MatterApp {
                         summary: describe_backup(&r.summary),
                         bytes,
                         server: self.server.clone(),
+                        identity_warning: r.identity.as_ref().and_then(describe_identity_warning),
+                        replace_armed: false,
                     },
                     Err(e) => DataDialog::Message {
                         ok: false,
@@ -1082,6 +1090,8 @@ impl MatterApp {
         };
         let mut close = false;
         let mut confirmed = false;
+        let mut replace_confirmed = false;
+        let mut arm_replace = false;
         egui::Window::new("Données")
             .collapsible(false)
             .resizable(false)
@@ -1106,7 +1116,13 @@ impl MatterApp {
                         ui.add_space(6.0);
                         close = ui.button("OK").clicked();
                     }
-                    DataDialog::ConfirmImport { path, summary, .. } => {
+                    DataDialog::ConfirmImport {
+                        path,
+                        summary,
+                        identity_warning,
+                        replace_armed,
+                        ..
+                    } => {
                         ui.label(format!("Importer {} ?", path.display()));
                         ui.label(summary);
                         ui.add_space(4.0);
@@ -1116,10 +1132,38 @@ impl MatterApp {
                              à côté) ; l'application se reconnecte toute seule.",
                         );
                         ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            confirmed = ui.button("Importer").clicked();
-                            close = ui.button("Annuler").clicked();
-                        });
+                        match (identity_warning, *replace_armed) {
+                            (None, _) => {
+                                ui.horizontal(|ui| {
+                                    confirmed = ui.button("Importer").clicked();
+                                    close = ui.button("Annuler").clicked();
+                                });
+                            }
+                            (Some(warning), false) => {
+                                ui.colored_label(Color32::from_rgb(210, 60, 50), warning);
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    arm_replace =
+                                        ui.button("Remplacer l'identité du serveur…").clicked();
+                                    close = ui.button("Annuler").clicked();
+                                });
+                            }
+                            (Some(_), true) => {
+                                ui.colored_label(
+                                    Color32::from_rgb(210, 60, 50),
+                                    "Dernière confirmation : l'identité Matter du serveur sera \
+                                     remplacée. Les appareils appairés avec l'ancienne ne seront \
+                                     plus reconnus et devront être réappairés.",
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    replace_confirmed = ui
+                                        .button("Oui, remplacer l'identité et importer")
+                                        .clicked();
+                                    close = ui.button("Annuler").clicked();
+                                });
+                            }
+                        }
                     }
                     DataDialog::ImportStarted => {
                         ui.label(
@@ -1131,18 +1175,44 @@ impl MatterApp {
                     }
                 }
             });
-        if confirmed {
-            self.confirm_import();
+        if arm_replace {
+            if let Some(DataDialog::ConfirmImport { replace_armed, .. }) = &mut self.data_dialog {
+                *replace_armed = true;
+            }
+        } else if confirmed {
+            self.confirm_import(false);
+        } else if replace_confirmed {
+            self.confirm_import(true);
         } else if close {
             self.data_dialog = None;
         }
     }
 
     /// « Importer » : envoie la sauvegarde vérifiée, mais seulement au serveur qui l'a vérifiée.
-    fn confirm_import(&mut self) {
-        let Some(DataDialog::ConfirmImport { bytes, server, .. }) = self.data_dialog.take() else {
+    ///
+    /// `replace_identity` : l'utilisateur a confirmé séparément le remplacement de l'identité
+    /// Matter. Sans lui, une sauvegarde d'une autre identité ne part pas du tout ; avec lui, le
+    /// paramètre `replace_identity=1` est ajouté.
+    fn confirm_import(&mut self, replace_identity: bool) {
+        let Some(DataDialog::ConfirmImport {
+            bytes,
+            server,
+            identity_warning,
+            replace_armed,
+            ..
+        }) = self.data_dialog.take()
+        else {
             return;
         };
+        if identity_warning.is_some() && !(replace_identity && replace_armed) {
+            self.data_dialog = Some(DataDialog::Message {
+                ok: false,
+                text: "Import annulé : l'identité Matter diffère, elle doit être remplacée par \
+                       une confirmation séparée."
+                    .into(),
+            });
+            return;
+        }
         if server.is_none() || server != self.server {
             self.data_dialog = Some(DataDialog::Message {
                 ok: false,
@@ -1155,7 +1225,7 @@ impl MatterApp {
         let request = Request {
             body: Body::Shared(bytes),
             timeout: Duration::from_secs(180),
-            ..Request::new("POST", "/api/import")
+            ..Request::new("POST", import_path(identity_warning.is_some()))
         };
         self.data_dialog = if self.request(Pending::ImportApply, request).is_some() {
             Some(DataDialog::Busy("Envoi de la sauvegarde…".into()))
@@ -1699,6 +1769,41 @@ impl MatterApp {
             }
         });
     }
+}
+
+/// Chemin de l'import réel : `replace_identity=1` seulement quand l'utilisateur a confirmé
+/// séparément le remplacement de l'identité.
+fn import_path(replace_identity: bool) -> &'static str {
+    if replace_identity {
+        "/api/import?replace_identity=1"
+    } else {
+        "/api/import"
+    }
+}
+
+/// Avertissement quand la sauvegarde porte une autre identité Matter (fabric) que le serveur.
+fn describe_identity_warning(identity: &ImportIdentity) -> Option<String> {
+    if !identity.differs {
+        return None;
+    }
+    let devices = |i: &IdentityInfo| {
+        format!(
+            "fabric {}, {} appareil{}",
+            i.fabric_id,
+            i.devices,
+            if i.devices > 1 { "s" } else { "" }
+        )
+    };
+    let current = match &identity.current {
+        Some(c) => format!("celle du serveur ({})", devices(c)),
+        None => "celle du serveur (illisible)".into(),
+    };
+    Some(format!(
+        "ATTENTION : cette sauvegarde porte une AUTRE identité Matter ({}) que {current}. \
+         Si vous continuez, les appareils appairés avec l'identité du serveur ne seront plus \
+         reconnus : il faudra les réappairer un par un.",
+        devices(&identity.incoming)
+    ))
 }
 
 /// « 12 appareils, 7 pièces, 4 règles, sauvegarde du … ».

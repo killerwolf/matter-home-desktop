@@ -512,6 +512,9 @@ async fn export(State(state): State<AppState>) -> ApiResult<Response> {
 struct ImportQuery {
     #[serde(default)]
     dry_run: Option<String>,
+    /// `replace_identity=1` : accepte une sauvegarde d'une autre identité Matter (fabric).
+    #[serde(default)]
+    replace_identity: Option<String>,
 }
 
 async fn import(
@@ -519,11 +522,20 @@ async fn import(
     q: Result<Query<ImportQuery>, axum::extract::rejection::QueryRejection>,
     ApiBytes(body): ApiBytes,
 ) -> ApiResult<Response> {
-    let dry_run = match q.map(|Query(q)| q.dry_run) {
-        Ok(None) => false,
-        Ok(Some(value)) if matches!(value.as_str(), "1" | "true") => true,
-        Ok(Some(value)) if matches!(value.as_str(), "0" | "false" | "") => false,
-        _ => {
+    let flag = |value: Option<String>, name: &str| match value.as_deref() {
+        None | Some("0" | "false" | "") => Ok(false),
+        Some("1" | "true") => Ok(true),
+        Some(_) => Err(ApiError::with_detail(
+            ErrorCode::BadRequest,
+            format!("paramètre {name} invalide"),
+        )),
+    };
+    let (dry_run, replace_identity) = match q {
+        Ok(Query(q)) => (
+            flag(q.dry_run, "dry_run")?,
+            flag(q.replace_identity, "replace_identity")?,
+        ),
+        Err(_) => {
             return Err(
                 ApiError::with_detail(ErrorCode::BadRequest, "paramètre dry_run invalide").into(),
             )
@@ -538,25 +550,28 @@ async fn import(
             )
         })?;
         if dry_run {
-            hub.inspect_import(text).map(|summary| {
+            hub.inspect_import(text).map(|(summary, identity)| {
                 (
                     StatusCode::OK,
                     ImportResponse {
                         summary,
                         restarting: false,
+                        identity: Some(identity),
                     },
                 )
             })
         } else {
-            hub.stage_import(text).map(|summary| {
-                (
-                    StatusCode::ACCEPTED,
-                    ImportResponse {
-                        summary,
-                        restarting: true,
-                    },
-                )
-            })
+            hub.stage_import(text, replace_identity)
+                .map(|(summary, identity)| {
+                    (
+                        StatusCode::ACCEPTED,
+                        ImportResponse {
+                            summary,
+                            restarting: true,
+                            identity: Some(identity),
+                        },
+                    )
+                })
         }
     })
     .await?;

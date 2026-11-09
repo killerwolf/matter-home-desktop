@@ -35,6 +35,9 @@ pub enum ErrorCode {
     PairingFailed,
     /// Fichier d'import illisible ou qui n'est pas une sauvegarde Matter Home.
     InvalidImport,
+    /// La sauvegarde porte une autre identité Matter (fabric) que celle du serveur : l'importer
+    /// ferait oublier les appareils appairés. Il faut `replace_identity=1` explicite.
+    IdentityMismatch,
     /// Rien à exporter pour l'instant (aucun appareil appairé).
     NoData,
     /// Appareil injoignable.
@@ -57,7 +60,7 @@ impl ErrorCode {
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::RequestTimeout => 408,
-            ErrorCode::PairingBusy | ErrorCode::ImportPending => 409,
+            ErrorCode::PairingBusy | ErrorCode::ImportPending | ErrorCode::IdentityMismatch => 409,
             ErrorCode::PairingFailed | ErrorCode::DeviceUnreachable => 502,
             ErrorCode::Unavailable => 503,
             ErrorCode::Internal => 500,

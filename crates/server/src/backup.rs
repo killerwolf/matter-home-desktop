@@ -829,6 +829,8 @@ pub fn abandon(dir: &Path) -> Result<Vec<String>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityBrief {
     pub fabric_id: u64,
+    /// Nombre d'appareils (nœuds et appareils pontés).
+    pub devices: usize,
     /// Un libellé par appareil : « nom (0xidentifiant) ».
     pub nodes: Vec<String>,
 }
@@ -837,6 +839,7 @@ impl IdentityBrief {
     fn of(state: &StoredState) -> Self {
         Self {
             fabric_id: state.identity.fabric_id,
+            devices: state.device_ids().len(),
             nodes: state
                 .nodes
                 .iter()
@@ -867,6 +870,18 @@ pub fn identity_in_file(src: &Path) -> Result<IdentityBrief> {
         .get(FILE_NAME)
         .with_context(|| format!("{FILE_NAME} manque dans la sauvegarde"))?;
     let state: StoredState = serde_json::from_str(text).context("identité illisible")?;
+    Ok(IdentityBrief::of(&state))
+}
+
+/// Identité portée par une sauvegarde reçue en mémoire (déjà validée ou non : refus si illisible).
+pub fn identity_in_text(text: &str) -> Result<IdentityBrief, Invalid> {
+    let (bundle, _) = parse(text)?;
+    let controller = bundle
+        .files
+        .get(FILE_NAME)
+        .ok_or_else(|| Invalid(format!("{FILE_NAME} manque")))?;
+    let state: StoredState =
+        serde_json::from_str(controller).map_err(|_| Invalid(format!("{FILE_NAME} illisible")))?;
     Ok(IdentityBrief::of(&state))
 }
 

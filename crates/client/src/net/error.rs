@@ -119,6 +119,11 @@ pub fn api_message(
         ErrorCode::InvalidImport => {
             with_detail("Ce fichier n'est pas une sauvegarde Matter Home valable")
         }
+        ErrorCode::IdentityMismatch => {
+            "Cette sauvegarde porte une autre identité Matter que le serveur : l'importer ferait \
+             oublier les appareils appairés. Rien n'a été modifié."
+                .into()
+        }
         ErrorCode::NoData => {
             "Rien à exporter pour l'instant : aucun appareil n'est appairé.".into()
         }
@@ -151,6 +156,7 @@ mod tests {
             ErrorCode::PairingBusy,
             ErrorCode::PairingFailed,
             ErrorCode::InvalidImport,
+            ErrorCode::IdentityMismatch,
             ErrorCode::NoData,
             ErrorCode::DeviceUnreachable,
             ErrorCode::Unavailable,

@@ -19,8 +19,8 @@ use protocol::automation::{CoverCommand, OnOffCommand, Rule, RuleSet};
 use protocol::home::HomePlan;
 use protocol::wire::{
     self, ApiError, CustomizeRequest, DeviceView, ErrorCode, HistoryPoint, HistoryQuery,
-    HistoryResponse, ImportSummary, LatestReading, Metric, RuleRunView, ServerMessage, Snapshot,
-    TextIds, WireEvent, WireMode, WireNode, WireStatus,
+    HistoryResponse, IdentityInfo, ImportIdentity, ImportSummary, LatestReading, Metric,
+    RuleRunView, ServerMessage, Snapshot, TextIds, WireEvent, WireMode, WireNode, WireStatus,
 };
 
 use crate::backup;
@@ -679,14 +679,40 @@ impl Hub {
 
     /// Valide une sauvegarde sans rien engager : ni fichier écrit, ni arrêt (l'inspection d'un
     /// import). Les mêmes contrôles que l'import réel.
-    pub fn inspect_import(&self, text: &str) -> ApiResult<ImportSummary> {
+    pub fn inspect_import(&self, text: &str) -> ApiResult<(ImportSummary, ImportIdentity)> {
         match backup::inspect_text(text) {
-            Ok(summary) => Ok(import_summary(summary)),
+            Ok(summary) => Ok((import_summary(summary), self.import_identity(text)?)),
             Err(e) => {
                 log::info!("sauvegarde à inspecter refusée : {e}");
                 Err(self.invalid_import(&e.to_string()))
             }
         }
+    }
+
+    /// L'identité de la sauvegarde face à celle du serveur. Une identité du serveur illisible
+    /// compte comme « différente » : dans le doute, rien n'est remplacé sans accord explicite.
+    fn import_identity(&self, text: &str) -> ApiResult<ImportIdentity> {
+        let info = |b: &backup::IdentityBrief| IdentityInfo {
+            fabric_id: format!("{:#x}", b.fabric_id),
+            devices: b.devices,
+        };
+        let incoming = backup::identity_in_text(text).map_err(|e| self.invalid_import(&e.0))?;
+        let (current, differs) = match backup::identity_in_dir(&self.data_dir) {
+            Ok(None) => (None, false),
+            Ok(Some(c)) => {
+                let differs = c.fabric_id != incoming.fabric_id;
+                (Some(info(&c)), differs)
+            }
+            Err(e) => {
+                log::warn!("identité actuelle illisible : {e:#}");
+                (None, true)
+            }
+        };
+        Ok(ImportIdentity {
+            incoming: info(&incoming),
+            current,
+            differs,
+        })
     }
 
     fn invalid_import(&self, why: &str) -> ApiError {
@@ -697,7 +723,29 @@ impl Hub {
     /// Valide une sauvegarde et la met de côté ; le serveur doit ensuite s'arrêter pour que
     /// son superviseur le relance et l'applique. Un seul import à la fois : tant qu'un import
     /// validé attend le redémarrage, un autre est refusé (`import_pending`).
-    pub fn stage_import(&self, text: &str) -> ApiResult<ImportSummary> {
+    ///
+    /// Une sauvegarde d'une autre identité (fabric) que celle du serveur n'est acceptée qu'avec
+    /// `replace_identity` : sinon `identity_mismatch` (409), rien n'est écrit ni arrêté.
+    pub fn stage_import(
+        &self,
+        text: &str,
+        replace_identity: bool,
+    ) -> ApiResult<(ImportSummary, ImportIdentity)> {
+        if let Err(e) = backup::inspect_text(text) {
+            log::info!("import refusé : {e}");
+            return Err(self.invalid_import(&e.to_string()));
+        }
+        let identity = self.import_identity(text)?;
+        if identity.differs && !replace_identity {
+            log::warn!(
+                "import refusé : fabric {} (sauvegarde) différente de celle du serveur",
+                identity.incoming.fabric_id
+            );
+            return Err(ApiError::with_detail(
+                ErrorCode::IdentityMismatch,
+                "la sauvegarde porte une autre identité Matter que le serveur",
+            ));
+        }
         if self.import_staged.swap(true, Ordering::SeqCst) {
             return Err(ApiError::new(ErrorCode::ImportPending));
         }
@@ -708,7 +756,7 @@ impl Hub {
                     summary.describe()
                 );
                 self.request_exit(ExitReason::ImportStaged);
-                Ok(import_summary(summary))
+                Ok((import_summary(summary), identity))
             }
             Err(e) => {
                 self.import_staged.store(false, Ordering::SeqCst);
@@ -953,21 +1001,22 @@ mod tests {
 
         // Refusé (pas une sauvegarde) : le verrou est rendu.
         assert_eq!(
-            hub.stage_import("n'importe quoi").unwrap_err().code,
+            hub.stage_import("n'importe quoi", false).unwrap_err().code,
             ErrorCode::InvalidImport
         );
         // Inspection : rien d'écrit, répétable.
         for _ in 0..2 {
-            let summary = hub.inspect_import(&text).unwrap();
+            let (summary, identity) = hub.inspect_import(&text).unwrap();
+            assert!(!identity.differs && identity.current.is_some());
             assert_eq!((summary.rooms, summary.rules), (0, 0));
             assert!(!dir.join("import-en-attente.matterhome").exists());
         }
         assert!(hub.exit_reason().is_none());
 
-        hub.stage_import(&text).unwrap();
+        hub.stage_import(&text, false).unwrap();
         assert_eq!(hub.exit_reason(), Some(ExitReason::ImportStaged));
         let pending = std::fs::read(dir.join("import-en-attente.matterhome")).unwrap();
-        let second = hub.stage_import(&text).unwrap_err();
+        let second = hub.stage_import(&text, false).unwrap_err();
         assert_eq!(second.code, ErrorCode::ImportPending);
         assert_eq!(second.code.http_status(), 409);
         // Le premier dépôt n'a pas été touché.
@@ -975,6 +1024,32 @@ mod tests {
             std::fs::read(dir.join("import-en-attente.matterhome")).unwrap(),
             pending
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Une sauvegarde d'une autre fabric n'est mise de côté qu'avec `replace_identity` ; sans
+    /// lui, refus `identity_mismatch` sans rien écrire ni arrêter le serveur.
+    #[test]
+    fn a_different_identity_needs_an_explicit_replace_identity() {
+        let dir = temp("identity");
+        let (hub, _rx) = hub_with(&dir, 16);
+        let own = backup_text(&dir);
+        // Une autre fabric : même clés, autre numéro.
+        let other = own.replace("\\\"fabric_id\\\":1,", "\\\"fabric_id\\\":255,");
+        assert_ne!(own, other, "la sauvegarde d'essai doit changer");
+
+        let (_, identity) = hub.inspect_import(&other).unwrap();
+        assert!(identity.differs);
+        assert_eq!(identity.incoming.fabric_id, "0xff");
+        assert_eq!(identity.current.as_ref().unwrap().fabric_id, "0x1");
+        let err = hub.stage_import(&other, false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::IdentityMismatch);
+        assert_eq!(err.code.http_status(), 409);
+        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(hub.exit_reason().is_none());
+        // Le refus ne bloque pas la suite : avec l'option, c'est accepté.
+        hub.stage_import(&other, true).unwrap();
+        assert_eq!(hub.exit_reason(), Some(ExitReason::ImportStaged));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
