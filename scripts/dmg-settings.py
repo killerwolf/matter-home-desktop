@@ -1,9 +1,9 @@
-# Mise en page du DMG, lue par dmgbuild (appelé par scripts/bundle.sh --dmg).
+# Mise en page du DMG, lue par dmgbuild (appelé par scripts/bundle.sh et scripts/bundle-server-app.sh avec --dmg).
 #
 # dmgbuild écrit lui-même le .DS_Store de la fenêtre : aucune automatisation du Finder,
 # donc le même résultat en local et sur les machines de CI sans session graphique.
 #
-# Valeurs passées par bundle.sh avec -D : app (chemin du .app), background (TIFF 1x + 2x),
+# Valeurs passées par les scripts avec -D : app (chemin du .app), background (TIFF 1x + 2x),
 # icon (icône du volume).
 
 import os.path

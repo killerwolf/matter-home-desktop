@@ -38,3 +38,11 @@ Journal :              ~/Library/Logs/MatterHomeServer/server.log
 
 Guide complet : docs/installation-serveur.md dans le dépôt
 https://github.com/killerwolf/matter-home-desktop
+
+Plus simple : l'application « Matter Home Server »
+  Le fichier MatterHomeServer-<version>-universal.dmg (même page de téléchargement) contient le
+  serveur sous forme d'application de la barre de menus : à glisser dans Applications, sans
+  Terminal ni mot de passe administrateur. Cette archive en ligne de commande est l'option
+  avancée ; ne l'utilisez pas en même temps que l'application sur le même Mac.
+  Pour passer de ce service à l'application : ./uninstall.sh (vos données restent), puis ouvrez
+  l'application.
