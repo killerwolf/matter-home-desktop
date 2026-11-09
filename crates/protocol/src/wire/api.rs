@@ -143,13 +143,21 @@ pub struct ImportSummary {
     /// Date de création, ISO 8601.
     pub created: String,
     pub devices: usize,
+    /// Pièces du plan de la maison (tous étages).
+    #[serde(default)]
+    pub rooms: usize,
+    /// Règles d'automatisation.
+    #[serde(default)]
+    pub rules: usize,
     pub history_files: usize,
     pub has_plan: bool,
     pub has_rules: bool,
 }
 
 /// Réponse de `POST /api/import` (202) : la sauvegarde est validée et mise de côté ; le
-/// serveur va s'arrêter pour que son superviseur le relance et l'applique.
+/// serveur va s'arrêter pour que son superviseur le relance et l'applique. Avec
+/// `?dry_run=1`, réponse 200 avec `restarting: false` : la sauvegarde est validée et résumée,
+/// rien n'est mis de côté et le serveur ne s'arrête pas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportResponse {
     pub summary: ImportSummary,

@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio_rustls::TlsConnector;
 
 const CONTROLLER: &str = r#"{"version":1,"identity":{"fabric_id":1,"controller_node_id":2,
-    "ca_private_key":"aa","ca_cert_der":"bb","controller_private_key":"cc","controller_cert_der":"dd"},
+    "ca_private_key":"0101010101010101010101010101010101010101010101010101010101010101","ca_cert_der":"bb","controller_private_key":"0101010101010101010101010101010101010101010101010101010101010101","controller_cert_der":"dd"},
     "nodes":[{"node_id":7,"name":"Capteur"}]}"#;
 
 const SECRET_FILES: [&str; 3] = ["tls-cert.pem", "tls-key.pem", "compte.json"];
@@ -153,6 +153,37 @@ fn import_keeps_account_certificate_and_sessions() {
         for refused in [&garbage, &evil] {
             assert!(!refused.text().contains(dir.to_str().unwrap()), "{}", refused.text());
         }
+        // Contenu qui ne se chargerait pas (clé du contrôleur invalide) : refusé avant tout dépôt.
+        let bad_key = CONTROLLER.replace(&"01".repeat(32), "aa");
+        let bad = json!({
+            "format": "matter-home-desktop-sauvegarde", "version": 1, "created": "2026-01-01T00:00:00+01:00",
+            "files": {"controller.json": bad_key}
+        });
+        let bad = client.send_json("POST", "/api/import", &token, &bad).await;
+        assert_eq!((bad.status, bad.code().as_str()), (400, "invalid_import"));
+        assert!(!bad.text().contains("aa\"") && !bad.text().contains(&"01".repeat(32)));
+        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+
+        // Inspection (dry_run) : résumé, sans rien mettre de côté ni arrêter le serveur.
+        let inspected = client
+            .request("POST", "/api/import?dry_run=1", Some(&token), Some(text.as_bytes()))
+            .await;
+        assert_eq!(inspected.status, 200, "{}", inspected.text());
+        let body = inspected.json();
+        assert_eq!(body["restarting"], false);
+        assert_eq!(body["summary"]["devices"], 1);
+        assert_eq!(body["summary"]["rooms"], 0);
+        assert_eq!(body["summary"]["rules"], 0);
+        assert!(body["summary"]["created"].as_str().unwrap().starts_with("20"));
+        let refused = client
+            .request("POST", "/api/import?dry_run=1", Some(&token), Some(b"pas une sauvegarde"))
+            .await;
+        assert_eq!((refused.status, refused.code().as_str()), (400, "invalid_import"));
+        let odd = client
+            .request("POST", "/api/import?dry_run=peut-etre", Some(&token), Some(text.as_bytes()))
+            .await;
+        assert_eq!((odd.status, odd.code().as_str()), (400, "bad_request"));
         assert!(!dir.join("import-en-attente.matterhome").exists());
         assert_eq!(client.get("/api/state", &token).await.status, 200);
 
@@ -170,7 +201,9 @@ fn import_keeps_account_certificate_and_sessions() {
     assert_eq!(status.code(), Some(75), "code de sortie « à relancer »");
 
     // Le lancement suivant applique l'import (comme le fait main avant de démarrer).
-    let message = backup::apply_pending(&dir).expect("import en attente");
+    let message = backup::apply_pending(&dir)
+        .expect("l'import doit s'appliquer")
+        .expect("import en attente");
     assert!(message.contains("Import terminé"), "{message}");
     assert!(std::fs::read_to_string(dir.join("controller.json"))
         .unwrap()

@@ -140,6 +140,8 @@ pub struct Hub {
     demo_history: Mutex<Option<HistorySink>>,
     exit: Mutex<Option<ExitReason>>,
     stopping: AtomicBool,
+    /// Un import validé attend le redémarrage : un second est refusé.
+    import_staged: AtomicBool,
 }
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -180,6 +182,7 @@ impl Hub {
             demo_history: Mutex::new(config.demo_history),
             exit: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            import_staged: AtomicBool::new(false),
         }
     }
 
@@ -674,9 +677,30 @@ impl Hub {
         }
     }
 
+    /// Valide une sauvegarde sans rien engager : ni fichier écrit, ni arrêt (l'inspection d'un
+    /// import). Les mêmes contrôles que l'import réel.
+    pub fn inspect_import(&self, text: &str) -> ApiResult<ImportSummary> {
+        match backup::inspect_text(text) {
+            Ok(summary) => Ok(import_summary(summary)),
+            Err(e) => {
+                log::info!("sauvegarde à inspecter refusée : {e}");
+                Err(self.invalid_import(&e.to_string()))
+            }
+        }
+    }
+
+    fn invalid_import(&self, why: &str) -> ApiError {
+        // Les messages de `backup` décrivent le fichier reçu ; on retire tout chemin.
+        ApiError::with_detail(ErrorCode::InvalidImport, self.scrubber.clean(why))
+    }
+
     /// Valide une sauvegarde et la met de côté ; le serveur doit ensuite s'arrêter pour que
-    /// son superviseur le relance et l'applique.
+    /// son superviseur le relance et l'applique. Un seul import à la fois : tant qu'un import
+    /// validé attend le redémarrage, un autre est refusé (`import_pending`).
     pub fn stage_import(&self, text: &str) -> ApiResult<ImportSummary> {
+        if self.import_staged.swap(true, Ordering::SeqCst) {
+            return Err(ApiError::new(ErrorCode::ImportPending));
+        }
         match backup::stage_import_text(&self.data_dir, text) {
             Ok(summary) => {
                 log::warn!(
@@ -684,21 +708,17 @@ impl Hub {
                     summary.describe()
                 );
                 self.request_exit(ExitReason::ImportStaged);
-                Ok(ImportSummary {
-                    created: summary.created,
-                    devices: summary.devices,
-                    history_files: summary.history_files,
-                    has_plan: summary.has_plan,
-                    has_rules: summary.has_rules,
-                })
+                Ok(import_summary(summary))
             }
             Err(e) => {
-                // Les messages de `backup` décrivent le fichier reçu ; on retire tout chemin.
-                log::info!("import refusé : {e:#}");
-                Err(ApiError::with_detail(
-                    ErrorCode::InvalidImport,
-                    self.scrubber.clean(&e.to_string()),
-                ))
+                self.import_staged.store(false, Ordering::SeqCst);
+                match e {
+                    backup::StageError::Invalid(why) => {
+                        log::info!("import refusé : {why}");
+                        Err(self.invalid_import(&why))
+                    }
+                    backup::StageError::Io(e) => Err(internal("import", &e)),
+                }
             }
         }
     }
@@ -713,6 +733,18 @@ impl Hub {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+}
+
+fn import_summary(summary: backup::Summary) -> ImportSummary {
+    ImportSummary {
+        created: summary.created,
+        devices: summary.devices,
+        rooms: summary.rooms,
+        rules: summary.rules,
+        history_files: summary.history_files,
+        has_plan: summary.has_plan,
+        has_rules: summary.has_rules,
     }
 }
 
@@ -880,6 +912,55 @@ mod tests {
         assert_eq!(seen[0].0 + 1, seen[1].0, "pas de trou dans les numéros");
         assert_eq!(seen[0].1["value"], 21.0);
         assert_eq!(seen[1].1["value"], 1.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn backup_text(dir: &Path) -> String {
+        let key = "01".repeat(32);
+        std::fs::write(
+            dir.join(persistence::FILE_NAME),
+            format!(
+                r#"{{"version":1,"identity":{{"fabric_id":1,"controller_node_id":2,
+                "ca_private_key":"{key}","ca_cert_der":"bb","controller_private_key":"{key}",
+                "controller_cert_der":"dd"}},"nodes":[]}}"#
+            ),
+        )
+        .unwrap();
+        backup::export_to_string(dir).unwrap().0
+    }
+
+    /// Un second import est refusé tant qu'un premier attend le redémarrage ; un import refusé
+    /// ne bloque pas le suivant ; l'inspection ne bloque rien et n'écrit rien.
+    #[test]
+    fn a_second_import_is_refused_while_one_is_pending() {
+        let dir = temp("imports");
+        let (hub, _rx) = hub_with(&dir, 16);
+        let text = backup_text(&dir);
+
+        // Refusé (pas une sauvegarde) : le verrou est rendu.
+        assert_eq!(
+            hub.stage_import("n'importe quoi").unwrap_err().code,
+            ErrorCode::InvalidImport
+        );
+        // Inspection : rien d'écrit, répétable.
+        for _ in 0..2 {
+            let summary = hub.inspect_import(&text).unwrap();
+            assert_eq!((summary.rooms, summary.rules), (0, 0));
+            assert!(!dir.join("import-en-attente.matterhome").exists());
+        }
+        assert!(hub.exit_reason().is_none());
+
+        hub.stage_import(&text).unwrap();
+        assert_eq!(hub.exit_reason(), Some(ExitReason::ImportStaged));
+        let pending = std::fs::read(dir.join("import-en-attente.matterhome")).unwrap();
+        let second = hub.stage_import(&text).unwrap_err();
+        assert_eq!(second.code, ErrorCode::ImportPending);
+        assert_eq!(second.code.http_status(), 409);
+        // Le premier dépôt n'a pas été touché.
+        assert_eq!(
+            std::fs::read(dir.join("import-en-attente.matterhome")).unwrap(),
+            pending
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

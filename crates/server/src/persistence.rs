@@ -180,6 +180,12 @@ fn current_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("./matter-home-desktop-data"))
 }
 
+/// Dossier de données standard (ou imposé par `--data-dir`), qu'il existe ou non : celui où
+/// un import interrompu doit être repris, avant toute migration d'un ancien dossier.
+pub fn current_data_dir() -> PathBuf {
+    current_dir()
+}
+
 /// Dossier des versions nommées « matter-demo » (jamais avec un dossier imposé).
 fn legacy_dir() -> Option<PathBuf> {
     if DATA_DIR_OVERRIDE.get().is_some() {

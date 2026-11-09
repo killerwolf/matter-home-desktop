@@ -171,11 +171,27 @@ fn run_server(args: &[String]) -> ExitCode {
     let data_dir = if demo {
         data_dir
     } else {
-        // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
+        // D'abord reprendre un import interrompu entre ses deux renommages (le dossier de
+        // données est alors absent) : avant la migration de l'ancien dossier, qui pourrait
+        // sinon s'installer à sa place, et avant tout chargement qui créerait une identité.
         let mut notes: Vec<String> = Vec::new();
+        match backup::recover(&persistence::current_data_dir()) {
+            Ok(note) => notes.extend(note),
+            Err(e) => {
+                log::error!("{e:#}");
+                return ExitCode::FAILURE;
+            }
+        }
+        // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
         notes.extend(persistence::migrate_legacy_data_dir());
         // Import demandé avant l'arrêt précédent : à appliquer avant tout chargement.
-        notes.extend(backup::apply_pending(&persistence::data_dir()));
+        match backup::apply_pending(&persistence::data_dir()) {
+            Ok(note) => notes.extend(note),
+            Err(e) => {
+                log::error!("{e:#}");
+                return ExitCode::FAILURE;
+            }
+        }
         for m in &notes {
             log::warn!("{m}");
         }

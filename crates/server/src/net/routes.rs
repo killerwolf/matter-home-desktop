@@ -505,26 +505,60 @@ async fn export(State(state): State<AppState>) -> ApiResult<Response> {
     Ok(attachment(wire::EXPORT_CONTENT_TYPE, &name, text))
 }
 
-async fn import(State(state): State<AppState>, ApiBytes(body): ApiBytes) -> ApiResult<Response> {
+/// `POST /api/import` : `?dry_run=1` valide et résume la sauvegarde sans rien engager.
+#[derive(serde::Deserialize, Default)]
+struct ImportQuery {
+    #[serde(default)]
+    dry_run: Option<String>,
+}
+
+async fn import(
+    State(state): State<AppState>,
+    q: Result<Query<ImportQuery>, axum::extract::rejection::QueryRejection>,
+    ApiBytes(body): ApiBytes,
+) -> ApiResult<Response> {
+    let dry_run = match q.map(|Query(q)| q.dry_run) {
+        Ok(None) => false,
+        Ok(Some(value)) if matches!(value.as_str(), "1" | "true") => true,
+        Ok(Some(value)) if matches!(value.as_str(), "0" | "false" | "") => false,
+        _ => {
+            return Err(
+                ApiError::with_detail(ErrorCode::BadRequest, "paramètre dry_run invalide").into(),
+            )
+        }
+    };
     let hub = state.hub.clone();
-    let summary = blocking(move || {
+    let response = blocking(move || {
         let text = std::str::from_utf8(&body).map_err(|_| {
             ApiError::with_detail(
                 ErrorCode::InvalidImport,
                 "le fichier n'est pas du texte JSON",
             )
         })?;
-        hub.stage_import(text)
+        if dry_run {
+            hub.inspect_import(text).map(|summary| {
+                (
+                    StatusCode::OK,
+                    ImportResponse {
+                        summary,
+                        restarting: false,
+                    },
+                )
+            })
+        } else {
+            hub.stage_import(text).map(|summary| {
+                (
+                    StatusCode::ACCEPTED,
+                    ImportResponse {
+                        summary,
+                        restarting: true,
+                    },
+                )
+            })
+        }
     })
     .await?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(ImportResponse {
-            summary,
-            restarting: true,
-        }),
-    )
-        .into_response())
+    Ok((response.0, Json(response.1)).into_response())
 }
 
 #[cfg(test)]
