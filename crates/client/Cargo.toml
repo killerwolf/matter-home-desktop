@@ -6,6 +6,10 @@ rust-version.workspace = true
 description = "Client de bureau Matter Home (egui) : capteurs, plan de la maison, automatisations"
 license.workspace = true
 
+[lib]
+name = "matter_home_client"
+path = "src/lib.rs"
+
 [[bin]]
 name = "matter-home-desktop"
 path = "src/main.rs"
@@ -18,3 +22,16 @@ eframe = "0.37"
 egui_plot = "0.38"
 env_logger = "0.11"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Réseau (étape 4), sans tokio : des fils d'exécution et des sockets bloquants, hors du fil de
+# l'interface. TLS en rustls avec ring (comme le serveur), sans aws-lc.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Analyse des réponses HTTP/1.1 (en-têtes). Les requêtes sont écrites à la main.
+httparse = "1"
+# WebSocket synchrone, par-dessus le flux TLS que nous ouvrons nous-mêmes.
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+# Empreinte SHA-256 du certificat du serveur.
+sha2 = "0.10"
+# Sélecteur de fichier du système (export, import, CSV), déjà utilisé par la v0.2.1.
+rfd = "0.17.2"
