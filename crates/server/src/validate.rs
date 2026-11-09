@@ -68,7 +68,12 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
                 Action::Webhook { url, body } => {
                     check_len(url, MAX_URL, "adresse")?;
                     check_len(body, MAX_BODY, "corps de requête")?;
-                    if !crate::automation::is_webhook_url(url) {
+                    // Une règle désactivée peut garder un brouillon d'adresse (vide, sans
+                    // « http », avec un espace) : la v0.2.1 les enregistrait, et l'import les
+                    // désactive au lieu de refuser toute la sauvegarde. Elle ne s'exécute jamais
+                    // (le moteur ignore les règles désactivées, et l'appel `webhook` revérifie
+                    // l'adresse, même pour « Tester »). Une règle activée, elle, doit être complète.
+                    if rule.enabled && !crate::automation::is_webhook_url(url) {
                         return Err(bad(
                             "adresse de webhook invalide (http:// ou https:// attendu, sans espace)",
                         ));
@@ -161,6 +166,22 @@ mod tests {
             }];
             assert!(rules(&set).is_err(), "{bad_url:?}");
         }
+        // Désactivée, la règle peut garder une adresse incomplète ; activée, jamais.
+        set.rules[0].enabled = false;
+        for draft in ["", "exemple.fr/hook", "http://a b"] {
+            set.rules[0].actions = vec![Action::Webhook {
+                url: draft.into(),
+                body: String::new(),
+            }];
+            assert!(rules(&set).is_ok(), "{draft:?}");
+        }
+        // Les bornes de taille restent valables pour une règle désactivée.
+        set.rules[0].actions = vec![Action::Webhook {
+            url: "x".repeat(MAX_URL + 1),
+            body: String::new(),
+        }];
+        assert!(rules(&set).is_err());
+        set.rules[0].enabled = true;
         set.rules[0].actions = vec![Action::Delay { seconds: 99_999 }];
         assert!(rules(&set).is_err());
         let mut p = HomePlan::default();

@@ -5,6 +5,8 @@
 //! - `matter-home-server --discover`     : diagnostic en ligne de commande (mDNS)
 //! - `matter-home-server create-account` : crée le compte unique (mot de passe demandé sans écho)
 //! - `matter-home-server fingerprint`    : affiche l'empreinte du certificat TLS
+//! - `matter-home-server import FICHIER` : importe un `.matterhome` (v0.2.1 ou export du serveur)
+//!   dans le dossier de données, puis quitte, sans démarrer Matter ni aucun réseau
 //!
 //! Le serveur quitte avec un code non nul sur une erreur fatale, pour qu'un superviseur
 //! (launchd, systemd) le relance. Ctrl-C ou SIGTERM l'arrête proprement (code 0). Après un
@@ -43,6 +45,14 @@ Usage :
                                  ses sessions (redémarrer ensuite le serveur)
   matter-home-server fingerprint [--data-dir DOSSIER]
                                  affiche l'empreinte SHA-256 du certificat TLS
+  matter-home-server import FICHIER.matterhome [--yes] [--data-dir DOSSIER]
+                                 importe une sauvegarde (même identité Matter, sans réappairage),
+                                 y compris dans un dossier vide (premier déploiement). Refuse si
+                                 un serveur tourne ; affiche un résumé et demande confirmation
+                                 (sauf avec --yes), applique l'import puis quitte : ni Matter ni
+                                 réseau ne sont démarrés. L'application de bureau doit être
+                                 arrêtée sur l'autre Mac. Les anciennes données sont conservées
+                                 dans « …avant-import-… ». Procédure : docs/migration.md
   matter-home-server --help      affiche cette aide
 
 Options : --listen accepte « adresse:port » ou un simple port (défaut : 0.0.0.0:8443, ou
@@ -71,6 +81,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("create-account") => run_create_account(&args[1..]),
         Some("fingerprint") => run_fingerprint(&args[1..]),
+        Some("import") => run_import(&args[1..]),
         _ => run_server(&args),
     }
 }
@@ -171,31 +182,14 @@ fn run_server(args: &[String]) -> ExitCode {
     let data_dir = if demo {
         data_dir
     } else {
-        // D'abord reprendre un import interrompu entre ses deux renommages (le dossier de
-        // données est alors absent) : avant la migration de l'ancien dossier, qui pourrait
-        // sinon s'installer à sa place, et avant tout chargement qui créerait une identité.
-        let mut notes: Vec<String> = Vec::new();
-        match backup::recover(&persistence::current_data_dir()) {
-            Ok(note) => notes.extend(note),
+        // Import demandé avant l'arrêt précédent : appliqué avant tout chargement.
+        match prologue(true) {
+            Ok(dir) => dir,
             Err(e) => {
                 log::error!("{e:#}");
                 return ExitCode::FAILURE;
             }
         }
-        // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
-        notes.extend(persistence::migrate_legacy_data_dir());
-        // Import demandé avant l'arrêt précédent : à appliquer avant tout chargement.
-        match backup::apply_pending(&persistence::data_dir()) {
-            Ok(note) => notes.extend(note),
-            Err(e) => {
-                log::error!("{e:#}");
-                return ExitCode::FAILURE;
-            }
-        }
-        for m in &notes {
-            log::warn!("{m}");
-        }
-        persistence::data_dir()
     };
 
     let code = serve(data_dir.clone(), listen, demo);
@@ -203,6 +197,27 @@ fn run_server(args: &[String]) -> ExitCode {
         let _ = std::fs::remove_dir_all(dir);
     }
     code
+}
+
+/// Ce que toute commande qui touche au dossier de données fait d'abord, verrou d'instance pris :
+/// reprendre un import interrompu entre ses deux renommages (le dossier de données est alors
+/// absent, ou recréé sans identité) avant la migration de l'ancien dossier, qui pourrait
+/// sinon s'installer à sa place, et avant tout chargement ou toute création de compte qui
+/// créerait une identité. `apply` : applique aussi l'import mis en attente par l'API (le
+/// serveur seulement ; la sous-commande `import` refuse un import en attente).
+/// Rend le dossier de données à utiliser.
+fn prologue(apply: bool) -> anyhow::Result<PathBuf> {
+    let mut notes: Vec<String> = Vec::new();
+    notes.extend(backup::recover(&persistence::current_data_dir())?);
+    // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
+    notes.extend(persistence::migrate_legacy_data_dir());
+    if apply {
+        notes.extend(backup::apply_pending(&persistence::data_dir())?);
+    }
+    for m in &notes {
+        log::warn!("{m}");
+    }
+    Ok(persistence::data_dir())
 }
 
 fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
@@ -305,9 +320,19 @@ fn ensure_demo_account(data_dir: &std::path::Path) -> Option<ExitCode> {
 // Sous-commandes
 // ---------------------------------------------------------------------------
 
+/// Dossier de données d'une sous-commande. `--data-dir` est imposé pour tout le processus
+/// (donc aussi pour le verrou d'instance, qui s'en déduit) : sans cela, le verrou serait pris
+/// à côté du dossier standard, jamais à côté du dossier demandé.
 fn data_dir_for_command(args: &mut Vec<String>) -> Result<PathBuf, ExitCode> {
     match take_value(args, "--data-dir") {
-        Ok(Some(dir)) => Ok(PathBuf::from(dir)),
+        Ok(Some(dir)) => {
+            let dir = PathBuf::from(dir);
+            if !persistence::set_data_dir(dir.clone()) {
+                eprintln!("dossier de données déjà fixé");
+                return Err(ExitCode::FAILURE);
+            }
+            Ok(dir)
+        }
         Ok(None) => Ok(persistence::data_dir()),
         Err(e) => Err(usage_error(&e)),
     }
@@ -334,6 +359,28 @@ fn run_create_account(args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
+        }
+    };
+    // Un import interrompu doit être repris AVANT de créer quoi que ce soit : `server_dir`
+    // créerait un dossier de données qui ne contient que `serveur/`. Si un serveur tourne, il a
+    // le verrou (et a déjà repris l'import à son démarrage) : on ne touche à rien d'autre.
+    let _lock = match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+        Ok(lock) => {
+            if let Err(e) = prologue(false) {
+                eprintln!("{e:#}");
+                return ExitCode::FAILURE;
+            }
+            Some(lock)
+        }
+        Err(_) => {
+            if backup::recovery_needed(&data_dir) {
+                eprintln!(
+                    "Un import interrompu attend d'être repris, et un serveur tient le verrou. \
+                     Arrêtez-le, puis relancez cette commande."
+                );
+                return ExitCode::FAILURE;
+            }
+            None
         }
     };
     let result = security::server_dir(&data_dir)
@@ -382,6 +429,113 @@ fn read_password(from_stdin: bool) -> Result<String, String> {
         return Err("les deux saisies sont différentes".into());
     }
     Ok(first)
+}
+
+/// `import FICHIER [--yes] [--data-dir DOSSIER]` : voir `docs/migration.md`.
+fn run_import(args: &[String]) -> ExitCode {
+    let mut args = args.to_vec();
+    let yes = take_flag(&mut args, "--yes");
+    if let Err(code) = data_dir_for_command(&mut args) {
+        return code;
+    }
+    let file = match args.as_slice() {
+        [file] if !file.starts_with("--") => PathBuf::from(file),
+        [] => return usage_error("import attend le fichier .matterhome à importer"),
+        [other, ..] if other.starts_with("--") => {
+            return usage_error(&format!("Option inconnue : {other}"))
+        }
+        _ => return usage_error("import n'accepte qu'un seul fichier"),
+    };
+    // Rien de ce qui suit ne démarre Matter ni le réseau : ni `Server::start`, ni mDNS.
+    let _lock = match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let data_dir = match prologue(false) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("{e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let pending = backup::pending_path(&data_dir);
+    if pending.exists() {
+        eprintln!(
+            "Une sauvegarde est déjà en attente dans {} (import demandé par l'API ?). Lancez le \
+             serveur pour qu'il l'applique, ou supprimez ce fichier pour y renoncer.",
+            pending.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let summary = match backup::inspect(&file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Fichier : {}", file.display());
+    println!("Dossier de données : {}", data_dir.display());
+    println!("Contenu : {}", summary.describe());
+    if data_dir.join(persistence::FILE_NAME).exists() {
+        println!(
+            "ATTENTION : ce dossier contient déjà des données Matter. Elles seront mises de côté \
+             (dossier « …avant-import-… », conservé) et remplacées par celles du fichier."
+        );
+    }
+    println!(
+        "Rappel : l'application de bureau doit être ARRÊTÉE sur l'autre Mac. Deux instances avec \
+         la même identité Matter se chassent (abonnements, règles exécutées deux fois)."
+    );
+    if !yes && !confirm("Importer cette sauvegarde ? [o/N] ") {
+        eprintln!("Import annulé : rien n'a été modifié.");
+        return ExitCode::FAILURE;
+    }
+    match backup::import_file(&data_dir, &file) {
+        Ok(done) => {
+            if let Some(note) = &done.resumed {
+                println!("{note}");
+            }
+            println!("Import terminé : {}.", done.summary.describe());
+            println!(
+                "Anciennes données conservées dans {} (à supprimer à la main quand tout \
+                 fonctionne).",
+                done.previous.display()
+            );
+            println!(
+                "Étapes suivantes : « matter-home-server create-account --username NOM » si le \
+                 compte n'existe pas encore, puis démarrer le serveur. N'ouvrez plus \
+                 l'application de bureau avec ces appareils."
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Question oui/non sur l'entrée standard. Sans terminal, jamais de « oui » implicite.
+fn confirm(question: &str) -> bool {
+    use std::io::Write;
+    if !std::io::stdin().is_terminal() {
+        eprintln!("L'entrée standard n'est pas un terminal : ajoutez --yes pour confirmer.");
+        return false;
+    }
+    print!("{question}");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(
+        line.trim().to_lowercase().as_str(),
+        "o" | "oui" | "y" | "yes"
+    )
 }
 
 fn run_fingerprint(args: &[String]) -> ExitCode {

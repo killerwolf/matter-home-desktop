@@ -1506,12 +1506,26 @@ fn describe_backup(s: &ImportSummary) -> String {
                 .to_string()
         })
         .unwrap_or_else(|_| s.created.clone());
-    format!(
+    let mut text = format!(
         "{}, {}, {}, sauvegarde du {when}.",
         plural(s.devices, "appareil", "appareils"),
         plural(s.rooms, "pièce", "pièces"),
         plural(s.rules, "règle", "règles"),
-    )
+    );
+    if !s.disabled_rules.is_empty() {
+        let names: Vec<String> = s
+            .disabled_rules
+            .iter()
+            .map(|n| format!("« {n} »"))
+            .collect();
+        text.push_str(&format!(
+            " {} désactivée(s) à l'import, adresse de webhook incomplète (contenu conservé, à \
+             corriger puis réactiver) : {}.",
+            plural(s.disabled_rules.len(), "règle", "règles"),
+            names.join(", ")
+        ));
+    }
+    text
 }
 
 fn status_badge(status: &WireStatus) -> (Color32, &'static str) {

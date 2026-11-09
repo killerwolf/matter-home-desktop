@@ -504,6 +504,63 @@ fn commands_reach_devices_and_results_come_back_as_events() {
     assert!(!log.contains(PASSWORD));
 }
 
+/// Une règle désactivée peut garder une adresse de webhook incomplète (c'est ce que produit
+/// l'import d'une sauvegarde de la v0.2.1) : le PUT l'accepte, l'ensemble des règles n'est pas
+/// bloqué. Activée, elle est refusée comme avant, et « Tester » n'appelle jamais l'adresse.
+#[test]
+fn a_disabled_rule_may_keep_an_incomplete_webhook_but_never_calls_it() {
+    let dir = temp_dir("draft-rule");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let mut rules = client.get("/api/rules", &token).await.json();
+        let id = rules["rules"][0]["id"].clone();
+        for url in ["", "exemple.fr/sans-http", "http://a b"] {
+            rules["rules"][0]["actions"] = json!([{"type": "Webhook", "url": url, "body": ""}]);
+            rules["rules"][0]["enabled"] = json!(true);
+            let r = client.send_json("PUT", "/api/rules", &token, &rules).await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (400, "bad_request"),
+                "{url:?}"
+            );
+            rules["rules"][0]["enabled"] = json!(false);
+            let r = client.send_json("PUT", "/api/rules", &token, &rules).await;
+            assert_eq!(r.status, 200, "{url:?} : {}", r.text());
+        }
+        let stored = client.get("/api/rules", &token).await.json();
+        assert_eq!(stored["rules"][0]["enabled"], false);
+        assert_eq!(stored["rules"][0]["actions"][0]["url"], "http://a b");
+
+        // « Tester » : la règle s'exécute, mais l'appel est refusé avant tout curl.
+        let r = client
+            .request(
+                "POST",
+                &format!("/api/rules/{}/test", id.as_str().unwrap()),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        let mut run = Value::Null;
+        for _ in 0..50 {
+            let runs = client.get("/api/rule-runs", &token).await.json();
+            if let Some(found) = runs.as_array().unwrap().iter().find(|r| {
+                r["rule_id"] == id
+                    && r["detail"]
+                        .as_str()
+                        .is_some_and(|d| d.contains("adresse invalide"))
+            }) {
+                run = found.clone();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(run["ok"], false, "{run}");
+    });
+}
+
 #[test]
 fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
     let dir = temp_dir("notify");

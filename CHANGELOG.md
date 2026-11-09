@@ -22,6 +22,13 @@ Les téléchargements de chaque version sont sur la
   import, historique et CSV sont servis à la demande. Protocole décrit dans
   `docs/protocole.md`.
 - Options du serveur `--listen` et `--data-dir`.
+- **Migration des données** (étape 5). `matter-home-server import FICHIER [--yes]` importe un
+  `.matterhome` de la v0.2.1 (même identité Matter, sans réappairage), y compris dans un dossier
+  vide ; il prend le verrou d'instance, affiche un résumé, puis quitte sans démarrer Matter ni le
+  réseau. Les règles dont le webhook est incomplet (brouillons enregistrés par la v0.2.1) sont
+  désactivées à l'import au lieu de le faire refuser, et nommées dans le résumé. Une coupure entre
+  les deux renommages de l'import n'est plus suivie de la perte du dossier complet si
+  `create-account` a été lancé avant la relance. Procédure : `docs/migration.md`.
 - **Client branché sur le serveur** (étape 4). Écran de connexion (adresse, identifiant, mot de
   passe) ; à la première connexion l'empreinte SHA-256 du certificat est montrée puis épinglée,
   une empreinte changée est refusée sans contournement silencieux. Le client ne garde plus aucune

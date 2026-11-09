@@ -41,17 +41,23 @@ pub struct RulesView {
 /// Ce qui empêche d'envoyer ces règles : le serveur refuse (400) une action « Appeler une URL »
 /// dont l'adresse n'est pas une adresse http(s) sans espace. Tant qu'elle est vide ou à moitié
 /// saisie, l'ensemble reste un brouillon visible, et rien ne part (ni ne revient en arrière).
+///
+/// Une règle **désactivée** peut garder une adresse incomplète (le serveur l'accepte, c'est ce que
+/// l'import d'une sauvegarde de la v0.2.1 produit) : elle ne bloque pas l'envoi des autres.
 fn rules_problem(set: &RuleSet) -> Option<String> {
-    set.rules.iter().find_map(|rule| {
-        rule.actions.iter().find_map(|action| match action {
-            Action::Webhook { url, .. } if !is_webhook_url(url) => Some(format!(
-                "l'action « Appeler une URL » de la règle « {} » n'a pas d'adresse valable \
+    set.rules
+        .iter()
+        .filter(|rule| rule.enabled)
+        .find_map(|rule| {
+            rule.actions.iter().find_map(|action| match action {
+                Action::Webhook { url, .. } if !is_webhook_url(url) => Some(format!(
+                    "l'action « Appeler une URL » de la règle « {} » n'a pas d'adresse valable \
                  (http:// ou https://, sans espace)",
-                rule.name
-            )),
-            _ => None,
+                    rule.name
+                )),
+                _ => None,
+            })
         })
-    })
 }
 
 /// Quel genre d'appareil un sélecteur doit proposer.
@@ -1014,6 +1020,34 @@ mod tests {
     use super::*;
     use protocol::events::Capabilities;
     use protocol::wire::WireNode;
+
+    fn webhook_rule(id: u64, enabled: bool, url: &str) -> Rule {
+        let mut rule = Rule::new(id);
+        rule.enabled = enabled;
+        rule.actions.push(Action::Webhook {
+            url: url.into(),
+            body: String::new(),
+        });
+        rule
+    }
+
+    /// Un brouillon de webhook dans une règle désactivée (ce que produit l'import d'une
+    /// sauvegarde de la v0.2.1) n'empêche pas d'enregistrer les autres règles ; activé, il
+    /// bloque comme avant.
+    #[test]
+    fn a_disabled_rule_may_keep_an_incomplete_webhook() {
+        let mut set = RuleSet::default();
+        set.rules
+            .push(webhook_rule(1, true, "https://exemple.fr/ok"));
+        set.rules.push(webhook_rule(2, false, ""));
+        set.rules
+            .push(webhook_rule(3, false, "exemple.fr/sans-http"));
+        set.rules.push(webhook_rule(4, false, "http://a b"));
+        assert_eq!(rules_problem(&set), None);
+        set.rules[1].enabled = true;
+        let why = rules_problem(&set).expect("une règle activée doit être complète");
+        assert!(why.contains(&set.rules[1].name), "{why}");
+    }
 
     #[test]
     fn summary_reads_naturally() {

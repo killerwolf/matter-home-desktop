@@ -152,6 +152,11 @@ pub struct ImportSummary {
     pub history_files: usize,
     pub has_plan: bool,
     pub has_rules: bool,
+    /// Noms des règles que l'import désactive parce que l'adresse de leur webhook est
+    /// incomplète (brouillons de la v0.2.1) : leur contenu est conservé, elles ne s'exécutent
+    /// pas tant qu'elles ne sont pas corrigées puis réactivées.
+    #[serde(default)]
+    pub disabled_rules: Vec<String>,
 }
 
 /// Réponse de `POST /api/import` (202) : la sauvegarde est validée et mise de côté ; le

@@ -745,6 +745,7 @@ fn import_summary(summary: backup::Summary) -> ImportSummary {
         history_files: summary.history_files,
         has_plan: summary.has_plan,
         has_rules: summary.has_rules,
+        disabled_rules: summary.disabled_rules,
     }
 }
 

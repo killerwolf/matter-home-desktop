@@ -573,10 +573,22 @@ fn backup_summary_reads_naturally() {
         history_files: 12,
         has_plan: true,
         has_rules: true,
+        disabled_rules: Vec::new(),
     };
     let text = describe_backup(&s);
     assert!(
         text.starts_with("12 appareils, 7 pièces, 1 règle, sauvegarde du "),
+        "{text}"
+    );
+    assert!(!text.contains("désactivée"), "{text}");
+    // Les brouillons désactivés par l'import sont nommés.
+    let with_drafts = ImportSummary {
+        disabled_rules: vec!["Alerte porte".into(), "Test".into()],
+        ..s
+    };
+    let text = describe_backup(&with_drafts);
+    assert!(
+        text.contains("2 règles désactivée(s)") && text.contains("« Alerte porte », « Test »"),
         "{text}"
     );
 }

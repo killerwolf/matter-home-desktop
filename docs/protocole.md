@@ -146,9 +146,24 @@ pendant ce temps est refusé : `import_pending` (409).
 
 **Inspecter sans importer** : `POST /api/import?dry_run=1` (même corps) fait les mêmes contrôles et
 répond 200 `{"summary": {"created": "2026-11-09T10:00:00+01:00", "devices": 12, "rooms": 7,
-"rules": 4, "history_files": 12, "has_plan": true, "has_rules": true}, "restarting": false}`
+"rules": 4, "history_files": 12, "has_plan": true, "has_rules": true,
+"disabled_rules": ["Alerte porte"]}, "restarting": false}`
 sans rien écrire ni arrêter le serveur. Le client l'appelle pour montrer « 12 appareils, 7 pièces,
 4 règles, sauvegarde du … » avant de demander confirmation, puis refait l'appel sans `dry_run`.
+
+**Règles à webhook incomplet** (`disabled_rules`) : la v0.2.1 enregistrait des règles dont l'adresse
+de l'action « Appeler une URL » était vide, sans `http` ou avec un espace, alors que `PUT /api/rules`
+les refuse quand la règle est **activée**. Plutôt que de refuser toute la sauvegarde, l'import
+**désactive** ces règles (`enabled: false`, tout le reste est conservé tel quel) et en donne les
+noms dans `disabled_rules` (liste vide sinon ; champ absent des anciens serveurs, à lire comme
+vide). Le client doit les montrer avant la confirmation. Une règle **désactivée** peut garder une
+adresse incomplète (`PUT /api/rules` l'accepte, bornes de taille comprises) : elle ne s'exécute
+jamais, et l'appel du webhook revérifie l'adresse, même pour `POST /api/rules/{id}/test`. Dès qu'on
+la réactive, l'adresse doit être complète.
+
+**Import en ligne de commande**, serveur arrêté : `matter-home-server import FICHIER [--yes]` (voir
+[migration.md](migration.md)). Même validation, même application atomique ; il prend le verrou
+d'instance, applique tout de suite puis quitte, sans jamais démarrer Matter ni le réseau.
 
 **Application au lancement suivant**, atomique et reprise après coupure : le nouveau dossier est
 construit à côté du dossier de données `D` (`D.import-partiel` : fichiers créés en 0600 et
@@ -161,6 +176,14 @@ et, après trois essais, **empêche le serveur de démarrer** en le disant dans 
 import annoncé n'est jamais perdu en silence, ni appliqué par surprise plus tard). Le dossier
 `serveur/` (compte, sessions, certificat) n'est ni exporté ni remplacé, seulement copié : l'empreinte
 et le compte ne changent pas.
+
+**Reprise** : si `D` est absent, ou présent sans `controller.json` (par exemple recréé par
+`create-account` entre la coupure et la relance, avec le seul `serveur/`) alors que `D.import-nouveau`
+contient une identité, l'échange est terminé : `D` (sans identité) est mis de côté sous
+`D.sans-identite-<date>`, jamais supprimé, puis `D.import-nouveau` devient `D`. `create-account`
+et `import` font cette reprise avant de toucher au dossier. `create-account` ne prend pas le
+verrou d'instance de force (`--replace` s'utilise serveur allumé) : si un serveur le tient, il a
+déjà fait la reprise à son démarrage, et la commande ne reprend rien.
 
 ## Côté client (`crates/client`)
 

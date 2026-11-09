@@ -75,6 +75,9 @@ sont gardées qu'en mémoire, le temps de l'affichage.
    sauvegarde du … ») ; après confirmation, le serveur redémarre pour appliquer l'import et le client
    se reconnecte seul.
 
+Pour reprendre les données de la **v0.2.1** (l'application de bureau d'avant le serveur), voir
+[migration.md](migration.md).
+
 Les données précédentes du serveur sont gardées dans un dossier voisin « …avant-import-<date> ».
 N'utilisez pas deux serveurs en même temps avec la même identité. Ces menus sont désactivés
 sans connexion au serveur.

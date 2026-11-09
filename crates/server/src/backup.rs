@@ -77,6 +77,9 @@ pub struct Summary {
     pub history_files: usize,
     pub has_plan: bool,
     pub has_rules: bool,
+    /// Noms des règles désactivées à l'import parce que leur webhook était incomplet
+    /// (brouillons enregistrés par la v0.2.1). Leur contenu est conservé.
+    pub disabled_rules: Vec<String>,
 }
 
 impl Summary {
@@ -92,8 +95,27 @@ impl Summary {
         if self.history_files > 0 {
             parts.push(format!("historique de {} appareil(s)", self.history_files));
         }
-        format!("sauvegarde du {date} : {}", parts.join(", "))
+        let mut text = format!("sauvegarde du {date} : {}", parts.join(", "));
+        if !self.disabled_rules.is_empty() {
+            text.push_str(&format!(". {}", describe_disabled(&self.disabled_rules)));
+        }
+        text
     }
+}
+
+/// « Règle désactivée… » : la phrase qui nomme les brouillons mis à l'arrêt par l'import.
+pub fn describe_disabled(names: &[String]) -> String {
+    let list = names
+        .iter()
+        .map(|n| format!("« {n} »"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} {} désactivée(s) à l'import, adresse de webhook incomplète (contenu conservé, \
+         à corriger puis réactiver) : {list}",
+        names.len(),
+        if names.len() > 1 { "règles" } else { "règle" }
+    )
 }
 
 /// Une sauvegarde refusée : le texte dit pourquoi, sans chemin ni contenu.
@@ -206,6 +228,7 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
             .count(),
         has_plan: plan.is_some(),
         has_rules: rules.is_some(),
+        disabled_rules: Vec::new(),
     })
 }
 
@@ -228,6 +251,48 @@ fn repair_plan(bundle: &mut Bundle) {
     }
 }
 
+/// Désactive les règles **activées** dont un webhook n'a pas d'adresse valable (vide, sans
+/// `http`, avec un espace…) et rend leurs noms. La v0.2.1 enregistrait ces brouillons ; le
+/// serveur refuse de les activer (`validate::rules`), et une seule règle ainsi faisait refuser
+/// toute la sauvegarde, sans même dire laquelle. Le contenu est gardé tel quel (seul `enabled`
+/// change) : l'utilisateur corrige l'adresse puis réactive. Une règle désactivée ne s'exécute
+/// jamais. Un fichier illisible n'est pas touché : l'analyse le refusera.
+fn repair_rules(bundle: &mut Bundle) -> Vec<String> {
+    let Some(text) = bundle.files.get(RULES) else {
+        return Vec::new();
+    };
+    let Ok(mut set) = serde_json::from_str::<RuleSet>(text) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for rule in set.rules.iter_mut().filter(|r| r.enabled) {
+        let incomplete = rule.actions.iter().any(|a| {
+            matches!(a, protocol::automation::Action::Webhook { url, .. }
+                if !protocol::automation::is_webhook_url(url))
+        });
+        if incomplete {
+            rule.enabled = false;
+            names.push(if rule.name.trim().is_empty() {
+                format!("(sans nom, règle {})", rule.id)
+            } else {
+                rule.name.clone()
+            });
+        }
+    }
+    if !names.is_empty() {
+        if let Ok(fixed) = serde_json::to_string(&set) {
+            log::warn!(
+                "{RULES} : {} règle(s) à webhook incomplet désactivée(s) dans la sauvegarde",
+                names.len()
+            );
+            bundle.files.insert(RULES.to_string(), fixed);
+        } else {
+            names.clear();
+        }
+    }
+    names
+}
+
 fn parse(text: &str) -> Result<(Bundle, Summary), Invalid> {
     let mut bundle: Bundle = serde_json::from_str(text)
         .map_err(|_| Invalid("ce fichier n'est pas une sauvegarde Matter Home".into()))?;
@@ -248,7 +313,9 @@ fn parse(text: &str) -> Result<(Bundle, Summary), Invalid> {
         )));
     }
     repair_plan(&mut bundle);
-    let summary = analyze(&bundle)?;
+    let disabled = repair_rules(&mut bundle);
+    let mut summary = analyze(&bundle)?;
+    summary.disabled_rules = disabled;
     Ok((bundle, summary))
 }
 
@@ -596,13 +663,120 @@ pub fn recover(dir: &Path) -> Result<Option<String>> {
             dir.display()
         )));
     }
+    // `dir` existe mais n'a aucune identité (pas de `controller.json`), aucun import en attente,
+    // et un dossier complet attend : l'échange a été coupé, puis quelque chose a recréé `dir`
+    // (typiquement `create-account` lancé avant la relance, qui ne met que `serveur/` dedans).
+    // Supprimer le dossier complet perdrait l'identité et mènerait à une nouvelle fabric : on
+    // termine l'échange. Ce `dir` presque vide est mis de côté, jamais supprimé : il peut porter
+    // le compte qui vient d'être créé.
+    if dir.exists()
+        && !dir.join(FILE_NAME).exists()
+        && !dir.join(PENDING).exists()
+        && complete.join(FILE_NAME).exists()
+    {
+        let aside = sibling(
+            dir,
+            &format!(
+                ".sans-identite-{}",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ),
+        )?;
+        std::fs::rename(dir, &aside).with_context(|| {
+            format!(
+                "import interrompu : impossible de mettre de côté {} (sans identité) pour y \
+                 mettre {}. Aucune nouvelle identité n'est créée ; corrigez le problème ou \
+                 renommez les dossiers à la main, puis relancez",
+                dir.display(),
+                complete.display()
+            )
+        })?;
+        std::fs::rename(&complete, dir).with_context(|| {
+            format!(
+                "import interrompu : {} est mis de côté ({}) mais {} n'a pas pu prendre sa \
+                 place. Renommez-le en {} à la main, puis relancez",
+                dir.display(),
+                aside.display(),
+                complete.display(),
+                dir.display()
+            )
+        })?;
+        sync_dir(parent)?;
+        let _ = remove_tree(&partial);
+        return Ok(Some(format!(
+            "Import interrompu repris : les nouvelles données sont en place dans {}. Le dossier \
+             qui avait été recréé entre-temps, sans identité, est conservé dans {} (le compte \
+             du serveur est celui de la sauvegarde ; recréez-le avec « create-account --replace » \
+             si besoin).",
+            dir.display(),
+            aside.display()
+        )));
+    }
     if remove_tree(&partial).is_err() {
         log::warn!("reste d'un import à nettoyer : {}", partial.display());
     }
+    // Ici, soit `dir` a son identité, soit le dossier complet n'en a pas (jamais construit
+    // ainsi) : c'est un reste d'un import qui n'a pas eu lieu.
     if dir.exists() && !dir.join(PENDING).exists() {
         let _ = remove_tree(&complete);
     }
     Ok(None)
+}
+
+/// Un import interrompu attend d'être repris dans `dir` ([`recover`]) : le dossier complet
+/// d'un import existe alors que `dir` est absent ou n'a pas d'identité.
+pub fn recovery_needed(dir: &Path) -> bool {
+    sibling(dir, NEW_SUFFIX).is_ok_and(|complete| {
+        complete.join(FILE_NAME).exists()
+            && !dir.join(FILE_NAME).exists()
+            && !dir.join(PENDING).exists()
+    })
+}
+
+/// Chemin de la sauvegarde mise en attente dans `dir`.
+pub fn pending_path(dir: &Path) -> PathBuf {
+    dir.join(PENDING)
+}
+
+/// Issue de [`apply_loop`].
+enum Applied {
+    Done(Summary, PathBuf),
+    /// La sauvegarde en attente n'est pas valable : elle a été retirée, rien n'a changé.
+    Rejected(String),
+}
+
+/// Pourquoi [`apply_loop`] n'a pas appliqué la sauvegarde en attente.
+enum LoopError {
+    /// Plusieurs essais ont échoué : les données actuelles sont intactes, la sauvegarde reste.
+    Exhausted(anyhow::Error),
+    /// État à réparer à la main (retour en arrière impossible) ou coupure simulée.
+    Fatal(anyhow::Error),
+}
+
+/// Applique la sauvegarde en attente de `dir` (au plus [`APPLY_ATTEMPTS`] essais).
+fn apply_loop(dir: &Path, hook: Hook<'_>) -> Result<Applied, LoopError> {
+    let mut last = None;
+    for attempt in 1..=APPLY_ATTEMPTS {
+        match apply_with(dir, hook) {
+            Ok((summary, backup)) => return Ok(Applied::Done(summary, backup)),
+            Err(ApplyError::Invalid(why)) => {
+                // Une sauvegarde invalide ne doit pas être retentée à chaque lancement.
+                let _ = std::fs::remove_file(dir.join(PENDING));
+                return Ok(Applied::Rejected(why));
+            }
+            Err(ApplyError::Transient(e)) => {
+                log::warn!("import non appliqué (essai {attempt}/{APPLY_ATTEMPTS}) : {e:#}");
+                last = Some(e);
+                if attempt < APPLY_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+            Err(ApplyError::Fatal(e)) => return Err(LoopError::Fatal(e)),
+            Err(ApplyError::Crashed) => return Err(LoopError::Fatal(anyhow!("arrêt simulé"))),
+        }
+    }
+    Err(LoopError::Exhausted(
+        last.unwrap_or_else(|| anyhow!("raison inconnue")),
+    ))
 }
 
 /// À appeler au démarrage, avant tout chargement : reprend un import interrompu puis applique
@@ -619,47 +793,103 @@ fn apply_pending_with(dir: &Path, hook: Hook<'_>) -> Result<Option<String>> {
     if !dir.join(PENDING).exists() {
         return Ok((!notes.is_empty()).then(|| notes.join(" ")));
     }
-    let mut last = None;
-    for attempt in 1..=APPLY_ATTEMPTS {
-        match apply_with(dir, hook) {
-            Ok((summary, backup)) => {
-                notes.push(format!(
-                    "Import terminé ({}). Anciennes données conservées dans {}.",
-                    summary.describe(),
-                    backup.display()
-                ));
-                return Ok(Some(notes.join(" ")));
-            }
-            Err(ApplyError::Invalid(why)) => {
-                // Une sauvegarde invalide ne doit pas être retentée à chaque lancement.
-                let _ = std::fs::remove_file(dir.join(PENDING));
-                notes.push(format!(
-                    "Import impossible, données actuelles conservées : {why}"
-                ));
-                return Ok(Some(notes.join(" ")));
-            }
-            Err(ApplyError::Transient(e)) => {
-                log::warn!("import non appliqué (essai {attempt}/{APPLY_ATTEMPTS}) : {e:#}");
-                last = Some(e);
-                if attempt < APPLY_ATTEMPTS {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-            }
-            Err(ApplyError::Fatal(e)) => return Err(e),
-            Err(ApplyError::Crashed) => bail!("arrêt simulé"),
+    match apply_loop(dir, hook) {
+        Ok(Applied::Done(summary, backup)) => {
+            notes.push(format!(
+                "Import terminé ({}). Anciennes données conservées dans {}.",
+                summary.describe(),
+                backup.display()
+            ));
+            Ok(Some(notes.join(" ")))
+        }
+        Ok(Applied::Rejected(why)) => {
+            notes.push(format!(
+                "Import impossible, données actuelles conservées : {why}"
+            ));
+            Ok(Some(notes.join(" ")))
+        }
+        Err(LoopError::Fatal(e)) => Err(e),
+        // Les données actuelles sont intactes et la sauvegarde reste en attente (le serveur a
+        // répondu 202 : on ne la supprime pas). Démarrer sans elle l'appliquerait peut-être des
+        // jours plus tard, par surprise : on s'arrête, l'opérateur voit pourquoi.
+        Err(LoopError::Exhausted(e)) => {
+            let pending = dir.join(PENDING);
+            Err(e.context(format!(
+                "l'import en attente n'a pas pu être appliqué après {APPLY_ATTEMPTS} essais ; \
+                 les données actuelles sont intactes et la sauvegarde reste en attente dans {p}. \
+                 Pour réessayer : corrigez la cause (espace disque, droits) et relancez le \
+                 serveur. Pour y renoncer : supprimez ce fichier (rm '{p}'), puis relancez le \
+                 serveur, qui démarrera avec les données actuelles",
+                p = pending.display()
+            )))
         }
     }
-    // Les données actuelles sont intactes et la sauvegarde reste en attente (le serveur a
-    // répondu 202 : on ne la supprime pas). Démarrer sans elle l'appliquerait peut-être des
-    // jours plus tard, par surprise : on s'arrête, l'opérateur voit pourquoi.
-    Err(last
-        .unwrap_or_else(|| anyhow!("raison inconnue"))
-        .context(format!(
-            "l'import en attente n'a pas pu être appliqué après {APPLY_ATTEMPTS} essais ; les \
-             données actuelles sont intactes et la sauvegarde reste en attente dans {}. \
-             Corrigez la cause (espace disque, droits) et relancez le serveur",
+}
+
+/// Résultat d'un import fait à la demande ([`import_file`]).
+#[derive(Debug)]
+pub struct Imported {
+    pub summary: Summary,
+    /// Où sont les anciennes données de `dir`.
+    pub previous: PathBuf,
+    /// Reprise d'un import interrompu faite avant celui-ci, s'il y en a eu une.
+    pub resumed: Option<String>,
+}
+
+/// Importe le fichier `src` dans `dir` tout de suite (sous-commande `import` : le serveur ne
+/// tourne pas). Même code atomique que l'import par l'API : validation complète, dossier
+/// construit à côté, deux renommages, reprise possible à chaque instant. `dir` peut ne pas
+/// exister (premier déploiement) ; il est alors créé en 0700.
+///
+/// L'appelant tient le verrou d'instance. Un échec laisse les données actuelles intactes et
+/// ne laisse **aucune** sauvegarde en attente : un import demandé à la main n'est pas rejoué
+/// plus tard par surprise.
+pub fn import_file(dir: &Path, src: &Path) -> Result<Imported> {
+    import_file_with(dir, src, &mut |_| Fault::None)
+}
+
+fn import_file_with(dir: &Path, src: &Path, hook: Hook<'_>) -> Result<Imported> {
+    let text =
+        std::fs::read_to_string(src).with_context(|| format!("lecture de {}", src.display()))?;
+    let resumed = recover(dir)?;
+    if dir.join(PENDING).exists() {
+        bail!(
+            "une sauvegarde est déjà en attente dans {} (import demandé par l'API ?). Lancez le \
+             serveur pour qu'il l'applique, ou supprimez ce fichier pour y renoncer",
             dir.join(PENDING).display()
-        )))
+        );
+    }
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .with_context(|| format!("droits de {}", dir.display()))?;
+    }
+    // Validation complète avant la moindre écriture, puis mise de côté et application.
+    let staged = stage_import_text(dir, &text).map_err(|e| anyhow!("{e}"))?;
+    match apply_loop(dir, hook) {
+        Ok(Applied::Done(mut summary, previous)) => Ok(Imported {
+            // La sauvegarde en attente est déjà réparée : les noms viennent de la validation.
+            summary: {
+                summary.disabled_rules = staged.disabled_rules;
+                summary
+            },
+            previous,
+            resumed,
+        }),
+        Ok(Applied::Rejected(why)) => {
+            bail!("import impossible, données actuelles conservées : {why}")
+        }
+        Err(LoopError::Exhausted(e)) => {
+            let _ = std::fs::remove_file(dir.join(PENDING));
+            Err(e.context(format!(
+                "l'import n'a pas pu être appliqué après {APPLY_ATTEMPTS} essais ; les données \
+                 actuelles sont intactes et rien n'est resté en attente. Corrigez la cause \
+                 (espace disque, droits) puis relancez la commande"
+            )))
+        }
+        Err(LoopError::Fatal(e)) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -728,6 +958,28 @@ mod tests {
                 (std::fs::read(entry.path()).unwrap(), mode(&entry.path())),
             );
         }
+        out
+    }
+
+    /// Chemin relatif → contenu, pour tous les fichiers sous `dir` (sous-dossiers compris).
+    fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else {
+                    let rel = path
+                        .strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    out.insert(rel, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
         out
     }
 
@@ -885,10 +1137,15 @@ mod tests {
             plan.floors[0].name = "x".repeat(10_000);
             serde_json::to_string(&plan).unwrap()
         };
-        let evil_rules = r#"{"version":1,"rules":[{"id":1,"name":"r","enabled":true,
+        // Deux règles de même identifiant (un webhook incomplet, lui, n'est plus un refus : la
+        // règle est désactivée, voir `draft_webhooks_are_disabled_with_their_content_not_refused`).
+        let evil_rules = r#"{"version":1,"rules":[
+            {"id":1,"name":"r","enabled":true,
             "trigger":{"type":"Time","hour":7,"minute":0,"days":[true,true,true,true,true,true,true]},
-            "conditions":[],"actions":[{"type":"Webhook","url":"file:///etc/passwd","body":""}],
-            "cooldown_s":60}]}"#
+            "conditions":[],"actions":[],"cooldown_s":60},
+            {"id":1,"name":"r2","enabled":true,
+            "trigger":{"type":"Time","hour":99,"minute":0,"days":[true,true,true,true,true,true,true]},
+            "conditions":[],"actions":[],"cooldown_s":60}]}"#
             .to_string();
         let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
             ("clé trop courte", vec![(FILE_NAME, bad_key)]),
@@ -1270,6 +1527,283 @@ mod tests {
         std::fs::write(partial.join(FILE_NAME), "à moitié").unwrap();
         assert!(recover(&dir).unwrap().is_none());
         assert!(!dir.exists() && !partial.exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    fn webhook_rule(id: u64, name: &str, enabled: bool, url: &str) -> protocol::automation::Rule {
+        let mut rule = protocol::automation::Rule::new(id);
+        rule.name = name.into();
+        rule.enabled = enabled;
+        rule.actions = vec![
+            protocol::automation::Action::Notify {
+                title: "t".into(),
+                message: "m".into(),
+            },
+            protocol::automation::Action::Webhook {
+                url: url.into(),
+                body: "{\"x\":1}".into(),
+            },
+        ];
+        rule
+    }
+
+    /// Les brouillons de la v0.2.1 (webhook vide, sans `http`, avec un espace) ne font plus
+    /// refuser toute la sauvegarde : ces règles sont désactivées, leur contenu est gardé, elles
+    /// sont nommées dans le résumé ; les autres règles ne bougent pas.
+    #[test]
+    fn draft_webhooks_are_disabled_with_their_content_not_refused() {
+        let set = RuleSet {
+            rules: vec![
+                webhook_rule(1, "Bonne", true, "https://exemple.fr/ok"),
+                webhook_rule(2, "Vide", true, ""),
+                webhook_rule(3, "Sans http", true, "exemple.fr/hook"),
+                webhook_rule(4, "Avec espace", true, "http://exemple.fr/a b"),
+                webhook_rule(5, "Déjà éteinte", false, "http://"),
+                webhook_rule(6, "   ", true, "ftp://x"),
+            ],
+            ..RuleSet::default()
+        };
+        let text = bundle_text(&[
+            (FILE_NAME, controller("Capteur")),
+            (RULES, serde_json::to_string(&set).unwrap()),
+        ]);
+        let summary = inspect_text(&text).expect("la sauvegarde doit être acceptée");
+        assert_eq!(summary.rules, 6);
+        assert_eq!(
+            summary.disabled_rules,
+            vec![
+                "Vide".to_string(),
+                "Sans http".into(),
+                "Avec espace".into(),
+                "(sans nom, règle 6)".into()
+            ]
+        );
+        let described = summary.describe();
+        assert!(described.contains("« Sans http »"), "{described}");
+
+        // Import réel : le fichier écrit contient les mêmes règles, `enabled` seul a changé.
+        let base = temp("drafts");
+        let dir = base.join("donnees");
+        std::fs::write(base.join("sauvegarde.matterhome"), &text).unwrap();
+        let done = import_file(&dir, &base.join("sauvegarde.matterhome")).unwrap();
+        assert_eq!(done.summary.disabled_rules.len(), 4);
+        let stored: RuleSet =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(RULES)).unwrap()).unwrap();
+        assert_eq!(stored.rules.len(), 6);
+        for (before, after) in set.rules.iter().zip(&stored.rules) {
+            let mut expected = before.clone();
+            expected.enabled = before.enabled && after.id == 1;
+            assert_eq!(*after, expected, "règle {}", before.id);
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Les autres refus restent des refus (une règle désactivée garde ses bornes de taille).
+    #[test]
+    fn other_rule_problems_still_refuse_the_import() {
+        let set = RuleSet {
+            rules: vec![webhook_rule(1, "Trop longue", false, &"x".repeat(5_000))],
+            ..RuleSet::default()
+        };
+        let text = bundle_text(&[
+            (FILE_NAME, controller("Capteur")),
+            (RULES, serde_json::to_string(&set).unwrap()),
+        ]);
+        let why = inspect_text(&text).unwrap_err().to_string();
+        assert!(why.contains("regles.json"), "{why}");
+    }
+
+    /// Coupure entre les deux renommages, puis `create-account` avant la relance : `D` renaît
+    /// avec le seul dossier `serveur/`. La reprise termine l'échange (même identité, mêmes
+    /// fichiers du serveur) au lieu de supprimer le dossier complet.
+    #[test]
+    fn a_recreated_empty_data_dir_does_not_lose_the_interrupted_import() {
+        let imported = controller("Importé");
+        let base = temp("recreated");
+        let dir = sample_dir(&base);
+        add_server_dir(&dir);
+        let secret_before = snapshot(&dir.join(SERVER_DIR));
+        stage_import_text(&dir, &bundle_text(&[(FILE_NAME, imported.clone())])).unwrap();
+        let result = apply_with(&dir, &mut |step| {
+            if step == "ecarte" {
+                Fault::Crash
+            } else {
+                Fault::None
+            }
+        });
+        assert!(matches!(result, Err(ApplyError::Crashed)));
+        let (_, complete) = marker_names(&dir);
+        assert!(!dir.exists() && complete.exists());
+        assert!(recovery_needed(&dir));
+
+        // `create-account` d'une ancienne version : crée D avec le seul `serveur/`.
+        let secret = dir.join(SERVER_DIR);
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("compte.json"), "{\"username\":\"autre\"}").unwrap();
+        assert!(recovery_needed(&dir));
+
+        let note = apply_pending(&dir)
+            .unwrap()
+            .expect("une reprise est annoncée");
+        assert!(note.contains("sans-identite"), "{note}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
+            imported,
+            "la reprise ne doit jamais créer une autre identité"
+        );
+        assert_eq!(snapshot(&dir.join(SERVER_DIR)), secret_before);
+        assert!(!complete.exists() && !recovery_needed(&dir));
+        // Le dossier recréé est conservé, pas supprimé.
+        let aside: Vec<_> = listing(&base)
+            .into_iter()
+            .filter(|n| n.contains(".sans-identite-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{:?}", listing(&base));
+        assert!(base
+            .join(&aside[0])
+            .join(SERVER_DIR)
+            .join("compte.json")
+            .exists());
+        // Et le lancement suivant ne change plus rien.
+        assert!(apply_pending(&dir).unwrap().is_none());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Un dossier qui a son identité garde la sienne : un dossier complet resté là est un reste.
+    #[test]
+    fn a_leftover_complete_dir_is_dropped_when_the_data_dir_has_its_identity() {
+        let base = temp("leftover");
+        let dir = sample_dir(&base);
+        let (_, complete) = marker_names(&dir);
+        std::fs::create_dir_all(&complete).unwrap();
+        std::fs::write(complete.join(FILE_NAME), controller("Autre")).unwrap();
+        assert!(!recovery_needed(&dir));
+        assert!(recover(&dir).unwrap().is_none());
+        assert!(!complete.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(FILE_NAME)).unwrap(),
+            controller("Capteur")
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Premier déploiement : le dossier de données n'existe pas, ou ne contient que `serveur/`
+    /// (compte créé avant). L'import construit tout, garde le compte et le certificat.
+    #[test]
+    fn import_file_works_on_a_missing_or_account_only_data_dir() {
+        let imported = controller("Importé");
+        let base = temp("fresh");
+        let src = base.join("v021.matterhome");
+        std::fs::write(
+            &src,
+            bundle_text(&[
+                (FILE_NAME, imported.clone()),
+                ("history/AB12.jsonl", "{\"t\":2}\n".into()),
+            ]),
+        )
+        .unwrap();
+
+        // 1. Dossier absent.
+        let absent = base.join("absent");
+        let done = import_file(&absent, &src).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(absent.join(FILE_NAME)).unwrap(),
+            imported
+        );
+        assert_eq!(done.summary.devices, 1);
+        assert!(!absent.join(PENDING).exists());
+        assert_eq!(
+            std::fs::metadata(&absent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        // 2. Seulement le compte.
+        let account = base.join("compte");
+        std::fs::create_dir_all(&account).unwrap();
+        add_server_dir(&account);
+        let secret_before = snapshot(&account.join(SERVER_DIR));
+        import_file(&account, &src).unwrap();
+        assert_eq!(snapshot(&account.join(SERVER_DIR)), secret_before);
+        assert_eq!(
+            std::fs::read_to_string(account.join(FILE_NAME)).unwrap(),
+            imported
+        );
+        assert!(account.join("history/AB12.jsonl").exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Un fichier refusé ne touche à rien et ne laisse rien en attente ; un import déjà en
+    /// attente (API) n'est pas écrasé.
+    #[test]
+    fn import_file_refuses_cleanly() {
+        let base = temp("refuse");
+        let dir = sample_dir(&base);
+        let bad = base.join("pas-une-sauvegarde.matterhome");
+        std::fs::write(&bad, "{\"format\":\"autre\"}").unwrap();
+        let before = tree(&dir);
+        let before_names = listing(&base);
+        let e = import_file(&dir, &bad).unwrap_err();
+        assert!(format!("{e:#}").contains("pas une sauvegarde"), "{e:#}");
+        assert_eq!(tree(&dir), before);
+        assert_eq!(listing(&base), before_names);
+
+        let good = base.join("bonne.matterhome");
+        std::fs::write(&good, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+        stage_import_text(&dir, &bundle_text(&[(FILE_NAME, controller("Via API"))])).unwrap();
+        let e = import_file(&dir, &good).unwrap_err();
+        assert!(format!("{e:#}").contains("déjà en attente"), "{e:#}");
+        assert!(dir.join(PENDING).exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Une panne persistante pendant `import_file` : données intactes, rien n'est laissé en
+    /// attente (la commande a échoué, elle ne doit pas être rejouée plus tard).
+    #[test]
+    fn a_failed_import_file_leaves_nothing_pending() {
+        let base = temp("failfile");
+        let dir = sample_dir(&base);
+        let src = base.join("bonne.matterhome");
+        std::fs::write(&src, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+        let before = tree(&dir);
+        let e = import_file_with(&dir, &src, &mut |step| {
+            if step == "construit" {
+                Fault::Fail
+            } else {
+                Fault::None
+            }
+        })
+        .unwrap_err();
+        assert!(
+            format!("{e:#}").contains("rien n'est resté en attente"),
+            "{e:#}"
+        );
+        assert_eq!(tree(&dir), before);
+        assert!(!dir.join(PENDING).exists());
+        assert!(!recovery_needed(&dir));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Après trois échecs, le message dit comment renoncer à l'import.
+    #[test]
+    fn the_giving_up_message_names_the_file_to_delete() {
+        let base = temp("giveup");
+        let dir = sample_dir(&base);
+        stage_import_text(&dir, &bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
+        let e = apply_pending_with(&dir, &mut |step| {
+            if step == "construit" {
+                Fault::Fail
+            } else {
+                Fault::None
+            }
+        })
+        .unwrap_err();
+        let text = format!("{e:#}");
+        let pending = dir.join(PENDING);
+        assert!(
+            text.contains("Pour y renoncer")
+                && text.contains(&format!("rm '{}'", pending.display())),
+            "{text}"
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 }
