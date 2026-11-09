@@ -21,6 +21,12 @@ pub enum ErrorCode {
     NotFound,
     /// Corps de requête trop gros.
     PayloadTooLarge,
+    /// Cette route n'existe pas avec cette méthode HTTP (l'en-tête `Allow` donne les bonnes).
+    MethodNotAllowed,
+    /// Le corps de la requête n'est pas arrivé à temps (client trop lent).
+    RequestTimeout,
+    /// Un import est déjà validé et en attente : le serveur va redémarrer pour l'appliquer.
+    ImportPending,
     /// Un appairage est déjà en cours.
     PairingBusy,
     /// L'appairage a échoué (le détail donne la cause).
@@ -47,7 +53,9 @@ impl ErrorCode {
             ErrorCode::BadRequest | ErrorCode::InvalidImport => 400,
             ErrorCode::NotFound | ErrorCode::NoData => 404,
             ErrorCode::PayloadTooLarge => 413,
-            ErrorCode::PairingBusy => 409,
+            ErrorCode::MethodNotAllowed => 405,
+            ErrorCode::RequestTimeout => 408,
+            ErrorCode::PairingBusy | ErrorCode::ImportPending => 409,
             ErrorCode::PairingFailed | ErrorCode::DeviceUnreachable => 502,
             ErrorCode::Unavailable => 503,
             ErrorCode::Internal => 500,

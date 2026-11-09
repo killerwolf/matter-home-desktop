@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
         .fallback(|| async { ApiErr(ApiError::new(ErrorCode::NotFound)) })
         .layer(DefaultBodyLimit::max(JSON_LIMIT))
         .layer(middleware::map_response(harden))
+        .layer(middleware::map_response(json_errors))
         .layer(middleware::from_fn(deadline))
         .with_state(state)
 }
@@ -88,6 +89,29 @@ async fn deadline(request: Request, next: Next) -> Response {
 }
 
 const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Les réponses que fabrique la bibliothèque (405 sans corps, 413 en texte) passent au format
+/// du protocole : `{"error": {"code": …}}`, avec un code stable. `Allow` est conservé.
+async fn json_errors(response: Response) -> Response {
+    let code = match response.status() {
+        StatusCode::METHOD_NOT_ALLOWED => ErrorCode::MethodNotAllowed,
+        StatusCode::PAYLOAD_TOO_LARGE => ErrorCode::PayloadTooLarge,
+        _ => return response,
+    };
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes().starts_with(b"application/json"));
+    if is_json {
+        return response;
+    }
+    let allow = response.headers().get(header::ALLOW).cloned();
+    let mut replaced = ApiErr(ApiError::new(code)).into_response();
+    if let Some(allow) = allow {
+        replaced.headers_mut().insert(header::ALLOW, allow);
+    }
+    replaced
+}
 
 /// En-têtes communs : jamais de mise en cache, pas de devinette de type.
 async fn harden(mut response: Response) -> Response {
@@ -142,19 +166,33 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
     type Rejection = ApiErr;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, ApiErr> {
-        let bytes = Bytes::from_request(req, state).await.map_err(|rejection| {
-            if rejection.into_response().status() == StatusCode::PAYLOAD_TOO_LARGE {
-                ApiError::new(ErrorCode::PayloadTooLarge)
-            } else {
-                ApiError::new(ErrorCode::BadRequest)
-            }
-        })?;
+        let ApiBytes(bytes) = ApiBytes::from_request(req, state).await?;
         serde_json::from_slice(&bytes).map(ApiJson).map_err(|_| {
             ApiErr(ApiError::with_detail(
                 ErrorCode::BadRequest,
                 "corps JSON invalide",
             ))
         })
+    }
+}
+
+/// Corps brut dont les erreurs (trop gros, interrompu) sont des codes du protocole.
+struct ApiBytes(Bytes);
+
+impl<S: Send + Sync> FromRequest<S> for ApiBytes {
+    type Rejection = ApiErr;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, ApiErr> {
+        Bytes::from_request(req, state)
+            .await
+            .map(ApiBytes)
+            .map_err(|rejection| {
+                if rejection.into_response().status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    ApiErr(ApiError::new(ErrorCode::PayloadTooLarge))
+                } else {
+                    ApiErr(ApiError::new(ErrorCode::BadRequest))
+                }
+            })
     }
 }
 
@@ -452,7 +490,7 @@ async fn export(State(state): State<AppState>) -> ApiResult<Response> {
     Ok(attachment(wire::EXPORT_CONTENT_TYPE, &name, text))
 }
 
-async fn import(State(state): State<AppState>, body: Bytes) -> ApiResult<Response> {
+async fn import(State(state): State<AppState>, ApiBytes(body): ApiBytes) -> ApiResult<Response> {
     let hub = state.hub.clone();
     let summary = blocking(move || {
         let text = std::str::from_utf8(&body).map_err(|_| {
@@ -472,4 +510,67 @@ async fn import(State(state): State<AppState>, body: Bytes) -> ApiResult<Respons
         }),
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    fn mini_router() -> Router {
+        async fn raw(ApiBytes(body): ApiBytes) -> StatusCode {
+            assert!(body.len() <= 8);
+            StatusCode::NO_CONTENT
+        }
+        Router::new()
+            .route("/raw", post(raw).layer(DefaultBodyLimit::max(8)))
+            .route("/only-get", get(|| async { "ok" }))
+            .layer(middleware::map_response(json_errors))
+    }
+
+    async fn send(method: &str, path: &str, body: &'static [u8]) -> Response {
+        mini_router()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn error_code(response: Response) -> (StatusCode, String, Option<HeaderValue>) {
+        let status = response.status();
+        let allow = response.headers().get(header::ALLOW).cloned();
+        let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+        assert_eq!(
+            content_type.as_ref().map(|v| v.as_bytes()),
+            Some(&b"application/json"[..])
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        (status, format!("{:?}", body.error.code), allow)
+    }
+
+    #[test]
+    fn payload_too_large_and_method_not_allowed_use_the_protocol_format() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Corps brut trop gros (l'import) : 413 au format du protocole, plus du texte.
+            let (status, code, _) = error_code(send("POST", "/raw", b"123456789").await).await;
+            assert_eq!((status.as_u16(), code.as_str()), (413, "PayloadTooLarge"));
+            assert_eq!(send("POST", "/raw", b"12345678").await.status(), 204);
+            // Mauvaise méthode : 405 avec un corps JSON, et l'en-tête Allow est conservé.
+            let (status, code, allow) = error_code(send("DELETE", "/only-get", b"").await).await;
+            assert_eq!((status.as_u16(), code.as_str()), (405, "MethodNotAllowed"));
+            assert!(allow.unwrap().to_str().unwrap().contains("GET"));
+        });
+    }
 }

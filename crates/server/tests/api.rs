@@ -910,3 +910,37 @@ fn pairing_code_with_multibyte_characters_is_refused_without_a_panic() {
     );
     assert!(!server.log().contains("panicked"), "{}", server.log());
 }
+
+/// 405 et 413 sont au format du protocole (`{"error": {"code": …}}`), pas du texte ou du vide.
+#[test]
+fn method_and_size_errors_use_the_protocol_format() {
+    let dir = temp_dir("errors");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        for (method, path) in [
+            ("PUT", "/api/state"),
+            ("DELETE", "/api/plan"),
+            ("GET", "/api/login"),
+        ] {
+            let r = client
+                .request(method, path, Some(&token), Some(b"{}"))
+                .await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (405, "method_not_allowed"),
+                "{method} {path}"
+            );
+            assert!(r.headers.contains_key("allow"), "{method} {path}");
+        }
+        // Un corps de plus de 1 Mo sur une route JSON ordinaire.
+        let big = vec![b' '; 1024 * 1024 + 1];
+        let r = client
+            .request("PUT", "/api/plan", Some(&token), Some(&big))
+            .await;
+        assert_eq!((r.status, r.code().as_str()), (413, "payload_too_large"));
+        // Le serveur répond encore.
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+    });
+}
