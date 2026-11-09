@@ -3,6 +3,7 @@
 //! passées en argument, donc testables sans toucher au système.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use matter_home_server::setup::IdentityState;
 
@@ -14,10 +15,12 @@ pub const DESKTOP_BINARY: &str = "matter-home-desktop";
 /// Le service installé par l'archive en ligne de commande.
 pub const SERVICE_PLIST: &str = "/Library/LaunchDaemons/dev.matter-home-desktop.server.plist";
 
-/// Un processus de la liste de `ps` : numéro et chemin de l'exécutable.
+/// Un processus de la liste de `ps` : numéro, temps écoulé depuis son lancement (s'il est lisible)
+/// et chemin de l'exécutable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proc {
     pub pid: u32,
+    pub elapsed: Option<Duration>,
     pub path: String,
 }
 
@@ -27,15 +30,35 @@ impl Proc {
     }
 }
 
-/// Lit la sortie de `ps -axo pid=,comm=`.
+/// Le temps écoulé de `ps -o etime` : `[[jj-]hh:]mm:ss`.
+pub fn parse_etime(text: &str) -> Option<Duration> {
+    let (days, rest) = match text.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0, text),
+    };
+    let mut seconds = 0u64;
+    let parts: Vec<&str> = rest.split(':').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    for part in parts {
+        seconds = seconds * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(Duration::from_secs(days * 86_400 + seconds))
+}
+
+/// Lit la sortie de `ps -axo pid=,etime=,comm=` (le chemin, qui peut contenir des espaces, en
+/// dernier).
 pub fn parse_ps(output: &str) -> Vec<Proc> {
     output
         .lines()
         .filter_map(|line| {
             let line = line.trim_start();
-            let (pid, path) = line.split_once(char::is_whitespace)?;
+            let (pid, rest) = line.split_once(char::is_whitespace)?;
+            let (etime, path) = rest.trim_start().split_once(char::is_whitespace)?;
             Some(Proc {
                 pid: pid.parse().ok()?,
+                elapsed: parse_etime(etime),
                 path: path.trim().to_string(),
             })
         })
@@ -104,7 +127,7 @@ impl Blocker {
             Blocker::Service => "le service installé tient les données",
             Blocker::OtherServer => "un autre serveur tient les données",
             Blocker::Unknown => "les données sont utilisées ailleurs",
-            Blocker::DesktopV02 => "l'ancienne application tourne",
+            Blocker::DesktopV02 => "l'ancienne application de bureau tourne",
         }
     }
 
@@ -112,10 +135,10 @@ impl Blocker {
     pub fn explain(&self) -> String {
         match self {
             Blocker::OtherApp => "Matter Home Server est déjà ouvert : cherchez son icône dans la barre de menus.".into(),
-            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Pour passer à cette application : ouvrez le Terminal une seule fois, allez dans le dossier de l'archive du serveur et lancez « ./uninstall.sh » (vos données restent en place), puis rouvrez Matter Home Server. Rien n'est démarré en attendant.".into(),
+            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Pour passer à cette application : ouvrez le Terminal une seule fois, allez dans le dossier de l'archive du serveur (celui où se trouve « uninstall.sh ») et lancez « ./uninstall.sh » : il demande le mot de passe administrateur du Mac, et vos données restent en place. Si ce dossier n'existe plus, retéléchargez l'archive sur la page des versions, ou tapez ces deux commandes : « sudo launchctl bootout system/dev.matter-home-desktop.server » puis « sudo rm -f /Library/LaunchDaemons/dev.matter-home-desktop.server.plist /usr/local/bin/matter-home-server ». Rouvrez ensuite Matter Home Server. Rien n'est démarré en attendant.".into(),
             Blocker::OtherServer => "Un autre serveur Matter Home (lancé à la main) utilise déjà les données. Arrêtez-le, puis rouvrez Matter Home Server. Rien n'est démarré en attendant.".into(),
             Blocker::Unknown => "Les données sont déjà utilisées par un autre programme Matter Home. Fermez-le, puis rouvrez Matter Home Server. Rien n'est démarré en attendant.".into(),
-            Blocker::DesktopV02 => "L'ancienne application de bureau (version 0.2) est ouverte. Elle ne signale pas qu'elle utilise les données : si le serveur démarrait en même temps, les deux se disputeraient vos appareils. Fermez-la (sur tous vos Mac), le serveur démarrera alors tout seul.".into(),
+            Blocker::DesktopV02 => "L'ancienne application de bureau (version 0.2) est ouverte. Elle ne signale pas qu'elle utilise les données : si le serveur démarrait en même temps, les deux se disputeraient vos appareils. Fermez-la (sur tous vos Mac), le serveur démarrera alors tout seul. Même message si l'application de bureau a été mise à jour pendant qu'elle était ouverte, ou si on ne peut pas savoir laquelle tourne : fermez-la puis rouvrez-la.".into(),
         }
     }
 }
@@ -196,15 +219,51 @@ pub fn parse_bundle_version(plist: &str) -> Option<String> {
     Some(after[start..start + end].trim().to_string())
 }
 
-/// L'ancienne application de bureau (version 0.2.x) tourne-t-elle ? `version_of` lit la version
-/// de l'application dont l'exécutable est donné (le client actuel, lui, prend le verrou).
-pub fn desktop_v02_running(procs: &[Proc], version_of: impl Fn(&Path) -> Option<String>) -> bool {
+/// Ce qu'on sait de l'application dont l'exécutable tourne : sa version et la date de dernière
+/// modification de son `Info.plist` (la plus récente de mtime et ctime : un copier-glisser conserve
+/// la date de modification d'origine, pas la date de changement).
+#[derive(Debug, Clone, Default)]
+pub struct BundleInfo {
+    pub version: Option<String>,
+    pub plist_changed: Option<SystemTime>,
+}
+
+/// Marge sur l'heure de lancement (le temps écoulé de `ps` est arrondi à la seconde).
+const START_MARGIN: Duration = Duration::from_secs(5);
+
+/// Cette application de bureau est-elle une v0.2 en cours d'exécution, ou peut-elle l'être ?
+/// Suspect : version 0.2.x ; `Info.plist` illisible (application déplacée ou supprimée pendant
+/// qu'elle tourne : on ne sait plus ce qui tourne) ; `Info.plist` modifié après le lancement du
+/// processus (l'application a été remplacée pendant qu'elle tourne : le disque dit 1.0 mais le
+/// processus peut être la v0.2.1).
+pub fn desktop_suspect(p: &Proc, info: &BundleInfo, now: SystemTime) -> bool {
+    let Some(version) = &info.version else {
+        return true;
+    };
+    if version == "0.2" || version.starts_with("0.2.") {
+        return true;
+    }
+    match (p.elapsed, info.plist_changed) {
+        (Some(elapsed), Some(changed)) => {
+            let started = now.checked_sub(elapsed).unwrap_or(SystemTime::UNIX_EPOCH);
+            changed > started + START_MARGIN
+        }
+        _ => false,
+    }
+}
+
+/// L'ancienne application de bureau (version 0.2.x) tourne-t-elle, ou un processus de ce nom
+/// est-il suspect ? `inspect` lit l'application dont l'exécutable est donné (le client actuel,
+/// lui, prend le verrou).
+pub fn desktop_v02_running(
+    procs: &[Proc],
+    now: SystemTime,
+    inspect: impl Fn(&Path) -> BundleInfo,
+) -> bool {
     procs
         .iter()
         .filter(|p| p.file_name() == DESKTOP_BINARY)
-        .any(|p| {
-            version_of(Path::new(&p.path)).is_some_and(|v| v == "0.2" || v.starts_with("0.2."))
-        })
+        .any(|p| desktop_suspect(p, &inspect(Path::new(&p.path)), now))
 }
 
 /// `<App>.app/Contents/MacOS/<binaire>` → `<App>.app/Contents/Info.plist`.
@@ -305,10 +364,16 @@ mod tests {
     fn explanations_give_the_way_out() {
         assert!(Blocker::Service.explain().contains("./uninstall.sh"));
         assert!(Blocker::Service.explain().contains("données restent"));
+        assert!(Blocker::Service
+            .explain()
+            .contains("mot de passe administrateur"));
+        // Le dossier de l'archive a pu disparaître : les commandes équivalentes sont données.
+        assert!(Blocker::Service.explain().contains("launchctl bootout"));
+        assert!(Blocker::Service.explain().contains(SERVICE_PLIST));
         assert!(Blocker::DesktopV02.explain().contains("version 0.2"));
     }
 
-    const PS: &str = "    1 /sbin/launchd\n  501 /Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app\n  777 /usr/local/bin/matter-home-server\n  900 /Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop\nbruit\n";
+    const PS: &str = "    1    05-03:04:05 /sbin/launchd\n  501       01:02 /Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app\n  777    12:00:01 /usr/local/bin/matter-home-server\n  900       45:10 /Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop\nbruit\n";
 
     #[test]
     fn parses_ps_with_spaces_in_paths() {
@@ -316,6 +381,24 @@ mod tests {
         assert_eq!(procs.len(), 4);
         assert_eq!(procs[1].pid, 501);
         assert!(procs[1].path.contains("Matter Home Server.app"));
+        assert_eq!(procs[1].elapsed, Some(Duration::from_secs(62)));
+        assert_eq!(procs[2].elapsed, Some(Duration::from_secs(12 * 3600 + 1)));
+        assert_eq!(
+            procs[0].elapsed,
+            Some(Duration::from_secs(5 * 86_400 + 3 * 3600 + 4 * 60 + 5))
+        );
+    }
+
+    #[test]
+    fn parses_elapsed_time_formats() {
+        assert_eq!(parse_etime("00:07"), Some(Duration::from_secs(7)));
+        assert_eq!(parse_etime("1:02:03"), Some(Duration::from_secs(3723)));
+        assert_eq!(
+            parse_etime("2-00:00:01"),
+            Some(Duration::from_secs(172_801))
+        );
+        assert_eq!(parse_etime("n/a"), None);
+        assert_eq!(parse_etime("12"), None);
     }
 
     #[test]
@@ -328,13 +411,60 @@ mod tests {
         assert_eq!(classify_holder(None, &procs[..1], false), Holder::Unknown);
     }
 
+    fn info(version: Option<&str>, changed_ago_s: Option<u64>, now: SystemTime) -> BundleInfo {
+        BundleInfo {
+            version: version.map(Into::into),
+            plist_changed: changed_ago_s.map(|s| now - Duration::from_secs(s)),
+        }
+    }
+
     #[test]
-    fn detects_only_the_0_2_desktop_app() {
+    fn detects_the_0_2_desktop_app() {
+        let now = SystemTime::now();
+        let procs = parse_ps(PS); // le client tourne depuis 45 min 10 s
+                                  // v0.2.1 : toujours bloquant.
+        assert!(desktop_v02_running(&procs, now, |_| info(
+            Some("0.2.1"),
+            Some(86_400),
+            now
+        )));
+        // v1 installée avant le lancement : le client actuel, qui prend le verrou, ne bloque pas.
+        assert!(!desktop_v02_running(&procs, now, |_| info(
+            Some("1.0.0"),
+            Some(86_400),
+            now
+        )));
+        // Pas de processus du client.
+        assert!(!desktop_v02_running(&procs[..3], now, |_| info(
+            Some("0.2.1"),
+            None,
+            now
+        )));
+    }
+
+    #[test]
+    fn unreadable_or_replaced_while_running_is_suspect() {
+        let now = SystemTime::now();
         let procs = parse_ps(PS);
-        assert!(desktop_v02_running(&procs, |_| Some("0.2.1".into())));
-        assert!(!desktop_v02_running(&procs, |_| Some("1.0.0".into())));
-        assert!(!desktop_v02_running(&procs, |_| None));
-        assert!(!desktop_v02_running(&procs[..3], |_| Some("0.2.1".into())));
+        // Plist illisible (ancienne application mise à la corbeille) : suspect.
+        assert!(desktop_v02_running(&procs, now, |_| BundleInfo::default()));
+        // Plist modifié (v1 glissée par-dessus) il y a 10 min alors que le processus a 45 min.
+        assert!(desktop_v02_running(&procs, now, |_| info(
+            Some("1.0.0"),
+            Some(600),
+            now
+        )));
+        // Modifié quelques secondes avant le lancement, ou dans la marge : pas suspect.
+        assert!(!desktop_v02_running(&procs, now, |_| info(
+            Some("1.0.0"),
+            Some(2711),
+            now
+        )));
+        assert!(!desktop_v02_running(&procs, now, |_| info(
+            Some("1.0.0"),
+            Some(2708),
+            now
+        )));
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod controller;
 pub mod icon;
 pub mod menu;
+pub mod signals;
 pub mod sleep;
 pub mod startup;
 pub mod status;

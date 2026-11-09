@@ -18,10 +18,13 @@ use matter_home_server_app::{agent, icon, system};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+/// Attente maximale de l'arrêt propre du serveur à la fermeture.
+const EXIT_WAIT: Duration = Duration::from_secs(20);
+
 const SLEEP_NOTE: &str = "Tant que Matter Home Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
 
 pub fn run(handle: Handle, demo: bool) -> eframe::Result {
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Matter Home Server")
             .with_inner_size([500.0, 640.0])
@@ -35,6 +38,9 @@ pub fn run(handle: Handle, demo: bool) -> eframe::Result {
         })),
         ..Default::default()
     };
+    // Portable allumé jour et nuit : le GPU intégré suffit à dessiner une petite fenêtre, le GPU
+    // discret (choix par défaut d'egui-wgpu, « haute performance ») resterait allumé en permanence.
+    low_power_gpu(&mut options.wgpu_options);
     eframe::run_native(
         "Matter Home Server",
         options,
@@ -56,6 +62,14 @@ pub fn run(handle: Handle, demo: bool) -> eframe::Result {
             Ok(Box::new(App::new(handle, demo, tray, rx)))
         }),
     )
+}
+
+/// Demande l'adaptateur graphique économe (le GPU intégré).
+fn low_power_gpu(config: &mut eframe::egui_wgpu::WgpuConfiguration) {
+    use eframe::egui_wgpu::{wgpu, WgpuSetup};
+    if let WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+        setup.power_preference = wgpu::PowerPreference::LowPower;
+    }
 }
 
 fn tray_image(kind: IconKind) -> Icon {
@@ -83,6 +97,24 @@ struct AccountForm {
     username: String,
     password: String,
     confirm: String,
+}
+
+/// Lit et compare une sauvegarde (hors du fil principal).
+fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, String> {
+    let inspected = backup::inspect(&file).map(|s| s.describe());
+    let comparison = setup::compare_identities(data_dir, &file);
+    match (inspected, comparison) {
+        (Ok(summary), Ok(comparison)) => Ok(Restore {
+            file,
+            summary,
+            comparison,
+            replace_ack: false,
+            stopped_ack: false,
+        }),
+        (Err(e), _) | (_, Err(e)) => Err(format!(
+            "Ce fichier n'est pas une sauvegarde utilisable : {e:#}"
+        )),
+    }
 }
 
 impl AccountForm {
@@ -114,6 +146,8 @@ struct App {
     login_enabled: bool,
     login_checked_at: std::time::Instant,
     local_notice: Option<Notice>,
+    /// Analyse d'une sauvegarde en cours (fil d'arrière-plan).
+    picking: Option<Receiver<Result<Restore, String>>>,
     // Interrupteur : l'écran de fin a déjà activé l'ouverture à la connexion.
     login_defaulted: bool,
 }
@@ -139,6 +173,7 @@ impl App {
             login_checked_at: std::time::Instant::now() - Duration::from_secs(60),
             local_notice: None,
             login_defaulted: false,
+            picking: None,
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
         if !app.demo {
@@ -334,13 +369,21 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // Cmd+Q ou fin de session : arrêt propre du serveur avant de sortir.
         let _ = self.handle.tx.send(Cmd::Quit);
-        std::thread::sleep(Duration::from_secs(12));
+        // L'arrêt du serveur peut durer environ 17 s : on attend le signal du chef d'orchestre,
+        // borné à 20 s.
+        if !self.handle.exited.wait(EXIT_WAIT) {
+            log::warn!(
+                "arrêt propre non confirmé en {} s : sortie",
+                EXIT_WAIT.as_secs()
+            );
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let st = self.handle.snapshot();
         self.refresh_login();
+        self.poll_picking();
         while let Ok(action) = self.actions.try_recv() {
             self.do_action(&ctx, action, &st);
         }
@@ -444,8 +487,13 @@ impl App {
                 }
                 ui.label(RichText::new("J'ai déjà des appareils appairés").strong());
                 ui.label("Reprenez la sauvegarde (fichier .matterhome) de l'ancienne application ou d'un autre Mac : rien à réappairer.");
-                if ui.button("Reprendre une sauvegarde…").clicked() {
-                    self.pick_backup(st);
+                if self.picking.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Lecture de la sauvegarde…");
+                    });
+                } else if ui.button("Reprendre une sauvegarde…").clicked() {
+                    self.pick_backup(&ui.ctx().clone(), st);
                 }
                 if setup::import_in_progress(&st.data_dir) {
                     ui.add_space(6.0);
@@ -544,7 +592,9 @@ impl App {
         }
     }
 
-    fn pick_backup(&mut self, st: &State) {
+    /// Le sélecteur de fichier reste sur le fil principal ; la lecture et l'analyse du fichier
+    /// (qui peut être gros) se font dans un fil, le résultat revient par `picking`.
+    fn pick_backup(&mut self, ctx: &egui::Context, st: &State) {
         let Some(file) = rfd::FileDialog::new()
             .set_title("Choisir une sauvegarde Matter Home")
             .add_filter("Sauvegarde Matter Home", &[backup::EXTENSION])
@@ -552,24 +602,30 @@ impl App {
         else {
             return;
         };
-        let inspected = backup::inspect(&file).map(|s| s.describe());
-        let comparison = setup::compare_identities(&st.data_dir, &file);
-        match (inspected, comparison) {
-            (Ok(summary), Ok(comparison)) => {
-                self.local_notice = None;
-                self.page = Page::Restore(Box::new(Restore {
-                    file,
-                    summary,
-                    comparison,
-                    replace_ack: false,
-                    stopped_ack: false,
-                }));
+        let (tx, rx) = mpsc::channel();
+        let (ctx, data_dir) = (ctx.clone(), st.data_dir.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(inspect_backup(&data_dir, file));
+            ctx.request_repaint();
+        });
+        self.local_notice = None;
+        self.picking = Some(rx);
+    }
+
+    /// Reçoit le résultat de l'analyse, s'il est arrivé.
+    fn poll_picking(&mut self) {
+        let Some(rx) = &self.picking else { return };
+        match rx.try_recv() {
+            Ok(Ok(restore)) => {
+                self.page = Page::Restore(Box::new(restore));
+                self.picking = None;
             }
-            (Err(e), _) | (_, Err(e)) => {
-                self.local_notice = Some(Notice::Err(format!(
-                    "Ce fichier n'est pas une sauvegarde utilisable : {e:#}"
-                )));
+            Ok(Err(message)) => {
+                self.local_notice = Some(Notice::Err(message));
+                self.picking = None;
             }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => self.picking = None,
         }
     }
 
@@ -701,6 +757,8 @@ impl App {
                     self.account_page(ui, st, true);
                     if ui.button("Annuler").clicked() {
                         self.change_account = false;
+                        // Aucun mot de passe ne reste en mémoire dans le formulaire.
+                        self.form = AccountForm::default();
                     }
                 } else {
                     if let Some(n) = &st.notice {
@@ -738,5 +796,33 @@ impl App {
         ui.label(SLEEP_NOTE);
         ui.add_space(6.0);
         ui.label(format!("Données : {}", st.data_dir.display()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui_wgpu::{wgpu, WgpuConfiguration, WgpuSetup};
+
+    #[test]
+    fn gpu_preference_is_low_power() {
+        let mut config = WgpuConfiguration::default();
+        low_power_gpu(&mut config);
+        let WgpuSetup::CreateNew(setup) = &config.wgpu_setup else {
+            panic!("configuration inattendue");
+        };
+        assert_eq!(setup.power_preference, wgpu::PowerPreference::LowPower);
+    }
+
+    #[test]
+    fn an_unreadable_backup_is_reported_without_a_panic() {
+        let dir = std::env::temp_dir().join(format!("mh-ui-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("faux.matterhome");
+        std::fs::write(&file, "ce n'est pas une sauvegarde").unwrap();
+        let err = inspect_backup(&dir, file).err().expect("refusé");
+        assert!(err.contains("pas une sauvegarde utilisable"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

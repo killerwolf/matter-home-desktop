@@ -8,8 +8,8 @@ use std::fs::File;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use matter_home_server::app::{Outcome, Server, ServerConfig};
 use matter_home_server::backup::{self, PendingKind};
@@ -59,7 +59,6 @@ pub struct State {
 
 pub type Shared = Arc<Mutex<State>>;
 
-#[derive(Debug)]
 pub enum Cmd {
     Retry,
     Import {
@@ -79,9 +78,63 @@ pub enum Cmd {
     Quit,
 }
 
+/// Jamais de mot de passe dans un journal : `Debug` le masque.
+impl std::fmt::Debug for Cmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cmd::Retry => f.write_str("Retry"),
+            Cmd::Import {
+                file,
+                replace_identity,
+            } => f
+                .debug_struct("Import")
+                .field("file", file)
+                .field("replace_identity", replace_identity)
+                .finish(),
+            Cmd::AbandonImport => f.write_str("AbandonImport"),
+            Cmd::NewHome => f.write_str("NewHome"),
+            Cmd::CreateAccount { username, .. } => f
+                .debug_struct("CreateAccount")
+                .field("username", username)
+                .field("password", &"***")
+                .finish(),
+            Cmd::ReplaceAccount { username, .. } => f
+                .debug_struct("ReplaceAccount")
+                .field("username", username)
+                .field("password", &"***")
+                .finish(),
+            Cmd::Quit => f.write_str("Quit"),
+        }
+    }
+}
+
+/// Signalé par le chef d'orchestre quand l'arrêt propre du serveur est terminé : l'interface
+/// attend ce signal (borné) avant de laisser le processus finir.
+#[derive(Clone, Default)]
+pub struct ExitSignal(Arc<(Mutex<bool>, Condvar)>);
+
+impl ExitSignal {
+    pub fn set(&self) {
+        let (flag, cv) = &*self.0;
+        *flag.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+    }
+
+    /// `true` si le signal est arrivé avant `timeout`.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let (flag, cv) = &*self.0;
+        let guard = flag.lock().unwrap_or_else(|e| e.into_inner());
+        let (guard, _) = cv
+            .wait_timeout_while(guard, timeout, |done| !*done)
+            .unwrap_or_else(|e| e.into_inner());
+        *guard
+    }
+}
+
 pub struct Handle {
     pub state: Shared,
     pub tx: Sender<Cmd>,
+    pub exited: ExitSignal,
 }
 
 impl Handle {
@@ -132,6 +185,26 @@ pub fn acquire_lock() -> (LockOutcome, Option<File>) {
     }
 }
 
+/// Le verrou propre à l'application, distinct de celui du serveur : il reste tenu même quand le
+/// serveur n'est pas démarré (service launchd, ancienne application), pour qu'une seconde
+/// ouverture se ferme au lieu d'ajouter une seconde icône.
+pub fn app_lock_path_for(instance_lock: &std::path::Path) -> PathBuf {
+    instance_lock.with_extension("app.lock")
+}
+
+/// `Some(fichier)` : verrou pris ; `None` : une autre instance de l'application le tient.
+pub fn acquire_app_lock_at(path: &std::path::Path) -> anyhow::Result<Option<File>> {
+    match persistence::acquire_instance_lock(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(e) if e.downcast_ref::<LockHeld>().is_some() => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn acquire_app_lock() -> anyhow::Result<Option<File>> {
+    acquire_app_lock_at(&app_lock_path_for(&persistence::instance_lock_path()))
+}
+
 pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle {
     let state = Arc::new(Mutex::new(State {
         phase: Phase::Starting,
@@ -146,6 +219,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle 
         demo: config.demo,
     }));
     let (tx, rx) = mpsc::channel();
+    let exited = ExitSignal::default();
     let ctl = Controller {
         cfg: config,
         state: state.clone(),
@@ -154,12 +228,14 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle 
         first_outcome: Some(first_lock.0),
         server: None,
         sleep: None,
+        exited: exited.clone(),
+        last_desktop_check: Instant::now(),
     };
     std::thread::Builder::new()
         .name("chef-orchestre".into())
         .spawn(move || ctl.run())
         .expect("fil du chef d'orchestre");
-    Handle { state, tx }
+    Handle { state, tx, exited }
 }
 
 struct Controller {
@@ -170,7 +246,13 @@ struct Controller {
     first_outcome: Option<LockOutcome>,
     server: Option<Server>,
     sleep: Option<SleepGuard>,
+    exited: ExitSignal,
+    /// Dernier contrôle de l'ancienne application de bureau pendant que le serveur tourne.
+    last_desktop_check: Instant,
 }
+
+/// Pendant que le serveur tourne, l'ancienne application de bureau est recherchée toutes les 30 s.
+const DESKTOP_CHECK_EVERY: Duration = Duration::from_secs(30);
 
 enum Next {
     Reboot,
@@ -237,8 +319,7 @@ impl Controller {
             account_exists: false,
         };
         if inputs.lock == LockOutcome::Acquired {
-            inputs.desktop_v02_running = !self.cfg.demo
-                && startup::desktop_v02_running(&system::processes(), system::bundle_version_of);
+            inputs.desktop_v02_running = !self.cfg.demo && desktop_v02_now();
             if !inputs.desktop_v02_running && !inputs.service_installed && !demo_skips_setup {
                 if let Err(e) = setup::prologue(true) {
                     log::error!("{e:#}");
@@ -337,7 +418,18 @@ impl Controller {
             let _ = std::fs::remove_file(persistence::instance_lock_path());
         }
         log::info!("Au revoir.");
+        self.exited.set();
         std::process::exit(code)
+    }
+
+    /// Arrête le serveur ; s'il ne s'arrête pas proprement (des fils tournent encore), on ne
+    /// redémarre jamais un second serveur dans ce processus sur la même identité : on sort en
+    /// erreur. launchd relance l'application si elle est supervisée, sinon l'utilisateur la rouvre.
+    fn stop_or_exit(&mut self) {
+        if !self.stop_server() {
+            log::error!("arrêt incomplet du serveur : sortie pour ne pas en démarrer un second dans ce processus");
+            self.finish_and_exit(1);
+        }
     }
 
     fn wait(&mut self) -> Next {
@@ -377,6 +469,16 @@ impl Controller {
                     let health = health_of(server);
                     self.set(|s| s.health = health);
                 }
+                if !self.cfg.demo && self.last_desktop_check.elapsed() >= DESKTOP_CHECK_EVERY {
+                    self.last_desktop_check = Instant::now();
+                    if desktop_v02_now() {
+                        log::warn!(
+                            "l'ancienne application de bureau (v0.2) est apparue : arrêt du serveur"
+                        );
+                        self.stop_or_exit();
+                        self.set_phase(Phase::Blocked(Blocker::DesktopV02));
+                    }
+                }
             } else if matches!(phase, Phase::Blocked(_))
                 && last_retry.elapsed() >= Duration::from_secs(10)
             {
@@ -395,14 +497,14 @@ impl Controller {
             }
             AfterStop::StayInProblem => {
                 log::error!("erreur fatale du serveur");
-                self.stop_server();
+                self.stop_or_exit();
                 self.set_phase(Phase::Problem(
                     "Le serveur s'est arrêté après une erreur. Consultez le journal, puis rouvrez Matter Home Server.".into(),
                 ));
             }
             AfterStop::Relaunch => {
                 log::warn!("import en attente : arrêt propre puis relance pour l'appliquer");
-                self.stop_server();
+                self.stop_or_exit();
                 self.lock = None;
                 self.relaunch();
             }
@@ -457,7 +559,7 @@ impl Controller {
                 match result {
                     Ok(()) => {
                         self.set(|s| s.notice = Some(Notice::Ok("Compte remplacé : les anciennes connexions sont fermées, le serveur redémarre.".into())));
-                        self.stop_server();
+                        self.stop_or_exit();
                         return Some(Next::Reboot);
                     }
                     Err(e) => self.set(|s| s.notice = Some(Notice::Err(e))),
@@ -489,6 +591,14 @@ impl Controller {
         // Un succès ouvre la suite (compte, puis démarrage) ; un échec laisse l'écran tel quel.
         ok.then_some(Next::Reboot)
     }
+}
+
+fn desktop_v02_now() -> bool {
+    startup::desktop_v02_running(
+        &system::processes(),
+        SystemTime::now(),
+        system::bundle_info_of,
+    )
 }
 
 fn health_of(server: &Server) -> Health {
@@ -595,6 +705,72 @@ mod tests {
             after_outcome(Outcome::Fatal, false),
             AfterStop::StayInProblem
         );
+    }
+
+    #[test]
+    fn debug_never_shows_a_password() {
+        let secret = "tres-secret-123";
+        for cmd in [
+            Cmd::CreateAccount {
+                username: "hamdi".into(),
+                password: secret.into(),
+            },
+            Cmd::ReplaceAccount {
+                username: "hamdi".into(),
+                password: secret.into(),
+            },
+        ] {
+            let text = format!("{cmd:?}");
+            assert!(!text.contains(secret), "{text}");
+            assert!(text.contains("hamdi") && text.contains("***"), "{text}");
+        }
+        assert_eq!(format!("{:?}", Cmd::Quit), "Quit");
+    }
+
+    #[test]
+    fn exit_signal_wakes_the_waiter_and_is_bounded() {
+        let signal = ExitSignal::default();
+        let t = Instant::now();
+        assert!(!signal.wait(Duration::from_millis(50)), "borné sans signal");
+        assert!(t.elapsed() >= Duration::from_millis(50));
+        let other = signal.clone();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            other.set();
+        });
+        let t = Instant::now();
+        assert!(signal.wait(Duration::from_secs(20)));
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "réveillé tout de suite"
+        );
+        setter.join().unwrap();
+        assert!(signal.wait(Duration::ZERO), "reste levé");
+    }
+
+    #[test]
+    fn app_lock_is_a_sibling_of_the_instance_lock() {
+        let inst = std::path::Path::new("/x/y/Dossier.lock");
+        assert_eq!(
+            app_lock_path_for(inst),
+            std::path::Path::new("/x/y/Dossier.app.lock")
+        );
+    }
+
+    #[test]
+    fn second_app_lock_is_refused_while_the_first_is_held() {
+        let dir = std::env::temp_dir().join(format!("mh-applock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("D.app.lock");
+        let first = acquire_app_lock_at(&path).unwrap();
+        assert!(first.is_some());
+        assert!(
+            acquire_app_lock_at(&path).unwrap().is_none(),
+            "une seule icône"
+        );
+        drop(first);
+        assert!(acquire_app_lock_at(&path).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

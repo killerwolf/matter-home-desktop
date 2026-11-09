@@ -5,21 +5,36 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
-use crate::startup::{self, Proc};
+use crate::startup::{self, BundleInfo, Proc};
 
 pub fn processes() -> Vec<Proc> {
     Command::new("/bin/ps")
-        .args(["-axo", "pid=,comm="])
+        .args(["-axo", "pid=,etime=,comm="])
         .output()
         .map(|o| startup::parse_ps(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default()
 }
 
-/// Version de l'application dont l'exécutable est `exe`, lue dans son `Info.plist`.
-pub fn bundle_version_of(exe: &Path) -> Option<String> {
-    let plist = startup::info_plist_of(exe)?;
-    startup::parse_bundle_version(&std::fs::read_to_string(plist).ok()?)
+/// Version de l'application dont l'exécutable est `exe` et date de dernier changement de son
+/// `Info.plist` (la plus récente de mtime et ctime : un copier-glisser conserve mtime, jamais ctime).
+pub fn bundle_info_of(exe: &Path) -> BundleInfo {
+    use std::os::unix::fs::MetadataExt;
+    let Some(plist) = startup::info_plist_of(exe) else {
+        return BundleInfo::default();
+    };
+    let version = std::fs::read_to_string(&plist)
+        .ok()
+        .and_then(|t| startup::parse_bundle_version(&t));
+    let plist_changed = std::fs::metadata(&plist).ok().map(|m| {
+        let secs = m.mtime().max(m.ctime()).max(0) as u64;
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    });
+    BundleInfo {
+        version,
+        plist_changed,
+    }
 }
 
 pub fn service_installed() -> bool {

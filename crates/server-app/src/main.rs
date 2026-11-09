@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use matter_home_server::logfile::RotatingLog;
 use matter_home_server::persistence;
 use matter_home_server_app::controller::{self, Config};
+use matter_home_server_app::signals;
 use matter_home_server_app::startup::{Holder, LockOutcome};
 
 const HELP: &str = "\
@@ -120,6 +121,21 @@ fn main() -> eframe::Result {
     init_logging(&log_path);
     install_panic_hook();
 
+    // Une seule icône : le verrou propre à l'application reste tenu pendant toute la vie du
+    // processus, même quand le serveur lui-même est bloqué (service launchd, ancienne
+    // application). Une seconde ouverture se ferme sans bruit.
+    let _app_lock = match controller::acquire_app_lock() {
+        Ok(Some(file)) => Some(file),
+        Ok(None) => {
+            eprintln!("Matter Home Server est déjà ouvert.");
+            return Ok(());
+        }
+        Err(e) => {
+            log::warn!("verrou de l'application indisponible : {e:#}");
+            None
+        }
+    };
+
     // Une seule instance : le verrou d'instance du serveur en tient lieu. Si c'est cette
     // application elle-même qui le tient, on s'efface sans bruit (une seconde icône prêterait
     // à confusion). Si c'est autre chose, on reste ouvert pour l'expliquer dans le menu.
@@ -141,6 +157,8 @@ fn main() -> eframe::Result {
         },
         lock,
     );
+    // SIGTERM / SIGINT : arrêt propre, comme « Quitter » (avant l'interface et ses fils).
+    signals::watch(&[signals::SIGTERM, signals::SIGINT], handle.tx.clone());
     ui::run(handle, demo)
 }
 
