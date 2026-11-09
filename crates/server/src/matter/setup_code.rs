@@ -28,8 +28,14 @@ pub fn parse(input: &str) -> Result<SetupInfo> {
     if trimmed.is_empty() {
         bail!("Le code est vide.");
     }
-    if trimmed.len() > 3 && trimmed[..3].eq_ignore_ascii_case("MT:") {
-        let info = matc::onboarding::decode_qr_payload(&format!("MT:{}", &trimmed[3..]))
+    // `get` et non une tranche d'octets : une entrée distante peut couper un caractère UTF-8.
+    if let Some(payload) = trimmed
+        .get(..3)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("MT:"))
+        .and_then(|_| trimmed.get(3..))
+        .filter(|payload| !payload.is_empty())
+    {
+        let info = matc::onboarding::decode_qr_payload(&format!("MT:{payload}"))
             .map_err(|e| anyhow::anyhow!("Code QR illisible : {e}"))?;
         return Ok(SetupInfo {
             passcode: info.passcode,
@@ -143,6 +149,53 @@ mod tests {
         assert!(parse("3497011233").is_err());
         assert!(parse("abc").is_err());
         assert!(parse("").is_err());
+    }
+
+    /// Une entrée distante ne doit jamais faire paniquer l'analyse (découpage au milieu d'un
+    /// caractère UTF-8, par exemple).
+    #[test]
+    fn never_panics_on_multibyte_input() {
+        for input in [
+            "aaé123",
+            "é",
+            "éé",
+            "MT:é",
+            "MT:éééé",
+            "mt:日本語",
+            "MTé:abc",
+            "aaé",
+            "ééé123456789",
+            "34970112332é",
+            "😀😀😀😀",
+            "M😀",
+            "MT:",
+            "MT",
+        ] {
+            assert!(parse(input).is_err(), "{input:?} devrait être refusé");
+        }
+    }
+
+    /// Aucune charge utile `MT:` (alphabet base 38, longueurs de 0 à 40) ne fait paniquer matc.
+    #[test]
+    fn qr_payloads_never_panic() {
+        const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.";
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for len in 0..=40 {
+            for _ in 0..50 {
+                let payload: String = (0..len)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        ALPHABET[(seed % ALPHABET.len() as u64) as usize] as char
+                    })
+                    .collect();
+                let _ = parse(&format!("MT:{payload}"));
+            }
+        }
+        for extreme in ["ZZZZZ", "..........", "-----------------------"] {
+            let _ = parse(&format!("MT:{extreme}"));
+        }
     }
 
     #[test]

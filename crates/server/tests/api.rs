@@ -876,3 +876,37 @@ fn log_never_contains_secrets() {
     let account = std::fs::read_to_string(dir.join("serveur/compte.json")).unwrap();
     assert!(!account.contains(PASSWORD) && account.contains("$argon2id$"));
 }
+
+/// Un code d'appairage avec un caractère UTF-8 multi-octets ne fait pas tomber le serveur.
+#[test]
+fn pairing_code_with_multibyte_characters_is_refused_without_a_panic() {
+    let dir = temp_dir("pairutf8");
+    let mut server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        for code in [
+            "aaé123",
+            "é",
+            "MT:é",
+            "mt:日本語日本語",
+            "😀😀😀😀",
+            "34970112332é",
+        ] {
+            let r = client
+                .send_json("POST", "/api/pairing", &token, &json!({ "code": code }))
+                .await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (400, "bad_request"),
+                "{code}"
+            );
+        }
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+    });
+    assert!(
+        server.wait_exit(Duration::from_millis(200)).is_none(),
+        "le serveur tourne encore"
+    );
+    assert!(!server.log().contains("panicked"), "{}", server.log());
+}
