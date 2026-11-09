@@ -127,7 +127,9 @@ jobs:
       - name: Determine release channel
         id: channel
         run: |
-          # Un tag de pré-version (ex. v0.2.0-rc.1) est publié comme « prerelease ».
+          # Un tag de pré-version (ex. v0.2.0-rc.1) est publié comme « prerelease » et jamais comme
+          # « latest » : l'adresse releases/latest ne la montre donc pas (la documentation renvoie
+          # vers la liste complète, /releases, pour les pré-versions).
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             echo "prerelease=--prerelease --latest=false" >> "$GITHUB_OUTPUT"
           else

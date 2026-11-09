@@ -9,8 +9,12 @@ s'y connecte, depuis ce Mac ou depuis un autre.
 
 Le plus simple : **l'application « Matter Home Server »**. Elle se glisse dans Applications,
 vit dans la barre de menus en haut de l'écran et contient le serveur. Tout se règle dans une
-petite fenêtre : **jamais de Terminal, jamais de mot de passe administrateur**. L'archive en ligne
-de commande (service launchd) reste disponible plus bas, comme option avancée.
+petite fenêtre : **ni Terminal ni mot de passe administrateur pour l'installer et l'utiliser**. Deux
+exceptions, une seule fois : si vous aviez installé l'ancien service (archive en ligne de commande),
+le désinstaller demande le mot de passe administrateur du Mac (voir « Passer du service à
+l'application ») ; et si le pare-feu de macOS est activé, il peut demander d'autoriser l'application
+(voir « Pare-feu »). L'archive en ligne de commande (service launchd) reste disponible plus bas,
+comme option avancée.
 
 ## Méthode simple : l'application Matter Home Server
 
@@ -18,7 +22,11 @@ de commande (service launchd) reste disponible plus bas, comme option avancée.
 
 1. Sur la [page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest),
    téléchargez `MatterHomeServer-<version>-universal.dmg` (macOS 10.15 ou plus récent sur Mac
-   Intel, macOS 11 ou plus récent sur Apple Silicon).
+   Intel, macOS 11 ou plus récent sur Apple Silicon). Attention : cette adresse (« dernière
+   version ») ne montre **que les versions définitives**. Une **pré-version** (un nom comme
+   `v1.0.0-rc.1`) n'y apparaît pas, même publiée : ouvrez la
+   [liste complète des versions](https://github.com/killerwolf/matter-home-desktop/releases) et
+   choisissez-la là.
 2. Ouvrez le DMG et glissez **Matter Home Server** dans **Applications**. Ouvrez-la depuis Applications, pas depuis le DMG :
    depuis l'image disque, l'ouverture à la connexion reste désactivée.
 3. Ouvrez l'application. L'application n'est pas signée avec un certificat Apple payant : si macOS
@@ -77,6 +85,16 @@ personne devant :
    indisponible si FileVault est activé).
 2. Ce Mac doit rester **allumé et branché**, de préférence en **Ethernet**.
 
+### Pare-feu
+
+Si le pare-feu de macOS est activé (Réglages Système → Réseau → Pare-feu), macOS demande, la
+première fois, s'il faut **autoriser les connexions réseau entrantes** pour « Matter Home Server » :
+répondez **Autoriser**, sans quoi le client ne pourra pas se connecter. L'application a une
+signature « ad hoc » qui change à chaque version : macOS peut reposer la question après une mise
+à jour. Si vous avez cliqué sur **Refuser** : Réglages Système → Réseau → Pare-feu → **Options…**,
+trouvez Matter Home Server dans la liste (ajoutez-le avec **+** s'il n'y est pas) et réglez-le sur
+« Autoriser les connexions entrantes ».
+
 ### Veille, capot ouvert, secteur
 
 Tant que l'application tourne, elle empêche le Mac de se mettre en veille tout seul (l'écran peut
@@ -97,16 +115,40 @@ risquer deux serveurs sur les mêmes données :
 - **Un autre serveur lancé à la main** : arrêtez-le, l'application démarre alors toute seule.
 - **L'ancienne application de bureau v0.2 est ouverte** : elle ne prend pas le verrou, donc
   l'application ne peut pas savoir si elle utilise les données. Fermez-la (sur tous vos Mac),
-  le serveur démarre tout seul.
-- **Matter Home Server est déjà ouvert** : une seconde ouverture ne fait rien, cherchez l'icône.
+  le serveur démarre tout seul. Cette vérification est refaite **toutes les 30 secondes** pendant
+  que le serveur tourne : si la v0.2 s'ouvre après coup, le serveur s'arrête et le menu l'explique.
+  Même réaction si l'application de bureau a été remplacée par une autre version pendant qu'elle
+  était ouverte (macOS garde alors l'ancienne en mémoire) : fermez-la, puis rouvrez-la.
+- **Matter Home Server est déjà ouvert** : une seconde ouverture se ferme sans bruit, cherchez
+  l'icône (une seule, même quand le serveur est bloqué).
 
 ### Passer du service launchd à l'application
 
-Si vous aviez installé le serveur avec l'archive (service launchd) : dans le Terminal, dans le
-dossier de l'archive, lancez `./uninstall.sh` (vos données et vos journaux restent en place), puis
-ouvrez l'application **Matter Home Server**. Elle reconnaît l'identité et le compte existants
-(même dossier de données, `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`)
-et démarre directement. Le certificat du serveur reste le même : le client n'a rien à refaire.
+Si vous aviez installé le serveur avec l'archive (service launchd), il faut d'abord le
+désinstaller, une seule fois :
+
+1. Dans le Terminal (Applications → Utilitaires), allez dans le **dossier de l'archive** (celui où
+   se trouve le fichier `uninstall.sh`) et lancez `./uninstall.sh`. Le script demande le **mot de
+   passe administrateur** du Mac (il le demande lui-même ; ne le lancez pas avec `sudo`). Vos
+   données et vos journaux restent en place.
+2. **Si ce dossier n'existe plus** (archive supprimée, déplacée) : retéléchargez la même archive
+   `matter-home-server-<version>-macos.tar.gz` sur la
+   [page des versions](https://github.com/killerwolf/matter-home-desktop/releases), ouvrez-la, et
+   reprenez au point 1 ; ou tapez ces deux commandes, qui font la même chose (le mot de passe
+   administrateur est demandé) :
+
+   ```
+   sudo launchctl bootout system/dev.matter-home-desktop.server
+   sudo rm -f /Library/LaunchDaemons/dev.matter-home-desktop.server.plist /usr/local/bin/matter-home-server
+   ```
+3. Ouvrez l'application **Matter Home Server**. Elle reconnaît l'identité et le compte existants
+   (même dossier de données, `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`)
+   et démarre directement. Le certificat du serveur reste le même : le client n'a rien à refaire.
+   L'ouverture à la connexion est activée par défaut (voir plus haut : elle ne prend effet qu'à
+   votre prochaine ouverture de session, et l'application ne démarre qu'une fois la session
+   ouverte).
+
+Tant que le service est installé, l'application le dit et ne démarre rien.
 
 ### Où sont les choses
 

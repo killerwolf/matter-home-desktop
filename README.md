@@ -71,7 +71,9 @@ encore été vérifiée avec une TaHoma réelle : les retours sont bienvenus.
 
 Téléchargez la dernière version sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest) ;
-les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md). Deux fichiers, un par partie :
+les nouveautés de chacune sont dans [CHANGELOG.md](CHANGELOG.md). (Cette adresse ne montre que les
+versions définitives : pour une pré-version, `-rc.1` par exemple, voir la
+[liste complète](https://github.com/killerwolf/matter-home-desktop/releases).) Deux fichiers, un par partie :
 
 ### 1. Le serveur, sur le Mac qui reste allumé
 
