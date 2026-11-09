@@ -19,7 +19,8 @@ de commande (service launchd) reste disponible plus bas, comme option avancée.
 1. Sur la [page des versions](https://github.com/killerwolf/matter-home-desktop/releases/latest),
    téléchargez `MatterHomeServer-<version>-universal.dmg` (macOS 10.15 ou plus récent sur Mac
    Intel, macOS 11 ou plus récent sur Apple Silicon).
-2. Ouvrez le DMG et glissez **Matter Home Server** dans **Applications**.
+2. Ouvrez le DMG et glissez **Matter Home Server** dans **Applications**. Ouvrez-la depuis Applications, pas depuis le DMG :
+   depuis l'image disque, l'ouverture à la connexion reste désactivée.
 3. Ouvrez l'application. L'application n'est pas signée avec un certificat Apple payant : si macOS
    la refuse (« endommagée » ou « développeur non identifié »), ouvrez Réglages Système →
    Confidentialité et sécurité, descendez jusqu'au message sur Matter Home Server et cliquez sur
@@ -60,10 +61,16 @@ automatismes s'arrêtent tant que l'application n'est pas rouverte.
 
 ### Ouvrir à la connexion, ouverture de session automatique
 
-L'application se relance toute seule à l'ouverture de votre session (case « Ouvrir à la
-connexion », cochée par défaut à la fin de la configuration) et après un plantage. Cela passe par
-un fichier dans `~/Library/LaunchAgents`, sans droits administrateur. Mais l'application ne peut
-démarrer qu'**une fois votre session ouverte**. Pour un Mac qui redémarre sans personne devant :
+L'application se relance toute seule à l'ouverture de votre session et après un plantage tant que
+la case « Ouvrir à la connexion » est cochée. Elle l'est **par défaut** dès la première fois que le
+serveur tourne dans l'application (fin de la configuration, ou premier lancement sur des données
+déjà en place, par exemple après le passage depuis le service) ; si vous la décochez, l'application
+respecte ce choix aux lancements suivants. Cela passe par un fichier dans `~/Library/LaunchAgents`,
+sans droits administrateur. Attention : macOS ne lit ce fichier **qu'à votre prochaine ouverture de
+session**. Tant que vous ne vous êtes pas déconnecté puis reconnecté (ou que le Mac n'a pas
+redémarré), ni le lancement à la connexion ni la relance après plantage ne sont actifs. De plus,
+l'application ne peut démarrer qu'**une fois votre session ouverte**. Pour un Mac qui redémarre sans
+personne devant :
 
 1. Réglages Système → Utilisateurs et groupes → **Ouvrir la session automatiquement** : choisissez
    votre compte (macOS demande votre mot de passe, c'est un réglage à faire vous-même ; il est

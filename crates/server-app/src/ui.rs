@@ -141,11 +141,9 @@ impl App {
             login_defaulted: false,
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
-        if app.login_available() {
+        if !app.demo {
             if let (Some(dir), Ok(exe)) = (agent::default_dir(), std::env::current_exe()) {
-                if agent::is_stale(&dir, &exe) {
-                    let _ = agent::enable(&dir, &exe);
-                }
+                agent::rewrite_if_stale(&dir, &exe);
             }
         }
         app
@@ -154,7 +152,35 @@ impl App {
     fn login_available(&self) -> bool {
         !self.demo
             && agent::default_dir().is_some()
-            && std::env::current_exe().is_ok_and(|e| agent::is_in_bundle(&e))
+            && std::env::current_exe().is_ok_and(|e| agent::is_installable(&e))
+    }
+
+    /// Première fois que le serveur tourne sans choix enregistré (fin de la configuration, ou
+    /// passage du service à l'application avec des données déjà là) : ouverture à la connexion
+    /// activée par défaut. Un choix déjà enregistré, même « non », est respecté.
+    fn apply_login_default(&mut self) {
+        if self.login_defaulted || self.demo {
+            return;
+        }
+        let (Some(dir), Some(marker), Ok(exe)) = (
+            agent::default_dir(),
+            agent::default_marker_dir(),
+            std::env::current_exe(),
+        ) else {
+            return;
+        };
+        self.login_defaulted = true;
+        match agent::apply_default(&dir, &marker, &exe, self.demo) {
+            agent::DefaultOutcome::Failed(e) => {
+                log::warn!("ouverture à la connexion non activée : {e}");
+                self.local_notice = Some(Notice::Err(e));
+            }
+            agent::DefaultOutcome::Enabled => {
+                log::info!("ouverture à la connexion activée par défaut");
+                self.login_checked_at = std::time::Instant::now() - Duration::from_secs(60);
+            }
+            _ => {}
+        }
     }
 
     fn refresh_login(&mut self) {
@@ -174,7 +200,16 @@ impl App {
             agent::disable(&dir)
         };
         match result {
-            Ok(()) => self.local_notice = None,
+            Ok(()) => {
+                // Le choix de l'utilisateur est enregistré : il sera respecté aux lancements suivants.
+                self.local_notice = match agent::default_marker_dir()
+                    .map(|d| agent::record_choice(&d, on))
+                    .transpose()
+                {
+                    Ok(_) => None,
+                    Err(e) => Some(Notice::Err(format!("{e:#}"))),
+                };
+            }
             Err(e) => self.local_notice = Some(Notice::Err(format!("{e:#}"))),
         }
         self.login_checked_at = std::time::Instant::now() - Duration::from_secs(60);
@@ -317,12 +352,11 @@ impl eframe::App for App {
                 self.setup_session = true;
                 self.show_window(&ctx);
             }
+            if st.phase == Phase::Running {
+                self.apply_login_default();
+            }
             if st.phase == Phase::Running && self.setup_session {
                 self.show_done = true;
-                if self.login_available() && !self.login_defaulted {
-                    self.login_defaulted = true;
-                    self.set_login(true);
-                }
                 self.show_window(&ctx);
             }
             self.last_phase = Some(st.phase.clone());
@@ -694,6 +728,10 @@ impl App {
             }
         } else if self.demo {
             ui.label("Mode démo : l'ouverture à la connexion est désactivée.");
+        } else if let Ok(exe) = std::env::current_exe() {
+            if agent::is_temporary_location(&exe) {
+                ui.label(agent::refusal(&exe));
+            }
         }
         ui.add_space(4.0);
         ui.label(RichText::new("Veille").strong());
