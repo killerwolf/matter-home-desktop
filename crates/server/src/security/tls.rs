@@ -18,6 +18,11 @@ use super::write_secret;
 
 pub const CERT_FILE: &str = "tls-cert.pem";
 pub const KEY_FILE: &str = "tls-key.pem";
+/// Posé avant la création du premier certificat, retiré une fois clé et certificat écrits.
+/// Sa présence avec la seule clé veut dire « première création interrompue » : aucun client
+/// n'a pu mémoriser une empreinte (le serveur n'écoutait pas encore), on peut recommencer.
+/// Sans lui, une clé seule est un certificat perdu après coup : on ne régénère pas.
+pub const CREATING_MARKER: &str = "tls-creation-en-cours";
 
 /// Validité du certificat. Le client épingle l'empreinte et ne regarde pas la date, mais un
 /// certificat qui expire ferait changer l'empreinte : on le fait durer.
@@ -79,7 +84,8 @@ fn subject_names() -> Vec<String> {
     names
 }
 
-fn generate(cert_path: &Path, key_path: &Path) -> Result<()> {
+/// Clé et certificat (PEM) d'un nouveau certificat auto-signé.
+fn generate_pems() -> Result<(String, String)> {
     let key = rcgen::KeyPair::generate().context("génération de la clé TLS")?;
     let mut params =
         rcgen::CertificateParams::new(subject_names()).context("noms du certificat TLS")?;
@@ -93,22 +99,65 @@ fn generate(cert_path: &Path, key_path: &Path) -> Result<()> {
     let cert = params
         .self_signed(&key)
         .context("signature du certificat TLS")?;
-    // La clé d'abord : sans clé, un certificat orphelin serait refusé au lancement suivant.
-    write_secret(key_path, key.serialize_pem().as_bytes())?;
-    write_secret(cert_path, cert.pem().as_bytes())?;
+    Ok((key.serialize_pem(), cert.pem()))
+}
+
+/// Écrit un premier certificat. Une coupure à n'importe quel point laisse un état que
+/// `load_or_create` sait reprendre : le marqueur est posé d'abord et retiré en dernier.
+fn create_first(dir: &Path) -> Result<()> {
+    let (key_pem, cert_pem) = generate_pems()?;
+    store_first(dir, &key_pem, &cert_pem, usize::MAX)
+}
+
+/// `stop_after` : nombre d'étapes à faire avant de s'arrêter net (simule une coupure ; les
+/// tests seuls s'en servent).
+fn store_first(dir: &Path, key_pem: &str, cert_pem: &str, stop_after: usize) -> Result<()> {
+    let marker = dir.join(CREATING_MARKER);
+    let steps: [&dyn Fn() -> Result<()>; 4] = [
+        &|| write_secret(&marker, b""),
+        &|| write_secret(&dir.join(KEY_FILE), key_pem.as_bytes()),
+        &|| write_secret(&dir.join(CERT_FILE), cert_pem.as_bytes()),
+        &|| {
+            std::fs::remove_file(&marker)
+                .with_context(|| format!("retrait de {}", marker.display()))?;
+            sync_dir(dir)
+        },
+    ];
+    for step in steps.iter().take(stop_after) {
+        step()?;
+    }
     Ok(())
+}
+
+fn sync_dir(dir: &Path) -> Result<()> {
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("synchronisation de {}", dir.display()))
 }
 
 /// Charge le certificat de `dir` (créé au premier lancement) et prépare la configuration TLS.
 pub fn load_or_create(dir: &Path) -> Result<TlsIdentity> {
     let cert_path = dir.join(CERT_FILE);
     let key_path = dir.join(KEY_FILE);
+    let marker = dir.join(CREATING_MARKER);
     let created = match (cert_path.exists(), key_path.exists()) {
         (false, false) => {
-            generate(&cert_path, &key_path)?;
+            create_first(dir)?;
             true
         }
-        (true, true) => false,
+        (true, true) => {
+            // Coupure juste avant le retrait du marqueur : clé et certificat sont complets
+            // (écritures atomiques).
+            let _ = std::fs::remove_file(&marker);
+            false
+        }
+        // Première création interrompue entre la clé et le certificat : rien n'a été publié,
+        // on recommence (le marqueur prouve qu'aucun certificat n'a jamais existé ici).
+        (false, true) if marker.exists() => {
+            log::warn!("création du certificat TLS interrompue au premier lancement : reprise");
+            create_first(dir)?;
+            true
+        }
         // Régénérer changerait l'empreinte que les clients ont mémorisée : on s'arrête
         // plutôt que de le faire en silence.
         _ => bail!(
@@ -194,6 +243,25 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_first_creation_is_resumed() {
+        let (key_pem, cert_pem) = generate_pems().unwrap();
+        // Une coupure après chacune des étapes : marqueur, clé, certificat.
+        for stop_after in 1..=3 {
+            let dir = temp(&format!("cut{stop_after}"));
+            store_first(&dir, &key_pem, &cert_pem, stop_after).unwrap();
+            let loaded = load_or_create(&dir)
+                .unwrap_or_else(|e| panic!("coupure après l'étape {stop_after} : {e:#}"));
+            assert!(!dir.join(CREATING_MARKER).exists());
+            // Redémarrage suivant : même empreinte, rien de recréé.
+            let again = load_or_create(&dir).unwrap();
+            assert!(!again.created);
+            assert_eq!(again.fingerprint, loaded.fingerprint);
+            assert_eq!(read_fingerprint(&dir).unwrap(), loaded.fingerprint);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn half_a_certificate_is_refused_not_regenerated() {
         let dir = temp("half");
         load_or_create(&dir).unwrap();
@@ -201,6 +269,17 @@ mod tests {
         let err = load_or_create(&dir).err().unwrap().to_string();
         assert!(err.contains("incomplet"), "{err}");
         assert!(!dir.join(KEY_FILE).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // Le certificat seul, ou la clé seule sans marqueur (certificat perdu après coup,
+        // peut-être déjà mémorisé par un client) : refus, jamais de régénération silencieuse.
+        let dir = temp("half-cert-only");
+        load_or_create(&dir).unwrap();
+        std::fs::remove_file(dir.join(CERT_FILE)).unwrap();
+        let key_before = std::fs::read(dir.join(KEY_FILE)).unwrap();
+        let err = load_or_create(&dir).err().unwrap().to_string();
+        assert!(err.contains("incomplet"), "{err}");
+        assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), key_before);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
