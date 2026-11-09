@@ -4,9 +4,10 @@
 //! Le parallélisme HTTP est borné à [`HTTP_WORKERS`] : le serveur plafonne à 16 connexions par
 //! adresse (docs/protocole.md), et une requête = une connexion.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use protocol::wire::{ErrorCode, LoginRequest, LoginResponse, VersionInfo, PROTOCOL_VERSION};
@@ -59,14 +60,17 @@ impl Shared {
         self.generation.load(Ordering::SeqCst)
     }
 
+    // Un fil de travail qui panique (rattrapé plus bas) ne doit pas faire passer la session
+    // pour « sans identifiants » : on reprend le verrou même empoisonné.
     fn creds(&self) -> Option<Creds> {
-        self.creds.lock().ok().and_then(|c| c.clone())
+        self.creds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn set_creds(&self, creds: Option<Creds>) {
-        if let Ok(mut c) = self.creds.lock() {
-            *c = creds;
-        }
+        *self.creds.lock().unwrap_or_else(PoisonError::into_inner) = creds;
     }
 
     /// Démarre une session (fil dédié) avec ces identifiants, et arrête la précédente.
@@ -91,6 +95,40 @@ impl Shared {
     fn stop_session(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.set_creds(None);
+    }
+
+    /// Efface le jeton du fichier de connexion en gardant l'adresse et l'empreinte. Rend
+    /// l'adresse conservée. Si le fichier ne peut pas être réécrit, il est supprimé : un jeton
+    /// révoqué ne doit jamais rester sur le disque pour repartir au lancement suivant.
+    fn forget_token(&self, creds: Option<&Creds>) -> Option<String> {
+        let kept = match creds {
+            Some(c) => Some(Saved {
+                url: c.addr.url(),
+                fingerprint: c.fingerprint.clone(),
+                token: None,
+            }),
+            None => match self.store.load() {
+                Ok(Some(saved)) => Some(Saved {
+                    token: None,
+                    ..saved
+                }),
+                _ => None,
+            },
+        };
+        let Some(kept) = kept else {
+            if let Err(e) = self.store.delete() {
+                self.emit(Event::Notice(e.message()));
+            }
+            return None;
+        };
+        if let Err(e) = self.store.save(&kept) {
+            self.emit(Event::Notice(e.message()));
+            if let Err(e) = self.store.delete() {
+                self.emit(Event::Notice(e.message()));
+            }
+            return None;
+        }
+        Some(kept.url)
     }
 
     /// Le serveur ne reconnaît plus le jeton : on l'oublie (l'adresse et l'empreinte restent)
@@ -292,16 +330,16 @@ impl Backend {
         id
     }
 
-    /// Déconnexion : le jeton est révoqué auprès du serveur puis tout est supprimé ici.
+    /// Déconnexion : le jeton est révoqué auprès du serveur puis effacé d'ici. L'adresse et
+    /// l'empreinte du certificat sont **conservées** : il suffit de ressaisir le mot de passe.
+    /// Oublier le certificat est un autre geste ([`Backend::reset_pinned_certificate`]).
     pub fn logout(&self) {
         let creds = self.shared.creds();
         self.shared.stop_session();
-        if let Err(e) = self.shared.store.delete() {
-            self.shared.emit(Event::Notice(e.message()));
-        }
+        let url = self.shared.forget_token(creds.as_ref());
         self.shared.link(Link::LoggedOut {
-            url: None,
-            pinned: false,
+            pinned: url.is_some(),
+            url,
             reason: None,
         });
         if let Some(creds) = creds {
@@ -342,6 +380,11 @@ impl Backend {
                     });
                 }
             }
+            Ok(Some(saved)) => self.shared.link(Link::LoggedOut {
+                url: Some(saved.url),
+                pinned: true,
+                reason: None,
+            }),
             _ => self.shared.link(Link::LoggedOut {
                 url: None,
                 pinned: false,
@@ -360,70 +403,105 @@ impl Drop for Backend {
 
 fn worker(shared: Arc<Shared>, jobs: Arc<Mutex<Receiver<Job>>>) {
     loop {
-        let job = match jobs.lock() {
-            Ok(rx) => rx.recv(),
-            Err(_) => return,
-        };
+        let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
         let Ok(job) = job else { return };
-        match job {
-            Job::Probe { url } => probe(&shared, &url),
-            Job::Login {
-                url,
-                fingerprint,
-                username,
-                password,
-            } => login(&shared, &url, &fingerprint, &username, &password),
-            Job::LoginSaved { username, password } => match shared.store.load() {
-                Ok(Some(saved)) => login(
-                    &shared,
-                    &saved.url,
-                    &saved.fingerprint,
-                    &username,
-                    &password,
-                ),
-                Ok(None) => shared.emit(Event::LoginFailed(NetError::Local(
-                    "Aucun serveur approuvé : saisissez son adresse.".into(),
-                ))),
-                Err(e) => shared.emit(Event::LoginFailed(e)),
+        // Un fil HTTP ne meurt jamais sans répondre : une panique dans une tâche devient une
+        // erreur visible pour son demandeur (sinon l'écran de connexion resterait sur
+        // « connexion en cours » et la requête sans réponse), et le fil continue.
+        guarded(&shared, job, run);
+    }
+}
+
+/// Exécute `work` en rattrapant une panique : le demandeur reçoit une erreur, le fil survit.
+fn guarded(shared: &Arc<Shared>, job: Job, work: impl FnOnce(&Arc<Shared>, Job)) {
+    let failure = job.failure();
+    if catch_unwind(AssertUnwindSafe(|| work(shared, job))).is_err() {
+        log::error!("erreur interne dans une tâche réseau");
+        shared.emit(failure);
+    }
+}
+
+impl Job {
+    /// Ce que l'interface reçoit si la tâche plante.
+    fn failure(&self) -> Event {
+        let internal = || NetError::Local("Erreur interne du client (voir le journal).".into());
+        match self {
+            Job::Probe { .. } => Event::ProbeFailed(internal()),
+            Job::Login { .. } | Job::LoginSaved { .. } => Event::LoginFailed(internal()),
+            Job::Call { id, .. } => Event::Reply {
+                id: *id,
+                result: Err(internal()),
             },
-            Job::Call {
-                id,
-                generation,
-                creds,
-                request,
-            } => {
-                let result = http::exec(
-                    &creds.addr,
-                    &Trust::Pinned(creds.fingerprint.clone()),
-                    Some(&creds.token),
-                    &request,
-                )
-                .and_then(http::Response::into_result);
-                if result.as_ref().is_err_and(NetError::is_unauthorized) {
-                    shared.token_rejected(generation);
+            Job::Revoke { .. } => Event::Notice(
+                "Déconnecté. Le serveur n'a pas pu être prévenu (erreur interne) : le jeton a \
+                 été supprimé de ce Mac."
+                    .into(),
+            ),
+        }
+    }
+}
+
+fn run(shared: &Arc<Shared>, job: Job) {
+    match job {
+        Job::Probe { url } => probe(shared, &url),
+        Job::Login {
+            url,
+            fingerprint,
+            username,
+            password,
+        } => login(shared, &url, &fingerprint, &username, &password),
+        Job::LoginSaved { username, password } => match shared.store.load() {
+            Ok(Some(saved)) => login(shared, &saved.url, &saved.fingerprint, &username, &password),
+            Ok(None) => shared.emit(Event::LoginFailed(NetError::Local(
+                "Aucun serveur approuvé : saisissez son adresse.".into(),
+            ))),
+            Err(e) => shared.emit(Event::LoginFailed(e)),
+        },
+        Job::Call {
+            id,
+            generation,
+            creds,
+            request,
+        } => {
+            // Déconnecté (ou session remplacée) entre la demande et son tour dans la file : le
+            // jeton de cette session ne part plus nulle part.
+            if shared.generation() != generation {
+                shared.emit(Event::Reply {
+                    id,
+                    result: Err(NetError::Unreachable("session fermée".into())),
+                });
+                return;
+            }
+            let result = http::exec(
+                &creds.addr,
+                &Trust::Pinned(creds.fingerprint.clone()),
+                Some(&creds.token),
+                &request,
+            )
+            .and_then(http::Response::into_result);
+            if result.as_ref().is_err_and(NetError::is_unauthorized) {
+                shared.token_rejected(generation);
+            }
+            shared.emit(Event::Reply { id, result });
+        }
+        Job::Revoke { creds } => {
+            let request = Request::new("POST", "/api/logout").with_timeout(Duration::from_secs(8));
+            let revoked = http::exec(
+                &creds.addr,
+                &Trust::Pinned(creds.fingerprint),
+                Some(&creds.token),
+                &request,
+            )
+            .and_then(http::Response::into_result);
+            shared.emit(Event::Notice(match revoked {
+                Ok(_) => "Déconnecté : le jeton a été révoqué sur le serveur.".into(),
+                Err(e) if e.is_unauthorized() => {
+                    "Déconnecté (le jeton n'était plus valable).".into()
                 }
-                shared.emit(Event::Reply { id, result });
-            }
-            Job::Revoke { creds } => {
-                let request =
-                    Request::new("POST", "/api/logout").with_timeout(Duration::from_secs(8));
-                let revoked = http::exec(
-                    &creds.addr,
-                    &Trust::Pinned(creds.fingerprint),
-                    Some(&creds.token),
-                    &request,
-                )
-                .and_then(http::Response::into_result);
-                shared.emit(Event::Notice(match revoked {
-                    Ok(_) => "Déconnecté : le jeton a été révoqué sur le serveur.".into(),
-                    Err(e) if e.is_unauthorized() => {
-                        "Déconnecté (le jeton n'était plus valable).".into()
-                    }
-                    Err(_) => "Déconnecté. Le serveur n'a pas pu être prévenu : le jeton a été \
-                               supprimé de ce Mac et expirera de lui-même sur le serveur."
-                        .into(),
-                }));
-            }
+                Err(_) => "Déconnecté. Le serveur n'a pas pu être prévenu : le jeton a été \
+                           supprimé de ce Mac et expirera de lui-même sur le serveur."
+                    .into(),
+            }));
         }
     }
 }
@@ -504,4 +582,144 @@ fn try_login(
         fingerprint,
         token: response.token,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!("mhd-backend-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Store::at(dir.join("connexion.json"))
+    }
+
+    fn wait_link(rx: &Receiver<Event>, pick: impl Fn(&Link) -> bool) -> Link {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(Event::Link(l)) if pick(&l) => return l,
+                Ok(_) => {}
+                Err(_) => panic!("liaison attendue non reçue"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_panicking_task_still_answers_its_requester() {
+        let (events, rx) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            events,
+            notify: Arc::new(|| {}),
+            store: temp_store("panic"),
+            generation: AtomicU64::new(0),
+            creds: Mutex::new(None),
+            protocol: PROTOCOL_VERSION,
+        });
+        let creds = Creds {
+            addr: ServerAddr::parse("https://127.0.0.1:1").unwrap(),
+            fingerprint: "AA".into(),
+            token: "t".into(),
+        };
+        let call = Job::Call {
+            id: 7,
+            generation: 0,
+            creds,
+            request: Request::get("/api/state"),
+        };
+        guarded(&shared, call, |_, _| panic!("panique voulue par le test"));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Event::Reply {
+                id: 7,
+                result: Err(NetError::Local(_))
+            })
+        ));
+        for (job, check) in [
+            (
+                Job::Probe { url: "x".into() },
+                (|e: &Event| matches!(e, Event::ProbeFailed(_))) as fn(&Event) -> bool,
+            ),
+            (
+                Job::LoginSaved {
+                    username: "u".into(),
+                    password: "p".into(),
+                },
+                |e| matches!(e, Event::LoginFailed(_)),
+            ),
+            (
+                Job::Revoke {
+                    creds: Creds {
+                        addr: ServerAddr::parse("https://127.0.0.1:1").unwrap(),
+                        fingerprint: "AA".into(),
+                        token: "t".into(),
+                    },
+                },
+                |e| matches!(e, Event::Notice(_)),
+            ),
+        ] {
+            guarded(&shared, job, |_, _| panic!("panique voulue par le test"));
+            assert!(check(&rx.try_recv().unwrap()));
+        }
+    }
+
+    /// Se déconnecter n'oublie que le jeton : adresse et empreinte restent, le jeton révoqué
+    /// ne revient jamais (ni au fichier, ni dans une requête déjà en file).
+    #[test]
+    fn logout_keeps_the_address_and_the_fingerprint_but_never_the_token() {
+        let store = temp_store("logout");
+        let fingerprint = tls::fingerprint_of(b"un certificat");
+        store
+            .save(&Saved {
+                url: "https://127.0.0.1:1".into(),
+                fingerprint: fingerprint.clone(),
+                token: Some("jeton-secret".into()),
+            })
+            .unwrap();
+        // Boucle locale, port fermé : la session essaie de se connecter et échoue aussitôt.
+        let (backend, rx) = Backend::start(store.clone(), Arc::new(|| {}));
+        let queued = backend.call(Request::get("/api/state"));
+        backend.logout();
+        let link = wait_link(&rx, |l| matches!(l, Link::LoggedOut { .. }));
+        assert_eq!(
+            link,
+            Link::LoggedOut {
+                url: Some("https://127.0.0.1:1".into()),
+                pinned: true,
+                reason: None
+            }
+        );
+        let saved = store.load().unwrap().unwrap();
+        assert_eq!(saved.url, "https://127.0.0.1:1");
+        assert_eq!(saved.fingerprint, fingerprint);
+        assert_eq!(saved.token, None);
+        let raw = std::fs::read_to_string(store.path()).unwrap();
+        assert!(!raw.contains("jeton-secret"));
+        // Sans session, plus aucune requête n'est possible, et « reconnecter » ne retrouve
+        // aucun jeton.
+        let id = backend.call(Request::get("/api/state"));
+        backend.reconnect();
+        let mut answered = Vec::new();
+        let mut reconnect_link = None;
+        while let Ok(event) = rx.recv_timeout(Duration::from_secs(2)) {
+            match event {
+                Event::Reply { id, result } => answered.push((id, result.is_err())),
+                Event::Link(l @ Link::LoggedOut { .. }) => reconnect_link = Some(l),
+                Event::Link(Link::Connecting) => panic!("la session ne doit pas repartir"),
+                _ => {}
+            }
+        }
+        assert!(answered.contains(&(id, true)));
+        assert!(
+            answered.iter().all(|(_, failed)| *failed),
+            "la requête déjà en file ne part pas avec le jeton révoqué : {answered:?} ({queued})"
+        );
+        assert!(matches!(
+            reconnect_link,
+            Some(Link::LoggedOut {
+                url: Some(_),
+                pinned: true,
+                ..
+            })
+        ));
+    }
 }

@@ -29,6 +29,11 @@ use super::{Event, Link};
 const SILENCE_LIMIT: Duration = Duration::from_secs(60);
 /// Pas de lecture : la boucle vérifie régulièrement qu'elle n'a pas été remplacée.
 const READ_TICK: Duration = Duration::from_millis(500);
+/// Délai pour que la mise à niveau WebSocket (requête, réponse 101) aboutisse.
+const UPGRADE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Délai pour recevoir `hello` puis l'état complet une fois la liaison ouverte : sans lui, un
+/// serveur qui goutte ses octets laisserait « Connexion… » affiché sans fin.
+const SNAPSHOT_LIMIT: Duration = Duration::from_secs(30);
 /// Attente maximale entre deux tentatives de reconnexion.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Une liaison restée établie aussi longtemps remet l'attente à zéro.
@@ -60,7 +65,15 @@ pub(super) fn run(shared: Arc<Shared>, generation: u64, creds: Creds) {
             return;
         }
         let started = Instant::now();
-        let ended = connect_and_stream(&shared, generation, &creds);
+        // Un fil qui meurt sans rien dire laisserait « connecté » affiché sur des données qui ne
+        // bougent plus : une panique devient une liaison perdue, visible, avec nouvel essai.
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            connect_and_stream(&shared, generation, &creds)
+        }))
+        .unwrap_or_else(|_| {
+            log::error!("erreur interne dans la liaison avec le serveur");
+            Ended::Lost("erreur interne du client".into())
+        });
         if shared.generation() != generation {
             return;
         }
@@ -167,7 +180,7 @@ fn classify(error: NetError) -> Ended {
     }
 }
 
-fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended {
+fn connect_and_stream(shared: &Arc<Shared>, generation: u64, creds: &Creds) -> Ended {
     let trust = Trust::Pinned(creds.fingerprint.clone());
 
     // 1. Version du protocole, annoncée avant toute chose.
@@ -191,10 +204,23 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
     }
 
     // 2. WebSocket.
-    let connected = match tls::connect(&creds.addr, &trust) {
+    let mut connected = match tls::connect(&creds.addr, &trust) {
         Ok(c) => c,
         Err(e) => return classify(e),
     };
+    // La requête de mise à niveau et la réponse 101 tiennent dans un délai absolu, et la
+    // connexion se coupe d'elle-même si la session est remplacée entre-temps.
+    {
+        let current = shared.clone();
+        connected
+            .stream
+            .sock
+            .set_cancel(Some(Arc::new(move || current.generation() != generation)));
+        connected
+            .stream
+            .sock
+            .set_deadline(Instant::now() + UPGRADE_TIMEOUT);
+    }
     let url = format!(
         "wss://{}/api/ws?protocol={}",
         creds.addr.authority(),
@@ -204,8 +230,10 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
         Ok(r) => r,
         Err(_) => return Ended::Lost("adresse du serveur invalide".into()),
     };
-    match format!("Bearer {}", creds.token).parse() {
-        Ok(value) => {
+    match format!("Bearer {}", creds.token).parse::<tungstenite::http::HeaderValue>() {
+        Ok(mut value) => {
+            // Marqué sensible : les `Debug` de l'en-tête n'en montrent pas la valeur.
+            value.set_sensitive(true);
             request.headers_mut().insert("Authorization", value);
         }
         Err(_) => return Ended::Unauthorized,
@@ -227,10 +255,12 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
             }
             Err(_) => return Ended::Lost("échange WebSocket refusé".into()),
         };
-    let _ = socket.get_mut().sock.set_read_timeout(Some(READ_TICK));
+    socket.get_mut().sock.set_tick(Some(READ_TICK));
 
     // 3. Flux : hello, état complet, événements.
-    let mut last_heard = Instant::now();
+    let opened = Instant::now();
+    let mut last_heard = opened;
+    let mut connected_announced = false;
     let mut greeted = false;
     let mut announced_version: Option<String> = None;
     let mut expected_seq: Option<u64> = None;
@@ -240,15 +270,30 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
             let _ = socket.flush();
             return Ended::Superseded;
         }
-        if last_heard.elapsed() > SILENCE_LIMIT {
+        if last_heard.elapsed() >= SILENCE_LIMIT {
             return Ended::Lost("le serveur ne répond plus".into());
         }
+        if !connected_announced && opened.elapsed() >= SNAPSHOT_LIMIT {
+            return Ended::Lost("le serveur n'a pas envoyé l'état complet".into());
+        }
+        // Échéance absolue de cette lecture : un message qui arrive au compte-gouttes
+        // n'allonge jamais l'attente (tungstenite ne rend la main qu'à la fin du message ou
+        // au pas de lecture, qu'un octet par pas suffit à repousser).
+        let mut limit = last_heard + SILENCE_LIMIT;
+        if !connected_announced {
+            limit = limit.min(opened + SNAPSHOT_LIMIT);
+        }
+        socket.get_mut().sock.set_deadline(limit);
         let message = match socket.read() {
             Ok(m) => m,
-            Err(WsError::Io(e))
-                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                continue;
+            // Un pas de lecture sans rien de neuf : on revérifie la session et les délais.
+            Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => continue,
+            Err(WsError::Io(e)) if e.kind() == ErrorKind::TimedOut => {
+                return Ended::Lost(if connected_announced {
+                    "le serveur ne répond plus".into()
+                } else {
+                    "le serveur n'a pas envoyé l'état complet".into()
+                });
             }
             Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => {
                 return Ended::Lost("connexion fermée par le serveur".into())
@@ -288,6 +333,7 @@ fn connect_and_stream(shared: &Shared, generation: u64, creds: &Creds) -> Ended 
                         // « Connecté » n'est annoncé qu'avec l'état complet : l'interface ne
                         // montre jamais une liste vide en attendant.
                         if let Some(server_version) = announced_version.clone() {
+                            connected_announced = true;
                             shared.link(Link::Connected { server_version });
                         }
                         shared.emit(Event::Snapshot(snapshot));

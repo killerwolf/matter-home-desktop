@@ -15,6 +15,8 @@ use protocol::wire::ErrorBody;
 /// Taille maximale acceptée pour une réponse (un export complet peut peser plusieurs Mo).
 const MAX_BODY: usize = 256 * 1024 * 1024;
 const MAX_HEAD: usize = 64 * 1024;
+/// Longueur maximale d'une ligne de taille de morceau (`1A3F;extension`).
+const MAX_CHUNK_LINE: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub enum Body {
@@ -118,16 +120,14 @@ pub fn exec(
     token: Option<&str>,
     request: &Request,
 ) -> Result<Response, NetError> {
-    let deadline = Instant::now() + request.timeout;
-    let tls::Connected { mut stream, .. } = tls::connect(addr, trust)?;
-    stream
-        .sock
-        .set_read_timeout(Some(request.timeout.min(Duration::from_secs(30))))
-        .ok();
-    stream
-        .sock
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    let started = Instant::now();
+    let deadline = started + request.timeout;
+    // La connexion et la poignée de main ont leur délai, sans dépasser celui de la requête.
+    let tls::Connected { mut stream, .. } =
+        tls::connect_until(addr, trust, deadline.min(started + tls::CONNECT_TIMEOUT))?;
+    // Ensuite, l'écriture de la requête et la lecture de la réponse tiennent dans le temps
+    // qui reste : chaque lecture et chaque écriture recalcule ce qu'il reste avant l'échéance.
+    stream.sock.set_deadline(deadline);
 
     let body: &[u8] = match &request.body {
         Body::None => &[],
@@ -271,36 +271,46 @@ fn read_chunked(
 ) -> Result<Vec<u8>, NetError> {
     let proto = |why: &str| NetError::Protocol(why.to_string());
     let mut out = Vec::new();
-    let mut pos = 0;
     loop {
-        // Ligne de taille.
+        // Ligne de taille. `buf` commence toujours au début d'une ligne de taille.
         let line_end = loop {
-            if let Some(i) = buf[pos..].windows(2).position(|w| w == b"\r\n") {
-                break pos + i;
+            if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
+                break i;
+            }
+            if buf.len() > MAX_CHUNK_LINE {
+                return Err(proto("ligne de taille de morceau trop longue"));
             }
             if read_some(stream, &mut buf, deadline)? == 0 {
                 return Err(proto("corps tronqué"));
             }
         };
-        let size_text = std::str::from_utf8(&buf[pos..line_end])
+        if line_end > MAX_CHUNK_LINE {
+            return Err(proto("ligne de taille de morceau trop longue"));
+        }
+        let size_text = std::str::from_utf8(&buf[..line_end])
             .map_err(|_| proto("taille de morceau illisible"))?;
         let size_text = size_text.split(';').next().unwrap_or("").trim();
+        // Au plus 16 chiffres hexadécimaux : au-delà, ce n'est pas une taille.
+        if size_text.is_empty() || size_text.len() > 16 {
+            return Err(proto("taille de morceau invalide"));
+        }
         let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| proto("taille de morceau invalide"))?;
-        pos = line_end + 2;
+        buf.drain(..line_end + 2);
         if size == 0 {
             return Ok(out);
         }
-        if out.len() + size > MAX_BODY {
+        // Sans addition : `out.len() + size` déborderait pour une taille proche de `usize::MAX`.
+        if size > MAX_BODY - out.len() {
             return Err(proto("réponse trop volumineuse"));
         }
-        while buf.len() < pos + size + 2 {
+        while buf.len() < size + 2 {
             if read_some(stream, &mut buf, deadline)? == 0 {
                 return Err(proto("corps tronqué"));
             }
         }
-        out.extend_from_slice(&buf[pos..pos + size]);
-        pos += size + 2;
+        out.extend_from_slice(&buf[..size]);
+        buf.drain(..size + 2);
     }
 }
 
@@ -336,6 +346,30 @@ mod tests {
         assert!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab").is_err());
         assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 99999999999\r\n\r\n").is_err());
         assert!(parse(b"").is_err());
+    }
+
+    #[test]
+    fn hostile_chunk_sizes_are_errors_never_panics() {
+        let chunked = |sizes: &str| {
+            parse(
+                format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{sizes}").as_bytes(),
+            )
+        };
+        // `usize::MAX` : l'addition `out.len() + size` débordait.
+        assert!(chunked("FFFFFFFFFFFFFFFF\r\nx").is_err());
+        assert!(chunked("3\r\nabc\r\nFFFFFFFFFFFFFFFF\r\nx").is_err());
+        // Plus de seize chiffres : jamais une taille, même avec des zéros devant.
+        assert!(chunked(&format!("{}1\r\nx\r\n0\r\n\r\n", "0".repeat(5000))).is_err());
+        assert!(chunked("00000000000000001\r\nx\r\n0\r\n\r\n").is_err());
+        // Une ligne de taille qui ne finit jamais.
+        assert!(chunked(&"A".repeat(100_000)).is_err());
+        assert!(chunked("\r\nabc").is_err());
+        assert!(chunked("-1\r\nabc").is_err());
+        // Plus gros que ce que le client accepte : refusé avant d'être lu.
+        assert!(chunked("20000000\r\nx").is_err());
+        // Un bon corps passe toujours, y compris avec des zéros devant et une extension.
+        let ok = chunked("0003;ext=1\r\nabc\r\n1\r\nd\r\n0\r\n\r\n").unwrap();
+        assert_eq!(ok.body, b"abcd");
     }
 
     #[test]

@@ -545,7 +545,7 @@ fn an_unknown_token_at_startup_is_the_same_as_a_revoked_one() {
 }
 
 #[test]
-fn logout_revokes_the_token_and_deletes_the_local_file() {
+fn logout_revokes_the_token_and_keeps_only_the_address_and_the_fingerprint() {
     let dir = temp_dir("logout");
     let server = Server::start(&dir);
     let path = store_path(&dir);
@@ -554,22 +554,26 @@ fn logout_revokes_the_token_and_deletes_the_local_file() {
     let token = saved_json(&dir)["token"].as_str().unwrap().to_string();
 
     client.backend.logout();
-    client.wait_link(T, |l| {
-        matches!(
-            l,
-            Link::LoggedOut {
-                url: None,
-                pinned: false,
-                ..
-            }
-        )
-    });
+    let link = client.wait_link(T, |l| matches!(l, Link::LoggedOut { .. }));
+    assert_eq!(
+        link,
+        Link::LoggedOut {
+            url: Some(server.url()),
+            pinned: true,
+            reason: None
+        }
+    );
     let notice = client.wait_for(T, |e| match e {
         Event::Notice(n) => Some(n.clone()),
         _ => None,
     });
     assert!(notice.contains("révoqué"), "{notice}");
-    assert!(!path.exists());
+    // Le fichier garde l'adresse et l'empreinte, jamais le jeton révoqué.
+    let kept = saved_json(&dir);
+    assert_eq!(kept["url"], server.url());
+    assert_eq!(kept["fingerprint"], server.fingerprint);
+    assert!(kept["token"].is_null(), "{kept}");
+    assert!(!std::fs::read_to_string(&path).unwrap().contains(&token));
     // Le jeton ne vaut plus rien côté serveur.
     let check = direct(&server, &token, &Request::get("/api/state"));
     assert_eq!(check.status, 401);

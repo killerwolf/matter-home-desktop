@@ -8,6 +8,7 @@
 //!   passe. Le certificat doit avoir exactement l'empreinte épinglée, la signature de la
 //!   poignée de main est vérifiée pour de bon (rejouer le certificat public ne suffit pas).
 
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,10 +22,111 @@ use sha2::{Digest, Sha256};
 use super::addr::ServerAddr;
 use super::error::NetError;
 
-pub type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+pub type TlsStream = StreamOwned<ClientConnection, DeadlineStream>;
 
 /// Délai pour établir la connexion TCP puis la poignée de main TLS.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Test d'annulation consulté avant chaque lecture ou écriture : `true` coupe la connexion.
+pub type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Un `TcpStream` dont **chaque** lecture et écriture respecte une échéance absolue.
+///
+/// Un délai de lecture posé une fois sur la socket se réarme à chaque octet reçu : un serveur
+/// qui goutte un octet toutes les quelques secondes tient la poignée de main, la réponse HTTP
+/// ou le WebSocket ouverts aussi longtemps qu'il veut. Ici, le temps restant avant l'échéance
+/// est recalculé avant chaque appel système, et l'échéance dépassée donne
+/// [`std::io::ErrorKind::TimedOut`] quoi que le serveur envoie.
+///
+/// `tick`, s'il est posé, borne en plus chaque lecture : elle rend alors `WouldBlock` (sans que
+/// l'échéance soit atteinte), ce que rustls et tungstenite savent reprendre en cours de
+/// message. Le WebSocket s'en sert pour revenir régulièrement dans sa boucle.
+pub struct DeadlineStream {
+    sock: TcpStream,
+    deadline: Instant,
+    tick: Option<Duration>,
+    cancel: Option<Cancel>,
+}
+
+impl DeadlineStream {
+    pub fn new(sock: TcpStream, deadline: Instant) -> Self {
+        Self {
+            sock,
+            deadline,
+            tick: None,
+            cancel: None,
+        }
+    }
+
+    pub fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+    }
+
+    pub fn set_tick(&mut self, tick: Option<Duration>) {
+        self.tick = tick;
+    }
+
+    pub fn set_cancel(&mut self, cancel: Option<Cancel>) {
+        self.cancel = cancel;
+    }
+
+    /// Temps restant avant l'échéance, ou l'erreur à rendre si elle est passée.
+    fn left(&self) -> std::io::Result<Duration> {
+        if self.cancel.as_ref().is_some_and(|c| c()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "connexion abandonnée",
+            ));
+        }
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(deadline_error());
+        }
+        Ok(left)
+    }
+
+    /// Une socket qui a rendu `WouldBlock` alors que l'échéance est passée : c'est elle.
+    fn after_wait<T>(&self, result: std::io::Result<T>) -> std::io::Result<T> {
+        match result {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() >= self.deadline =>
+            {
+                Err(deadline_error())
+            }
+            other => other,
+        }
+    }
+}
+
+fn deadline_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, "délai dépassé")
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.left()?;
+        let wait = self.tick.map_or(left, |t| t.min(left));
+        self.sock.set_read_timeout(Some(wait))?;
+        let result = self.sock.read(buf);
+        self.after_wait(result)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let left = self.left()?;
+        self.sock.set_write_timeout(Some(left))?;
+        let result = self.sock.write(buf);
+        self.after_wait(result)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.sock.flush()
+    }
+}
 
 /// Empreinte SHA-256 d'un certificat, `AA:BB:…` (la forme que le serveur affiche).
 pub fn fingerprint_of(der: &[u8]) -> String {
@@ -162,7 +264,17 @@ pub fn io_reason(e: &std::io::Error) -> String {
 
 /// Ouvre la connexion TCP et termine la poignée de main TLS, dans un délai borné.
 pub fn connect(addr: &ServerAddr, trust: &Trust) -> Result<Connected, NetError> {
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    connect_until(addr, trust, Instant::now() + CONNECT_TIMEOUT)
+}
+
+/// Comme [`connect`], avec une échéance absolue : la connexion TCP et la poignée de main TLS
+/// n'en dépassent jamais, même si le serveur répond au compte-gouttes. Le flux rendu garde
+/// cette échéance : l'appelant la remplace par la sienne (`stream.sock.set_deadline`).
+pub fn connect_until(
+    addr: &ServerAddr,
+    trust: &Trust,
+    deadline: Instant,
+) -> Result<Connected, NetError> {
     let mut last = NetError::Unreachable("aucune adresse".into());
     let mut sock = None;
     for target in resolve(addr)? {
@@ -178,13 +290,9 @@ pub fn connect(addr: &ServerAddr, trust: &Trust) -> Result<Connected, NetError> 
             Err(e) => last = NetError::Unreachable(io_reason(&e)),
         }
     }
-    let mut sock = sock.ok_or(last)?;
+    let sock = sock.ok_or(last)?;
     let _ = sock.set_nodelay(true);
-    let io_err = |e: std::io::Error| NetError::Unreachable(io_reason(&e));
-    sock.set_read_timeout(Some(CONNECT_TIMEOUT))
-        .map_err(io_err)?;
-    sock.set_write_timeout(Some(CONNECT_TIMEOUT))
-        .map_err(io_err)?;
+    let mut sock = DeadlineStream::new(sock, deadline);
 
     let provider = Arc::new(ring::default_provider());
     let seen = Arc::new(Mutex::new(None));
@@ -205,7 +313,7 @@ pub fn connect(addr: &ServerAddr, trust: &Trust) -> Result<Connected, NetError> 
         .map_err(|_| NetError::BadAddress("nom de serveur invalide".into()))?;
     let mut conn = ClientConnection::new(Arc::new(config), name)
         .map_err(|e| NetError::Protocol(e.to_string()))?;
-    // Poignée de main terminée ici, avec le délai ci-dessus : ensuite seulement le flux sert.
+    // Poignée de main terminée ici, avec l'échéance ci-dessus : ensuite seulement le flux sert.
     while conn.is_handshaking() {
         if Instant::now() >= deadline {
             return Err(NetError::Timeout);
@@ -252,6 +360,95 @@ fn handshake_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Serveur de test : sur 127.0.0.1 uniquement, il écrit `first`, puis un octet toutes les
+    /// `pause` pendant `for_how_long`. C'est le goutte-à-goutte : chaque octet réarme un délai
+    /// de lecture ordinaire, jamais une échéance absolue.
+    fn dripping_server(
+        first: &'static [u8],
+        pause: Duration,
+        for_how_long: Duration,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let _ = sock.write_all(first);
+            let end = Instant::now() + for_how_long;
+            while Instant::now() < end {
+                std::thread::sleep(pause);
+                if sock.write_all(&[0]).is_err() {
+                    return;
+                }
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_drip_never_extends_the_handshake_deadline() {
+        // En-tête d'un enregistrement TLS de 16 Kio, dont le reste arrive octet par octet.
+        let addr = dripping_server(
+            &[0x16, 0x03, 0x03, 0x40, 0x00],
+            Duration::from_millis(100),
+            Duration::from_secs(8),
+        );
+        let server = ServerAddr::parse(&format!("https://{addr}")).unwrap();
+        let started = Instant::now();
+        let result = connect_until(&server, &Trust::Probe, started + Duration::from_millis(700));
+        let took = started.elapsed();
+        assert!(
+            matches!(result, Err(NetError::Timeout)),
+            "{:?}",
+            result.err()
+        );
+        assert!(
+            took < Duration::from_millis(1500),
+            "la poignée de main a duré {took:?} pour une échéance de 700 ms"
+        );
+    }
+
+    #[test]
+    fn a_stream_with_a_tick_comes_back_but_the_deadline_still_ends_it() {
+        let addr = dripping_server(b"x", Duration::from_millis(80), Duration::from_secs(8));
+        let sock = TcpStream::connect(addr).unwrap();
+        let started = Instant::now();
+        let mut stream = DeadlineStream::new(sock, started + Duration::from_millis(600));
+        stream.set_tick(Some(Duration::from_millis(40)));
+        let mut byte = [0u8; 1];
+        let (mut ticks, mut bytes) = (0, 0);
+        let end = loop {
+            match stream.read(&mut byte) {
+                Ok(0) => panic!("fermé"),
+                Ok(_) => bytes += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => ticks += 1,
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(end.kind(), std::io::ErrorKind::TimedOut);
+        assert!(bytes > 3 && ticks > 0, "{bytes} octets, {ticks} pas");
+        assert!(started.elapsed() < Duration::from_millis(1200));
+    }
+
+    #[test]
+    fn a_cancelled_stream_stops_at_once() {
+        let addr = dripping_server(b"x", Duration::from_millis(50), Duration::from_secs(5));
+        let sock = TcpStream::connect(addr).unwrap();
+        let mut stream = DeadlineStream::new(sock, Instant::now() + Duration::from_secs(30));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        stream.set_cancel(Some(Arc::new(move || {
+            flag.load(std::sync::atomic::Ordering::SeqCst)
+        })));
+        let mut byte = [0u8; 1];
+        assert!(stream.read(&mut byte).is_ok());
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(stream.read(&mut byte).is_err());
+    }
 
     #[test]
     fn fingerprint_format_matches_the_server() {
