@@ -322,6 +322,7 @@ impl App {
             url: st.url.as_deref(),
             fingerprint: st.fingerprint.as_deref(),
             login_enabled: self.login_enabled,
+            desktop_doubt: st.desktop_doubt,
             login_available: self.login_available(),
         });
         if model != self.shown_menu {

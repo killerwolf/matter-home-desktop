@@ -115,10 +115,16 @@ risquer deux serveurs sur les mêmes données :
 - **Un autre serveur lancé à la main** : arrêtez-le, l'application démarre alors toute seule.
 - **L'ancienne application de bureau v0.2 est ouverte** : elle ne prend pas le verrou, donc
   l'application ne peut pas savoir si elle utilise les données. Fermez-la (sur tous vos Mac),
-  le serveur démarre tout seul. Cette vérification est refaite **toutes les 30 secondes** pendant
-  que le serveur tourne : si la v0.2 s'ouvre après coup, le serveur s'arrête et le menu l'explique.
-  Même réaction si l'application de bureau a été remplacée par une autre version pendant qu'elle
-  était ouverte (macOS garde alors l'ancienne en mémoire) : fermez-la, puis rouvrez-la.
+  le serveur démarre tout seul. L'application reconnaît la v0.2 au chemin réel de l'exécutable
+  (pas à son nom) et à la version lue dans son `Info.plist`. Le client Matter Home V1, qui porte le
+  même nom de processus mais ne touche pas aux données, ne bloque rien, pas plus qu'un exécutable
+  lancé hors d'une application (`cargo run`, `target/debug`).
+  **Au démarrage**, un doute suffit à refuser (application déplacée ou remplacée pendant qu'elle
+  tourne, `Info.plist` illisible) : fermez-la puis rouvrez-la, nouvel essai toutes les 10 secondes.
+  **Pendant que le serveur tourne**, le contrôle est refait toutes les **30 secondes** mais le
+  serveur ne s'arrête que sur preuve : une version 0.2.x effectivement lue pour ce processus. Un
+  processus nouveau et incertain est noté dans le journal et mentionné dans le menu, sans arrêt.
+  Un processus jugé sain n'est plus réévalué tant qu'il tourne.
 - **Matter Home Server est déjà ouvert** : une seconde ouverture se ferme sans bruit, cherchez
   l'icône (une seule, même quand le serveur est bloqué).
 

@@ -61,6 +61,8 @@ pub struct MenuInput<'a> {
     pub url: Option<&'a str>,
     pub fingerprint: Option<&'a str>,
     pub login_enabled: bool,
+    /// Un processus `matter-home-desktop` incertain : le serveur tourne, mais on le signale.
+    pub desktop_doubt: bool,
     /// L'ouverture à la connexion peut être (dés)activée (application installée, pas en essai).
     pub login_available: bool,
 }
@@ -90,6 +92,12 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
             "Ouvrez « Ouvrir le journal » pour le détail.".into(),
         )),
         _ => {}
+    }
+    if i.desktop_doubt && matches!(i.phase, Phase::Running) {
+        m.push(Entry::Info(
+            "Un programme « matter-home-desktop » est incertain : si c'est la v0.2, fermez-la."
+                .into(),
+        ));
     }
     m.push(Entry::Separator);
     if let Some(url) = i.url {
@@ -142,6 +150,7 @@ mod tests {
             url: Some("https://mac.local:8443"),
             fingerprint: Some("AA:BB"),
             login_enabled: true,
+            desktop_doubt: false,
             login_available: true,
         });
         assert_eq!(
@@ -180,11 +189,34 @@ mod tests {
             url: None,
             fingerprint: None,
             login_enabled: false,
+            desktop_doubt: false,
             login_available: true,
         });
         assert!(!actions(&menu).contains(&Action::CopyUrl));
         assert!(actions(&menu).contains(&Action::Settings));
         assert!(actions(&menu).contains(&Action::Quit));
+    }
+
+    #[test]
+    fn running_menu_mentions_an_uncertain_desktop_process() {
+        let health = Health::default();
+        let build_with = |doubt| {
+            build(&MenuInput {
+                phase: &Phase::Running,
+                health: &health,
+                url: None,
+                fingerprint: None,
+                login_enabled: false,
+                desktop_doubt: doubt,
+                login_available: true,
+            })
+        };
+        assert!(build_with(true)
+            .iter()
+            .any(|e| matches!(e, Entry::Info(t) if t.contains("matter-home-desktop"))));
+        assert!(!build_with(false)
+            .iter()
+            .any(|e| matches!(e, Entry::Info(t) if t.contains("matter-home-desktop"))));
     }
 
     #[test]

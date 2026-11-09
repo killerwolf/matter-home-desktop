@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
@@ -15,6 +15,25 @@ pub fn processes() -> Vec<Proc> {
         .output()
         .map(|o| startup::parse_ps(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default()
+}
+
+extern "C" {
+    fn proc_pidpath(pid: i32, buffer: *mut std::ffi::c_void, size: u32) -> i32;
+}
+
+/// Chemin réel de l'exécutable d'un processus (libproc, déjà dans libSystem). Jamais `argv[0]`,
+/// que `ps` rapporte dans `comm` : il peut être relatif ou trompeur.
+pub fn exe_path_of(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // PROC_PIDPATHINFO_MAXSIZE = 4 * MAXPATHLEN.
+    let mut buf = vec![0u8; 4096];
+    // SAFETY : `buf` est valide en écriture sur `size` octets ; `proc_pidpath` n'en écrit pas plus.
+    let n = unsafe { proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf)))
 }
 
 /// Version de l'application dont l'exécutable est `exe` et date de dernier changement de son
@@ -88,6 +107,16 @@ pub fn open_file(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_exe_path_of_this_process() {
+        let me = exe_path_of(std::process::id()).expect("proc_pidpath");
+        assert_eq!(
+            me.canonicalize().unwrap(),
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
+        assert!(exe_path_of(u32::MAX - 1).is_none());
+    }
 
     #[test]
     fn url_uses_the_bonjour_name_on_the_network() {

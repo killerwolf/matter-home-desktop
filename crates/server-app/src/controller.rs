@@ -52,6 +52,9 @@ pub struct State {
     pub setup: Option<SetupNeed>,
     pub busy: Option<String>,
     pub notice: Option<Notice>,
+    /// Pendant que le serveur tourne : un processus `matter-home-desktop` dont on ne peut pas
+    /// dire si c'est l'ancienne v0.2 (le serveur n'est pas arrêté pour autant).
+    pub desktop_doubt: bool,
     pub data_dir: PathBuf,
     pub log_path: PathBuf,
     pub demo: bool,
@@ -214,6 +217,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle 
         setup: None,
         busy: None,
         notice: None,
+        desktop_doubt: false,
         data_dir: config.data_dir.clone(),
         log_path: config.log_path.clone(),
         demo: config.demo,
@@ -230,6 +234,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle 
         sleep: None,
         exited: exited.clone(),
         last_desktop_check: Instant::now(),
+        desktop_verdicts: startup::VerdictCache::default(),
     };
     std::thread::Builder::new()
         .name("chef-orchestre".into())
@@ -249,6 +254,8 @@ struct Controller {
     exited: ExitSignal,
     /// Dernier contrôle de l'ancienne application de bureau pendant que le serveur tourne.
     last_desktop_check: Instant,
+    /// Verdicts par (processus, heure de lancement) : un processus jugé sain n'est pas réévalué.
+    desktop_verdicts: startup::VerdictCache,
 }
 
 /// Pendant que le serveur tourne, l'ancienne application de bureau est recherchée toutes les 30 s.
@@ -259,6 +266,16 @@ enum Next {
 }
 
 impl Controller {
+    fn desktop_scan(&mut self) -> startup::DesktopScan {
+        startup::scan_desktop(
+            &system::processes(),
+            SystemTime::now(),
+            &mut self.desktop_verdicts,
+            system::exe_path_of,
+            system::bundle_info_of,
+        )
+    }
+
     fn set(&self, f: impl FnOnce(&mut State)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
     }
@@ -291,6 +308,7 @@ impl Controller {
             s.url = None;
             s.fingerprint = None;
             s.health = Health::default();
+            s.desktop_doubt = false;
         });
         let demo_skips_setup = self.cfg.demo && !self.cfg.demo_setup;
         // Le service launchd installé : on ne prend même pas le verrou (il le reprendrait en vain
@@ -319,7 +337,11 @@ impl Controller {
             account_exists: false,
         };
         if inputs.lock == LockOutcome::Acquired {
-            inputs.desktop_v02_running = !self.cfg.demo && desktop_v02_now();
+            // Au démarrage, un doute suffit à refuser (nouvel essai toutes les 10 s).
+            inputs.desktop_v02_running = !self.cfg.demo && {
+                let scan = self.desktop_scan();
+                scan.v02 || !scan.uncertain.is_empty()
+            };
             if !inputs.desktop_v02_running && !inputs.service_installed && !demo_skips_setup {
                 if let Err(e) = setup::prologue(true) {
                     log::error!("{e:#}");
@@ -471,11 +493,29 @@ impl Controller {
                 }
                 if !self.cfg.demo && self.last_desktop_check.elapsed() >= DESKTOP_CHECK_EVERY {
                     self.last_desktop_check = Instant::now();
-                    if desktop_v02_now() {
+                    let scan = self.desktop_scan();
+                    let doubt = !scan.uncertain.is_empty();
+                    if doubt
+                        != self
+                            .state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .desktop_doubt
+                    {
+                        if doubt {
+                            log::warn!(
+                                "processus matter-home-desktop incertain (pid {:?}) : le serveur continue de tourner",
+                                scan.uncertain
+                            );
+                        }
+                        self.set(|s| s.desktop_doubt = doubt);
+                    }
+                    if scan.v02 {
                         log::warn!(
                             "l'ancienne application de bureau (v0.2) est apparue : arrêt du serveur"
                         );
                         self.stop_or_exit();
+                        self.set(|s| s.desktop_doubt = false);
                         self.set_phase(Phase::Blocked(Blocker::DesktopV02));
                     }
                 }
@@ -591,14 +631,6 @@ impl Controller {
         // Un succès ouvre la suite (compte, puis démarrage) ; un échec laisse l'écran tel quel.
         ok.then_some(Next::Reboot)
     }
-}
-
-fn desktop_v02_now() -> bool {
-    startup::desktop_v02_running(
-        &system::processes(),
-        SystemTime::now(),
-        system::bundle_info_of,
-    )
 }
 
 fn health_of(server: &Server) -> Health {
