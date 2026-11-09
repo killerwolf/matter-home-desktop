@@ -63,6 +63,9 @@ lipo -create -output "$APP/Contents/MacOS/$BIN" "${BINARIES[@]}"
 cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 
 # LSUIElement : pas d'icône dans le Dock, l'application vit dans la barre de menus.
+# NSSupportsAutomaticGraphicsSwitching : sur un portable à deux GPU, macOS peut garder le GPU
+# intégré (l'application tourne jour et nuit). NSAppSleepDisabled : pas d'App Nap, qui ralentirait
+# les minuteries du serveur quand l'application n'a aucune fenêtre visible.
 # NSLocalNetworkUsageDescription et NSBonjourServices : sans eux, macOS bloque la découverte
 # mDNS des appareils Matter et l'accès au réseau local.
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -83,6 +86,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSAppSleepDisabled</key><true/>
   <key>NSHumanReadableCopyright</key><string>Licence MIT</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Matter Home Server communique avec vos appareils Matter sur le réseau local pour les appairer, lire leurs mesures et les commander, et il répond aux clients Matter Home de votre réseau.</string>

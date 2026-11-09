@@ -2,7 +2,8 @@
 name = "matter-home-server-app"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.90"
+# Le plus élevé des `rust-version` de l'arbre de dépendances (eframe 0.37, egui, emath… : 1.95).
+rust-version = "1.95"
 description = "Matter Home Server : le serveur Matter Home en application de barre de menus (macOS)"
 license.workspace = true
 
