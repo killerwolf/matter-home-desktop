@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::MeasureKind;
 
+/// Une adresse de webhook acceptable : http(s) seulement, sans espace ni caractère de contrôle.
+/// Le serveur refuse les autres (`PUT /api/rules`) ; le client s'en sert pour ne pas envoyer
+/// une règle dont l'adresse est encore à moitié saisie.
+pub fn is_webhook_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnOffCommand {
     On,

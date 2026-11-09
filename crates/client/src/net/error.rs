@@ -98,6 +98,9 @@ pub fn api_message(
                 .into()
         }
         ErrorCode::BadRequest => with_detail("Le serveur a refusé la demande"),
+        ErrorCode::PlanWithoutFloor => {
+            "Le plan doit garder au moins un étage : il n'a pas été enregistré.".into()
+        }
         ErrorCode::NotFound => {
             "Introuvable sur le serveur (appareil ou règle peut-être supprimé).".into()
         }
@@ -139,6 +142,7 @@ mod tests {
             ErrorCode::TooManyAttempts,
             ErrorCode::VersionIncompatible,
             ErrorCode::BadRequest,
+            ErrorCode::PlanWithoutFloor,
             ErrorCode::NotFound,
             ErrorCode::PayloadTooLarge,
             ErrorCode::MethodNotAllowed,

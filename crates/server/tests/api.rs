@@ -336,6 +336,12 @@ fn plan_and_rules_updates_are_validated() {
         numeric["floors"][0]["id"] = json!(1);
         let r = client.send_json("PUT", "/api/plan", &token, &numeric).await;
         assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+        // Aucun étage : refusé avec un code à part (les clients supposent au moins un étage).
+        let mut empty = plan.clone();
+        empty["floors"] = json!([]);
+        let r = client.send_json("PUT", "/api/plan", &token, &empty).await;
+        assert_eq!((r.status, r.code().as_str()), (400, "plan_without_floor"));
+        assert_eq!(client.get("/api/plan", &token).await.json(), plan);
         // Identifiants en double.
         let mut twice = plan.clone();
         let floor = twice["floors"][0].clone();

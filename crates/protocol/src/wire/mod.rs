@@ -270,6 +270,7 @@ mod tests {
             (ErrorCode::TooManyAttempts, "too_many_attempts", 429),
             (ErrorCode::VersionIncompatible, "version_incompatible", 426),
             (ErrorCode::BadRequest, "bad_request", 400),
+            (ErrorCode::PlanWithoutFloor, "plan_without_floor", 400),
             (ErrorCode::NotFound, "not_found", 404),
             (ErrorCode::PayloadTooLarge, "payload_too_large", 413),
             (ErrorCode::PairingBusy, "pairing_busy", 409),

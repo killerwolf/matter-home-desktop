@@ -125,6 +125,17 @@ impl Default for HomePlan {
 }
 
 impl HomePlan {
+    /// Un plan a toujours au moins un étage. Remplace un plan sans étage (`floors: []`) par le
+    /// plan par défaut ; `true` si c'était le cas. Sert à lire une ancienne sauvegarde ou un
+    /// ancien fichier, jamais à accepter un plan envoyé par un client (refusé).
+    pub fn ensure_floor(&mut self) -> bool {
+        if !self.floors.is_empty() {
+            return false;
+        }
+        *self = Self::default();
+        true
+    }
+
     /// Nouvel identifiant unique dans tout le plan.
     pub fn next_id(&self) -> u64 {
         let ids = self.floors.iter().flat_map(|f| {

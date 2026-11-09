@@ -92,6 +92,12 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
     if plan.version != 1 {
         return Err(bad("version du plan non prise en charge"));
     }
+    if plan.floors.is_empty() {
+        return Err(ApiError::with_detail(
+            ErrorCode::PlanWithoutFloor,
+            "le plan doit avoir au moins un étage",
+        ));
+    }
     if plan.floors.len() > MAX_FLOORS {
         return Err(bad("trop d'étages"));
     }
@@ -159,6 +165,12 @@ mod tests {
         assert!(rules(&set).is_err());
         let mut p = HomePlan::default();
         assert!(plan(&p).is_ok());
+        // Un plan sans étage plante les clients : refusé, avec un code à part.
+        let none = HomePlan {
+            floors: vec![],
+            ..HomePlan::default()
+        };
+        assert_eq!(plan(&none).unwrap_err().code, ErrorCode::PlanWithoutFloor);
         p.floors[0].name = "x".repeat(MAX_NAME + 1);
         assert!(plan(&p).is_err());
     }

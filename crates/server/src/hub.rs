@@ -159,7 +159,7 @@ impl Hub {
             (crate::demo::demo_plan(), crate::demo::demo_rules())
         } else {
             (
-                load_document::<HomePlan>(&config.data_dir.join(PLAN_FILE), "plan"),
+                load_plan(&config.data_dir.join(PLAN_FILE)),
                 load_document::<RuleSet>(&config.data_dir.join(RULES_FILE), "règles"),
             )
         };
@@ -772,6 +772,19 @@ fn to_json<T: Serialize>(message: &T) -> Option<Arc<str>> {
 
 /// Lit `maison.json` ou `regles.json`. Un fichier illisible est mis de côté (jamais écrasé
 /// sans trace) et le document par défaut prend sa place.
+/// Le plan enregistré. Un plan sans étage (ancien fichier, édition à la main) est remplacé en
+/// mémoire par le plan par défaut : les clients supposent qu'il y a toujours un étage.
+fn load_plan(path: &Path) -> HomePlan {
+    let mut plan = load_document::<HomePlan>(path, "plan");
+    if plan.ensure_floor() {
+        log::warn!(
+            "plan sans étage dans {} : plan par défaut utilisé",
+            path.display()
+        );
+    }
+    plan
+}
+
 fn load_document<T: serde::de::DeserializeOwned + Default>(path: &Path, what: &str) -> T {
     match persistence::load_json::<T>(path) {
         Ok(Some(doc)) => doc,
@@ -995,6 +1008,24 @@ mod tests {
         hub.apply(&temperature(7, 1.0, 500.0));
         let next: ServerMessage = serde_json::from_str(&fresh_rx.try_recv().unwrap()).unwrap();
         assert!(matches!(next, ServerMessage::Event { seq: 52, .. }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_stored_plan_without_floor_loads_as_the_default_plan() {
+        let dir = temp("nofloor");
+        std::fs::write(dir.join(PLAN_FILE), r#"{"version":1,"floors":[]}"#).unwrap();
+        let (hub, _commands) = hub_with(&dir, 16);
+        assert_eq!(hub.plan(), HomePlan::default());
+        // Et un client ne peut pas en renvoyer un.
+        let empty = HomePlan {
+            floors: vec![],
+            ..HomePlan::default()
+        };
+        assert_eq!(
+            hub.set_plan(empty).unwrap_err().code,
+            protocol::wire::ErrorCode::PlanWithoutFloor
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

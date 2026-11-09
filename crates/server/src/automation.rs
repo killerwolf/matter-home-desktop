@@ -442,11 +442,8 @@ pub fn render(template: &str, f: &Firing) -> String {
         .replace("{regle}", &f.rule.name)
 }
 
-/// Une adresse de webhook acceptable : http(s) seulement, sans espace ni caractère de contrôle.
-pub fn is_webhook_url(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://"))
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-}
+// Même contrôle que celui du client, qui ne doit pas envoyer une adresse que le serveur refuse.
+pub use protocol::automation::is_webhook_url;
 
 /// Arguments de `curl` pour un webhook. Rien ici n'est interprété par curl comme une option ou
 /// un fichier :

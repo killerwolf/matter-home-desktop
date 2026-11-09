@@ -17,6 +17,8 @@ pub enum ErrorCode {
     VersionIncompatible,
     /// Requête mal formée ou valeur refusée.
     BadRequest,
+    /// Le plan envoyé n'a aucun étage (`floors: []`) : un plan en a toujours au moins un.
+    PlanWithoutFloor,
     /// Appareil, règle ou ressource inconnu.
     NotFound,
     /// Corps de requête trop gros.
@@ -50,7 +52,7 @@ impl ErrorCode {
             ErrorCode::Unauthorized | ErrorCode::InvalidCredentials => 401,
             ErrorCode::TooManyAttempts => 429,
             ErrorCode::VersionIncompatible => 426,
-            ErrorCode::BadRequest | ErrorCode::InvalidImport => 400,
+            ErrorCode::BadRequest | ErrorCode::PlanWithoutFloor | ErrorCode::InvalidImport => 400,
             ErrorCode::NotFound | ErrorCode::NoData => 404,
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::MethodNotAllowed => 405,

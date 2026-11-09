@@ -209,8 +209,27 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
     })
 }
 
+/// Une sauvegarde dont le plan n'a aucun étage (`floors: []`) reste importable : le plan est
+/// remplacé par le plan par défaut, comme au chargement (`Hub::new`). Le serveur, lui, refuse
+/// un tel plan envoyé par un client (`validate::plan`) ; une vraie sauvegarde ne doit pas être
+/// refusée pour autant. Un plan illisible n'est pas touché : l'analyse le refusera.
+fn repair_plan(bundle: &mut Bundle) {
+    let Some(text) = bundle.files.get(PLAN) else {
+        return;
+    };
+    let Ok(mut plan) = serde_json::from_str::<HomePlan>(text) else {
+        return;
+    };
+    if plan.ensure_floor() {
+        if let Ok(fixed) = serde_json::to_string(&plan) {
+            log::warn!("{PLAN} sans étage dans la sauvegarde : plan par défaut utilisé");
+            bundle.files.insert(PLAN.to_string(), fixed);
+        }
+    }
+}
+
 fn parse(text: &str) -> Result<(Bundle, Summary), Invalid> {
-    let bundle: Bundle = serde_json::from_str(text)
+    let mut bundle: Bundle = serde_json::from_str(text)
         .map_err(|_| Invalid("ce fichier n'est pas une sauvegarde Matter Home".into()))?;
     if bundle.format != FORMAT {
         return Err(Invalid(
@@ -228,6 +247,7 @@ fn parse(text: &str) -> Result<(Bundle, Summary), Invalid> {
             "fichier inattendu dans la sauvegarde : {bad}"
         )));
     }
+    repair_plan(&mut bundle);
     let summary = analyze(&bundle)?;
     Ok((bundle, summary))
 }
@@ -906,6 +926,34 @@ mod tests {
         // Et une bonne sauvegarde, elle, passe, avec son résumé.
         let good = bundle_text(&[(FILE_NAME, controller("X")), (PLAN, plan_json())]);
         assert!(inspect_text(&good).is_ok());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Une vraie sauvegarde dont le plan n'a aucun étage n'est pas refusée : elle s'importe avec
+    /// le plan par défaut (le serveur refuse pourtant un tel plan envoyé par un client).
+    #[test]
+    fn a_backup_with_an_empty_plan_is_imported_with_the_default_plan() {
+        let base = temp("emptyplan");
+        let dir = sample_dir(&base);
+        let text = bundle_text(&[
+            (FILE_NAME, controller("X")),
+            (PLAN, r#"{"version":1,"floors":[]}"#.into()),
+        ]);
+        assert!(crate::validate::plan(
+            &serde_json::from_str(r#"{"version":1,"floors":[]}"#).unwrap()
+        )
+        .is_err());
+        let summary = inspect_text(&text).unwrap();
+        assert!(summary.has_plan);
+        stage_import_text(&dir, &text).unwrap();
+        let pending: Bundle =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(PENDING)).unwrap()).unwrap();
+        let staged: HomePlan = serde_json::from_str(&pending.files[PLAN]).unwrap();
+        assert_eq!(staged, HomePlan::default());
+        apply_pending(&dir).unwrap().unwrap();
+        let applied: HomePlan =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(PLAN)).unwrap()).unwrap();
+        assert_eq!(applied, HomePlan::default());
         std::fs::remove_dir_all(base).unwrap();
     }
 
