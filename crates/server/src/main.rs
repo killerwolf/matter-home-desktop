@@ -364,25 +364,28 @@ fn run_create_account(args: &[String]) -> ExitCode {
     // Un import interrompu doit être repris AVANT de créer quoi que ce soit : `server_dir`
     // créerait un dossier de données qui ne contient que `serveur/`. Si un serveur tourne, il a
     // le verrou (et a déjà repris l'import à son démarrage) : on ne touche à rien d'autre.
-    let _lock = match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
-        Ok(lock) => {
-            if let Err(e) = prologue(false) {
-                eprintln!("{e:#}");
-                return ExitCode::FAILURE;
-            }
-            Some(lock)
-        }
-        Err(_) => {
-            if backup::recovery_needed(&data_dir) {
-                eprintln!(
+    let (_lock, data_dir) =
+        match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+            // Le prologue peut déplacer l'ancien dossier « matter-demo » : c'est le dossier qu'il
+            // rend qu'il faut utiliser, pas celui lu avant.
+            Ok(lock) => match prologue(false) {
+                Ok(dir) => (Some(lock), dir),
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(_) => {
+                if backup::recovery_needed(&data_dir) {
+                    eprintln!(
                     "Un import interrompu attend d'être repris, et un serveur tient le verrou. \
                      Arrêtez-le, puis relancez cette commande."
                 );
-                return ExitCode::FAILURE;
+                    return ExitCode::FAILURE;
+                }
+                (None, persistence::data_dir())
             }
-            None
-        }
-    };
+        };
     let result = security::server_dir(&data_dir)
         .and_then(|dir| account::create(&dir, &username, &password, replace));
     match result {

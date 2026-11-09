@@ -200,7 +200,7 @@ fn fixture() -> Fixture {
       "actions": [
         {{ "type": "SetCover", "node_id": {BRIDGED_A}, "command": {{ "Position": 80 }} }},
         {{ "type": "Delay", "seconds": 30 }},
-        {{ "type": "Webhook", "url": "http://192.168.1.50:8123/api/webhook/matin", "body": "{{\"regle\":\"{{regle}}\"}}" }}
+        {{ "type": "Webhook", "url": "https://exemple.invalid/api/webhook/matin", "body": "{{\"regle\":\"{{regle}}\"}}" }}
       ],
       "cooldown_s": 60
     }},

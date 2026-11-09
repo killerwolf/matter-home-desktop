@@ -484,17 +484,18 @@ impl MatterApp {
     /// Brouillons et choix en attente, pour la barre du haut : visibles depuis toutes les vues.
     fn sync_alerts(&self) -> Vec<SyncAlert> {
         let mut alerts = Vec::new();
-        for (view, name, editing, conflict, notice) in [
+        // (vue, [« modifié ailleurs », « non enregistré »] accordés avec le nom, état)
+        for (view, names, editing, conflict, notice) in [
             (
                 View::Plan,
-                "Plan",
+                ["Plan modifié ailleurs", "Plan non enregistré"],
                 self.plan.editing(),
                 self.plan.conflict_pending(),
                 self.plan.notice(),
             ),
             (
                 View::Rules,
-                "Règles",
+                ["Règles modifiées ailleurs", "Règles non enregistrées"],
                 self.rules.editing(),
                 self.rules.conflict_pending(),
                 self.rules.notice(),
@@ -503,7 +504,7 @@ impl MatterApp {
             if conflict {
                 alerts.push(SyncAlert {
                     view,
-                    label: format!("⚠ {name} modifiés ailleurs"),
+                    label: format!("⚠ {}", names[0]),
                     detail: format!(
                         "Un autre client a modifié cette partie pendant votre édition : \
                          choisissez quelle version garder (onglet « {} »).",
@@ -513,13 +514,13 @@ impl MatterApp {
             } else if let Some(detail) = notice {
                 alerts.push(SyncAlert {
                     view,
-                    label: format!("⚠ {name} non enregistrés"),
+                    label: format!("⚠ {}", names[1]),
                     detail,
                 });
             } else if editing && !self.connected() {
                 alerts.push(SyncAlert {
                     view,
-                    label: format!("⚠ {name} non enregistrés"),
+                    label: format!("⚠ {}", names[1]),
                     detail: "La liaison avec le serveur est coupée : vos modifications sont \
                              gardées et repartiront à la reconnexion."
                         .into(),

@@ -561,6 +561,69 @@ fn a_disabled_rule_may_keep_an_incomplete_webhook_but_never_calls_it() {
     });
 }
 
+/// `POST /api/import?dry_run=1` nomme les règles que l'import désactiverait (brouillons de la
+/// v0.2.1), sans rien mettre de côté ni arrêter le serveur.
+#[test]
+fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
+    let dir = temp_dir("dry-run-drafts");
+    let server = Server::start(&dir);
+    let client = server.client();
+    let id = matter_home_server::matter::certs::generate_identity().unwrap();
+    let controller = json!({
+        "version": 1,
+        "identity": {
+            "fabric_id": id.fabric_id,
+            "controller_node_id": id.controller_node_id,
+            "ca_private_key": id.ca_private_key,
+            "ca_cert_der": id.ca_cert_der,
+            "controller_private_key": id.controller_private_key,
+            "controller_cert_der": id.controller_cert_der,
+        },
+        "nodes": [{"node_id": 7, "name": "Capteur"}],
+    });
+    let rule = |id: u64, name: &str, url: &str| {
+        json!({
+            "id": id, "name": name, "enabled": true,
+            "trigger": {"type": "Time", "hour": 7, "minute": 0, "days": [true, true, true, true, true, true, true]},
+            "conditions": [],
+            "actions": [{"type": "Webhook", "url": url, "body": ""}],
+            "cooldown_s": 60
+        })
+    };
+    let rules = json!({"version": 1, "rules": [
+        rule(1, "Complète", "https://exemple.invalid/ok"),
+        rule(2, "Brouillon vide", ""),
+        rule(3, "Brouillon avec espace", "http://exemple.invalid/a b"),
+    ]});
+    let bundle = json!({
+        "format": "matter-home-desktop-sauvegarde", "version": 1,
+        "created": "2026-11-09T09:15:00+01:00",
+        "files": {"controller.json": controller.to_string(), "regles.json": rules.to_string()},
+    });
+    runtime().block_on(async {
+        let token = client.login().await;
+        let r = client
+            .request(
+                "POST",
+                "/api/import?dry_run=1",
+                Some(&token),
+                Some(bundle.to_string().as_bytes()),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let body = r.json();
+        assert_eq!(body["restarting"], false);
+        assert_eq!(body["summary"]["rules"], 3);
+        assert_eq!(
+            body["summary"]["disabled_rules"],
+            json!(["Brouillon vide", "Brouillon avec espace"])
+        );
+        // Rien n'est mis de côté, le serveur continue.
+        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert_eq!(client.get("/api/state", &token).await.status, 200);
+    });
+}
+
 #[test]
 fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
     let dir = temp_dir("notify");

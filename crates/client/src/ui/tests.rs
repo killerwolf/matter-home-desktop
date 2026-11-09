@@ -1337,7 +1337,7 @@ fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
     let alerts = f.app.sync_alerts();
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert_eq!(alerts[0].view, View::Rules);
-    assert!(alerts[0].label.contains("Règles"), "{alerts:?}");
+    assert_eq!(alerts[0].label, "⚠ Règles non enregistrées");
     assert!(alerts[0].detail.contains("adresse"), "{alerts:?}");
 
     // Revenir à la version du serveur : le brouillon disparaît, l'indicateur aussi.
@@ -1361,7 +1361,7 @@ fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert_eq!(
         (alerts[0].view, alerts[0].label.as_str()),
-        (View::Plan, "⚠ Plan modifiés ailleurs")
+        (View::Plan, "⚠ Plan modifié ailleurs")
     );
     assert!(f.app.plan.revert_to_server());
     assert_eq!(f.app.plan.show_name(), "Étage d'un autre");
@@ -1372,9 +1372,9 @@ fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
     disconnect(&mut f);
     let alerts = f.app.sync_alerts();
     assert!(
-        alerts
-            .iter()
-            .any(|a| a.view == View::Plan && a.detail.contains("coupée")),
+        alerts.iter().any(|a| a.view == View::Plan
+            && a.label == "⚠ Plan non enregistré"
+            && a.detail.contains("coupée")),
         "{alerts:?}"
     );
     // Sans version du serveur connue, on ne peut pas revenir en arrière.
