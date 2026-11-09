@@ -152,6 +152,7 @@ fn every_route_requires_the_token() {
             ("DELETE", "/api/devices/1/history"),
             ("GET", "/api/export"),
             ("POST", "/api/import"),
+            ("POST", "/api/import?dry_run=1"),
             ("GET", "/api/ws?protocol=1"),
         ];
         for (method, path) in routes {

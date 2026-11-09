@@ -66,6 +66,12 @@ fn method_and_size_errors_use_the_protocol_format() {
                 "{method} {path}"
             );
             assert!(r.headers.contains_key("allow"), "{method} {path}");
+            // Les en-têtes communs sont aussi sur ces réponses refabriquées.
+            assert_eq!(r.headers["cache-control"], "no-store", "{method} {path}");
+            assert_eq!(
+                r.headers["x-content-type-options"], "nosniff",
+                "{method} {path}"
+            );
         }
         // Un corps de plus de 1 Mo sur une route JSON ordinaire.
         let big = vec![b' '; 1024 * 1024 + 1];
@@ -73,6 +79,7 @@ fn method_and_size_errors_use_the_protocol_format() {
             .request("PUT", "/api/plan", Some(&token), Some(&big))
             .await;
         assert_eq!((r.status, r.code().as_str()), (413, "payload_too_large"));
+        assert_eq!(r.headers["cache-control"], "no-store");
         // Le serveur répond encore.
         assert_eq!(client.get("/api/state", &token).await.status, 200);
     });

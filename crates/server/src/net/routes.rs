@@ -71,9 +71,11 @@ pub fn router(state: AppState) -> Router {
         .merge(protected)
         .fallback(|| async { ApiErr(ApiError::new(ErrorCode::NotFound)) })
         .layer(DefaultBodyLimit::max(JSON_LIMIT))
-        .layer(middleware::map_response(harden))
         .layer(middleware::map_response(json_errors))
         .layer(middleware::from_fn_with_state(state.clone(), deadline))
+        // En dernier (donc à l'extérieur de tout) : les en-têtes communs couvrent aussi les
+        // réponses refabriquées par `json_errors` et le 503 de `deadline`.
+        .layer(middleware::map_response(harden))
         .with_state(state)
 }
 
