@@ -81,6 +81,7 @@ impl Shared {
         if spawned.is_err() {
             self.link(Link::LoggedOut {
                 url: None,
+                pinned: false,
                 reason: Some("Impossible de démarrer la connexion (ressources du système).".into()),
             });
         }
@@ -123,6 +124,7 @@ impl Shared {
         log::info!("jeton refusé par le serveur : retour à l'écran de connexion");
         self.link(Link::LoggedOut {
             url,
+            pinned: true,
             reason: Some(
                 "Votre session a expiré ou a été révoquée : reconnectez-vous.".to_string(),
             ),
@@ -137,6 +139,11 @@ enum Job {
     Login {
         url: String,
         fingerprint: String,
+        username: String,
+        password: String,
+    },
+    /// Connexion avec l'adresse et l'empreinte déjà approuvées (fichier de connexion).
+    LoginSaved {
         username: String,
         password: String,
     },
@@ -207,6 +214,7 @@ impl Backend {
                 }),
                 _ => shared.link(Link::LoggedOut {
                     url: None,
+                    pinned: false,
                     reason: Some(
                         "Le fichier de connexion est incomplet : reconnectez-vous au serveur."
                             .into(),
@@ -215,14 +223,17 @@ impl Backend {
             },
             Ok(Some(saved)) => shared.link(Link::LoggedOut {
                 url: Some(saved.url),
+                pinned: true,
                 reason: None,
             }),
             Ok(None) => shared.link(Link::LoggedOut {
                 url: None,
+                pinned: false,
                 reason: None,
             }),
             Err(e) => shared.link(Link::LoggedOut {
                 url: None,
+                pinned: false,
                 reason: Some(e.message()),
             }),
         }
@@ -248,6 +259,15 @@ impl Backend {
         self.submit(Job::Login {
             url: url.to_string(),
             fingerprint: fingerprint.to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
+        });
+    }
+
+    /// Comme [`Backend::login`], avec l'adresse et l'empreinte déjà approuvées, conservées dans
+    /// le fichier de connexion (jeton expiré ou révoqué).
+    pub fn login_saved(&self, username: &str, password: &str) {
+        self.submit(Job::LoginSaved {
             username: username.to_string(),
             password: password.to_string(),
         });
@@ -281,6 +301,7 @@ impl Backend {
         }
         self.shared.link(Link::LoggedOut {
             url: None,
+            pinned: false,
             reason: None,
         });
         if let Some(creds) = creds {
@@ -295,7 +316,11 @@ impl Backend {
         if let Err(e) = self.shared.store.delete() {
             self.shared.emit(Event::Notice(e.message()));
         }
-        self.shared.link(Link::LoggedOut { url, reason: None });
+        self.shared.link(Link::LoggedOut {
+            url,
+            pinned: false,
+            reason: None,
+        });
     }
 
     /// Relance la connexion avec les identifiants du fichier (après une version incompatible
@@ -319,6 +344,7 @@ impl Backend {
             }
             _ => self.shared.link(Link::LoggedOut {
                 url: None,
+                pinned: false,
                 reason: None,
             }),
         }
@@ -347,6 +373,19 @@ fn worker(shared: Arc<Shared>, jobs: Arc<Mutex<Receiver<Job>>>) {
                 username,
                 password,
             } => login(&shared, &url, &fingerprint, &username, &password),
+            Job::LoginSaved { username, password } => match shared.store.load() {
+                Ok(Some(saved)) => login(
+                    &shared,
+                    &saved.url,
+                    &saved.fingerprint,
+                    &username,
+                    &password,
+                ),
+                Ok(None) => shared.emit(Event::LoginFailed(NetError::Local(
+                    "Aucun serveur approuvé : saisissez son adresse.".into(),
+                ))),
+                Err(e) => shared.emit(Event::LoginFailed(e)),
+            },
             Job::Call {
                 id,
                 generation,

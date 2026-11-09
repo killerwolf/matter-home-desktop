@@ -1,12 +1,14 @@
 //! Vue thermomètre : valeur actuelle, fenêtre de temps, statistiques, graphique, export CSV.
+//! Les points viennent de l'historique lu sur le serveur (`series`).
 
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
-use super::{ago, Device};
-use crate::history::{compute_stats, to_csv, TimeWindow};
-use protocol::events::{now_unix, ReportingMode};
+use super::{ago, Device, ViewRequests};
+use matter_home_client::series::{compute_stats, DeviceSeries, Series, TimeWindow};
+use protocol::events::now_unix;
 use protocol::format::{format_humidity, format_temperature};
+use protocol::wire::{Metric, WireMode};
 
 const TEMP_COLOR: Color32 = Color32::from_rgb(230, 90, 50);
 const HUM_COLOR: Color32 = Color32::from_rgb(60, 140, 220);
@@ -20,17 +22,46 @@ pub(super) fn local_time(t: f64, with_seconds: bool) -> String {
         .unwrap_or_default()
 }
 
+/// État de la lecture de l'historique : en cours, en échec (avec « Réessayer »), tronquée.
+pub(super) fn history_status(ui: &mut egui::Ui, series: &DeviceSeries, req: &mut ViewRequests) {
+    if series.loading.is_some() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.small("Lecture de l'historique sur le serveur…");
+        });
+    }
+    if let Some(error) = &series.error {
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                Color32::from_rgb(210, 60, 50),
+                format!("Historique indisponible : {error}"),
+            );
+            if ui.small_button("Réessayer").clicked() {
+                req.retry = true;
+            }
+        });
+    }
+    if series.truncated {
+        ui.small("Le serveur n'a renvoyé que les mesures les plus récentes de cette période.");
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     device: &Device,
+    series: &DeviceSeries,
     window: &mut TimeWindow,
-    export_message: &mut Option<(bool, String)>,
+    export_message: &Option<(bool, String)>,
+    req: &mut ViewRequests,
 ) {
     let now = now_unix();
+    let empty = Series::default();
+    let temperature = series.get(Metric::Temperature).unwrap_or(&empty);
+    let humidity = series.get(Metric::Humidity).unwrap_or(&empty);
 
-    // Valeur actuelle.
+    // Valeur actuelle (celle de l'état complet, tenue à jour par les événements).
     ui.horizontal(|ui| {
-        match device.temperature.last() {
+        match device.temperature() {
             Some(s) => {
                 ui.label(
                     RichText::new(format_temperature(s.value))
@@ -48,11 +79,10 @@ pub fn show(
                 );
             }
         }
-        if device.info.caps.humidity || !device.humidity.is_empty() {
+        if device.info.caps.humidity || device.humidity().is_some() {
             ui.add_space(24.0);
             let text = device
-                .humidity
-                .last()
+                .humidity()
                 .map(|s| format_humidity(s.value))
                 .unwrap_or_else(|| "— %".into());
             ui.label(
@@ -62,17 +92,17 @@ pub fn show(
             );
         }
     });
-    let mut line = match device.temperature.last() {
-        Some(s) => format!("Mesure reçue {}", ago(now - s.t)),
+    let mut line = match device.temperature() {
+        Some(s) => format!("Mesure reçue {}", ago(now - s.at)),
         None => "En attente de la première mesure…".into(),
     };
     match &device.mode {
-        Some(ReportingMode::Subscription { max_interval_s }) => {
+        Some(WireMode::Subscription { max_interval_s }) => {
             line.push_str(&format!(
                 " · souscription active (rapport au moins toutes les {max_interval_s} s)"
             ));
         }
-        Some(ReportingMode::Polling { every_s }) => {
+        Some(WireMode::Polling { every_s }) => {
             line.push_str(&format!(
                 " · interrogation toutes les {every_s} s (souscription impossible)"
             ));
@@ -80,11 +110,7 @@ pub fn show(
         None => {}
     }
     ui.label(line);
-    ui.small(format!(
-        "Historique en mémoire : {} / {} points",
-        device.temperature.len(),
-        device.temperature.capacity()
-    ));
+    history_status(ui, series, req);
     ui.add_space(8.0);
 
     // Fenêtre, statistiques et export.
@@ -97,12 +123,13 @@ pub fn show(
         ui.separator();
         if ui
             .add_enabled(
-                !device.temperature.is_empty(),
+                !temperature.is_empty() && series.loading.is_none(),
                 egui::Button::new("Exporter en CSV"),
             )
+            .on_hover_text("Fichier produit par le serveur pour la fenêtre choisie.")
             .clicked()
         {
-            *export_message = Some(export_csv(device));
+            req.export_csv = true;
         }
     });
     if let Some((ok, msg)) = export_message {
@@ -114,8 +141,8 @@ pub fn show(
         ui.colored_label(color, msg.as_str());
     }
 
-    let temp_stats = compute_stats(device.temperature.since(start));
-    let hum_stats = compute_stats(device.humidity.since(start));
+    let temp_stats = compute_stats(temperature.since(start));
+    let hum_stats = compute_stats(humidity.since(start));
     egui::Grid::new("stats")
         .num_columns(5)
         .spacing([24.0, 4.0])
@@ -156,20 +183,12 @@ pub fn show(
 
     // Graphique température (axe gauche) ; l'humidité n'a pas la même échelle, elle
     // n'est pas tracée pour garder un graphique lisible.
-    let points: PlotPoints = device
-        .temperature
+    let points: PlotPoints = temperature.since(start).map(|s| [s.t, s.value]).collect();
+    let x_min = temperature
         .since(start)
-        .map(|s| [s.t, s.value])
-        .collect();
-    let x_min = if *window == TimeWindow::Session {
-        device
-            .temperature
-            .iter()
-            .next()
-            .map_or(now - 900.0, |s| s.t)
-    } else {
-        start
-    };
+        .next()
+        .map_or(start, |s| s.t)
+        .max(start);
     Plot::new(("temperature_plot", device.info.node_id))
         .legend(Legend::default())
         .height(260.0)
@@ -196,37 +215,4 @@ pub fn show(
                     .width(2.0),
             );
         });
-}
-
-/// Écrit le CSV dans le dossier Téléchargements (ou le dossier temporaire à défaut).
-// TODO étape 4 : télécharger le CSV du serveur (`GET /api/devices/{id}/history.csv`).
-fn export_csv(device: &Device) -> (bool, String) {
-    let dir = directories::UserDirs::new()
-        .and_then(|u| u.download_dir().map(|d| d.to_path_buf()))
-        .unwrap_or_else(std::env::temp_dir);
-    let safe_name: String = device
-        .info
-        .name
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect();
-    let file = dir.join(format!(
-        "matter-{}-{}.csv",
-        safe_name,
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    ));
-    let humidity = (!device.humidity.is_empty()).then_some(&device.humidity);
-    match std::fs::create_dir_all(&dir)
-        .and_then(|_| std::fs::write(&file, to_csv(&device.temperature, humidity)))
-    {
-        Ok(()) => (
-            true,
-            format!(
-                "{} points exportés dans {}",
-                device.temperature.len(),
-                file.display()
-            ),
-        ),
-        Err(e) => (false, format!("Export impossible : {e}")),
-    }
 }

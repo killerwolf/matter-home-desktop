@@ -1,33 +1,33 @@
-//! Client de bureau Matter Home : l'interface seule.
+//! Client de bureau Matter Home : l'interface, branchée sur `matter-home-server`.
 //!
-//! Étape 1 du découpage client-serveur : le client n'a plus de lien Matter ni de données
-//! locales. Il se lance sans serveur et affiche « déconnecté » ; le branchement sur le
-//! serveur (`matter-home-server`) est l'étape 4.
+//! Le client ne pilote rien lui-même et ne garde aucune donnée : tout vient du serveur (HTTPS
+//! et WebSocket, certificat épinglé). Sans serveur, il affiche « déconnecté ». Seuls l'adresse,
+//! l'empreinte du certificat et le jeton de session sont conservés (fichier en 0600).
 //!
 //! - `matter-home-desktop`           : lance l'interface
 //! - `matter-home-desktop --plan`    : ouvre directement le plan de la maison
 //! - `matter-home-desktop --rules`   : ouvre directement les automatisations
 //! - `matter-home-desktop --device X`: ouvre la fiche du premier appareil dont le nom contient X
 
-mod history;
 mod ui;
 
-use std::sync::mpsc;
+use std::sync::Arc;
 
 use eframe::egui;
+use matter_home_client::net::{Backend, Store};
 
 const HELP: &str = "\
 matter-home-desktop — client Matter Home (interface)
 
 Usage :
-  matter-home-desktop             lance l'interface (déconnectée tant que le serveur n'est pas branché)
+  matter-home-desktop             lance l'interface et se connecte au serveur
   matter-home-desktop --plan      ouvre directement le plan de la maison
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --help      affiche cette aide
 
-Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont maintenant
-des options du serveur : matter-home-server --demo.
+Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
+serveur : matter-home-server --demo.
 
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
@@ -77,13 +77,14 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Matter Home Desktop",
         options,
-        Box::new(move |_cc| {
-            // TODO étape 4 : ces canaux seront alimentés par la connexion au serveur.
-            // Pour l'instant personne ne lit les commandes ni n'écrit les événements :
-            // l'interface reste « déconnectée ».
-            let (commands, _unconnected_commands) = mpsc::channel();
-            let (_unconnected_events, events) = mpsc::channel();
-            let mut app = ui::MatterApp::new(commands, events);
+        Box::new(move |cc| {
+            // Le réseau tourne dans ses propres fils : chaque événement réveille l'interface.
+            let ctx = cc.egui_ctx.clone();
+            let notify: matter_home_client::net::Notifier = Arc::new(move || ctx.request_repaint());
+            let store = Store::default_location()
+                .ok_or("dossier de données de l'utilisateur introuvable")?;
+            let (backend, events) = Backend::start(store, notify);
+            let mut app = ui::MatterApp::new(backend, events);
             if open_plan {
                 app.show_plan();
             }

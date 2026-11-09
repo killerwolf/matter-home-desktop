@@ -40,7 +40,16 @@ fn first_connection_pins_the_certificate_and_receives_the_full_state() {
     let server = Server::start(&dir);
     let path = store_path(&dir);
     let mut client = TestClient::new(path.clone());
-    client.wait_link(T, |l| matches!(l, Link::LoggedOut { url: None, .. }));
+    client.wait_link(T, |l| {
+        matches!(
+            l,
+            Link::LoggedOut {
+                url: None,
+                pinned: false,
+                ..
+            }
+        )
+    });
 
     // Rien n'est conservé tant que l'utilisateur n'a pas approuvé l'empreinte.
     client.backend.probe(&server.url());
@@ -175,7 +184,16 @@ fn a_changed_certificate_is_refused_with_an_explicit_way_out() {
     client
         .backend
         .reset_pinned_certificate(Some(server_b.url()));
-    client.wait_link(T, |l| matches!(l, Link::LoggedOut { url: Some(_), .. }));
+    client.wait_link(T, |l| {
+        matches!(
+            l,
+            Link::LoggedOut {
+                url: Some(_),
+                pinned: false,
+                ..
+            }
+        )
+    });
     assert!(!path.exists());
     client.backend.probe(&server_b.url());
     let fp = client.wait_for(T, |e| match e {
@@ -444,7 +462,12 @@ fn a_revoked_token_sends_the_client_back_to_the_login_screen() {
         matches!(l, Link::LoggedOut { .. })
     });
     match link {
-        Link::LoggedOut { url, reason } => {
+        Link::LoggedOut {
+            url,
+            pinned,
+            reason,
+        } => {
+            assert!(pinned, "le certificat reste approuvé");
             assert_eq!(url.as_deref(), Some(server.url().as_str()));
             assert!(reason.unwrap().contains("reconnectez-vous"));
         }
@@ -483,6 +506,7 @@ fn an_unknown_token_at_startup_is_the_same_as_a_revoked_one() {
             l,
             Link::LoggedOut {
                 url: Some(_),
+                pinned: true,
                 reason: Some(_)
             }
         )
@@ -499,7 +523,16 @@ fn logout_revokes_the_token_and_deletes_the_local_file() {
     let token = saved_json(&dir)["token"].as_str().unwrap().to_string();
 
     client.backend.logout();
-    client.wait_link(T, |l| matches!(l, Link::LoggedOut { url: None, .. }));
+    client.wait_link(T, |l| {
+        matches!(
+            l,
+            Link::LoggedOut {
+                url: None,
+                pinned: false,
+                ..
+            }
+        )
+    });
     let notice = client.wait_for(T, |e| match e {
         Event::Notice(n) => Some(n.clone()),
         _ => None,

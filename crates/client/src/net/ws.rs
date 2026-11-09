@@ -54,6 +54,7 @@ enum Ended {
 
 pub(super) fn run(shared: Arc<Shared>, generation: u64, creds: Creds) {
     let mut attempt: u32 = 0;
+    let mut quick_resyncs: u32 = 0;
     loop {
         if shared.generation() != generation {
             return;
@@ -83,10 +84,30 @@ pub(super) fn run(shared: Arc<Shared>, generation: u64, creds: Creds) {
                 return;
             }
             Ended::Resync => {
+                // Quelques resynchronisations de suite en quelques secondes : le serveur est
+                // débordé ou le client trop lent, on ralentit au lieu de boucler.
+                if started.elapsed() < Duration::from_secs(3) {
+                    quick_resyncs += 1;
+                } else {
+                    quick_resyncs = 0;
+                }
+                if quick_resyncs >= 5 {
+                    quick_resyncs = 0;
+                    attempt += 1;
+                    let wait = backoff(attempt);
+                    shared.link(Link::Reconnecting {
+                        attempt,
+                        retry_in_s: wait.as_secs(),
+                        reason: "resynchronisations trop fréquentes.".into(),
+                    });
+                    if !sleep_while_current(&shared, generation, wait) {
+                        return;
+                    }
+                    shared.link(Link::Connecting);
+                    continue;
+                }
                 log::info!("resynchronisation avec le serveur");
                 shared.link(Link::Resyncing);
-                // Évite une boucle serrée si le serveur renvoie sans cesse le même cas.
-                attempt = attempt.max(0);
                 if !sleep_while_current(&shared, generation, Duration::from_millis(300)) {
                     return;
                 }

@@ -260,8 +260,10 @@ mod tests {
 
     #[test]
     fn load_sorts_groups_and_marks_the_window() {
-        let mut d = DeviceSeries::default();
-        d.loading = Some(3);
+        let mut d = DeviceSeries {
+            loading: Some(3),
+            ..Default::default()
+        };
         d.load(
             100.0,
             true,

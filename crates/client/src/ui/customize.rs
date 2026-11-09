@@ -3,8 +3,8 @@
 use eframe::egui;
 
 use super::plan::glyph;
-use protocol::events::NodeInfo;
 use protocol::home::Symbol;
+use protocol::wire::WireNode;
 
 /// Brouillon en cours d'édition.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +15,7 @@ pub struct DeviceEdit {
 }
 
 impl DeviceEdit {
-    pub fn from_info(info: &NodeInfo) -> Self {
+    pub fn from_info(info: &WireNode) -> Self {
         Self {
             node_id: info.node_id,
             name: info.custom_name.clone().unwrap_or_default(),

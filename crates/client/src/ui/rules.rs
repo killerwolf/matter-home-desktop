@@ -1,13 +1,16 @@
 //! Onglet « Automatisations » : liste des règles, éditeur « Quand / Si / Alors », journal.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
 
 use super::plan::{glyph, icon_of};
+use super::sync::{Incoming, SyncState};
 use super::{ago, Device};
 use protocol::automation::{Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger};
 use protocol::events::{now_unix, MeasureKind};
+use protocol::wire::RuleRunView;
 
 const RED: Color32 = Color32::from_rgb(210, 60, 50);
 const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
@@ -20,17 +23,8 @@ const MEASURES: [MeasureKind; 5] = [
     MeasureKind::Position,
 ];
 
-pub struct RunEntry {
-    pub rule_id: u64,
-    pub name: String,
-    pub at: f64,
-    pub ok: bool,
-    pub detail: String,
-}
-
 pub enum RulesAction {
     None,
-    Changed(Vec<Rule>),
     Test(u64),
 }
 
@@ -38,7 +32,11 @@ pub struct RulesView {
     set: RuleSet,
     selected: Option<u64>,
     confirm_delete: bool,
-    runs: VecDeque<RunEntry>,
+    /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
+    sync: SyncState<RuleSet>,
+    /// Une zone de saisie est active : on envoie quand même (délai de calme), mais jamais
+    /// pendant un glisser.
+    holding: bool,
 }
 
 /// Quel genre d'appareil un sélecteur doit proposer.
@@ -297,28 +295,72 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
 }
 
 impl RulesView {
-    /// Règles vides. TODO étape 4 : les règles viendront du serveur, qui les enregistre
-    /// (le client ne lit ni n'écrit plus aucun fichier).
+    /// Aucune règle : les vraies viennent du serveur (état complet à la connexion).
     pub fn new() -> Self {
-        let set = RuleSet::default();
         Self {
-            selected: set.rules.first().map(|r| r.id),
-            set,
+            set: RuleSet::default(),
+            selected: None,
             confirm_delete: false,
-            runs: VecDeque::new(),
+            sync: SyncState::default(),
+            holding: false,
         }
     }
 
-    pub fn record_run(&mut self, entry: RunEntry) {
-        self.runs.push_front(entry);
-        self.runs.truncate(50);
+    /// Une modification locale n'est pas encore arrivée au serveur.
+    pub fn editing(&self) -> bool {
+        self.sync.editing()
     }
 
-    fn save(&mut self) -> RulesAction {
-        RulesAction::Changed(self.set.rules.clone())
+    /// Déconnexion : les règles affichées ne sont plus celles du serveur, on les oublie.
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> RulesAction {
+    /// Règles reçues du serveur (état complet ou `rules_changed`). Une édition en cours n'est
+    /// jamais écrasée : voir `SyncState`.
+    pub fn on_server(&mut self, incoming: RuleSet) {
+        if self.sync.on_server(incoming, &mut self.set) == Incoming::Adopted {
+            self.fix_selection();
+        }
+    }
+
+    fn fix_selection(&mut self) {
+        self.confirm_delete = false;
+        if !self
+            .selected
+            .is_some_and(|id| self.set.rules.iter().any(|r| r.id == id))
+        {
+            self.selected = self.set.rules.first().map(|r| r.id);
+        }
+    }
+
+    pub fn poll_save(&self, now: Instant) -> Option<RuleSet> {
+        self.sync.due(now, self.holding, &self.set)
+    }
+
+    pub fn sent(&mut self, request_id: u64, content: RuleSet) {
+        self.sync.sent(request_id, content);
+    }
+
+    pub fn saved(&mut self, request_id: u64, stored: Option<RuleSet>) {
+        self.sync.on_saved(request_id, stored, &mut self.set);
+    }
+
+    /// Envoi refusé : retour à la version du serveur. `true` si c'était un envoi des règles.
+    pub fn rejected(&mut self, request_id: u64) -> bool {
+        let was_ours = self.sync.on_rejected(request_id, &mut self.set);
+        if was_ours {
+            self.fix_selection();
+        }
+        was_ours
+    }
+
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        devices: &BTreeMap<u64, Device>,
+        runs: &VecDeque<RuleRunView>,
+    ) -> RulesAction {
         let mut action = RulesAction::None;
         let mut changed = false;
 
@@ -332,6 +374,7 @@ impl RulesView {
             }
         });
         ui.small("Les règles s'exécutent sur le serveur, tant qu'il tourne.");
+        self.remote_banner(ui);
         ui.separator();
 
         egui::Panel::bottom("rules_journal")
@@ -342,11 +385,11 @@ impl RulesView {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
-                        if self.runs.is_empty() {
-                            ui.small("Aucune exécution depuis le lancement.");
+                        if runs.is_empty() {
+                            ui.small("Aucune exécution depuis le démarrage du serveur.");
                         }
                         let now = now_unix();
-                        for r in &self.runs {
+                        for r in runs.iter().rev() {
                             let color = if r.ok { GREEN } else { RED };
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(color, if r.ok { "✔" } else { "✖" });
@@ -387,7 +430,7 @@ impl RulesView {
                                     ui.label(RichText::new(&rule.name).strong());
                                 });
                                 ui.small(summary(rule, devices));
-                                if let Some(last) = self.runs.iter().find(|r| r.rule_id == rule.id)
+                                if let Some(last) = runs.iter().rev().find(|r| r.rule_id == rule.id)
                                 {
                                     let color = if last.ok { GREEN } else { RED };
                                     ui.colored_label(
@@ -424,14 +467,34 @@ impl RulesView {
                 });
         });
 
+        self.holding = ui.input(|i| i.pointer.any_down());
         if changed {
-            if let RulesAction::None = action {
-                action = self.save();
-            } else {
-                self.save();
-            }
+            self.sync.mark_changed(Instant::now());
         }
         action
+    }
+
+    /// Un autre client a modifié les règles pendant que nous les éditions.
+    fn remote_banner(&mut self, ui: &mut egui::Ui) {
+        if self.sync.remote().is_none() {
+            return;
+        }
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(90, 70, 20))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        "Les règles ont été modifiées par un autre client pendant votre édition.",
+                    );
+                    if ui.button("Afficher sa version").clicked() {
+                        self.sync.accept_remote(&mut self.set);
+                        self.fix_selection();
+                    }
+                    if ui.button("Garder la mienne").clicked() {
+                        self.sync.keep_mine(Instant::now());
+                    }
+                });
+            });
     }
 
     /// Éditeur d'une règle. Retourne (modifiée ?, action demandée).
@@ -861,45 +924,64 @@ impl RulesView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::events::{Capabilities, NodeInfo};
+    use protocol::events::Capabilities;
+    use protocol::wire::WireNode;
 
     #[test]
     fn summary_reads_naturally() {
         let mut devices = BTreeMap::new();
         devices.insert(
             7,
-            Device::new(NodeInfo {
+            Device::new(WireNode {
                 node_id: 7,
                 name: "Porte".into(),
+                device_name: "Porte".into(),
+                custom_name: None,
+                icon: None,
+                vendor: None,
+                product: None,
+                device_types: vec![],
                 caps: Capabilities {
                     contact: true,
                     ..Default::default()
                 },
-                ..Default::default()
+                bridge: None,
             }),
         );
         devices.insert(
             8,
-            Device::new(NodeInfo {
+            Device::new(WireNode {
                 node_id: 8,
                 name: "Lampe".into(),
+                device_name: "Lampe".into(),
+                custom_name: None,
+                icon: None,
+                vendor: None,
+                product: None,
+                device_types: vec![],
                 caps: Capabilities {
                     on_off: true,
                     ..Default::default()
                 },
-                ..Default::default()
+                bridge: None,
             }),
         );
         devices.insert(
             9,
-            Device::new(NodeInfo {
+            Device::new(WireNode {
                 node_id: 9,
                 name: "Volet".into(),
+                device_name: "Volet".into(),
+                custom_name: None,
+                icon: None,
+                vendor: None,
+                product: None,
+                device_types: vec![],
                 caps: Capabilities {
                     cover: true,
                     ..Default::default()
                 },
-                ..Default::default()
+                bridge: None,
             }),
         );
         let mut r = Rule::new(1);

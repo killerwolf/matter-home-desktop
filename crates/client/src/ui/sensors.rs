@@ -3,12 +3,13 @@
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
-use super::thermometer::local_time;
-use super::{ago, Device};
-use crate::history::{compute_stats, Sample, TimeWindow};
+use super::thermometer::{history_status, local_time};
+use super::{ago, Device, ViewRequests};
+use matter_home_client::series::{compute_stats, DeviceSeries, Sample, Series, TimeWindow};
 use protocol::automation::CoverCommand;
 use protocol::events::{now_unix, CoverMotion};
 use protocol::format::{format_energy, format_position, format_power};
+use protocol::wire::Metric;
 
 const OPEN_COLOR: Color32 = Color32::from_rgb(230, 140, 30);
 const CLOSED_COLOR: Color32 = Color32::from_rgb(40, 160, 70);
@@ -25,10 +26,16 @@ fn window_selector(ui: &mut egui::Ui, window: &mut TimeWindow) {
 }
 
 /// Détecteur d'ouverture : état actuel, nombre d'ouvertures, chronologie.
-pub fn door(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
+pub fn door(
+    ui: &mut egui::Ui,
+    device: &Device,
+    series: &DeviceSeries,
+    window: &mut TimeWindow,
+    req: &mut ViewRequests,
+) {
     let now = now_unix();
     ui.heading("Ouverture");
-    match device.open {
+    match device.open() {
         Some(open) => {
             let (text, color) = if open {
                 ("Ouvert", OPEN_COLOR)
@@ -54,11 +61,12 @@ pub fn door(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
             );
         }
     }
+    history_status(ui, series, req);
 
     window_selector(ui, window);
     let start = window.start(now);
-    let openings = device
-        .door_events
+    let changes = series.transitions(Metric::Open);
+    let openings = changes
         .iter()
         .filter(|(t, open)| *open && *t >= start)
         .count();
@@ -66,9 +74,9 @@ pub fn door(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
 
     ui.add_space(4.0);
     ui.strong("Derniers changements");
-    let recent: Vec<_> = device.door_events.iter().rev().take(12).collect();
+    let recent: Vec<_> = changes.iter().rev().take(12).collect();
     if recent.is_empty() {
-        ui.label("Aucun changement observé depuis le lancement.");
+        ui.label("Aucun changement sur la période lue.");
     }
     egui::Grid::new(("door_events", device.info.node_id))
         .num_columns(2)
@@ -112,11 +120,19 @@ fn step_points<'a>(samples: impl Iterator<Item = &'a Sample>, now: f64) -> Vec<[
 }
 
 /// Prise : état marche/arrêt, puissance instantanée, énergie cumulée et graphique.
-pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
+pub fn power(
+    ui: &mut egui::Ui,
+    device: &Device,
+    series: &DeviceSeries,
+    window: &mut TimeWindow,
+    req: &mut ViewRequests,
+) {
     let now = now_unix();
+    let empty = Series::default();
+    let power = series.get(Metric::Power).unwrap_or(&empty);
     ui.heading("Consommation électrique");
     ui.horizontal(|ui| {
-        match device.power.last() {
+        match device.power() {
             Some(s) => {
                 ui.label(
                     RichText::new(format_power(s.value))
@@ -135,7 +151,7 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
             }
             None => {}
         }
-        if let Some(on) = device.on_off {
+        if let Some(on) = device.on_off() {
             ui.add_space(16.0);
             let (text, color) = if on {
                 ("Allumée", CLOSED_COLOR)
@@ -145,20 +161,21 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
             ui.label(RichText::new(text).size(24.0).color(color));
         }
     });
-    if let Some(e) = device.energy {
+    if let Some(e) = device.energy() {
         ui.label(format!(
             "Énergie consommée (compteur de la prise) : {} — relevé {}",
             format_energy(e.value),
-            ago(now - e.t)
+            ago(now - e.at)
         ));
     }
     if !device.info.caps.power {
         return;
     }
+    history_status(ui, series, req);
 
     window_selector(ui, window);
     let start = window.start(now);
-    if let Some(st) = compute_stats(device.power.since(start)) {
+    if let Some(st) = compute_stats(power.since(start)) {
         ui.label(format!(
             "Min {} · Max {} · Moyenne {} · {} points",
             format_power(st.min),
@@ -167,7 +184,7 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
             st.count
         ));
         // Énergie estimée sur la fenêtre par intégration (méthode des trapèzes).
-        let pts: Vec<_> = device.power.since(start).collect();
+        let pts: Vec<_> = power.since(start).collect();
         if pts.len() >= 2 {
             // `+ 0.0` : une somme f64 vide vaut -0.0, qui s'afficherait « -0,0 ».
             let wh: f64 = pts
@@ -179,12 +196,8 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
         }
     }
 
-    let points = step_points(device.power.since(start), now);
-    let x_min = if *window == TimeWindow::Session {
-        device.power.iter().next().map_or(now - 900.0, |s| s.t)
-    } else {
-        start
-    };
+    let points = step_points(power.since(start), now);
+    let x_min = power.since(start).next().map_or(start, |s| s.t).max(start);
     Plot::new(("power_plot", device.info.node_id))
         .legend(Legend::default())
         .height(240.0)
@@ -221,11 +234,15 @@ pub fn power(ui: &mut egui::Ui, device: &Device, window: &mut TimeWindow) {
 pub fn cover(
     ui: &mut egui::Ui,
     device: &mut Device,
+    series: &DeviceSeries,
     window: &mut TimeWindow,
+    req: &mut ViewRequests,
 ) -> Option<CoverCommand> {
     let now = now_unix();
+    let empty = Series::default();
+    let position = series.get(Metric::Position).unwrap_or(&empty);
     let position_aware = device.info.caps.cover_position;
-    let current = device.position.last().map(|s| s.value);
+    let current = device.position().map(|s| s.value);
     let mut command = None;
 
     ui.heading("Volet");
@@ -304,12 +321,12 @@ pub fn cover(
         return command;
     }
 
+    history_status(ui, series, req);
     window_selector(ui, window);
     let start = window.start(now);
-    let openings = device
-        .position
+    let openings = position
         .since(start)
-        .zip(device.position.since(start).skip(1))
+        .zip(position.since(start).skip(1))
         .filter(|(a, b)| a.value <= 0.0 && b.value > 0.0)
         .count();
     ui.label(format!(
@@ -318,21 +335,12 @@ pub fn cover(
 
     // La position tient depuis son dernier changement : si celui-ci précède la fenêtre,
     // le palier part du début de la fenêtre.
-    let carried = device
-        .position
-        .iter()
-        .take_while(|s| s.t < start)
-        .last()
-        .map(|s| Sample {
-            t: start,
-            value: s.value,
-        });
-    let points = step_points(carried.iter().chain(device.position.since(start)), now);
-    let x_min = if *window == TimeWindow::Session {
-        device.position.iter().next().map_or(now - 900.0, |s| s.t)
-    } else {
-        start
-    };
+    let carried = position.before(start).map(|s| Sample {
+        t: start,
+        value: s.value,
+    });
+    let points = step_points(carried.iter().chain(position.since(start)), now);
+    let x_min = start;
     Plot::new(("cover_plot", device.info.node_id))
         .legend(Legend::default())
         .height(180.0)

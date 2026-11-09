@@ -2,16 +2,18 @@
 //! avec l'état des appareils en direct. Deux modes : consultation et modification.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use super::customize::{editor, DeviceEdit, EditResult};
+use super::sync::{Incoming, SyncState};
 use super::Device;
-use protocol::events::NodeStatus;
 use protocol::format::{format_position, format_power, format_temperature};
 use protocol::home::{
     self, snap, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MIN_ROOM_SIZE, ROOM_SNAP,
 };
+use protocol::wire::WireStatus;
 
 const ITEM_RADIUS: f32 = 15.0;
 const HANDLE_SIZE: f32 = 10.0;
@@ -80,7 +82,12 @@ pub struct PlanView {
     fit_pending: bool,
     drag: Option<Drag>,
     selection: Option<Selection>,
+    /// Modifié pendant cette image : à signaler au suivi de synchronisation.
     dirty: bool,
+    /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
+    sync: SyncState<HomePlan>,
+    /// Le pointeur est enfoncé (glisser en cours) : on n'envoie rien avant le relâchement.
+    holding: bool,
     confirm_delete_floor: bool,
     /// Brouillon du nom et de l'icône de l'appareil sélectionné.
     device_edit: Option<DeviceEdit>,
@@ -178,18 +185,18 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
             // L'icône choisie pour l'appareil prime sur un ancien réglage propre au plan.
             let symbol = d.info.icon.or(*symbol).or_else(|| default_symbol(d));
             let (mut fill, mut value) = (TEAL, None);
-            if let Some(open) = d.open {
+            if let Some(open) = d.open() {
                 fill = if open { ORANGE } else { GREEN };
                 value = Some(if open { "Ouvert" } else { "Fermé" }.to_string());
-            } else if let Some(t) = d.temperature.last() {
+            } else if let Some(t) = d.temperature() {
                 fill = temperature_color(t.value);
                 let mut v = format_temperature(t.value);
-                if let Some(h) = d.humidity.last() {
+                if let Some(h) = d.humidity() {
                     v.push_str(&format!(" · {:.0} %", h.value));
                 }
                 value = Some(v);
             } else if d.info.caps.cover {
-                let mut text = match d.position.last() {
+                let mut text = match d.position() {
                     Some(p) => {
                         fill = if p.value <= 0.0 {
                             Color32::from_gray(80)
@@ -208,22 +215,22 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 let text = text.trim().to_string();
                 value = (!text.is_empty()).then_some(text);
             } else if d.info.caps.power || d.info.caps.on_off {
-                fill = if d.on_off == Some(true) {
+                fill = if d.on_off() == Some(true) {
                     YELLOW
                 } else {
                     Color32::from_gray(80)
                 };
-                value = d.power.last().map(|p| format_power(p.value)).or_else(|| {
-                    d.on_off
+                value = d.power().map(|p| format_power(p.value)).or_else(|| {
+                    d.on_off()
                         .map(|on| if on { "Allumée" } else { "Éteinte" }.to_string())
                 });
             }
             match &d.status {
-                NodeStatus::Unreachable { .. } => {
+                WireStatus::Unreachable { .. } => {
                     fill = GRAY;
                     value = Some("injoignable".into());
                 }
-                NodeStatus::Connecting if d.last_seen.is_none() => fill = GRAY,
+                WireStatus::Connecting if d.last_seen.is_none() => fill = GRAY,
                 _ => {}
             }
             Look {
@@ -231,7 +238,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 fill,
                 name: short(&d.info.name),
                 value,
-                battery_low: d.battery_low,
+                battery_low: d.battery_low(),
             }
         }
     }
@@ -244,10 +251,10 @@ fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) ->
     for item in items.iter().filter(|i| room.contains(i.x, i.y)) {
         if let ItemKind::Device { node_id, .. } = item.kind {
             if let Some(d) = devices.get(&node_id) {
-                if let Some(t) = d.temperature.last() {
+                if let Some(t) = d.temperature() {
                     temps.push(t.value);
                 }
-                if d.open == Some(true) {
+                if d.open() == Some(true) {
                     open += 1;
                 }
             }
@@ -266,8 +273,7 @@ fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) ->
 }
 
 impl PlanView {
-    /// Plan par défaut. TODO étape 4 : le plan viendra du serveur, qui l'enregistre
-    /// (le client ne lit ni n'écrit plus aucun fichier).
+    /// Plan vide : le vrai plan vient du serveur (état complet à la connexion).
     pub fn new() -> Self {
         Self {
             plan: HomePlan::default(),
@@ -279,31 +285,81 @@ impl PlanView {
             drag: None,
             selection: None,
             dirty: false,
+            sync: SyncState::default(),
+            holding: false,
             confirm_delete_floor: false,
             device_edit: None,
         }
     }
 
-    pub fn remove_device(&mut self, node_id: u64) {
-        if self.plan.remove_device(node_id) {
-            self.dirty = true;
+    /// Une modification locale n'est pas encore arrivée au serveur.
+    pub fn editing(&self) -> bool {
+        self.dirty || self.sync.editing()
+    }
+
+    #[cfg(test)]
+    pub fn show_name(&self) -> &str {
+        &self.plan.floors[0].name
+    }
+
+    /// Simule une modification locale du nom du premier étage (tests).
+    #[cfg(test)]
+    pub fn edit_name(&mut self, name: &str) {
+        self.plan.floors[0].name = name.into();
+        self.sync.mark_changed(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub fn has_remote_banner(&self) -> bool {
+        self.sync.remote().is_some()
+    }
+
+    /// Déconnexion : le plan affiché n'est plus celui du serveur, on l'oublie.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Plan reçu du serveur (état complet ou `plan_changed`). Une édition en cours n'est
+    /// jamais écrasée : voir `SyncState`.
+    pub fn on_server(&mut self, incoming: HomePlan) {
+        if self.sync.on_server(incoming, &mut self.plan) == Incoming::Adopted {
+            self.floor = self.floor.min(self.plan.floors.len().saturating_sub(1));
+            self.selection = None;
+            self.device_edit = None;
+            self.confirm_delete_floor = false;
+        }
+    }
+
+    /// Modification à envoyer maintenant, s'il y en a une.
+    pub fn poll_save(&self, now: Instant) -> Option<HomePlan> {
+        self.sync.due(now, self.holding, &self.plan)
+    }
+
+    pub fn sent(&mut self, request_id: u64, content: HomePlan) {
+        self.sync.sent(request_id, content);
+    }
+
+    pub fn saved(&mut self, request_id: u64, stored: Option<HomePlan>) {
+        self.sync.on_saved(request_id, stored, &mut self.plan);
+    }
+
+    /// Envoi refusé : retour à la version du serveur. `true` si c'était un envoi du plan.
+    pub fn rejected(&mut self, request_id: u64) -> bool {
+        let was_ours = self.sync.on_rejected(request_id, &mut self.plan);
+        if was_ours {
+            self.floor = self.floor.min(self.plan.floors.len().saturating_sub(1));
             self.selection = None;
         }
+        was_ours
     }
 
     fn floor_mut(&mut self) -> &mut home::Floor {
         &mut self.plan.floors[self.floor]
     }
 
-    fn save_if_needed(&mut self, ui: &egui::Ui) {
-        if self.dirty && !ui.input(|i| i.pointer.any_down()) {
-            // TODO étape 4 : envoyer le plan modifié au serveur.
-            self.dirty = false;
-        }
-    }
-
     pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {
         self.floor = self.floor.min(self.plan.floors.len() - 1);
+        self.remote_banner(ui);
         self.toolbar(ui);
         ui.separator();
 
@@ -319,11 +375,36 @@ impl PlanView {
                 });
         }
         let action = self.canvas(ui, devices);
-        self.save_if_needed(ui);
+        self.holding = ui.input(|i| i.pointer.any_down());
+        if std::mem::take(&mut self.dirty) {
+            self.sync.mark_changed(Instant::now());
+        }
         match (action, palette_action) {
             (PlanAction::None, Some(a)) => a,
             (a, _) => a,
         }
+    }
+
+    /// Un autre client a modifié le plan pendant que nous l'éditions.
+    fn remote_banner(&mut self, ui: &mut egui::Ui) {
+        if self.sync.remote().is_none() {
+            return;
+        }
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(90, 70, 20))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Le plan a été modifié par un autre client pendant votre édition.");
+                    if ui.button("Afficher sa version").clicked() {
+                        self.sync.accept_remote(&mut self.plan);
+                        self.selection = None;
+                        self.device_edit = None;
+                    }
+                    if ui.button("Garder la mienne").clicked() {
+                        self.sync.keep_mine(Instant::now());
+                    }
+                });
+            });
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -990,15 +1071,21 @@ impl PlanView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::Sample;
-    use protocol::events::{Capabilities, NodeInfo};
+    use protocol::events::Capabilities;
+    use protocol::wire::{Metric, WireNode};
 
     fn device(caps: Capabilities) -> Device {
-        Device::new(NodeInfo {
+        Device::new(WireNode {
             node_id: 1,
             name: "Capteur".into(),
+            device_name: "Capteur".into(),
+            custom_name: None,
+            icon: None,
+            vendor: None,
+            product: None,
+            device_types: vec![],
             caps,
-            ..Default::default()
+            bridge: None,
         })
     }
 
@@ -1043,8 +1130,8 @@ mod tests {
             cover_position: true,
             ..Default::default()
         });
-        shutter.status = NodeStatus::Online;
-        shutter.position.push(Sample { t: 0.0, value: 0.0 });
+        shutter.status = WireStatus::Online;
+        shutter.apply_reading(Metric::Position, 0.0, 0.0);
         devices.insert(1, shutter);
         let item = Item {
             id: 5,
@@ -1061,10 +1148,7 @@ mod tests {
             (Some(Symbol::Shutter), Some("Fermé"))
         );
         let d = devices.get_mut(&1).unwrap();
-        d.position.push(Sample {
-            t: 1.0,
-            value: 65.0,
-        });
+        d.apply_reading(Metric::Position, 65.0, 1.0);
         d.cover_motion = Some(protocol::events::CoverMotion::Opening);
         let lk = look(&item, &devices);
         assert_eq!(
@@ -1081,9 +1165,9 @@ mod tests {
             battery: true,
             ..Default::default()
         });
-        door.status = NodeStatus::Online;
-        door.open = Some(true);
-        door.battery_low = true;
+        door.status = WireStatus::Online;
+        door.apply_reading(Metric::Open, 1.0, 1.0);
+        door.apply_reading(Metric::BatteryLow, 1.0, 1.0);
         devices.insert(1, door);
         let item = Item {
             id: 5,
@@ -1100,11 +1184,15 @@ mod tests {
             (Some(Symbol::Door), ORANGE, Some("Ouvert"), true)
         );
 
-        devices.get_mut(&1).unwrap().open = Some(false);
+        devices
+            .get_mut(&1)
+            .unwrap()
+            .apply_reading(Metric::Open, 0.0, 2.0);
         assert_eq!(look(&item, &devices).fill, GREEN);
 
-        devices.get_mut(&1).unwrap().status = NodeStatus::Unreachable {
-            error: "x".into(),
+        devices.get_mut(&1).unwrap().status = WireStatus::Unreachable {
+            code: protocol::wire::ErrorCode::DeviceUnreachable,
+            detail: Some("x".into()),
             retry_in_s: 5,
         };
         let lk = look(&item, &devices);
@@ -1155,23 +1243,17 @@ mod tests {
             temperature: true,
             ..Default::default()
         });
-        t1.temperature.push(Sample {
-            t: 0.0,
-            value: 20.0,
-        });
+        t1.apply_reading(Metric::Temperature, 20.0, 0.0);
         let mut t2 = device(Capabilities {
             temperature: true,
             ..Default::default()
         });
-        t2.temperature.push(Sample {
-            t: 0.0,
-            value: 22.0,
-        });
+        t2.apply_reading(Metric::Temperature, 22.0, 0.0);
         let mut door = device(Capabilities {
             contact: true,
             ..Default::default()
         });
-        door.open = Some(true);
+        door.apply_reading(Metric::Open, 1.0, 0.0);
         devices.insert(1, t1);
         devices.insert(2, t2);
         devices.insert(3, door);

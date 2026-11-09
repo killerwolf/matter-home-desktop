@@ -30,10 +30,12 @@ pub type Notifier = Arc<dyn Fn() + Send + Sync>;
 /// État de la liaison avec le serveur.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Link {
-    /// Pas de session : écran de connexion. `url` est préremplie quand une adresse a déjà été
-    /// approuvée (jeton expiré, révoqué ou déconnexion), `reason` explique pourquoi.
+    /// Pas de session : écran de connexion. `url` est préremplie ; `pinned` dit que le
+    /// certificat de cette adresse est déjà approuvé (jeton expiré ou révoqué : le mot de passe
+    /// suffit). `reason` explique pourquoi on est ici.
     LoggedOut {
         url: Option<String>,
+        pinned: bool,
         reason: Option<String>,
     },
     /// Première tentative après le démarrage ou la connexion.
