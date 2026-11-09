@@ -92,11 +92,11 @@ dans ces cas, créer une nouvelle fabric ferait oublier tous vos appareils.
   **anciennes** données en place depuis le dossier « …avant-import-<date> » le plus récent et le
   dit (« Import coupé en plein échange : les anciennes données … sont remises en place ») ; s'il n'y
   a aucun dossier « …avant-import-… », il refuse et explique pourquoi plutôt que de prétendre avoir
-  abandonné.
+  abandonné. Supprimer à la main le fichier en attente a le même effet au lancement suivant (le
+  dossier préparé est alors aussi mis de côté, jamais effacé).
 - **Pas en root** : `import`, `init`, `create-account` et le serveur refusent de tourner avec
   `sudo` ou en root (ils laisseraient dans vos données des fichiers que le service ne pourrait
-  plus lire). Lancez-les sous votre compte. Supprimer à la main le fichier en attente a le même effet au lancement
-  suivant (le dossier préparé est alors aussi mis de côté, jamais effacé).
+  plus lire). Lancez-les sous votre compte.
 - **Serveur qui ne démarre plus** après un import demandé par l'API (« n'a pas pu être appliqué après
   3 essais ») : corrigez la cause (espace disque, droits) ; pour renoncer à l'import, lancez
   `matter-home-server import --abandon` comme ci-dessus, puis relancez.
