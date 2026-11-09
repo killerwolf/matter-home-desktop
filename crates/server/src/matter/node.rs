@@ -168,37 +168,127 @@ fn mode(ctx: &Ctx, node_id: u64, mode: ReportingMode) {
     }
 }
 
-/// Ouvre une session CASE : adresse connue d'abord, puis redécouverte mDNS.
+/// Délai avant de lancer la redécouverte mDNS pendant que l'adresse mémorisée est
+/// encore à l'essai (une session saine s'ouvre bien plus vite ; un appareil à sommeil,
+/// lent, garde sa chance sur l'adresse mémorisée si mDNS annonce la même).
+const DISCOVERY_GRACE: Duration = Duration::from_secs(3);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Ouvre une session CASE : adresse connue d'abord, redécouverte mDNS en parallèle.
 async fn connect(ctx: &Ctx, node_id: u64) -> Result<Connection> {
     let stored = ctx.node(node_id).context("nœud inconnu")?;
-    let mut last_err = None;
-    if !stored.address.is_empty() {
-        match case(ctx, node_id, &stored.address).await {
-            Ok(c) => return Ok(c),
-            Err(e) => {
-                log::debug!("CASE {node_id:016X} @ {} : {e:#}", stored.address);
-                last_err = Some(e);
+    let instance = ctx.instance_name(node_id);
+    let (conn, address) = connect_race(
+        &stored.address,
+        DISCOVERY_GRACE,
+        |address| async move {
+            case(ctx, node_id, &address).await.inspect_err(|e| {
+                log::debug!("CASE {node_id:016X} @ {address} : {e:#}");
+            })
+        },
+        || async {
+            ctx.discovery
+                .find_operational(&instance, DISCOVERY_TIMEOUT)
+                .await
+                .map(|found| found.addresses)
+        },
+    )
+    .await?;
+    if address != stored.address {
+        ctx.update_node(node_id, |n| n.address = address.clone());
+    }
+    Ok(conn)
+}
+
+/// Adresses annoncées en mDNS à essayer en plus de l'adresse mémorisée.
+fn fresh_addresses(stored: &str, found: &[String]) -> Vec<String> {
+    found.iter().filter(|a| *a != stored).cloned().collect()
+}
+
+/// Faut-il abandonner l'essai sur l'adresse mémorisée au profit des adresses annoncées ?
+/// Oui seulement si mDNS en annonce d'autres et pas celle-ci : si elle est annoncée, elle
+/// peut être simplement lente (appareil à sommeil) et on la laisse aller au bout.
+fn should_abandon_stored(stored: &str, found: &[String]) -> bool {
+    !found.is_empty() && !found.iter().any(|a| a == stored)
+}
+
+/// Essaie l'adresse mémorisée ; la découverte démarre après `grace`, ou tout de suite si
+/// l'essai échoue. Dès que mDNS annonce des adresses qui ne contiennent pas la mémorisée,
+/// l'essai mémorisé est annulé (future abandonnée : sa connexion est libérée, une seule
+/// session reste en jeu), puis les adresses fraîches sont essayées l'une après l'autre.
+/// Renvoie la connexion et l'adresse qui a servi.
+async fn connect_race<C, A, AF, D, DF>(
+    stored: &str,
+    grace: Duration,
+    attempt: A,
+    discover: D,
+) -> Result<(C, String)>
+where
+    A: Fn(String) -> AF,
+    AF: std::future::Future<Output = Result<C>>,
+    D: FnOnce() -> DF,
+    DF: std::future::Future<Output = Result<Vec<String>>>,
+{
+    let mut errors: Vec<String> = Vec::new();
+    let mut found: Vec<String> = Vec::new();
+    {
+        let failed = Notify::new();
+        let mut stored_active = !stored.is_empty();
+        let mut disc_active = true;
+        if !stored_active {
+            failed.notify_one();
+        }
+        let stored_fut = std::pin::pin!(async {
+            if stored.is_empty() {
+                std::future::pending().await
+            } else {
+                attempt(stored.to_string()).await
+            }
+        });
+        let disc_fut = std::pin::pin!(async {
+            tokio::select! {
+                _ = tokio::time::sleep(grace) => {}
+                _ = failed.notified() => {}
+            }
+            discover().await
+        });
+        let mut stored_fut = stored_fut;
+        let mut disc_fut = disc_fut;
+        while stored_active || disc_active {
+            tokio::select! {
+                r = &mut stored_fut, if stored_active => {
+                    stored_active = false;
+                    failed.notify_one();
+                    match r {
+                        Ok(c) => return Ok((c, stored.to_string())),
+                        Err(e) => errors.push(format!("{e:#}")),
+                    }
+                }
+                r = &mut disc_fut, if disc_active => {
+                    disc_active = false;
+                    match r {
+                        Ok(addresses) => found = addresses,
+                        Err(e) => errors.push(format!("{e:#}")),
+                    }
+                    if stored_active && should_abandon_stored(stored, &found) {
+                        log::debug!("adresse mémorisée {stored} abandonnée : mDNS annonce {found:?}");
+                        break;
+                    }
+                }
             }
         }
+        // Ici l'essai mémorisé, s'il tournait encore, est abandonné avec le bloc.
     }
-    let found = ctx
-        .discovery
-        .find_operational(&ctx.instance_name(node_id), Duration::from_secs(15))
-        .await
-        .map_err(|e| match &last_err {
-            Some(prev) => anyhow!("{prev:#} ; {e:#}"),
-            None => e,
-        })?;
-    for address in found.addresses.iter().filter(|a| **a != stored.address) {
-        match case(ctx, node_id, address).await {
-            Ok(c) => {
-                ctx.update_node(node_id, |n| n.address = address.clone());
-                return Ok(c);
-            }
-            Err(e) => last_err = Some(e),
+    for address in fresh_addresses(stored, &found) {
+        match attempt(address.clone()).await {
+            Ok(c) => return Ok((c, address)),
+            Err(e) => errors.push(format!("{e:#}")),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("aucune adresse joignable")))
+    if errors.is_empty() {
+        bail!("aucune adresse joignable");
+    }
+    Err(anyhow!(errors.join(" ; ")))
 }
 
 async fn case(ctx: &Ctx, node_id: u64, address: &str) -> Result<Connection> {
@@ -928,5 +1018,194 @@ mod tests {
         assert_eq!(device_type_name(0x0202).as_deref(), Some("Volet / store"));
         assert_eq!(device_type_name(0x000E).as_deref(), Some("Passerelle"));
         assert_eq!(device_type_name(0x0013), None, "Bridged Node : utilitaire");
+    }
+
+    #[test]
+    fn fresh_addresses_skip_the_stored_one() {
+        let found = vec!["[fdb2::1]:5540".to_string(), "[2001::1]:5540".to_string()];
+        assert_eq!(
+            fresh_addresses("[2001::1]:5540", &found),
+            vec!["[fdb2::1]:5540"]
+        );
+        assert_eq!(fresh_addresses("", &found).len(), 2);
+    }
+
+    #[test]
+    fn abandon_stored_only_when_mdns_disagrees() {
+        let found = vec!["[fdb2::1]:5540".to_string()];
+        assert!(should_abandon_stored("[2001::1]:5540", &found));
+        assert!(should_abandon_stored("", &found));
+        assert!(!should_abandon_stored("[fdb2::1]:5540", &found));
+        assert!(!should_abandon_stored("[2001::1]:5540", &[]));
+        let both = vec!["[fdb2::1]:5540".to_string(), "[2001::1]:5540".to_string()];
+        assert!(!should_abandon_stored("[2001::1]:5540", &both));
+    }
+
+    /// Faux transport : `plan` donne, par adresse, le délai puis le résultat.
+    struct Fake {
+        plan: Vec<(&'static str, u64, bool)>,
+        started: std::sync::Mutex<Vec<String>>,
+        dropped: std::sync::atomic::AtomicUsize,
+    }
+    struct DropGuard<'a>(&'a Fake);
+    impl Drop for DropGuard<'_> {
+        fn drop(&mut self) {
+            self.0
+                .dropped
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl Fake {
+        fn new(plan: Vec<(&'static str, u64, bool)>) -> Self {
+            Self {
+                plan,
+                started: Default::default(),
+                dropped: Default::default(),
+            }
+        }
+        async fn attempt(&self, address: String) -> Result<u32> {
+            self.started.lock().unwrap().push(address.clone());
+            let guard = DropGuard(self);
+            let (_, ms, ok) = *self.plan.iter().find(|p| p.0 == address).unwrap();
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            std::mem::forget(guard);
+            if ok {
+                Ok(1)
+            } else {
+                bail!("échec {address}")
+            }
+        }
+        fn started(&self) -> Vec<String> {
+            self.started.lock().unwrap().clone()
+        }
+        fn dropped(&self) -> usize {
+            self.dropped.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    const DEAD: &str = "[2001::1]:5540";
+    const ULA: &str = "[fdb2::1]:5540";
+
+    #[tokio::test]
+    async fn healthy_stored_address_never_starts_discovery() {
+        let fake = Fake::new(vec![(DEAD, 5, true)]);
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let (_, addr) = connect_race(
+            DEAD,
+            Duration::from_secs(10),
+            |a| fake.attempt(a),
+            || async {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(vec![ULA.to_string()])
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, DEAD);
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn dead_stored_address_is_cancelled_when_mdns_differs() {
+        // L'adresse mémorisée ne répond jamais (10 s) ; mDNS annonce l'ULA.
+        let fake = Fake::new(vec![(DEAD, 10_000, false), (ULA, 5, true)]);
+        let t = std::time::Instant::now();
+        let (_, addr) = connect_race(
+            DEAD,
+            Duration::from_millis(30),
+            |a| fake.attempt(a),
+            || async { Ok(vec![ULA.to_string()]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, ULA);
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert_eq!(fake.started(), vec![DEAD, ULA]);
+        assert_eq!(
+            fake.dropped(),
+            1,
+            "l'essai mémorisé est annulé, pas orphelin"
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_stored_address_starts_discovery_without_grace() {
+        let fake = Fake::new(vec![(DEAD, 5, false), (ULA, 5, true)]);
+        let t = std::time::Instant::now();
+        let (_, addr) = connect_race(
+            DEAD,
+            Duration::from_secs(30),
+            |a| fake.attempt(a),
+            || async { Ok(vec![ULA.to_string()]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, ULA);
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn slow_but_announced_stored_address_is_kept() {
+        // mDNS confirme l'adresse mémorisée : l'appareil à sommeil a le temps de répondre.
+        let fake = Fake::new(vec![(DEAD, 200, true), (ULA, 5, true)]);
+        let (_, addr) = connect_race(
+            DEAD,
+            Duration::from_millis(20),
+            |a| fake.attempt(a),
+            || async { Ok(vec![DEAD.to_string(), ULA.to_string()]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, DEAD);
+        assert_eq!(fake.started(), vec![DEAD]);
+        assert_eq!(fake.dropped(), 0);
+    }
+
+    #[tokio::test]
+    async fn announced_stored_address_failing_falls_back_to_the_others() {
+        let fake = Fake::new(vec![(DEAD, 80, false), (ULA, 5, true)]);
+        let (_, addr) = connect_race(
+            DEAD,
+            Duration::from_millis(10),
+            |a| fake.attempt(a),
+            || async { Ok(vec![DEAD.to_string(), ULA.to_string()]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, ULA);
+        assert_eq!(fake.started(), vec![DEAD, ULA]);
+    }
+
+    #[tokio::test]
+    async fn no_stored_address_goes_straight_to_discovery() {
+        let fake = Fake::new(vec![(ULA, 5, true)]);
+        let (_, addr) = connect_race(
+            "",
+            Duration::from_secs(30),
+            |a| fake.attempt(a),
+            || async { Ok(vec![ULA.to_string()]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addr, ULA);
+    }
+
+    #[tokio::test]
+    async fn errors_are_combined_when_everything_fails() {
+        let fake = Fake::new(vec![(DEAD, 5, false)]);
+        let err = connect_race(
+            DEAD,
+            Duration::from_millis(5),
+            |a| fake.attempt(a),
+            || async { bail!("introuvable en mDNS") },
+        )
+        .await
+        .err()
+        .unwrap();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("échec") && msg.contains("introuvable en mDNS"),
+            "{msg}"
+        );
     }
 }
