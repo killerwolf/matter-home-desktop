@@ -1,6 +1,8 @@
 //! Vue « Plan de la maison » : étages, pièces rectangulaires, objets placés,
 //! avec l'état des appareils en direct. Deux modes : consultation et modification.
 
+mod camera;
+
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -9,11 +11,13 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Str
 use super::customize::{editor, DeviceEdit, EditResult};
 use super::sync::{Failure, Incoming, SyncState};
 use super::Device;
+use matter_home_client::model::Model;
 use protocol::format::{format_position, format_power, format_temperature};
 use protocol::home::{
-    self, snap, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MIN_ROOM_SIZE, ROOM_SNAP,
+    self, snap, FovShape, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MAX_FOV,
+    MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
 };
-use protocol::wire::WireStatus;
+use protocol::wire::{CameraView, StreamKind, WireStatus};
 
 const ITEM_RADIUS: f32 = 15.0;
 const HANDLE_SIZE: f32 = 10.0;
@@ -33,6 +37,7 @@ const YELLOW: Color32 = Color32::from_rgb(220, 180, 40);
 enum Payload {
     Device(u64),
     Decor(Symbol),
+    Camera(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +61,14 @@ enum Drag {
     MoveItem {
         id: u64,
         grab: Vec2,
+    },
+    /// Poignée de rotation d'une caméra.
+    RotateCamera {
+        id: u64,
+    },
+    /// Poignée de portée d'une caméra.
+    CameraRange {
+        id: u64,
     },
 }
 
@@ -89,6 +102,8 @@ pub struct PlanView {
     confirm_delete_floor: bool,
     /// Brouillon du nom et de l'icône de l'appareil sélectionné.
     device_edit: Option<DeviceEdit>,
+    /// Caméra dont le direct est ouvert dans une fenêtre (clic en consultation).
+    live_camera: Option<u64>,
 }
 
 /// Ce que montre un appareil placé : pictogramme, couleur, lignes de texte.
@@ -159,7 +174,7 @@ fn default_symbol(d: &Device) -> Option<Symbol> {
 
 fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
     match &item.kind {
-        // #6 : remplacer par le vrai dessin de la caméra (nom, état, cône orienté).
+        // Une caméra se dessine à part (`camera_look`, il lui faut la liste des caméras).
         ItemKind::Camera { .. } => Look {
             symbol: None,
             fill: Color32::from_gray(70),
@@ -250,6 +265,27 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
     }
 }
 
+/// Ce que montre une caméra posée : nom du serveur, état en couleur ; une caméra que le serveur
+/// ne connaît plus est grisée et nommée comme telle.
+fn camera_look(item: &Item, cameras: &[CameraView]) -> Look {
+    let ItemKind::Camera { camera_id, .. } = &item.kind else {
+        unreachable!("camera_look ne reçoit que des caméras");
+    };
+    let camera = cameras.iter().find(|c| c.id == *camera_id);
+    let state = camera::CameraState::of(camera);
+    Look {
+        symbol: None,
+        fill: state.color(),
+        name: camera.map_or_else(|| "Caméra supprimée".to_string(), |c| short(&c.name)),
+        value: (!matches!(
+            state,
+            camera::CameraState::Online | camera::CameraState::Missing
+        ))
+        .then(|| state.label().to_lowercase()),
+        battery_low: false,
+    }
+}
+
 /// Résumé d'une pièce : température moyenne et ouvertures des capteurs placés dedans.
 fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) -> Option<String> {
     let mut temps = Vec::new();
@@ -301,6 +337,7 @@ impl PlanView {
             sync: SyncState::with_check(plan_problem),
             confirm_delete_floor: false,
             device_edit: None,
+            live_camera: None,
         }
     }
 
@@ -488,12 +525,34 @@ impl PlanView {
         self.sync.blocked(&self.plan)
     }
 
+    /// Fenêtre du direct d'une caméra, ouverte par un clic sur le plan.
+    fn live_window(&mut self, ui: &egui::Ui, model: &Model) {
+        let Some(id) = self.live_camera else {
+            return;
+        };
+        let title = model
+            .camera(id)
+            .map_or_else(|| "Caméra".to_string(), |c| c.name.clone());
+        let mut open = true;
+        egui::Window::new(title)
+            .open(&mut open)
+            .default_size([480.0, 300.0])
+            .show(ui.ctx(), |ui| {
+                super::player::player(ui, model, id, StreamKind::Sub);
+            });
+        if !open {
+            self.live_camera = None;
+        }
+    }
+
     /// Un autre client a modifié le plan pendant l'édition : un choix attend.
     pub fn conflict_pending(&self) -> bool {
         self.sync.remote().is_some()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {
+    pub fn show(&mut self, ui: &mut egui::Ui, model: &Model) -> PlanAction {
+        let devices = &model.devices;
+        let cameras = &model.cameras[..];
         if !self.has_floor(ui) {
             return PlanAction::None;
         }
@@ -512,11 +571,12 @@ impl PlanView {
                 .exact_size(250.0)
                 .show(ui, |ui| {
                     palette_action = egui::ScrollArea::vertical()
-                        .show(ui, |ui| self.palette(ui, devices))
+                        .show(ui, |ui| self.palette(ui, devices, cameras))
                         .inner;
                 });
         }
-        let action = self.canvas(ui, devices);
+        let action = self.canvas(ui, devices, cameras);
+        self.live_window(ui, model);
         if std::mem::take(&mut self.dirty) {
             self.sync.mark_changed(Instant::now());
         }
@@ -640,6 +700,7 @@ impl PlanView {
         &mut self,
         ui: &mut egui::Ui,
         devices: &BTreeMap<u64, Device>,
+        cameras: &[CameraView],
     ) -> Option<PlanAction> {
         let mut action = None;
         // Inspecteur de la sélection.
@@ -675,9 +736,61 @@ impl PlanView {
                     let item = &mut self.plan.floors[floor].items[idx];
                     let mut changed = false;
                     match &mut item.kind {
-                        // #6 : l'éditeur de caméra (choix de la caméra, poignée de rotation).
-                        ItemKind::Camera { .. } => {
-                            ui.label("Caméra");
+                        ItemKind::Camera {
+                            camera_id,
+                            fov,
+                            range,
+                            shape,
+                        } => {
+                            let camera = cameras.iter().find(|c| c.id == *camera_id);
+                            let state = camera::CameraState::of(camera);
+                            match camera {
+                                Some(c) => ui.label(format!("📹 {}", c.name)),
+                                None => ui.label("📹 Caméra supprimée"),
+                            };
+                            ui.colored_label(state.color(), state.label());
+                            if camera.is_none() {
+                                ui.small(
+                                    "Le serveur ne connaît plus cette caméra. Retirez-la du plan.",
+                                );
+                            } else {
+                                ui.small(
+                                    "Orientation : tirez la poignée ronde (Maj : sans aimantation). \
+                                     Portée : tirez la poignée carrée au bout du champ.",
+                                );
+                            }
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut item.rotation)
+                                        .range(0.0..=359.0)
+                                        .speed(1.0)
+                                        .fixed_decimals(0)
+                                        .suffix(" °"),
+                                )
+                                .on_hover_text("Orientation (0 ° = vers le haut du plan)")
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::Slider::new(fov, MIN_FOV..=MAX_FOV)
+                                        .text("Ouverture")
+                                        .suffix(" °")
+                                        .fixed_decimals(0),
+                                )
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::Slider::new(range, MIN_CAMERA_RANGE..=20.0)
+                                        .text("Portée")
+                                        .suffix(" m")
+                                        .step_by(0.25)
+                                        .clamping(egui::SliderClamping::Never),
+                                )
+                                .changed();
+                            ui.horizontal(|ui| {
+                                for s in FovShape::ALL {
+                                    changed |= ui.selectable_value(shape, s, s.label()).changed();
+                                }
+                            });
                         }
                         ItemKind::Device { node_id, symbol } => match devices.get(node_id) {
                             Some(d) => {
@@ -753,6 +866,31 @@ impl PlanView {
             ui.small("Tous les appareils sont placés.");
         }
         ui.add_space(6.0);
+        ui.strong("Caméras à placer");
+        let placed_cameras = self.plan.placed_cameras();
+        let mut any = false;
+        for c in cameras.iter().filter(|c| !placed_cameras.contains(&c.id)) {
+            any = true;
+            ui.dnd_drag_source(
+                egui::Id::unique(("plan_cam", c.id)),
+                Payload::Camera(c.id),
+                |ui| {
+                    let state = camera::CameraState::of(Some(c));
+                    ui.horizontal(|ui| {
+                        ui.label(format!("⠿ 📹 {}", short(&c.name)));
+                        ui.colored_label(state.color(), "●");
+                    });
+                },
+            );
+        }
+        if !any {
+            ui.small(if cameras.is_empty() {
+                "Aucune caméra : ajoutez-en dans l'application du serveur."
+            } else {
+                "Toutes les caméras sont placées."
+            });
+        }
+        ui.add_space(6.0);
         ui.strong("Objets non connectés");
         for s in Symbol::ALL {
             ui.dnd_drag_source(
@@ -799,7 +937,12 @@ impl PlanView {
         self.offset = min - margin - (visible - world) / 2.0;
     }
 
-    fn canvas(&mut self, ui: &mut egui::Ui, devices: &BTreeMap<u64, Device>) -> PlanAction {
+    fn canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        devices: &BTreeMap<u64, Device>,
+        cameras: &[CameraView],
+    ) -> PlanAction {
         let size = ui.available_size().max(Vec2::new(200.0, 200.0));
         let (resp, painter) = ui.allocate_painter(size, Sense::click_and_drag());
         let rect = resp.rect;
@@ -819,8 +962,8 @@ impl PlanView {
             }
         }
 
-        let action = self.interact(ui, &resp, devices);
-        self.paint(ui, &painter, rect, &resp, devices);
+        let action = self.interact(ui, &resp, devices, cameras);
+        self.paint(ui, &painter, rect, &resp, devices, cameras);
         action
     }
 
@@ -839,6 +982,26 @@ impl PlanView {
             .rev()
             .find(|i| self.to_screen(rect, i.x, i.y).distance(p) <= ITEM_RADIUS + 3.0)
             .map(|i| i.id)
+    }
+
+    /// Caméra sélectionnée (mode modification) : `(id, centre écran, rotation, portée en px)`.
+    fn selected_camera(&self, rect: Rect) -> Option<(u64, Pos2, f32, f32)> {
+        let Some(Selection::Item(id)) = self.selection else {
+            return None;
+        };
+        let item = self.plan.floors[self.floor]
+            .items
+            .iter()
+            .find(|i| i.id == id)?;
+        let ItemKind::Camera { range, .. } = item.kind else {
+            return None;
+        };
+        Some((
+            id,
+            self.to_screen(rect, item.x, item.y),
+            item.rotation,
+            range * self.scale,
+        ))
     }
 
     fn handle_at(&self, rect: Rect, p: Pos2) -> Option<u64> {
@@ -860,6 +1023,7 @@ impl PlanView {
         ui: &egui::Ui,
         resp: &egui::Response,
         devices: &BTreeMap<u64, Device>,
+        cameras: &[CameraView],
     ) -> PlanAction {
         let rect = resp.rect;
         let mut action = PlanAction::None;
@@ -878,16 +1042,22 @@ impl PlanView {
                         symbol,
                         label: String::new(),
                     },
+                    Payload::Camera(camera_id) => ItemKind::camera(camera_id),
                 };
-                self.floor_mut().items.push(Item {
-                    id,
-                    kind,
-                    x: snap(w.x, ITEM_SNAP),
-                    y: snap(w.y, ITEM_SNAP),
-                    rotation: 0.0,
-                });
-                self.selection = Some(Selection::Item(id));
-                self.dirty = true;
+                // Une caméra n'a qu'un objet sur le plan : déjà placée, on ignore le dépôt.
+                let twice = matches!(kind, ItemKind::Camera { camera_id, .. }
+                    if self.plan.placed_cameras().contains(&camera_id));
+                if !twice {
+                    self.floor_mut().items.push(Item {
+                        id,
+                        kind,
+                        x: snap(w.x, ITEM_SNAP),
+                        y: snap(w.y, ITEM_SNAP),
+                        rotation: 0.0,
+                    });
+                    self.selection = Some(Selection::Item(id));
+                    self.dirty = true;
+                }
             }
         }
 
@@ -899,7 +1069,22 @@ impl PlanView {
             if let (true, Some(o)) = (self.edit, origin) {
                 let w = self.to_world(rect, o);
                 let floor = &self.plan.floors[self.floor];
-                if let Some(id) = self.item_at(rect, o) {
+                let camera_handle =
+                    self.selected_camera(rect)
+                        .and_then(|(id, c, rot, range_px)| {
+                            if camera::rotate_handle(c, rot).distance(o)
+                                <= camera::HANDLE_RADIUS + 4.0
+                            {
+                                Some(Drag::RotateCamera { id })
+                            } else {
+                                camera::range_handle(c, rot, range_px)
+                                    .filter(|h| h.distance(o) <= camera::HANDLE_RADIUS + 4.0)
+                                    .map(|_| Drag::CameraRange { id })
+                            }
+                        });
+                if let Some(handle) = camera_handle {
+                    self.drag = Some(handle);
+                } else if let Some(id) = self.item_at(rect, o) {
                     let item = floor.items.iter().find(|i| i.id == id).expect("objet");
                     self.drag = Some(Drag::MoveItem {
                         id,
@@ -947,6 +1132,26 @@ impl PlanView {
                             self.dirty = true;
                         }
                     }
+                    Some(Drag::RotateCamera { id }) => {
+                        let free = ui.input(|i| i.modifiers.shift);
+                        if let Some(item) = f.items.iter_mut().find(|i| i.id == *id) {
+                            if let Some(r) =
+                                camera::rotation_from_pointer(w.x - item.x, w.y - item.y, free)
+                            {
+                                item.rotation = r;
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                    Some(Drag::CameraRange { id }) => {
+                        if let Some(item) = f.items.iter_mut().find(|i| i.id == *id) {
+                            let new = camera::range_from_pointer(w.x - item.x, w.y - item.y);
+                            if let ItemKind::Camera { range, .. } = &mut item.kind {
+                                *range = new;
+                                self.dirty = true;
+                            }
+                        }
+                    }
                     Some(Drag::MoveRoom { id, grab, carried }) => {
                         if let Some(room) = f.rooms.iter_mut().find(|r| r.id == *id) {
                             room.x = snap(w.x + grab.x, ROOM_SNAP);
@@ -985,12 +1190,17 @@ impl PlanView {
                         .or_else(|| self.room_at(rect, p).map(Selection::Room));
                 } else if let Some(id) = item {
                     let f = &self.plan.floors[self.floor];
-                    if let Some(ItemKind::Device { node_id, .. }) =
-                        f.items.iter().find(|i| i.id == id).map(|i| &i.kind)
-                    {
-                        if devices.contains_key(node_id) {
+                    match f.items.iter().find(|i| i.id == id).map(|i| &i.kind) {
+                        Some(ItemKind::Device { node_id, .. }) if devices.contains_key(node_id) => {
                             action = PlanAction::OpenDevice(*node_id);
                         }
+                        // Une caméra que le serveur ne connaît plus n'ouvre rien.
+                        Some(ItemKind::Camera { camera_id, .. })
+                            if cameras.iter().any(|c| c.id == *camera_id) =>
+                        {
+                            self.live_camera = Some(*camera_id);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1020,6 +1230,7 @@ impl PlanView {
         rect: Rect,
         resp: &egui::Response,
         devices: &BTreeMap<u64, Device>,
+        cameras: &[CameraView],
     ) {
         let visuals = ui.visuals();
         let dark = visuals.dark_mode;
@@ -1134,27 +1345,66 @@ impl PlanView {
             }
         }
 
+        // Champs filmés des caméras, sous les objets.
+        for item in &floor.items {
+            let ItemKind::Camera {
+                camera_id,
+                fov,
+                range,
+                shape,
+            } = &item.kind
+            else {
+                continue;
+            };
+            let state = camera::CameraState::of(cameras.iter().find(|c| c.id == *camera_id));
+            let field = camera::Field {
+                rotation: item.rotation,
+                fov: *fov,
+                range_px: range * self.scale,
+                shape: *shape,
+            };
+            let selected = self.selection == Some(Selection::Item(item.id));
+            camera::paint_fov(
+                &painter,
+                self.to_screen(rect, item.x, item.y),
+                field,
+                state,
+                selected,
+            );
+        }
+
         // Objets.
         let hover = resp.hover_pos();
         let mut hovered: Option<(&Item, Look)> = None;
         for item in &floor.items {
             let c = self.to_screen(rect, item.x, item.y);
-            let lk = look(item, devices);
+            let is_camera = matches!(item.kind, ItemKind::Camera { .. });
+            let lk = if is_camera {
+                camera_look(item, cameras)
+            } else {
+                look(item, devices)
+            };
             let decor = matches!(item.kind, ItemKind::Decor { .. });
-            painter.circle_filled(c, ITEM_RADIUS, lk.fill);
-            let ring = if self.selection == Some(Selection::Item(item.id)) {
+            let selected = self.selection == Some(Selection::Item(item.id));
+            let ring = if selected {
                 Stroke::new(3.0, visuals.selection.stroke.color)
             } else {
                 Stroke::new(1.5, if decor { GRAY } else { Color32::from_gray(230) })
             };
-            painter.circle_stroke(c, ITEM_RADIUS, ring);
-            painter.text(
-                c,
-                Align2::CENTER_CENTER,
-                glyph(lk.symbol),
-                FontId::proportional(15.0),
-                Color32::WHITE,
-            );
+            if let ItemKind::Camera { camera_id, .. } = &item.kind {
+                let state = camera::CameraState::of(cameras.iter().find(|c| c.id == *camera_id));
+                camera::paint_icon(&painter, c, ITEM_RADIUS, item.rotation, state, ring);
+            } else {
+                painter.circle_filled(c, ITEM_RADIUS, lk.fill);
+                painter.circle_stroke(c, ITEM_RADIUS, ring);
+                painter.text(
+                    c,
+                    Align2::CENTER_CENTER,
+                    glyph(lk.symbol),
+                    FontId::proportional(15.0),
+                    Color32::WHITE,
+                );
+            }
             if lk.battery_low {
                 painter.circle_filled(
                     c + Vec2::new(ITEM_RADIUS * 0.75, -ITEM_RADIUS * 0.75),
@@ -1185,6 +1435,13 @@ impl PlanView {
             }
         }
 
+        // Poignées de la caméra sélectionnée (rotation, portée).
+        if self.edit {
+            if let Some((_, c, rot, range_px)) = self.selected_camera(rect) {
+                camera::paint_handles(&painter, c, rot, range_px, visuals.selection.stroke.color);
+            }
+        }
+
         // Survol en consultation : bulle avec le nom et un rappel du clic.
         if let (false, Some((item, lk)), Some(h)) = (self.edit, hovered, hover) {
             let mut text = lk.name.clone();
@@ -1193,6 +1450,13 @@ impl PlanView {
             }
             if matches!(item.kind, ItemKind::Device { .. }) {
                 text.push_str("\nCliquer pour le détail");
+            }
+            if let ItemKind::Camera { camera_id, .. } = &item.kind {
+                let camera = cameras.iter().find(|c| c.id == *camera_id);
+                text = camera::tooltip(camera);
+                if camera.is_some() {
+                    text.push_str("\nCliquer pour le direct");
+                }
             }
             let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), text_color);
             let bubble =
@@ -1428,5 +1692,113 @@ mod tests {
             Some("21,00 °C · 1 ouvert")
         );
         assert_eq!(room_summary(&room, &[], &devices), None);
+    }
+
+    fn camera_item(id: u64, camera_id: u64, x: f32, rotation: f32) -> Item {
+        Item {
+            id,
+            kind: ItemKind::camera(camera_id),
+            x,
+            y: 1.0,
+            rotation,
+        }
+    }
+
+    fn camera_view(id: u64, name: &str, status: protocol::wire::CameraStatus) -> CameraView {
+        CameraView {
+            id,
+            name: name.into(),
+            status,
+            has_sub_stream: false,
+            stream: None,
+        }
+    }
+
+    #[test]
+    fn camera_look_follows_status_and_greys_out_orphans() {
+        let cam = protocol::wire::CAMERA_ID_MIN + 1;
+        let item = camera_item(5, cam, 1.0, 0.0);
+        let mut cameras = vec![camera_view(
+            cam,
+            "Entrée",
+            protocol::wire::CameraStatus::Online,
+        )];
+        let lk = camera_look(&item, &cameras);
+        assert_eq!(
+            (lk.name.as_str(), lk.value.as_deref(), lk.fill),
+            ("Entrée", None, GREEN)
+        );
+        cameras[0].status = protocol::wire::CameraStatus::Unreachable {
+            problem: protocol::wire::CameraProblem::Unreachable,
+            detail: None,
+        };
+        let lk = camera_look(&item, &cameras);
+        assert_eq!((lk.value.as_deref(), lk.fill), (Some("injoignable"), RED));
+        cameras[0].status = protocol::wire::CameraStatus::Unknown;
+        assert_eq!(
+            camera_look(&item, &cameras).value.as_deref(),
+            Some("état inconnu")
+        );
+        // Caméra supprimée du serveur : grisée, nommée comme telle, rien à ouvrir.
+        let lk = camera_look(&item, &[]);
+        assert_eq!(lk.name, "Caméra supprimée");
+        assert_eq!(lk.fill, GRAY);
+    }
+
+    #[test]
+    fn the_plan_draws_and_selects_cameras_including_orphans() {
+        let cam = protocol::wire::CAMERA_ID_MIN + 1;
+        let gone = protocol::wire::CAMERA_ID_MIN + 2;
+        let model = Model {
+            cameras: vec![camera_view(
+                cam,
+                "Entrée",
+                protocol::wire::CameraStatus::Online,
+            )],
+            ..Model::default()
+        };
+        let mut view = PlanView::new();
+        let mut plan = HomePlan::default();
+        plan.floors[0].rooms.push(Room {
+            id: 2,
+            name: "Salon".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 5.0,
+            h: 4.0,
+        });
+        plan.floors[0].items.push(camera_item(5, cam, 1.0, 45.0));
+        plan.floors[0].items.push(camera_item(6, gone, 3.0, 300.0));
+        view.on_server(plan);
+        let ctx = egui::Context::default();
+        let run = |view: &mut PlanView| {
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _ = view.show(ui, &model);
+            })
+            .textures_delta
+            .clear();
+        };
+        // Consultation : dessin sans panique, rien d'ouvert.
+        run(&mut view);
+        assert_eq!(view.live_camera, None);
+        // Modification : la caméra sélectionnée a ses poignées, l'orpheline aussi (à retirer).
+        view.edit = true;
+        for id in [5, 6] {
+            view.selection = Some(Selection::Item(id));
+            run(&mut view);
+            let (sel, _, rot, range_px) = view
+                .selected_camera(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0)))
+                .unwrap();
+            assert_eq!(sel, id);
+            assert!(rot > 0.0 && range_px > 0.0);
+        }
+        // Une pièce sélectionnée n'a pas de poignée de caméra.
+        view.selection = Some(Selection::Room(2));
+        assert!(view.selected_camera(Rect::ZERO).is_none());
+        // La caméra posée est dans la pièce (même règle que pour les appareils).
+        assert_eq!(
+            view.plan().camera_room(cam).map(|r| r.name.as_str()),
+            Some("Salon")
+        );
     }
 }

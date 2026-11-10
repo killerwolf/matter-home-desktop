@@ -1030,7 +1030,7 @@ fn a_plan_without_floors_never_reaches_the_drawing_code() {
     // Dessin réel du plan, sans fenêtre : ne panique pas.
     let ctx = egui::Context::default();
     ctx.run_ui(egui::RawInput::default(), |ui| {
-        let _ = f.app.plan.show(ui, &f.app.model.devices);
+        let _ = f.app.plan.show(ui, &f.app.model);
     })
     .textures_delta
     .clear();
@@ -1038,7 +1038,7 @@ fn a_plan_without_floors_never_reaches_the_drawing_code() {
     f.app.plan.force_no_floor();
     ctx.run_ui(egui::RawInput::default(), |ui| {
         assert!(matches!(
-            f.app.plan.show(ui, &f.app.model.devices),
+            f.app.plan.show(ui, &f.app.model),
             plan::PlanAction::None
         ));
     })
@@ -1486,7 +1486,7 @@ fn the_draft_widgets_draw_without_a_window() {
             f.app.top_bar(ui);
             match view {
                 View::Plan => {
-                    let _ = f.app.plan.show(ui, &f.app.model.devices);
+                    let _ = f.app.plan.show(ui, &f.app.model);
                 }
                 View::Rules => {
                     let _ = f

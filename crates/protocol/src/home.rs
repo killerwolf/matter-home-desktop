@@ -64,7 +64,95 @@ pub enum ItemKind {
     /// Caméra du serveur (`CameraView::id`), posée et orientée avec `Item::rotation`. Ticket n° 6.
     /// Un client plus ancien ne connaît pas cette variante : le protocole est en version 2 pour
     /// cette raison, et il n'y a pas de variante de repli ici (un plan reçu serait illisible).
-    Camera { camera_id: u64 },
+    /// `fov`, `range` et `shape` décrivent le champ filmé ; absents d'un plan écrit avec la
+    /// version 1 de l'objet (sans champ), ils prennent leurs valeurs par défaut.
+    Camera {
+        camera_id: u64,
+        /// Ouverture du champ, en degrés (`MIN_FOV..=MAX_FOV`).
+        #[serde(default = "default_fov")]
+        fov: f32,
+        /// Portée dessinée, en mètres (`MIN_CAMERA_RANGE..=MAX_CAMERA_RANGE`).
+        #[serde(default = "default_camera_range")]
+        range: f32,
+        #[serde(default)]
+        shape: FovShape,
+    },
+}
+
+/// Ouverture minimale et maximale du champ d'une caméra (degrés).
+pub const MIN_FOV: f32 = 10.0;
+pub const MAX_FOV: f32 = 180.0;
+/// Portée minimale et maximale dessinée pour une caméra (m).
+pub const MIN_CAMERA_RANGE: f32 = 0.5;
+pub const MAX_CAMERA_RANGE: f32 = 50.0;
+pub const DEFAULT_FOV: f32 = 90.0;
+pub const DEFAULT_CAMERA_RANGE: f32 = 3.0;
+
+fn default_fov() -> f32 {
+    DEFAULT_FOV
+}
+
+fn default_camera_range() -> f32 {
+    DEFAULT_CAMERA_RANGE
+}
+
+/// Forme sous laquelle le champ d'une caméra est dessiné sur le plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FovShape {
+    /// Secteur de disque : l'ouverture est l'angle du secteur.
+    #[default]
+    Cone,
+    /// Rectangle de la profondeur de la portée, aussi large que la corde du secteur.
+    Rectangle,
+}
+
+impl FovShape {
+    pub const ALL: [FovShape; 2] = [FovShape::Cone, FovShape::Rectangle];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FovShape::Cone => "Cône",
+            FovShape::Rectangle => "Rectangle",
+        }
+    }
+}
+
+impl ItemKind {
+    /// Caméra posée avec le champ par défaut (cône de 90 degrés, 3 m).
+    pub fn camera(camera_id: u64) -> Self {
+        ItemKind::Camera {
+            camera_id,
+            fov: DEFAULT_FOV,
+            range: DEFAULT_CAMERA_RANGE,
+            shape: FovShape::Cone,
+        }
+    }
+}
+
+/// Direction (vecteur unitaire, y vers le bas) d'une orientation en degrés : 0 = vers le haut du
+/// plan, sens des aiguilles d'une montre.
+pub fn rotation_vector(degrees: f32) -> (f32, f32) {
+    let r = degrees.to_radians();
+    (r.sin(), -r.cos())
+}
+
+/// Orientation (`0 <= r < 360`) du vecteur `(dx, dy)` (y vers le bas) ; `None` s'il est nul.
+pub fn rotation_of(dx: f32, dy: f32) -> Option<f32> {
+    if dx == 0.0 && dy == 0.0 {
+        return None;
+    }
+    Some(normalize_rotation(dx.atan2(-dy).to_degrees()))
+}
+
+/// Ramène un angle quelconque dans `[0, 360)`.
+pub fn normalize_rotation(degrees: f32) -> f32 {
+    let r = degrees.rem_euclid(360.0);
+    // `rem_euclid` d'un tout petit négatif peut rendre exactement 360.0 en `f32`.
+    if r >= 360.0 {
+        0.0
+    } else {
+        r
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,7 +272,7 @@ impl HomePlan {
         self.floors.iter().find_map(|f| {
             f.items
                 .iter()
-                .find(|i| matches!(i.kind, ItemKind::Camera { camera_id: c } if c == camera_id))
+                .find(|i| matches!(i.kind, ItemKind::Camera { camera_id: c, .. } if c == camera_id))
                 .and_then(|i| f.room_at(i.x, i.y))
         })
     }
@@ -195,7 +283,7 @@ impl HomePlan {
             .iter()
             .flat_map(|f| &f.items)
             .filter_map(|i| match i.kind {
-                ItemKind::Camera { camera_id } => Some(camera_id),
+                ItemKind::Camera { camera_id, .. } => Some(camera_id),
                 _ => None,
             })
             .collect()
@@ -206,8 +294,9 @@ impl HomePlan {
         let mut changed = false;
         for f in &mut self.floors {
             let before = f.items.len();
-            f.items
-                .retain(|i| !matches!(i.kind, ItemKind::Camera { camera_id: c } if c == camera_id));
+            f.items.retain(
+                |i| !matches!(i.kind, ItemKind::Camera { camera_id: c, .. } if c == camera_id),
+            );
             changed |= f.items.len() != before;
         }
         changed
@@ -347,7 +436,7 @@ mod tests {
         plan.floors[0].rooms.push(room(10, 0.0, 0.0, 4.0, 3.0));
         plan.floors[0].items.push(Item {
             id: 20,
-            kind: ItemKind::Camera { camera_id: cam },
+            kind: ItemKind::camera(cam),
             x: 1.0,
             y: 1.0,
             rotation: 135.0,
@@ -365,5 +454,73 @@ mod tests {
         assert_eq!(old.floors[0].items[0].rotation, 0.0);
         assert!(plan.remove_camera(cam));
         assert!(!plan.remove_camera(cam));
+    }
+
+    #[test]
+    fn camera_field_of_view_round_trips_and_defaults() {
+        let cam = 0xFFFF_FFF8_0000_0002u64;
+        let mut plan = HomePlan::default();
+        plan.floors[0].items.push(Item {
+            id: 4,
+            kind: ItemKind::Camera {
+                camera_id: cam,
+                fov: 70.0,
+                range: 5.5,
+                shape: FovShape::Rectangle,
+            },
+            x: 0.5,
+            y: 0.5,
+            rotation: 270.0,
+        });
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(json.contains("\"Rectangle\""));
+        assert_eq!(serde_json::from_str::<HomePlan>(&json).unwrap(), plan);
+        // Sur le fil, l'identifiant de caméra est du texte, le reste du champ reste numérique.
+        let wired = serde_json::to_string(&crate::wire::TextIds(plan.clone())).unwrap();
+        assert!(
+            wired.contains("\"camera_id\":\"18446744039349813250\""),
+            "{wired}"
+        );
+        assert!(wired.contains("\"fov\":70.0"), "{wired}");
+        let back: crate::wire::TextIds<HomePlan> = serde_json::from_str(&wired).unwrap();
+        assert_eq!(back.0, plan);
+        // Une caméra posée sans ouverture (premier format du ticket n° 4) reçoit les valeurs par défaut.
+        let bare = r#"{"version":1,"floors":[{"id":1,"name":"RDC","items":[
+            {"id":2,"kind":{"type":"Camera","camera_id":18446744004990074882},"x":1.0,"y":2.0,"rotation":10.0}]}]}"#;
+        let plan: HomePlan = serde_json::from_str(bare).unwrap();
+        match &plan.floors[0].items[0].kind {
+            ItemKind::Camera {
+                fov, range, shape, ..
+            } => {
+                assert_eq!(
+                    (*fov, *range, *shape),
+                    (DEFAULT_FOV, DEFAULT_CAMERA_RANGE, FovShape::Cone)
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotation_math() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        // 0 = haut du plan (y négatif), sens horaire.
+        assert_eq!(rotation_of(0.0, -1.0), Some(0.0));
+        assert!(close(rotation_of(1.0, 0.0).unwrap(), 90.0));
+        assert!(close(rotation_of(0.0, 1.0).unwrap(), 180.0));
+        assert!(close(rotation_of(-1.0, 0.0).unwrap(), 270.0));
+        assert_eq!(rotation_of(0.0, 0.0), None);
+        let (x, y) = rotation_vector(90.0);
+        assert!(close(x, 1.0) && close(y, 0.0));
+        let (x, y) = rotation_vector(180.0);
+        assert!(close(x, 0.0) && close(y, 1.0));
+        for d in [0.0, 33.0, 179.0, 271.0, 359.0] {
+            let (x, y) = rotation_vector(d);
+            assert!(close(rotation_of(x, y).unwrap(), d), "{d}");
+        }
+        assert!(close(normalize_rotation(-90.0), 270.0));
+        assert!(close(normalize_rotation(725.0), 5.0));
+        assert!(normalize_rotation(-1e-9) < 360.0);
+        assert!((0.0..360.0).contains(&normalize_rotation(-1e-9)));
     }
 }
