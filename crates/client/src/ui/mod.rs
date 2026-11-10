@@ -2193,7 +2193,7 @@ impl eframe::App for MatterApp {
 
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Devices => self.details(ui),
-            View::Plan => match self.plan.show(ui, &self.model.devices) {
+            View::Plan => match self.plan.show(ui, &self.model) {
                 plan::PlanAction::OpenDevice(id) => {
                     self.selected = Some(id);
                     self.export_message = None;

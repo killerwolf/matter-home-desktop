@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use protocol::automation::{Action, Condition, RuleSet, Trigger};
-use protocol::home::{HomePlan, ItemKind};
+use protocol::home::{HomePlan, ItemKind, MAX_CAMERA_RANGE, MAX_FOV, MIN_CAMERA_RANGE, MIN_FOV};
 use protocol::wire::{ApiError, ErrorCode};
 
 pub const MAX_RULES: usize = 500;
@@ -107,6 +107,7 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
         return Err(bad("trop d'étages"));
     }
     let mut ids = HashSet::new();
+    let mut cameras = HashSet::new();
     let mut unique = |id: u64| ids.insert(id);
     let coord_ok = |v: f32| v.is_finite() && v.abs() <= MAX_COORD;
     for floor in &plan.floors {
@@ -138,12 +139,28 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
             }
             match &item.kind {
                 ItemKind::Decor { label, .. } => check_len(label, MAX_NAME, "libellé")?,
-                // Plage de tirage seulement : l'existence de la caméra est à contrôler au
-                // moment voulu par #6 (voir `Hub::set_plan`), car un plan envoyé avant la
-                // suppression d'une caméra ne doit pas bloquer le client.
-                ItemKind::Camera { camera_id } => {
+                // Plage de tirage seulement, **pas l'existence** : un plan envoyé juste avant la
+                // suppression d'une caméra (ou par un client pas encore au courant) ne doit pas
+                // être refusé. `Hub::delete_camera` retire l'objet orphelin, et le client grise
+                // ceux qui subsistent (sauvegarde importée…).
+                ItemKind::Camera {
+                    camera_id,
+                    fov,
+                    range,
+                    ..
+                } => {
                     if !protocol::wire::is_camera_id(*camera_id) {
                         return Err(bad("identifiant de caméra invalide"));
+                    }
+                    if !fov.is_finite() || !(MIN_FOV..=MAX_FOV).contains(fov) {
+                        return Err(bad("ouverture de caméra invalide (10 à 180 degrés)"));
+                    }
+                    if !range.is_finite() || !(MIN_CAMERA_RANGE..=MAX_CAMERA_RANGE).contains(range)
+                    {
+                        return Err(bad("portée de caméra invalide (0,5 à 50 m)"));
+                    }
+                    if !cameras.insert(*camera_id) {
+                        return Err(bad("caméra placée deux fois sur le plan"));
                     }
                 }
                 ItemKind::Device { .. } => {}
@@ -212,7 +229,7 @@ mod tests {
     fn camera_items_are_checked() {
         let item = |camera_id: u64, rotation: f32| protocol::home::Item {
             id: 9,
-            kind: ItemKind::Camera { camera_id },
+            kind: ItemKind::camera(camera_id),
             x: 1.0,
             y: 1.0,
             rotation,
@@ -235,5 +252,70 @@ mod tests {
                 "{bad_rotation}"
             );
         }
+    }
+
+    #[test]
+    fn camera_field_of_view_and_duplicates_are_checked() {
+        use protocol::home::{FovShape, Item};
+        let cam = protocol::wire::CAMERA_ID_MIN + 4;
+        let item = |id: u64, camera_id: u64, fov: f32, range: f32| Item {
+            id,
+            kind: ItemKind::Camera {
+                camera_id,
+                fov,
+                range,
+                shape: FovShape::Rectangle,
+            },
+            x: 1.0,
+            y: 1.0,
+            rotation: 45.0,
+        };
+        let with = |items: Vec<Item>| {
+            let mut p = HomePlan::default();
+            p.floors[0].items = items;
+            p
+        };
+        assert!(plan(&with(vec![item(9, cam, 10.0, 0.5)])).is_ok());
+        assert!(plan(&with(vec![item(9, cam, 180.0, 50.0)])).is_ok());
+        for (fov, range) in [
+            (9.9, 3.0),
+            (180.1, 3.0),
+            (f32::NAN, 3.0),
+            (90.0, 0.4),
+            (90.0, 50.1),
+            (90.0, f32::INFINITY),
+            (90.0, f32::NAN),
+        ] {
+            assert!(
+                plan(&with(vec![item(9, cam, fov, range)])).is_err(),
+                "{fov} {range}"
+            );
+        }
+        // Une même caméra posée deux fois est refusée ; deux caméras différentes, non.
+        assert!(plan(&with(vec![
+            item(9, cam, 90.0, 3.0),
+            item(10, cam, 90.0, 3.0)
+        ]))
+        .is_err());
+        assert!(plan(&with(vec![
+            item(9, cam, 90.0, 3.0),
+            item(10, cam + 1, 90.0, 3.0)
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn a_camera_that_does_not_exist_is_not_refused_here() {
+        // Décision du ticket n° 6 : `validate::plan` ne connaît pas la liste des caméras, et ne
+        // doit pas : un plan envoyé avant une suppression passe. L'orphelin est grisé côté client.
+        let mut p = HomePlan::default();
+        p.floors[0].items.push(protocol::home::Item {
+            id: 9,
+            kind: ItemKind::camera(protocol::wire::CAMERA_ID_MIN + 123_456),
+            x: 0.0,
+            y: 0.0,
+            rotation: 0.0,
+        });
+        assert!(plan(&p).is_ok());
     }
 }

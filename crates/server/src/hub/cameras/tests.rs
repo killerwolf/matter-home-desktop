@@ -311,7 +311,7 @@ fn deleting_a_camera_also_removes_it_from_the_plan_in_one_transaction() {
     for (n, camera_id) in [(50, id), (51, other)] {
         plan.floors[0].items.push(Item {
             id: n,
-            kind: ItemKind::Camera { camera_id },
+            kind: ItemKind::camera(camera_id),
             x: 1.0,
             y: 1.0,
             rotation: 90.0,
@@ -401,5 +401,25 @@ fn a_new_camera_never_takes_a_known_device_id() {
         let id = hub.add_camera(&cam_draft(&format!("c{i}"))).unwrap();
         assert_ne!(id, device);
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_plan_may_reference_a_camera_the_server_does_not_know() {
+    // Décision du ticket n° 6 : pas de refus à l'enregistrement du plan (un client peut envoyer
+    // son plan juste avant une suppression) ; le client grise l'objet orphelin.
+    use protocol::home::{Item, ItemKind};
+    let dir = temp("cam-orphan");
+    let (hub, _rx) = hub_with(&dir, 32);
+    let mut plan = hub.plan();
+    plan.floors[0].items.push(Item {
+        id: 60,
+        kind: ItemKind::camera(protocol::wire::CAMERA_ID_MIN + 99),
+        x: 1.0,
+        y: 1.0,
+        rotation: 10.0,
+    });
+    hub.set_plan(plan.clone()).unwrap();
+    assert_eq!(hub.plan(), plan);
     std::fs::remove_dir_all(dir).unwrap();
 }
