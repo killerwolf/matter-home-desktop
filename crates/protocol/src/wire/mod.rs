@@ -21,12 +21,14 @@ mod camera;
 mod convert;
 mod error;
 mod message;
+mod stream;
 mod text_ids;
 
 pub use api::*;
 pub use camera::*;
 pub use error::*;
 pub use message::*;
+pub use stream::*;
 pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 
 /// Version du protocole. Elle change quand un message existant change de sens ou de forme ;

@@ -35,3 +35,12 @@ tungstenite = { version = "0.29", default-features = false, features = ["handsha
 sha2 = "0.10"
 # Sélecteur de fichier du système (export, import, CSV), déjà utilisé par la v0.2.1.
 rfd = "0.17.2"
+
+# Décodage vidéo des caméras (#5) : VideoToolbox, le décodeur H.264 matériel de macOS. Rien à
+# embarquer dans le DMG ni à installer. Liaisons générées (objc2), mêmes versions que le reste
+# de l'arbre ; hors macOS, `video` compile un décodeur qui refuse tout (voir `video/mod.rs`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-video-toolbox = "0.3"

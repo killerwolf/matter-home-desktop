@@ -166,7 +166,7 @@ fn main() -> eframe::Result {
 fn init_logging(path: &std::path::Path) {
     let mut logger = env_logger::Builder::from_env(
         env_logger::Env::default()
-            .default_filter_or("info,matc=warn,retina=warn,wgpu=warn,naga=warn"),
+            .default_filter_or("info,matc=warn,retina=off,wgpu=warn,naga=warn"),
     );
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);

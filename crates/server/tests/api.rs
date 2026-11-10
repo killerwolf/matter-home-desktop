@@ -1176,7 +1176,8 @@ fn cameras_are_listed_without_any_address_or_secret() {
         let not_there = client
             .request("GET", "/api/cameras/1/stream", Some(&token), None)
             .await;
-        assert_eq!(not_there.status, 404);
+        // La route du flux existe (ticket n° 5) : sans mise à niveau WebSocket, elle refuse (400).
+        assert_eq!(not_there.status, 400);
 
         for text in &texts {
             for needle in forbidden {

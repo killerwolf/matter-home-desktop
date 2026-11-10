@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ws", get(super::ws::upgrade))
         .route("/api/rule-runs", get(rule_runs))
         .route("/api/cameras", get(get_cameras))
+        .merge(super::camera_stream::router())
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))
         .route("/api/rules/{id}/test", post(test_rule))

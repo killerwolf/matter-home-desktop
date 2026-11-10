@@ -4,6 +4,7 @@
 //! borné au total et par adresse.
 
 mod body;
+mod camera_stream;
 mod routes;
 mod ws;
 

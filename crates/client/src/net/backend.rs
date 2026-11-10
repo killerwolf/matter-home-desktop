@@ -79,6 +79,8 @@ impl Shared {
     }
 
     fn set_creds(&self, creds: Option<Creds>) {
+        // Le lecteur vidéo (`stream.rs`) n'a pas d'autre moyen de connaître la session en cours.
+        super::stream::publish(self.generation(), creds.as_ref());
         *self.creds.lock().unwrap_or_else(PoisonError::into_inner) = creds;
     }
 
