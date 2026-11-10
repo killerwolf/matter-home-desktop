@@ -11,7 +11,11 @@
 //! Le fichier de connexion (`--store`) est celui qu'on veut (jetable). Avec `--shot`, la capture
 //! est faite après N images décodées (30 par défaut), écrite en PPM (P6), et l'exemple se ferme.
 
+#[path = "../src/ui/camera_text.rs"]
+#[allow(dead_code)]
+mod camera_text;
 #[path = "../src/ui/player.rs"]
+#[allow(dead_code)]
 mod player;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,7 +94,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(path) = &self.shot {
-            let frames = id.map_or(0, |id| player::frames_decoded(&ctx, id));
+            let frames = id.map_or(0, |id| player::frames_decoded(&ctx, id, self.kind));
             if !self.requested && frames >= self.after_frames {
                 self.requested = true;
                 let (path, done, repaint) = (path.clone(), self.done.clone(), ctx.clone());

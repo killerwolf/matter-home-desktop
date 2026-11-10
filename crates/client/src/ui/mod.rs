@@ -5,6 +5,7 @@
 //! cache, pas de mode local. Déconnectée, elle affiche « déconnecté » et n'autorise aucune
 //! commande.
 
+mod camera_text;
 mod cameras;
 mod connect;
 mod customize;

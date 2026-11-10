@@ -1742,7 +1742,7 @@ mod tests {
         // Caméra supprimée du serveur : grisée, nommée comme telle, rien à ouvrir.
         let lk = camera_look(&item, &[]);
         assert_eq!(lk.name, "Caméra supprimée");
-        assert_eq!(lk.fill, GRAY);
+        assert_eq!(lk.fill, crate::ui::camera_text::NEUTRAL);
     }
 
     #[test]

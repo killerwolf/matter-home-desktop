@@ -62,6 +62,12 @@ pub(super) fn publish(generation: u64, creds: Option<&Creds>) {
         creds.map(|c| (generation, c.clone()));
 }
 
+/// Numéro de la session en cours (`None` : pas de session). Un lecteur ouvert sous un autre
+/// numéro est périmé : il doit rouvrir sa liaison (après une reconnexion, par exemple).
+pub fn current_generation() -> Option<u64> {
+    current().map(|(g, _)| g)
+}
+
 fn current() -> Option<(u64, Creds)> {
     CURRENT
         .lock()
@@ -94,6 +100,8 @@ pub enum StreamState {
     CameraGone,
     /// Cette caméra n'a pas ce flux (pas de flux réduit). Définitif.
     NoSuchStream,
+    /// Le serveur a refusé la demande elle-même (identifiant ou type de flux invalide). Définitif.
+    BadRequest,
     /// Le serveur ne reconnaît plus la session. Définitif (l'écran de connexion prend le relais).
     SessionEnded,
     /// Pas de session avec un serveur. Définitif.
@@ -111,6 +119,7 @@ impl StreamState {
                 | StreamState::ServerTooOld
                 | StreamState::CameraGone
                 | StreamState::NoSuchStream
+                | StreamState::BadRequest
                 | StreamState::SessionEnded
                 | StreamState::NoConnection
                 | StreamState::DecoderUnavailable(_)
@@ -138,6 +147,8 @@ struct Live {
     touched_ms: AtomicU64,
     stop: AtomicBool,
     finished: AtomicBool,
+    /// La session qui était en cours à l'ouverture.
+    generation: Option<u64>,
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -194,6 +205,7 @@ impl StreamHandle {
             touched_ms: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            generation: current_generation(),
             notify,
         });
         let thread_live = live.clone();
@@ -222,6 +234,17 @@ impl StreamHandle {
         let handle = StreamHandle { live };
         handle.touch();
         handle
+    }
+
+    /// La session sous laquelle cette liaison a été ouverte.
+    pub fn generation(&self) -> Option<u64> {
+        self.live.generation
+    }
+
+    /// La session a changé depuis l'ouverture (reconnexion, déconnexion) : cette liaison ne vaut
+    /// plus rien, même si elle affiche encore un état final (« session terminée »).
+    pub fn is_stale(&self) -> bool {
+        self.live.generation != current_generation()
     }
 
     /// Le lecteur est affiché : à appeler à chaque image de l'interface.
@@ -573,6 +596,11 @@ fn classify_refusal(status: u16, detail: Option<&str>) -> Ended {
     match status {
         404 if detail.is_some() => Ended::Final(StreamState::CameraGone),
         404 | 405 | 426 => Ended::Final(StreamState::ServerTooOld),
+        // 400 : identifiant ou `kind` invalide (un client trop ancien ou fautif) ou pas de flux
+        // réduit. Le serveur ne les distingue que par le détail : « flux réduit » = le second.
+        400 if detail.is_some_and(|d| !d.to_lowercase().contains("réduit")) => {
+            Ended::Final(StreamState::BadRequest)
+        }
         400 => Ended::Final(StreamState::NoSuchStream),
         401 => Ended::Final(StreamState::SessionEnded),
         _ => Ended::Retry {
@@ -609,6 +637,14 @@ mod tests {
             Some(StreamState::NoSuchStream)
         );
         assert_eq!(
+            final_state(classify_refusal(400, Some("kind attend main ou sub"))),
+            Some(StreamState::BadRequest)
+        );
+        assert_eq!(
+            final_state(classify_refusal(400, None)),
+            Some(StreamState::NoSuchStream)
+        );
+        assert_eq!(
             final_state(classify_refusal(401, None)),
             Some(StreamState::SessionEnded)
         );
@@ -634,5 +670,27 @@ mod tests {
             final_state(refusal(404, None)),
             Some(StreamState::ServerTooOld)
         );
+    }
+
+    #[test]
+    fn a_handle_opened_under_an_older_session_is_stale() {
+        use super::super::addr::ServerAddr;
+        let creds = Creds {
+            addr: ServerAddr::parse("127.0.0.1:9").unwrap(),
+            fingerprint: String::new(),
+            token: String::new(),
+        };
+        publish(41, None);
+        let handle = StreamHandle::open(1, StreamKind::Sub, || {});
+        assert_eq!(handle.generation(), None);
+        assert!(!handle.is_stale());
+        // Une reconnexion publie une nouvelle session : la liaison ouverte avant est périmée.
+        publish(42, Some(&creds));
+        assert!(handle.is_stale());
+        let fresh = StreamHandle::open(1, StreamKind::Sub, || {});
+        assert_eq!(fresh.generation(), Some(42));
+        assert!(!fresh.is_stale());
+        publish(43, None);
+        assert!(fresh.is_stale());
     }
 }

@@ -7,7 +7,7 @@
 
 use eframe::egui::{Color32, Painter, Pos2, Shape, Stroke, Vec2};
 use protocol::home::{rotation_vector, FovShape};
-use protocol::wire::{CameraProblem, CameraStatus, CameraView};
+use protocol::wire::{CameraStatus, CameraView};
 
 /// Distance (px) entre le centre de l'icône et la poignée de rotation.
 pub const ROTATE_HANDLE_DIST: f32 = 40.0;
@@ -18,9 +18,7 @@ pub const ROTATION_STEP: f32 = 5.0;
 /// Pas de la portée à la souris (m).
 pub const RANGE_STEP: f32 = 0.25;
 
-const ONLINE: Color32 = Color32::from_rgb(40, 160, 70);
-const OFFLINE: Color32 = Color32::from_rgb(210, 60, 50);
-const NEUTRAL: Color32 = Color32::from_rgb(110, 110, 110);
+use crate::ui::camera_text::{problem_text as problem_phrase, NEUTRAL, OFFLINE, ONLINE};
 
 /// Ce que le plan sait d'une caméra posée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,13 +71,7 @@ impl CameraState {
 /// Phrase pour une caméra injoignable (sans détail technique ni adresse).
 pub fn problem_text(status: &CameraStatus) -> Option<&'static str> {
     match status {
-        CameraStatus::Unreachable { problem, .. } => Some(match problem {
-            CameraProblem::Unreachable => "ne répond pas",
-            CameraProblem::Unauthorized => "identifiants refusés",
-            CameraProblem::NotFound => "flux introuvable",
-            CameraProblem::Protocol => "réponse inattendue",
-            CameraProblem::Failed => "échec de la vérification",
-        }),
+        CameraStatus::Unreachable { problem, .. } => Some(problem_phrase(*problem)),
         _ => None,
     }
 }
@@ -286,7 +278,7 @@ pub fn paint_handles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::wire::StreamInfo;
+    use protocol::wire::{CameraProblem, StreamInfo};
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-2
@@ -314,7 +306,10 @@ mod tests {
         });
         assert_eq!(CameraState::of(Some(&down)), CameraState::Unreachable);
         let text = tooltip(Some(&down));
-        assert_eq!(text, "Entrée\nInjoignable (identifiants refusés)");
+        assert_eq!(
+            text,
+            "Entrée\nInjoignable (identifiant ou mot de passe refusé)"
+        );
         assert!(!text.contains("secret"));
         assert_eq!(
             CameraState::of(Some(&view(CameraStatus::Unknown))),

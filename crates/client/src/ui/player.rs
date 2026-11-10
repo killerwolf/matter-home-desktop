@@ -21,8 +21,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use protocol::wire::{CameraProblem, CameraStatus, StreamKind};
+use protocol::wire::{CameraStatus, StreamKind};
 
+use super::camera_text::problem_text;
 use matter_home_client::model::Model;
 use matter_home_client::net::stream::{StreamHandle, StreamState};
 
@@ -33,12 +34,9 @@ const REOPEN_AFTER: Duration = Duration::from_secs(1);
 /// liaison, et fait avancer les messages).
 const REPAINT_EVERY: Duration = Duration::from_millis(100);
 
-/// L'état d'un lecteur, gardé dans la mémoire d'`egui`.
+/// L'état d'un lecteur, gardé dans la mémoire d'`egui` **par caméra et par flux** : deux endroits
+/// qui montrent la même caméra sur des flux différents n'ont jamais à se disputer une liaison.
 struct State {
-    /// Le flux voulu par l'appelant la dernière fois : s'il change, il l'emporte sur le choix fait
-    /// avec les boutons.
-    requested: StreamKind,
-    kind: StreamKind,
     handle: Option<StreamHandle>,
     opened_at: Option<Instant>,
     texture: Option<egui::TextureHandle>,
@@ -48,53 +46,91 @@ struct State {
 
 type Shared = Arc<Mutex<State>>;
 
-/// Affiche le flux `kind` de la caméra `camera_id` dans `ui` (la zone disponible). Les flux ne
-/// tournent que tant que cette fonction est appelée à chaque image : ne plus l'appeler (page
-/// quittée, fenêtre réduite) coupe la connexion (aucun spectateur côté serveur).
+/// Affiche le flux `kind` de la caméra `camera_id` dans `ui` (la zone disponible), avec un choix
+/// entre flux réduit et flux principal (propre à cet `ui`, il ne se répercute nulle part ailleurs).
+/// Les flux ne tournent que tant que cette fonction est appelée à chaque image : ne plus l'appeler
+/// (page quittée, fenêtre fermée) coupe la connexion (aucun spectateur côté serveur).
 ///
-/// `kind` est le flux voulu au départ ; l'utilisateur peut en changer avec les boutons du lecteur.
-/// Une caméra sans flux réduit n'a que le flux principal.
-#[allow(dead_code)]
+/// `kind` est le flux voulu au départ. Une caméra sans flux réduit n'a que le flux principal.
 pub fn player(ui: &mut egui::Ui, model: &Model, camera_id: u64, kind: StreamKind) {
+    show(ui, model, camera_id, kind, true);
+}
+
+/// Comme [`player`], sans aucun contrôle : le flux est **toujours** `kind`, choisi par l'appelant
+/// (mosaïque : le réduit ; page de détail : son propre bouton). Une caméra sans le flux demandé
+/// l'annonce, elle ne bascule jamais sur l'autre.
+pub fn player_compact(ui: &mut egui::Ui, model: &Model, camera_id: u64, kind: StreamKind) {
+    show(ui, model, camera_id, kind, false);
+}
+
+/// Le flux réellement lu : celui de l'appelant, ou, avec le choix affiché, celui qu'on a cliqué
+/// dans cet `ui` (le choix est oublié quand l'appelant change de demande).
+fn effective_kind(
+    ui: &egui::Ui,
+    camera_id: u64,
+    requested: StreamKind,
+    has_sub: bool,
+    toggle: bool,
+) -> StreamKind {
+    let kind = if toggle {
+        let id = ui.scope_id().with(("camera-player-choice", camera_id));
+        let (asked, chosen): (StreamKind, StreamKind) = ui
+            .data(|d| d.get_temp(id))
+            .filter(|(asked, _)| *asked == requested)
+            .unwrap_or((requested, requested));
+        ui.data_mut(|d| d.insert_temp(id, (asked, chosen)));
+        chosen
+    } else {
+        requested
+    };
+    if toggle && kind == StreamKind::Sub && !has_sub {
+        StreamKind::Main
+    } else {
+        kind
+    }
+}
+
+fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind, toggle: bool) {
     let Some(camera) = model.camera(camera_id) else {
         ui.label("Cette caméra n'existe plus.");
         return;
     };
+    let kind = effective_kind(ui, camera_id, requested, camera.has_sub_stream, toggle);
+    if kind == StreamKind::Sub && !camera.has_sub_stream {
+        ui.label("Cette caméra n'a pas de flux réduit.");
+        return;
+    }
     let shared = state(ui.ctx(), camera_id, kind);
     let mut state = shared.lock().unwrap_or_else(PoisonError::into_inner);
     let state = &mut *state;
 
-    if kind != state.requested {
-        state.requested = kind;
-        state.kind = kind;
-        state.handle = None;
-        state.shown = None;
-        state.texture = None;
-    }
-    if state.kind == StreamKind::Sub && !camera.has_sub_stream {
-        state.kind = StreamKind::Main;
-    }
-
-    // Le choix du flux.
-    ui.horizontal(|ui| {
-        ui.strong(&camera.name);
-        if camera.has_sub_stream {
-            ui.separator();
-            for choice in [StreamKind::Sub, StreamKind::Main] {
-                if ui
-                    .selectable_label(state.kind == choice, choice.label())
-                    .clicked()
-                    && state.kind != choice
-                {
-                    state.kind = choice;
-                    state.handle = None;
-                    state.shown = None;
-                    state.texture = None;
+    // Le choix du flux (l'appelant qui n'en veut pas utilise `player_compact`).
+    if toggle {
+        let choice_id = ui.scope_id().with(("camera-player-choice", camera_id));
+        ui.horizontal(|ui| {
+            ui.strong(&camera.name);
+            if camera.has_sub_stream {
+                ui.separator();
+                for choice in [StreamKind::Sub, StreamKind::Main] {
+                    if ui
+                        .selectable_label(kind == choice, choice.label())
+                        .clicked()
+                        && kind != choice
+                    {
+                        ui.data_mut(|d| d.insert_temp(choice_id, (requested, choice)));
+                        ui.request_repaint();
+                    }
                 }
             }
-        }
-    });
-    ui.add_space(4.0);
+        });
+        ui.add_space(4.0);
+    }
+
+    // Une liaison ouverte sous une autre session (reconnexion) est périmée, même si elle affiche
+    // encore « session terminée » ou « pas de connexion » : on repart de zéro.
+    if state.handle.as_ref().is_some_and(StreamHandle::is_stale) {
+        state.handle = None;
+    }
 
     // La liaison : ouverte au premier affichage, rouverte si elle s'est arrêtée (page quittée puis
     // retrouvée) tant qu'aucun état définitif ne l'interdit.
@@ -110,7 +146,7 @@ pub fn player(ui: &mut egui::Ui, model: &Model, camera_id: u64, kind: StreamKind
     };
     if reopen {
         let ctx = ui.ctx().clone();
-        state.handle = Some(StreamHandle::open(camera_id, state.kind, move || {
+        state.handle = Some(StreamHandle::open(camera_id, kind, move || {
             ctx.request_repaint()
         }));
         state.opened_at = Some(Instant::now());
@@ -127,7 +163,7 @@ pub fn player(ui: &mut egui::Ui, model: &Model, camera_id: u64, kind: StreamKind
             Some(texture) => texture.set(color, egui::TextureOptions::LINEAR),
             None => {
                 state.texture = Some(ui.ctx().load_texture(
-                    format!("camera-{camera_id}"),
+                    format!("camera-{camera_id}-{}", kind.key()),
                     color,
                     egui::TextureOptions::LINEAR,
                 ));
@@ -275,22 +311,16 @@ fn notice(state: &StreamState, status: &CameraStatus) -> Option<Notice> {
         ),
         StreamState::CameraGone => say("Cette caméra n'existe plus sur le serveur.", false),
         StreamState::NoSuchStream => say("Cette caméra n'a pas ce flux.", false),
+        StreamState::BadRequest => say(
+            "Le serveur a refusé cette demande de flux : mettez à jour l'application et le serveur.",
+            false,
+        ),
         StreamState::SessionEnded => say("Votre session a expiré : reconnectez-vous.", false),
         StreamState::NoConnection => say("Pas de connexion avec le serveur.", false),
         StreamState::DecoderUnavailable(why) => Some(Notice {
             text: format!("Le décodage vidéo n'est pas disponible sur ce Mac ({why})."),
             busy: false,
         }),
-    }
-}
-
-fn problem_text(problem: CameraProblem) -> &'static str {
-    match problem {
-        CameraProblem::Unreachable => "la caméra ne répond pas",
-        CameraProblem::Unauthorized => "la caméra refuse l'identifiant ou le mot de passe",
-        CameraProblem::NotFound => "la caméra ne connaît pas l'adresse de ce flux",
-        CameraProblem::Protocol => "réponse inattendue de la caméra",
-        CameraProblem::Failed => "la connexion à la caméra a échoué",
     }
 }
 
@@ -303,11 +333,37 @@ fn codec_name(codec: &str) -> String {
     }
 }
 
+/// Ce lecteur a une liaison ouverte (et pas finie) : il est affiché depuis peu. Une tuile qui
+/// lisait continue ainsi de l'appeler quand sa caméra devient injoignable, pour que la reprise
+/// se fasse toute seule, comme dans la fenêtre du plan.
+pub fn is_active(ctx: &egui::Context, camera_id: u64, kind: StreamKind) -> bool {
+    let id = egui::Id::unique(("camera-player", camera_id, kind.key()));
+    let Some(shared) = ctx.data(|data| data.get_temp::<Shared>(id)) else {
+        return false;
+    };
+    let state = shared.lock().unwrap_or_else(PoisonError::into_inner);
+    state
+        .handle
+        .as_ref()
+        .is_some_and(|h| !h.is_finished() && !h.is_stale())
+}
+
+#[cfg(test)]
+fn has_handle(ctx: &egui::Context, camera_id: u64, kind: StreamKind) -> bool {
+    let id = egui::Id::unique(("camera-player", camera_id, kind.key()));
+    ctx.data(|d| d.get_temp::<Shared>(id)).is_some_and(|s| {
+        s.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .handle
+            .is_some()
+    })
+}
+
 /// Images décodées par le lecteur de cette caméra depuis l'ouverture de sa liaison (diagnostic ;
 /// sert à l'exemple `camera_player`, qui attend la vidéo avant de faire une capture).
 #[allow(dead_code)]
-pub fn frames_decoded(ctx: &egui::Context, camera_id: u64) -> u64 {
-    let id = egui::Id::unique(("camera-player", camera_id));
+pub fn frames_decoded(ctx: &egui::Context, camera_id: u64, kind: StreamKind) -> u64 {
+    let id = egui::Id::unique(("camera-player", camera_id, kind.key()));
     let Some(shared) = ctx.data(|data| data.get_temp::<Shared>(id)) else {
         return 0;
     };
@@ -316,12 +372,10 @@ pub fn frames_decoded(ctx: &egui::Context, camera_id: u64) -> u64 {
 }
 
 fn state(ctx: &egui::Context, camera_id: u64, kind: StreamKind) -> Shared {
-    let id = egui::Id::unique(("camera-player", camera_id));
+    let id = egui::Id::unique(("camera-player", camera_id, kind.key()));
     ctx.data_mut(|data| {
         data.get_temp_mut_or_insert_with::<Shared>(id, || {
             Arc::new(Mutex::new(State {
-                requested: kind,
-                kind,
                 handle: None,
                 opened_at: None,
                 texture: None,
@@ -335,6 +389,7 @@ fn state(ctx: &egui::Context, camera_id: u64, kind: StreamKind) -> Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::wire::CameraProblem;
 
     fn unreachable(problem: CameraProblem) -> CameraStatus {
         CameraStatus::Unreachable {
@@ -455,5 +510,57 @@ mod tests {
             .expect("liaison ouverte à l'affichage");
         // Rien n'est publié par ce test : jamais d'image (états de chargement ou d'échec).
         assert_ne!(handle.state(), StreamState::Live);
+    }
+
+    fn camera(id: u64, has_sub: bool) -> protocol::wire::CameraView {
+        protocol::wire::CameraView {
+            id,
+            name: "Entrée".into(),
+            status: CameraStatus::Online,
+            has_sub_stream: has_sub,
+            stream: None,
+        }
+    }
+
+    fn draw(ctx: &egui::Context, model: &Model, compact: bool, kind: StreamKind) {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            if compact {
+                player_compact(ui, model, 7, kind)
+            } else {
+                player(ui, model, 7, kind)
+            }
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_compact_player_only_ever_opens_the_stream_it_is_given() {
+        let ctx = egui::Context::default();
+        let mut model = Model::default();
+        // Une caméra avec flux réduit : la tuile lit le réduit, jamais le principal.
+        model.cameras = vec![camera(7, true)];
+        draw(&ctx, &model, true, StreamKind::Sub);
+        assert!(has_handle(&ctx, 7, StreamKind::Sub));
+        assert!(!has_handle(&ctx, 7, StreamKind::Main));
+        // Sans flux réduit : rien ne s'ouvre, le principal non plus (pas de repli silencieux).
+        let ctx = egui::Context::default();
+        model.cameras = vec![camera(7, false)];
+        draw(&ctx, &model, true, StreamKind::Sub);
+        assert!(!has_handle(&ctx, 7, StreamKind::Sub));
+        assert!(!has_handle(&ctx, 7, StreamKind::Main));
+        // Le lecteur avec choix, lui, se replie sur le principal.
+        draw(&ctx, &model, false, StreamKind::Sub);
+        assert!(has_handle(&ctx, 7, StreamKind::Main));
+    }
+
+    #[test]
+    fn two_callers_on_the_same_camera_never_share_a_stream_kind() {
+        let ctx = egui::Context::default();
+        let mut model = Model::default();
+        model.cameras = vec![camera(7, true)];
+        draw(&ctx, &model, false, StreamKind::Main);
+        draw(&ctx, &model, true, StreamKind::Sub);
+        assert!(has_handle(&ctx, 7, StreamKind::Main));
+        assert!(has_handle(&ctx, 7, StreamKind::Sub));
     }
 }

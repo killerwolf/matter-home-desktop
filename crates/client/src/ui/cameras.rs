@@ -13,9 +13,10 @@
 
 use eframe::egui::{self, Color32, RichText};
 use protocol::home::HomePlan;
-use protocol::wire::{CameraProblem, CameraStatus, CameraView, StreamKind};
+use protocol::wire::{CameraStatus, CameraView, StreamKind};
 
-use super::player::player;
+use super::camera_text::{problem_text, NEUTRAL, OFFLINE, ONLINE};
+use super::player::{is_active, player_compact};
 use matter_home_client::model::Model;
 
 /// Nombre maximal de tuiles qui lisent un flux en même temps (le décodage se fait sur le client,
@@ -63,6 +64,12 @@ pub fn tile_video(camera: &CameraView) -> TileVideo {
     } else {
         TileVideo::NoSubStream
     }
+}
+
+/// Le flux qu'une tuile lit : **toujours le réduit** (jamais le principal, trop lourd pour une
+/// mosaïque), et rien si la caméra n'en a pas.
+pub fn tile_stream(camera: &CameraView) -> Option<StreamKind> {
+    camera.has_sub_stream.then_some(StreamKind::Sub)
 }
 
 /// Une pièce et ses caméras, triées par nom.
@@ -127,6 +134,14 @@ pub fn tile_visible(clip: egui::Rect, tile: egui::Rect) -> bool {
     clip.intersects(tile)
 }
 
+/// Une tuile veut un flux si sa caméra est en ligne et en a un réduit, ou si elle en lisait déjà
+/// un (la caméra devient injoignable : le serveur reprend tout seul, la tuile continue de
+/// l'afficher et le message du lecteur dit ce qui se passe).
+fn tile_wants_stream(ctx: &egui::Context, camera: &CameraView) -> bool {
+    matches!(tile_video(camera), TileVideo::Live(_))
+        || tile_stream(camera).is_some_and(|kind| is_active(ctx, camera.id, kind))
+}
+
 /// Décide, parmi les tuiles de l'image, lesquelles lisent vraiment un flux : celles qui en ont
 /// un à lire (`wants`), sont visibles, dans la limite de `max`, dans l'ordre d'affichage.
 pub fn live_slots(tiles: &[(bool, bool)], max: usize) -> Vec<bool> {
@@ -146,28 +161,15 @@ pub fn live_slots(tiles: &[(bool, bool)], max: usize) -> Vec<bool> {
 /// Phrase d'état d'une caméra : (badge, détail éventuel, couleur).
 pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Color32) {
     match status {
-        CameraStatus::Online => ("En ligne", None, Color32::from_rgb(40, 165, 90)),
+        CameraStatus::Online => ("En ligne", None, ONLINE),
         CameraStatus::Unreachable { problem, detail } => {
-            let reason = match problem {
-                CameraProblem::Unreachable => {
-                    "ne répond pas (éteinte, hors réseau ou RTSP désactivé)"
-                }
-                CameraProblem::Unauthorized => "identifiant ou mot de passe refusé",
-                CameraProblem::NotFound => "adresse du flux introuvable",
-                CameraProblem::Protocol => "réponse inattendue (pas une caméra RTSP ?)",
-                CameraProblem::Failed => "échec de la connexion",
-            };
-            let mut text = format!("Injoignable : {reason}");
+            let mut text = format!("Injoignable : {}", problem_text(*problem));
             if let Some(detail) = detail.as_deref().filter(|d| !d.is_empty()) {
                 text.push_str(&format!(" ({detail})"));
             }
-            ("Injoignable", Some(text), Color32::from_rgb(210, 70, 60))
+            ("Injoignable", Some(text), OFFLINE)
         }
-        CameraStatus::Unknown => (
-            "Inconnu",
-            Some("Pas encore vérifiée.".to_string()),
-            Color32::from_rgb(140, 140, 140),
-        ),
+        CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), NEUTRAL),
     }
 }
 
@@ -269,12 +271,7 @@ fn mosaic(ui: &mut egui::Ui, model: &Model, plan: &HomePlan, state: &mut PageSta
                     let wants: Vec<(bool, bool)> = row
                         .iter()
                         .zip(&rects)
-                        .map(|(c, r)| {
-                            (
-                                matches!(tile_video(c), TileVideo::Live(_)),
-                                tile_visible(clip, *r),
-                            )
-                        })
+                        .map(|(c, r)| (tile_wants_stream(ui.ctx(), c), tile_visible(clip, *r)))
                         .collect();
                     let live = live_slots(&wants, live_budget);
                     live_budget -= live.iter().filter(|l| **l).count();
@@ -328,15 +325,13 @@ fn tile(
     let video_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), video_h));
     let video = tile_video(camera);
     painter.rect_filled(video_rect.shrink(1.0), radius, Color32::from_gray(24));
-    if live {
-        if let TileVideo::Live(kind) = video {
-            ui.scope_builder(
-                egui::UiBuilder::new().max_rect(video_rect.shrink(1.0)),
-                |ui| {
-                    player(ui, model, camera.id, kind);
-                },
-            );
-        }
+    if let (true, Some(kind)) = (live, tile_stream(camera)) {
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(video_rect.shrink(1.0)),
+            |ui| {
+                player_compact(ui, model, camera.id, kind);
+            },
+        );
     } else {
         let capped = matches!(video, TileVideo::Live(_));
         ui.scope_builder(
@@ -409,12 +404,11 @@ fn detail(ui: &mut egui::Ui, model: &Model, camera: &CameraView, state: &mut Pag
     let size = ui.available_size();
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, Color32::from_gray(24));
-    if matches!(camera.status, CameraStatus::Online) {
-        // Le lecteur change de flux dès que `kind` change : l'ancien n'est plus appelé.
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            player(ui, model, camera.id, kind);
-        });
-    }
+    // Toujours appelé, même hors ligne : le lecteur dit l'état (injoignable, reprise…) et le
+    // serveur reprend la caméra tout seul. Le seul choix du flux est la case de cette page.
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        player_compact(ui, model, camera.id, kind);
+    });
 }
 
 /// Flux du détail : le principal si demandé, ou s'il n'y a que lui.
@@ -430,6 +424,7 @@ pub fn detail_stream(camera: &CameraView, main_requested: bool) -> StreamKind {
 mod tests {
     use super::*;
     use protocol::home::{Floor, Item, ItemKind, Room};
+    use protocol::wire::CameraProblem;
     use protocol::wire::StreamInfo;
 
     const A: u64 = 0xFFFF_FFF8_0000_0001;
@@ -574,6 +569,25 @@ mod tests {
         assert!(tile_visible(clip, tile(0.0)));
         assert!(tile_visible(clip, tile(350.0)));
         assert!(!tile_visible(clip, tile(450.0)));
+    }
+
+    #[test]
+    fn a_tile_can_never_request_the_main_stream() {
+        for has_sub in [true, false] {
+            for status in [
+                CameraStatus::Online,
+                CameraStatus::Unknown,
+                CameraStatus::Unreachable {
+                    problem: CameraProblem::Failed,
+                    detail: None,
+                },
+            ] {
+                let c = cam(A, "a", status, has_sub);
+                assert_ne!(tile_stream(&c), Some(StreamKind::Main));
+                assert_eq!(tile_stream(&c).is_some(), has_sub);
+                assert_ne!(tile_video(&c), TileVideo::Live(StreamKind::Main));
+            }
+        }
     }
 
     #[test]
