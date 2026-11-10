@@ -15,7 +15,7 @@ use eframe::egui::{self, Color32, RichText};
 use protocol::home::HomePlan;
 use protocol::wire::{CameraStatus, CameraView, StreamKind};
 
-use super::camera_text::{problem_text, NEUTRAL, OFFLINE, ONLINE};
+use super::camera_text::{offline_since_now, problem_text, NEUTRAL, OFFLINE, ONLINE};
 use super::player::{is_active, player_compact};
 use matter_home_client::model::Model;
 
@@ -162,10 +162,17 @@ pub fn live_slots(tiles: &[(bool, bool)], max: usize) -> Vec<bool> {
 pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Color32) {
     match status {
         CameraStatus::Online => ("En ligne", None, ONLINE),
-        CameraStatus::Unreachable { problem, detail } => {
+        CameraStatus::Unreachable {
+            problem,
+            detail,
+            since,
+        } => {
             let mut text = format!("Injoignable : {}", problem_text(*problem));
             if let Some(detail) = detail.as_deref().filter(|d| !d.is_empty()) {
                 text.push_str(&format!(" ({detail})"));
+            }
+            if let Some(since) = since {
+                text.push_str(&format!(" · {}", offline_since_now(*since)));
             }
             ("Injoignable", Some(text), OFFLINE)
         }
@@ -538,6 +545,8 @@ mod tests {
         let down = CameraStatus::Unreachable {
             problem: CameraProblem::Unreachable,
             detail: None,
+
+            since: None,
         };
         assert_eq!(tile_video(&cam(A, "a", down, true)), TileVideo::NotOnline);
         assert_eq!(
@@ -580,6 +589,8 @@ mod tests {
                 CameraStatus::Unreachable {
                     problem: CameraProblem::Failed,
                     detail: None,
+
+                    since: None,
                 },
             ] {
                 let c = cam(A, "a", status, has_sub);
@@ -604,6 +615,8 @@ mod tests {
         let (label, text, _) = status_text(&CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("401".into()),
+
+            since: None,
         });
         assert_eq!(label, "Injoignable");
         let text = text.unwrap();
@@ -612,6 +625,13 @@ mod tests {
             "{text}"
         );
         assert_eq!(status_text(&CameraStatus::Unknown).0, "Inconnu");
+        // Avec l'heure de la panne, la vignette et le détail disent depuis quand.
+        let (_, text, _) = status_text(&CameraStatus::Unreachable {
+            problem: CameraProblem::Unreachable,
+            detail: None,
+            since: Some(1_700_000_000),
+        });
+        assert!(text.unwrap().contains("Hors ligne depuis"));
     }
 
     #[test]

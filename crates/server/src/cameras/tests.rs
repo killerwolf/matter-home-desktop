@@ -288,6 +288,8 @@ fn a_failed_probe_keeps_the_last_known_stream() {
     let down = CameraStatus::Unreachable {
         problem: CameraProblem::Unreachable,
         detail: None,
+
+        since: None,
     };
     assert!(book.set_health(id, down.clone(), None));
     let view = &book.views()[0];
@@ -1129,4 +1131,38 @@ async fn a_first_failure_of_a_reachable_camera_is_rechecked_at_once() {
         }
     ));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_offline_time_is_set_once_after_the_two_failures_and_cleared_on_recovery() {
+    let mut book = CameraBook::default();
+    let id = book.add(&draft("x", &format!("rtsp://{HOST}/a"))).unwrap();
+    let info = || StreamInfo {
+        codec: "h264".into(),
+        width: Some(1),
+        height: Some(1),
+    };
+    let fail = |p: CameraProblem| Err((p, "d".to_string()));
+    let since = |book: &CameraBook| match book.status(id) {
+        Some(CameraStatus::Unreachable { since, .. }) => *since,
+        _ => None,
+    };
+    book.record_probe_at(id, Ok(info()), 100);
+    // Premier échec d'une caméra joignable : toujours en ligne, aucune heure.
+    book.record_probe_at(id, fail(CameraProblem::Unreachable), 160);
+    assert_eq!(since(&book), None);
+    // Deuxième échec : l'heure est celle de ce passage.
+    book.record_probe_at(id, fail(CameraProblem::Unreachable), 220);
+    assert_eq!(since(&book), Some(220));
+    // Elle ne bouge plus tant que la caméra reste injoignable, même si le motif change.
+    book.record_probe_at(id, fail(CameraProblem::Unreachable), 280);
+    assert_eq!(since(&book), Some(220));
+    book.record_probe_at(id, fail(CameraProblem::Unauthorized), 340);
+    assert_eq!(since(&book), Some(220));
+    // Retour en ligne : rien ; une nouvelle panne repart d'une nouvelle heure.
+    book.record_probe_at(id, Ok(info()), 400);
+    assert_eq!(book.status(id), Some(&CameraStatus::Online));
+    book.record_probe_at(id, fail(CameraProblem::Unreachable), 460);
+    book.record_probe_at(id, fail(CameraProblem::Unreachable), 520);
+    assert_eq!(since(&book), Some(520));
 }

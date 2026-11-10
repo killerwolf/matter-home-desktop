@@ -1915,6 +1915,8 @@ mod tests {
         cameras[0].status = protocol::wire::CameraStatus::Unreachable {
             problem: protocol::wire::CameraProblem::Unreachable,
             detail: None,
+
+            since: None,
         };
         let lk = camera_look(&item, &cameras);
         assert_eq!((lk.value.as_deref(), lk.fill), (Some("injoignable"), RED));

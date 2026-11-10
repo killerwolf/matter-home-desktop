@@ -182,6 +182,13 @@ fige la liste des clés).
   connexion ouverte** vers une caméra : il fait un `DESCRIBE` bref (jamais `SETUP` ni `PLAY`),
   une caméra à la fois, à l'ajout puis environ chaque minute, avec 8 s de délai. Une caméra
   injoignable n'a aucun effet sur les appareils Matter (autre fil, autre runtime).
+- **Depuis quand** (`status.since`) : pour `unreachable`, l'heure (secondes Unix) du passage à
+  injoignable, fixée **après les 2 échecs d'affilée** d'une caméra jusque-là joignable (ou au
+  premier échec d'une caméra jamais vue joignable), puis **inchangée** tant que la caméra reste
+  injoignable, même si le motif change. Elle disparaît quand la caméra revient. Facultatif
+  (`#[serde(default)]`, non écrit s'il est absent) : un client plus ancien l'ignore, un serveur plus
+  ancien ne l'envoie pas (« depuis quand » inconnu). Les états ne sont pas gardés sur disque : après
+  un redémarrage du serveur, l'heure repart du premier échec constaté. Version du protocole : **2**.
 - **Flux** (`stream`) : ce que la caméra annonce pour le flux surveillé (le réduit s'il existe,
   sinon le principal) : `codec` en minuscules (`h264`, `h265`, `jpeg`), et `width`/`height` si la
   description les contient (SPS). Il garde la dernière valeur connue quand la caméra devient

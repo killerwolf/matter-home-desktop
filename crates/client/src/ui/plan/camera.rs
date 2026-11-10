@@ -18,7 +18,9 @@ pub const ROTATION_STEP: f32 = 5.0;
 /// Pas de la portée à la souris (m).
 pub const RANGE_STEP: f32 = 0.25;
 
-use crate::ui::camera_text::{problem_text as problem_phrase, NEUTRAL, OFFLINE, ONLINE};
+use crate::ui::camera_text::{
+    offline_since_now, problem_text as problem_phrase, NEUTRAL, OFFLINE, ONLINE,
+};
 
 /// Ce que le plan sait d'une caméra posée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +87,12 @@ pub fn tooltip(camera: Option<&CameraView>) -> String {
             let mut text = format!("{}\n{}", c.name, state.label());
             if let Some(why) = problem_text(&c.status) {
                 text.push_str(&format!(" ({why})"));
+            }
+            if let CameraStatus::Unreachable {
+                since: Some(since), ..
+            } = &c.status
+            {
+                text.push_str(&format!("\n{}", offline_since_now(*since)));
             }
             text
         }
@@ -303,6 +311,8 @@ mod tests {
         let down = view(CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("secret".into()),
+
+            since: None,
         });
         assert_eq!(CameraState::of(Some(&down)), CameraState::Unreachable);
         let text = tooltip(Some(&down));
@@ -316,6 +326,13 @@ mod tests {
             CameraState::Unknown
         );
         assert!(tooltip(None).contains("supprimée"));
+        // Avec l'heure de la panne, le survol dit depuis quand.
+        let since = view(CameraStatus::Unreachable {
+            problem: CameraProblem::Unreachable,
+            detail: None,
+            since: Some(1_700_000_000),
+        });
+        assert!(tooltip(Some(&since)).contains("\nHors ligne depuis "));
     }
 
     #[test]

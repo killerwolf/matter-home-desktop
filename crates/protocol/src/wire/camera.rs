@@ -121,6 +121,11 @@ pub enum CameraStatus {
         problem: CameraProblem,
         #[serde(default)]
         detail: Option<String>,
+        /// Depuis quand la caméra est injoignable (secondes Unix), fixé quand elle le devient
+        /// (après 2 échecs d'affilée si elle était joignable) et inchangé tant qu'elle le reste,
+        /// même si le motif change. Absent d'un serveur plus ancien : « depuis quand » inconnu.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
     },
     /// Pas encore vérifiée (ajout ou démarrage récent). Aussi lu quand un serveur plus récent
     /// envoie un état que ce client ne connaît pas : il l'affiche comme « inconnu ».

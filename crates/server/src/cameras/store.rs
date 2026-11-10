@@ -621,6 +621,13 @@ impl CameraBook {
                     "La caméra ne répond pas (éteinte, hors réseau, RTSP désactivé ou mauvais port)."
                         .into(),
                 ),
+                // Démonstration : injoignable depuis une demi-heure.
+                since: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                        .saturating_sub(1800),
+                ),
             },
             None,
         );
@@ -799,6 +806,20 @@ impl CameraBook {
         id: u64,
         outcome: Result<StreamInfo, (CameraProblem, String)>,
     ) -> Recorded {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.record_probe_at(id, outcome, now)
+    }
+
+    /// [`Self::record_probe`] avec l'heure (secondes Unix) : c'est elle qui devient `since` quand
+    /// la caméra passe injoignable, puis elle ne bouge plus tant que la caméra le reste.
+    pub fn record_probe_at(
+        &mut self,
+        id: u64,
+        outcome: Result<StreamInfo, (CameraProblem, String)>,
+        now: u64,
+    ) -> Recorded {
         match outcome {
             Ok(info) => {
                 self.failures.remove(&id);
@@ -820,9 +841,17 @@ impl CameraBook {
                         recheck: true,
                     };
                 }
+                // Déjà injoignable : l'heure de départ est conservée (le motif a pu changer).
+                let since = match self.health.get(&id).map(|h| &h.status) {
+                    Some(CameraStatus::Unreachable {
+                        since: Some(since), ..
+                    }) => *since,
+                    _ => now,
+                };
                 let status = CameraStatus::Unreachable {
                     problem,
                     detail: Some(detail),
+                    since: Some(since),
                 };
                 Recorded {
                     changed: self.set_health(id, status, None),

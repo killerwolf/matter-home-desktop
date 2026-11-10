@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use protocol::wire::{CameraStatus, StreamKind};
 
-use super::camera_text::problem_text;
+use super::camera_text::{offline_since_now, problem_text};
 use matter_home_client::model::Model;
 use matter_home_client::net::stream::{StreamHandle, StreamState};
 
@@ -274,10 +274,11 @@ fn notice(state: &StreamState, status: &CameraStatus) -> Option<Notice> {
         StreamState::Live => None,
         StreamState::Connecting => say("Connexion au serveur…", true),
         StreamState::Waiting => match status {
-            CameraStatus::Unreachable { problem, .. } => Some(Notice {
+            CameraStatus::Unreachable { problem, since, .. } => Some(Notice {
                 text: format!(
-                    "Caméra injoignable : {}. Nouvelle tentative automatique…",
-                    problem_text(*problem)
+                    "Caméra injoignable : {}. {}Nouvelle tentative automatique…",
+                    problem_text(*problem),
+                    since.map_or_else(String::new, |s| format!("{}. ", offline_since_now(s)))
                 ),
                 busy: true,
             }),
@@ -395,6 +396,8 @@ mod tests {
         CameraStatus::Unreachable {
             problem,
             detail: None,
+
+            since: None,
         }
     }
 
@@ -427,6 +430,12 @@ mod tests {
             text(StreamState::Waiting, &online),
             "Connexion à la caméra…"
         );
+        let down = CameraStatus::Unreachable {
+            problem: CameraProblem::Unreachable,
+            detail: None,
+            since: Some(1_700_000_000),
+        };
+        assert!(text(StreamState::Waiting, &down).contains("Hors ligne depuis"));
         assert!(text(
             StreamState::Waiting,
             &unreachable(CameraProblem::Unreachable)

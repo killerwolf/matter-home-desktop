@@ -424,6 +424,7 @@ mod tests {
                     CameraStatus::Unreachable {
                         problem: CameraProblem::Unauthorized,
                         detail: Some("identifiant refusé".into()),
+                        since: Some(1_700_000_000),
                     },
                 ),
             ],
@@ -448,6 +449,7 @@ mod tests {
             status: CameraStatus::Unreachable {
                 problem: CameraProblem::Failed,
                 detail: Some("d".into()),
+                since: None,
             },
             has_sub_stream: true,
             stream: Some(StreamInfo {
@@ -546,9 +548,32 @@ mod tests {
             status,
             CameraStatus::Unreachable {
                 problem: CameraProblem::Failed,
-                detail: None
+                detail: None,
+                since: None
             }
         );
+    }
+
+    #[test]
+    fn the_offline_time_is_optional_on_the_wire() {
+        // Un serveur plus ancien n'envoie pas `since` : lu comme inconnu.
+        let old: CameraStatus = serde_json::from_value(
+            serde_json::json!({"state": "unreachable", "problem": "unreachable", "detail": "x"}),
+        )
+        .unwrap();
+        assert!(matches!(old, CameraStatus::Unreachable { since: None, .. }));
+        // Sans heure, rien n'est écrit (un client plus ancien lit exactement ce qu'il lisait).
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("since").is_none(), "{json}");
+        // Avec : aller-retour, et un client plus ancien, qui ignore les champs inconnus, le lit.
+        let new = CameraStatus::Unreachable {
+            problem: CameraProblem::Unreachable,
+            detail: None,
+            since: Some(1_700_000_000),
+        };
+        let json = serde_json::to_value(&new).unwrap();
+        assert_eq!(json["since"], 1_700_000_000u64);
+        assert_eq!(serde_json::from_value::<CameraStatus>(json).unwrap(), new);
     }
 
     #[test]
