@@ -105,7 +105,9 @@ grandeurs sont `temperature`, `humidity`, `power`, `energy`, `battery`, `positio
 
 **Réduction par tranches** (optionnelle, ajoutée après la v1.0.0-rc.4) : `buckets=N` (au plus
 2 000) découpe la fenêtre en N tranches égales ; chaque grandeur ne garde que le **minimum et
-le maximum** de chaque tranche (au plus 2 N + 2 points, extrémités comprises), avant `limit`.
+le maximum** de chaque tranche (au plus 2 N + 2 points par grandeur, extrémités comprises). Avec
+`buckets`, `limit` compte **par grandeur** (et non pour l'ensemble des points) et `truncated`
+vaut `true` si une seule grandeur a dû être coupée.
 Toute la fenêtre est donc couverte, même pour un capteur qui rapporte toutes les 10 s, et les
 pointes survivent. Aucune valeur n'est calculée (pas de moyenne) et un trou de données reste un
 trou. Un serveur plus ancien ignore le paramètre et renvoie les mesures brutes (éventuellement

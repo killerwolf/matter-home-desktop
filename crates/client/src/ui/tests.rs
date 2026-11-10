@@ -1566,6 +1566,10 @@ fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings(
     f.app.maintain_temperatures();
     assert!(f.pending_ids().is_empty());
     f.app.show_temperatures(None);
+    // Tant que la largeur du graphique est inconnue (avant la première image), pas de lecture.
+    f.app.maintain_temperatures();
+    assert!(f.pending_ids().is_empty());
+    f.app.temp_buckets = 800;
     f.app.maintain_temperatures();
     assert_eq!(
         f.pending_ids().len(),

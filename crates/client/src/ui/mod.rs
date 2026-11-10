@@ -175,7 +175,8 @@ pub struct MatterApp {
     temp_window: TimeWindow,
     temp_series: HashMap<u64, TempFetch>,
     temp_hidden: HashSet<u64>,
-    /// Nombre de tranches voulu, d'après la largeur du graphique à la dernière image.
+    /// Nombre de tranches voulu, d'après la largeur du graphique à la dernière image ; 0 tant
+    /// que le graphique n'a pas été dessiné (aucune lecture avant : pas de relecture au démarrage).
     temp_buckets: usize,
     /// Couleur (rang dans la palette) de chaque thermomètre, gardée tant que le client tourne.
     temp_colors: HashMap<u64, usize>,
@@ -249,7 +250,7 @@ impl MatterApp {
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
             temp_hidden: HashSet::new(),
-            temp_buckets: 800,
+            temp_buckets: 0,
             temp_colors: HashMap::new(),
             data_epoch: 0,
             temp_cache: None,
@@ -661,7 +662,7 @@ impl MatterApp {
             self.temp_cache = None;
             return;
         }
-        if !self.connected() {
+        if !self.connected() || self.temp_buckets == 0 {
             return;
         }
         let ids: Vec<u64> = self
@@ -755,7 +756,12 @@ impl MatterApp {
     fn temperatures_page(&mut self, ui: &mut egui::Ui) {
         let now = now_unix();
         // Graphique moins la graduation de l'axe vertical : une tranche par pixel.
+        let first_frame = self.temp_buckets == 0;
         self.temp_buckets = temps::buckets_for_width(ui.available_width() - 70.0);
+        if first_frame {
+            // La largeur est connue : les lectures peuvent partir à la prochaine passe.
+            ui.ctx().request_repaint();
+        }
         let key = TempCacheKey {
             epoch: self.data_epoch,
             window: self.temp_window,
