@@ -134,8 +134,10 @@ Les téléchargements de chaque version sont sur la
   fenêtre. L'onglet **Appareils** est en pleine largeur : une ligne par appareil (un nom, une
   valeur), rangée par pièce, le pont à part ; seuls « pile faible » et « hors ligne » sont signalés.
   Le détail (état, pile, type, nœud, dernière communication, fabricant, commandes, courbes)
-  s'ouvre dans un panneau à droite au clic. Rien n'est supprimé. Les autres onglets changent
-  seulement de thème.
+  s'ouvre dans un panneau à droite au clic, jamais tout seul. Un appareil injoignable montre
+  « — » et le mot « injoignable » (le même sur le plan). Rien n'est supprimé. Les autres onglets
+  changent seulement de thème. `design/tokens.css` (généré, vérifié par un test) prépare l'app
+  web ; `HomePlan::room_of` est la règle unique de la pièce d'un appareil.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.

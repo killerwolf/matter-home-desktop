@@ -184,6 +184,8 @@ pub struct MatterApp {
     pairing: Pairing,
     /// Fenêtre « Ajouter un appareil » (bouton « + Ajouter »).
     add_open: bool,
+    /// Option `--add` : ouvrir la fenêtre dès la première arrivée de l'état complet.
+    add_on_arrival: bool,
     window: TimeWindow,
     /// Page Températures : période choisie, lectures par appareil, courbes masquées.
     temp_window: TimeWindow,
@@ -261,6 +263,7 @@ impl MatterApp {
             code: String::new(),
             pairing: Pairing::Idle,
             add_open: false,
+            add_on_arrival: false,
             window: TimeWindow::Min15,
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
@@ -305,6 +308,11 @@ impl MatterApp {
         if let Some(period) = period {
             self.temp_window = period;
         }
+    }
+
+    /// Ouvre la fenêtre « Ajouter un appareil ».
+    pub fn show_add(&mut self) {
+        self.add_on_arrival = true;
     }
 
     /// Ouvre l'onglet « Plan ».
@@ -869,6 +877,7 @@ impl MatterApp {
         self.code.clear();
         self.confirm_clear = None;
         self.device_edit = None;
+        self.selected = None;
         self.export_message = None;
         // Le journal et les notifications partent avec la liaison, pas à chaque nouvel essai de
         // connexion (`Link::Connecting`) : ils porteraient sinon la raison de la coupure et les
@@ -906,6 +915,9 @@ impl MatterApp {
     }
 
     fn on_link(&mut self, link: Link) {
+        if !matches!(link, Link::Resyncing) {
+            self.add_open = false;
+        }
         match &link {
             // Resynchronisation : on garde l'affichage, un nouvel état complet arrive aussitôt.
             Link::Resyncing => {}
@@ -987,11 +999,15 @@ impl MatterApp {
         for s in self.temp_series.values_mut() {
             s.invalidate();
         }
+        // Le panneau de détail ne s'ouvre jamais tout seul ; il se ferme si son appareil a disparu.
         if !self
             .selected
             .is_some_and(|id| self.model.devices.contains_key(&id))
         {
-            self.selected = self.model.devices.keys().next().copied();
+            self.close_detail();
+        }
+        if std::mem::take(&mut self.add_on_arrival) {
+            self.add_open = true;
         }
         self.try_select_on_arrival();
     }
@@ -1015,18 +1031,13 @@ impl MatterApp {
     fn on_live(&mut self, event: WireEvent) {
         match self.model.apply_event(event) {
             Change::Nothing => {}
-            Change::DeviceUpdated(id) => {
-                if self.selected.is_none() {
-                    self.selected = Some(id);
-                }
-                self.try_select_on_arrival();
-            }
+            Change::DeviceUpdated(_) => self.try_select_on_arrival(),
             Change::DeviceRemoved(id) => {
                 self.series.remove(&id);
                 self.temp_series.remove(&id);
                 self.temp_hidden.remove(&id);
                 if self.selected == Some(id) {
-                    self.selected = self.model.devices.keys().next().copied();
+                    self.close_detail();
                 }
             }
             Change::Reading {
@@ -1047,17 +1058,18 @@ impl MatterApp {
             }
             Change::Journal(line) => self.push_log(line),
             Change::PairingProgress(m) => self.pairing = Pairing::InProgress(m),
-            Change::PairingDone { node_id, name } => {
+            Change::PairingDone { name, .. } => {
                 self.push_log(format!("Appairé : {name}"));
                 self.pairing = Pairing::Success(format!(
                     "« {name} » est appairé. Lecture de sa description en cours…"
                 ));
-                self.selected = Some(node_id);
+                self.toast("Appairage terminé", format!("« {name} » est appairé."));
                 self.code.clear();
             }
             Change::PairingFailed { code, detail } => {
                 let text = api_message(code, detail.as_deref(), None, 0);
                 self.push_log(format!("Échec d'appairage : {text}"));
+                self.toast("Appairage échoué", text.clone());
                 self.pairing = Pairing::Failed(text);
                 self.code.clear();
             }
@@ -1136,6 +1148,7 @@ impl MatterApp {
             }
             Pending::Pair => {
                 if let Err(e) = result {
+                    self.toast("Appairage échoué", e.message());
                     self.pairing = Pairing::Failed(e.message());
                     self.code.clear();
                 }
@@ -1356,9 +1369,9 @@ impl MatterApp {
                     }
                     DataDialog::Message { ok, text } => {
                         let color = if *ok {
-                            Color32::from_rgb(60, 160, 90)
+                            theme::palette(ui).ok
                         } else {
-                            Color32::from_rgb(210, 60, 50)
+                            theme::palette(ui).error
                         };
                         ui.colored_label(color, text);
                         ui.add_space(6.0);
@@ -1388,7 +1401,7 @@ impl MatterApp {
                                 });
                             }
                             (Some(warning), false) => {
-                                ui.colored_label(Color32::from_rgb(210, 60, 50), warning);
+                                ui.colored_label(theme::palette(ui).error, warning);
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     arm_replace =
@@ -1398,7 +1411,7 @@ impl MatterApp {
                             }
                             (Some(_), true) => {
                                 ui.colored_label(
-                                    Color32::from_rgb(210, 60, 50),
+                                    theme::palette(ui).error,
                                     "Dernière confirmation : l'identité Matter du serveur sera \
                                      remplacée. Les appareils appairés avec l'ancienne ne seront \
                                      plus reconnus et devront être réappairés.",
@@ -1564,6 +1577,26 @@ impl MatterApp {
         }
     }
 
+    /// Ferme le panneau de détail (et ce qui s'y préparait).
+    fn close_detail(&mut self) {
+        self.selected = None;
+        self.device_edit = None;
+        self.confirm_clear = None;
+        self.export_message = None;
+    }
+
+    /// Une notification dans l'application (pas celle du système).
+    fn toast(&mut self, title: &str, message: String) {
+        self.toasts.push(Toast {
+            title: title.into(),
+            message,
+            until: Instant::now() + TOAST_LIFETIME,
+        });
+        if self.toasts.len() > 5 {
+            self.toasts.remove(0);
+        }
+    }
+
     /// L'appareil sélectionné, s'il existe encore.
     fn selected_device(&self) -> Option<u64> {
         self.selected
@@ -1586,7 +1619,7 @@ impl MatterApp {
         self.add_open = open;
     }
 
-    fn details(&mut self, ui: &mut egui::Ui) {
+    fn details(&mut self, ui: &mut egui::Ui, layout: &devices::Layout) {
         let Some(id) = self.selected else {
             ui.centered_and_justified(|ui| {
                 ui.label("Appairez un appareil ou sélectionnez-en un dans la liste.");
@@ -1616,17 +1649,7 @@ impl MatterApp {
                     .map_or_else(|| format!("{:016X}", link.node_id), |b| b.info.name.clone()),
             )
         });
-        let room_name = {
-            let (groups, bridges) = devices::groups(&self.model.devices, self.plan.plan());
-            if bridges.contains(&id) {
-                "Pont".to_string()
-            } else {
-                groups
-                    .into_iter()
-                    .find(|g| g.ids.contains(&id))
-                    .map_or_else(|| "Sans pièce".to_string(), |g| g.title)
-            }
-        };
+        let room_name = layout.room_of(id);
         let Some(device) = self.model.devices.get_mut(&id) else {
             return;
         };
@@ -1646,7 +1669,7 @@ impl MatterApp {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(room_name)
-                    .size(theme::tokens().text.caption)
+                    .size(theme::tokens().font.size.caption)
                     .color(p.text_secondary),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1662,25 +1685,13 @@ impl MatterApp {
                 plan::glyph(plan::icon_of(device)),
                 device.info.name
             ))
-            .size(theme::tokens().text.title),
+            .size(theme::tokens().font.size.title),
         );
-        if let Some(value) = devices::headline(device) {
-            ui.label(RichText::new(value).size(theme::tokens().text.display));
-        }
-        if let Some(h) = device.humidity() {
-            ui.label(
-                RichText::new(format!(
-                    "Humidité {}",
-                    protocol::format::format_humidity(h.value)
-                ))
-                .color(p.text_secondary),
-            );
-        }
         ui.add_space(theme::tokens().space.sm);
 
         // Ce qui était dans la liste ou en tête de fiche : état, pile, type, nœud, dernière
         // communication, fabricant, pont, nom d'origine.
-        let (status_color, status_text) = status_badge(&device.status);
+        let (status_color, status_text) = status_badge(p, &device.status);
         let kind = if device.info.device_types.is_empty() {
             "Type inconnu".to_string()
         } else {
@@ -1869,8 +1880,7 @@ impl MatterApp {
             self.device_edit = Some(fresh_edit);
         }
         if close {
-            self.selected = None;
-            self.confirm_clear = None;
+            self.close_detail();
         }
         if let Some(edit) = save {
             self.device_edit = None;
@@ -1878,6 +1888,7 @@ impl MatterApp {
         }
         if forget {
             self.forget_device(id);
+            self.close_detail();
         }
         if clear {
             self.confirm_clear = None;
@@ -1928,6 +1939,9 @@ impl MatterApp {
                         View::Rules,
                     ] {
                         if theme::tab(ui, self.view == view, view.title()).clicked() {
+                            if view == View::Devices && self.view != View::Devices {
+                                self.close_detail();
+                            }
                             self.view = view;
                         }
                     }
@@ -1949,6 +1963,15 @@ impl MatterApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.connected() && theme::primary_button(ui, "+ Ajouter").clicked() {
                         self.add_open = true;
+                        // Un appairage fini (réussi ou non) ne s'affiche pas à la réouverture.
+                        if matches!(self.pairing, Pairing::Success(_) | Pairing::Failed(_)) {
+                            self.pairing = Pairing::Idle;
+                        }
+                    }
+                    if matches!(self.pairing, Pairing::InProgress(_)) || self.model.pairing_busy {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Appairage…").small());
+                        ui.spinner();
                     }
                     match &self.link {
                         Link::Connected { server_version, .. } => {
@@ -1966,7 +1989,7 @@ impl MatterApp {
                             ui.label(
                                 RichText::new(" DÉCONNECTÉ ")
                                     .strong()
-                                    .color(p.on_accent)
+                                    .color(p.on_warn)
                                     .background_color(p.warn),
                             )
                             .on_hover_text("Pas de connexion au serveur Matter Home.");
@@ -2127,11 +2150,11 @@ fn describe_backup(s: &ImportSummary) -> String {
     text
 }
 
-fn status_badge(status: &WireStatus) -> (Color32, &'static str) {
+fn status_badge(p: &theme::Palette, status: &WireStatus) -> (Color32, &'static str) {
     match status {
-        WireStatus::Online => (Color32::from_rgb(40, 170, 70), "En ligne"),
-        WireStatus::Connecting => (Color32::from_rgb(230, 160, 30), "Connexion…"),
-        WireStatus::Unreachable { .. } => (Color32::from_rgb(210, 60, 50), "Injoignable"),
+        WireStatus::Online => (p.ok, "En ligne"),
+        WireStatus::Connecting => (p.warn, "Connexion…"),
+        WireStatus::Unreachable { .. } => (p.error, "Injoignable"),
     }
 }
 
@@ -2220,20 +2243,25 @@ impl eframe::App for MatterApp {
 
         self.add_window(&ui.ctx().clone());
 
-        // Onglet Appareils : le détail s'ouvre dans un panneau à droite, au clic sur une ligne.
+        // Onglet Appareils : la liste rangée est calculée une fois par image, pour la liste et
+        // pour le panneau de détail, qui s'ouvre à droite au clic sur une ligne.
+        let layout = if self.view == View::Devices {
+            devices::groups(&self.model.devices, self.plan.plan())
+        } else {
+            devices::Layout::default()
+        };
         if self.view == View::Devices && self.selected_device().is_some() {
             egui::Panel::right("detail")
                 .resizable(true)
                 .default_size(460.0)
                 .size_range(340.0..=760.0)
                 .frame(theme::detail_frame(ui))
-                .show(ui, |ui| self.details(ui));
+                .show(ui, |ui| self.details(ui, &layout));
         }
 
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Devices => {
-                let plan = self.plan.plan().clone();
-                if let Some(id) = devices::show(ui, &self.model.devices, &plan, self.selected) {
+                if let Some(id) = devices::show(ui, &self.model.devices, &layout, self.selected) {
                     self.selected = Some(id);
                     self.export_message = None;
                 }

@@ -1,0 +1,81 @@
+/* Généré depuis design/tokens.json : ne pas modifier à la main.
+   Régénérer : cargo run -p matter-home-desktop --example tokens_css */
+:root {
+  --color-accent: #0b6a94;
+  --color-accent-soft: #e2f0f6;
+  --color-accent-text: #0b6a94;
+  --color-banner-info: #f5ecc0;
+  --color-banner-warn: #fbe3c6;
+  --color-bg: #f6f5f2;
+  --color-error: #c4372c;
+  --color-line: #dcdad4;
+  --color-no-sensor: #d9d7d1;
+  --color-ok: #1f8f4e;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-series-cover: #1f6fc0;
+  --color-series-humidity: #1f6fc0;
+  --color-series-power: #7a4cc8;
+  --color-series-temperature: #c8431a;
+  --color-surface: #ffffff;
+  --color-surface-alt: #ecebe7;
+  --color-text: #1d1f23;
+  --color-text-secondary: #62676f;
+  --color-warn: #b3590a;
+  --temp-16: #3b7fc4;
+  --temp-18: #4f9fc0;
+  --temp-20: #c9a94a;
+  --temp-22: #e0703a;
+  --temp-24: #d0483a;
+  --temp-fill-alpha: 0.28;
+  --space-lg: 16px;
+  --space-md: 12px;
+  --space-sm: 8px;
+  --space-xl: 24px;
+  --space-xs: 4px;
+  --radius-lg: 8px;
+  --radius-md: 6px;
+  --radius-sm: 4px;
+  --size-button-pad-x: 10px;
+  --size-button-pad-y: 3px;
+  --size-control: 24px;
+  --size-dot: 7px;
+  --size-item-gap-y: 6px;
+  --size-row: 30px;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-line-height: 1.4;
+  --font-weight-normal: 400;
+  --font-weight-strong: 600;
+  --font-size-body: 13px;
+  --font-size-caption: 11px;
+  --font-size-display: 26px;
+  --font-size-heading: 18px;
+  --font-size-title: 15px;
+  --color-state-hover: var(--color-surface-alt);
+  --color-state-selected: var(--color-accent-soft);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-accent: #0b5a80;
+    --color-accent-soft: #12303d;
+    --color-accent-text: #58b4dc;
+    --color-banner-info: #5a4614;
+    --color-banner-warn: #5a3214;
+    --color-bg: #1b1b1b;
+    --color-error: #f0623a;
+    --color-line: #3a3a3a;
+    --color-no-sensor: #2c2c2c;
+    --color-ok: #2fb260;
+    --color-on-accent: #ffffff;
+    --color-on-warn: #1b1b1b;
+    --color-series-cover: #3c8cdc;
+    --color-series-humidity: #3c8cdc;
+    --color-series-power: #9664e6;
+    --color-series-temperature: #e65a32;
+    --color-surface: #242424;
+    --color-surface-alt: #2c2c2c;
+    --color-text: #e6e6e6;
+    --color-text-secondary: #9a9a9a;
+    --color-warn: #e8853a;
+  }
+}

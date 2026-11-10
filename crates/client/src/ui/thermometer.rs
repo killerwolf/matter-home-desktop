@@ -1,7 +1,8 @@
 //! Vue thermomètre : valeur actuelle, fenêtre de temps, statistiques, graphique, export CSV.
 //! Les points viennent de l'historique lu sur le serveur (`series`).
 
-use eframe::egui::{self, Color32, RichText};
+use super::theme;
+use eframe::egui::{self, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::{ago, Device, ViewRequests};
@@ -9,9 +10,6 @@ use matter_home_client::series::{compute_stats, DeviceSeries, Series, TimeWindow
 use protocol::events::now_unix;
 use protocol::format::{format_humidity, format_temperature};
 use protocol::wire::{Metric, WireMode};
-
-const TEMP_COLOR: Color32 = Color32::from_rgb(230, 90, 50);
-const HUM_COLOR: Color32 = Color32::from_rgb(60, 140, 220);
 
 pub(super) fn local_time(t: f64, with_seconds: bool) -> String {
     chrono::DateTime::from_timestamp(t as i64, 0)
@@ -24,6 +22,7 @@ pub(super) fn local_time(t: f64, with_seconds: bool) -> String {
 
 /// État de la lecture de l'historique : en cours, en échec (avec « Réessayer »), tronquée.
 pub(super) fn history_status(ui: &mut egui::Ui, series: &DeviceSeries, req: &mut ViewRequests) {
+    let pal = theme::palette(ui);
     if series.loading.is_some() {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -32,10 +31,7 @@ pub(super) fn history_status(ui: &mut egui::Ui, series: &DeviceSeries, req: &mut
     }
     if let Some(error) = &series.error {
         ui.horizontal(|ui| {
-            ui.colored_label(
-                Color32::from_rgb(210, 60, 50),
-                format!("Historique indisponible : {error}"),
-            );
+            ui.colored_label(pal.error, format!("Historique indisponible : {error}"));
             if ui.small_button("Réessayer").clicked() {
                 req.retry = true;
             }
@@ -54,6 +50,7 @@ pub fn show(
     export_message: &Option<(bool, String)>,
     req: &mut ViewRequests,
 ) {
+    let pal = theme::palette(ui);
     let now = now_unix();
     let empty = Series::default();
     let temperature = series.get(Metric::Temperature).unwrap_or(&empty);
@@ -67,7 +64,7 @@ pub fn show(
                     RichText::new(format_temperature(s.value))
                         .size(56.0)
                         .strong()
-                        .color(TEMP_COLOR),
+                        .color(pal.series_temperature),
                 );
             }
             None => {
@@ -75,7 +72,7 @@ pub fn show(
                     RichText::new("— °C")
                         .size(56.0)
                         .strong()
-                        .color(Color32::GRAY),
+                        .color(pal.text_secondary),
                 );
             }
         }
@@ -88,7 +85,7 @@ pub fn show(
             ui.label(
                 RichText::new(format!("💧 {text}"))
                     .size(30.0)
-                    .color(HUM_COLOR),
+                    .color(pal.series_humidity),
             );
         }
     });
@@ -133,11 +130,7 @@ pub fn show(
         }
     });
     if let Some((ok, msg)) = export_message {
-        let color = if *ok {
-            Color32::from_rgb(40, 160, 70)
-        } else {
-            Color32::from_rgb(210, 60, 50)
-        };
+        let color = if *ok { pal.ok } else { pal.error };
         ui.colored_label(color, msg.as_str());
     }
 
@@ -211,7 +204,7 @@ pub fn show(
         .show(ui, |plot_ui| {
             plot_ui.line(
                 Line::new("Température (°C)", points)
-                    .color(TEMP_COLOR)
+                    .color(pal.series_temperature)
                     .width(2.0),
             );
         });

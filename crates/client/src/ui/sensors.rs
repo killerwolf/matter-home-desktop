@@ -1,6 +1,7 @@
 //! Vues « détecteur d'ouverture », « prise / consommation électrique » et « volet ».
 
-use eframe::egui::{self, Color32, RichText};
+use super::theme;
+use eframe::egui::{self, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::thermometer::{history_status, local_time};
@@ -10,11 +11,6 @@ use protocol::automation::CoverCommand;
 use protocol::events::{now_unix, CoverMotion};
 use protocol::format::{format_energy, format_position, format_power};
 use protocol::wire::Metric;
-
-const OPEN_COLOR: Color32 = Color32::from_rgb(230, 140, 30);
-const CLOSED_COLOR: Color32 = Color32::from_rgb(40, 160, 70);
-const POWER_COLOR: Color32 = Color32::from_rgb(150, 100, 230);
-const COVER_COLOR: Color32 = Color32::from_rgb(60, 140, 220);
 
 fn window_selector(ui: &mut egui::Ui, window: &mut TimeWindow) {
     ui.horizontal(|ui| {
@@ -33,14 +29,15 @@ pub fn door(
     window: &mut TimeWindow,
     req: &mut ViewRequests,
 ) {
+    let pal = theme::palette(ui);
     let now = now_unix();
     ui.heading("Ouverture");
     match device.open() {
         Some(open) => {
             let (text, color) = if open {
-                ("Ouvert", OPEN_COLOR)
+                ("Ouvert", pal.warn)
             } else {
-                ("Fermé", CLOSED_COLOR)
+                ("Fermé", pal.ok)
             };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).size(48.0).strong().color(color));
@@ -57,7 +54,7 @@ pub fn door(
             ui.label(
                 RichText::new("État inconnu")
                     .size(32.0)
-                    .color(Color32::GRAY),
+                    .color(pal.text_secondary),
             );
         }
     }
@@ -85,9 +82,9 @@ pub fn door(
             for (t, open) in recent {
                 ui.label(local_time(*t, true));
                 if *open {
-                    ui.colored_label(OPEN_COLOR, "ouverture");
+                    ui.colored_label(pal.warn, "ouverture");
                 } else {
-                    ui.colored_label(CLOSED_COLOR, "fermeture");
+                    ui.colored_label(pal.ok, "fermeture");
                 }
                 ui.end_row();
             }
@@ -127,6 +124,7 @@ pub fn power(
     window: &mut TimeWindow,
     req: &mut ViewRequests,
 ) {
+    let pal = theme::palette(ui);
     let now = now_unix();
     let empty = Series::default();
     let power = series.get(Metric::Power).unwrap_or(&empty);
@@ -138,7 +136,7 @@ pub fn power(
                     RichText::new(format_power(s.value))
                         .size(48.0)
                         .strong()
-                        .color(POWER_COLOR),
+                        .color(pal.series_power),
                 );
             }
             None if device.info.caps.power => {
@@ -146,7 +144,7 @@ pub fn power(
                     RichText::new("— W")
                         .size(48.0)
                         .strong()
-                        .color(Color32::GRAY),
+                        .color(pal.text_secondary),
                 );
             }
             None => {}
@@ -154,9 +152,9 @@ pub fn power(
         if let Some(on) = device.on_off() {
             ui.add_space(16.0);
             let (text, color) = if on {
-                ("Allumée", CLOSED_COLOR)
+                ("Allumée", pal.ok)
             } else {
-                ("Éteinte", Color32::GRAY)
+                ("Éteinte", pal.text_secondary)
             };
             ui.label(RichText::new(text).size(24.0).color(color));
         }
@@ -221,7 +219,7 @@ pub fn power(
             // à la même abscisse) par une bande remplie qui déforme le tracé.
             plot_ui.line(
                 Line::new("Puissance (W)", PlotPoints::from(points))
-                    .color(POWER_COLOR)
+                    .color(pal.series_power)
                     .width(2.0)
                     .allow_band(false),
             );
@@ -238,6 +236,7 @@ pub fn cover(
     window: &mut TimeWindow,
     req: &mut ViewRequests,
 ) -> Option<CoverCommand> {
+    let pal = theme::palette(ui);
     let now = now_unix();
     let empty = Series::default();
     let position = series.get(Metric::Position).unwrap_or(&empty);
@@ -249,7 +248,11 @@ pub fn cover(
     ui.horizontal(|ui| {
         match current {
             Some(p) => {
-                let color = if p <= 0.0 { Color32::GRAY } else { COVER_COLOR };
+                let color = if p <= 0.0 {
+                    pal.text_secondary
+                } else {
+                    pal.series_cover
+                };
                 ui.label(
                     RichText::new(format_position(p))
                         .size(48.0)
@@ -261,15 +264,15 @@ pub fn cover(
                 ui.label(
                     RichText::new("Position inconnue")
                         .size(32.0)
-                        .color(Color32::GRAY),
+                        .color(pal.text_secondary),
                 );
             }
         }
         ui.add_space(16.0);
         let motion = match device.cover_motion {
-            Some(CoverMotion::Opening) => Some(("▲ Ouverture en cours", COVER_COLOR)),
-            Some(CoverMotion::Closing) => Some(("▼ Fermeture en cours", OPEN_COLOR)),
-            Some(CoverMotion::Stopped) => Some(("■ À l'arrêt", Color32::GRAY)),
+            Some(CoverMotion::Opening) => Some(("▲ Ouverture en cours", pal.series_cover)),
+            Some(CoverMotion::Closing) => Some(("▼ Fermeture en cours", pal.warn)),
+            Some(CoverMotion::Stopped) => Some(("■ À l'arrêt", pal.text_secondary)),
             None => None,
         };
         if let Some((text, color)) = motion {
@@ -361,7 +364,7 @@ pub fn cover(
         .show(ui, |plot_ui| {
             plot_ui.line(
                 Line::new("Ouverture (%)", PlotPoints::from(points))
-                    .color(COVER_COLOR)
+                    .color(pal.series_cover)
                     .width(2.0)
                     .allow_band(false),
             );

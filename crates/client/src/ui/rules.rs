@@ -7,6 +7,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use super::plan::{glyph, icon_of};
 use super::sync::{Failure, Incoming, SyncState};
+use super::theme;
 use super::{ago, Device};
 use protocol::automation::{
     is_webhook_url, Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger,
@@ -14,8 +15,6 @@ use protocol::automation::{
 use protocol::events::{now_unix, MeasureKind};
 use protocol::wire::RuleRunView;
 
-const RED: Color32 = Color32::from_rgb(210, 60, 50);
-const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
 const DAYS: [&str; 7] = ["L", "M", "M", "J", "V", "S", "D"];
 const MEASURES: [MeasureKind; 5] = [
     MeasureKind::Temperature,
@@ -475,7 +474,11 @@ impl RulesView {
                         }
                         let now = now_unix();
                         for r in runs.iter().rev() {
-                            let color = if r.ok { GREEN } else { RED };
+                            let color = if r.ok {
+                                theme::palette(ui).ok
+                            } else {
+                                theme::palette(ui).error
+                            };
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(color, if r.ok { "✔" } else { "✖" });
                                 ui.small(format!(
@@ -517,7 +520,11 @@ impl RulesView {
                                 ui.small(summary(rule, devices));
                                 if let Some(last) = runs.iter().rev().find(|r| r.rule_id == rule.id)
                                 {
-                                    let color = if last.ok { GREEN } else { RED };
+                                    let color = if last.ok {
+                                        theme::palette(ui).ok
+                                    } else {
+                                        theme::palette(ui).error
+                                    };
                                     ui.colored_label(
                                         color,
                                         format!("Dernière exécution {}", ago(now_unix() - last.at)),
@@ -563,23 +570,19 @@ impl RulesView {
     fn draft_banner(&mut self, ui: &mut egui::Ui) {
         let Some(text) = self.notice() else { return };
         let mut revert = false;
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(90, 50, 20))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(text);
-                    revert = ui
-                        .add_enabled(
-                            self.sync.can_revert(),
-                            egui::Button::new("Revenir à la version du serveur"),
-                        )
-                        .on_hover_text("Abandonne vos modifications non enregistrées des règles.")
-                        .on_disabled_hover_text(
-                            "Un envoi est en cours : réessayez dans un instant.",
-                        )
-                        .clicked();
-                });
+        theme::banner_frame(ui, theme::Banner::Warn).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(text);
+                revert = ui
+                    .add_enabled(
+                        self.sync.can_revert(),
+                        egui::Button::new("Revenir à la version du serveur"),
+                    )
+                    .on_hover_text("Abandonne vos modifications non enregistrées des règles.")
+                    .on_disabled_hover_text("Un envoi est en cours : réessayez dans un instant.")
+                    .clicked();
             });
+        });
         if revert {
             self.revert_to_server();
         }
@@ -605,22 +608,18 @@ impl RulesView {
         if self.sync.remote().is_none() {
             return;
         }
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(90, 70, 20))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        "Les règles ont été modifiées par un autre client pendant votre édition.",
-                    );
-                    if ui.button("Afficher sa version").clicked() {
-                        self.sync.accept_remote(&mut self.set);
-                        self.fix_selection();
-                    }
-                    if ui.button("Garder la mienne").clicked() {
-                        self.sync.keep_mine(Instant::now());
-                    }
-                });
+        theme::banner_frame(ui, theme::Banner::Info).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Les règles ont été modifiées par un autre client pendant votre édition.");
+                if ui.button("Afficher sa version").clicked() {
+                    self.sync.accept_remote(&mut self.set);
+                    self.fix_selection();
+                }
+                if ui.button("Garder la mienne").clicked() {
+                    self.sync.keep_mine(Instant::now());
+                }
             });
+        });
     }
 
     /// Éditeur d'une règle. Retourne (modifiée ?, action demandée).
@@ -657,7 +656,7 @@ impl RulesView {
                 }
             } else {
                 if ui
-                    .button(RichText::new("Oui, supprimer").color(RED))
+                    .button(RichText::new("Oui, supprimer").color(theme::palette(ui).error))
                     .clicked()
                 {
                     delete = true;

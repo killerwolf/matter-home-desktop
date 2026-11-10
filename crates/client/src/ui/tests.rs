@@ -182,9 +182,8 @@ fn snapshot_then_events_drive_the_interface_state() {
     assert!(f.app.connected());
     assert_eq!(f.app.model.devices.len(), 5);
     assert_eq!(
-        f.app.selected,
-        Some(1),
-        "le premier appareil est sélectionné"
+        f.app.selected, None,
+        "le panneau de détail ne s'ouvre pas tout seul"
     );
     assert!(f.app.model.devices[&1]
         .summary()
@@ -245,11 +244,12 @@ fn snapshot_then_events_drive_the_interface_state() {
         device: node(9, "Nouveau", Capabilities::default()),
     });
     assert!(matches!(f.app.pairing, Pairing::Success(_)));
-    assert_eq!(f.app.selected, Some(9));
+    assert_eq!(f.app.selected, None, "l'appairage n'ouvre pas le détail");
+    assert_eq!(f.app.toasts.len(), 2, "échec puis réussite, annoncés");
     assert_eq!(f.app.model.devices.len(), 6);
     f.live(WireEvent::DeviceRemoved { node_id: 9 });
     assert_eq!(f.app.model.devices.len(), 5);
-    assert_ne!(f.app.selected, Some(9));
+    assert_eq!(f.app.selected, None);
 
     // Nom et icône choisis : le serveur renvoie la fiche, les dernières valeurs restent.
     let mut renamed = node(plug_id, "GRILLPLATS Plug", plug_caps);
@@ -378,7 +378,8 @@ fn history_is_read_on_demand_filled_live_and_errors_are_shown() {
     f.connect(snapshot(1, vec![view(node(1, "Salon", caps), vec![])]));
     // Le plan est l'onglet d'ouverture : l'historique se lit quand l'onglet Appareils est ouvert.
     f.app.view = View::Devices;
-    // Aucune lecture avant qu'une fiche ne la demande.
+    f.app.selected = Some(1); // un clic sur la ligne
+                              // Aucune lecture avant qu'une fiche ne la demande.
     assert!(f.app.series.is_empty());
     f.app.maintain_series();
     assert_eq!(f.pending_ids().len(), 1, "une lecture, pas plus");
@@ -1746,4 +1747,71 @@ fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_windo
         temperatures::show(ui, &[], &mut hidden, &mut window, &Default::default(), now);
     });
     output.textures_delta.clear();
+}
+
+#[test]
+fn the_detail_panel_opens_only_on_a_click_and_closes_with_its_device() {
+    let mut f = Fixture::new();
+    let caps = Capabilities {
+        temperature: true,
+        ..Default::default()
+    };
+    f.connect(snapshot(
+        1,
+        vec![
+            view(node(1, "Salon", caps), vec![]),
+            view(node(2, "Chambre", caps), vec![]),
+        ],
+    ));
+    assert_eq!(f.app.selected, None);
+    f.live(WireEvent::DeviceUpdated {
+        device: node(1, "Salon", caps),
+    });
+    assert_eq!(f.app.selected, None, "une mise à jour n'ouvre rien");
+
+    // Un clic ouvre ; une édition de nom en cours est abandonnée à la fermeture.
+    f.app.selected = Some(2);
+    f.app.device_edit = Some(customize::DeviceEdit::from_info(
+        &f.app.model.devices[&2].info,
+    ));
+    f.app.confirm_clear = Some(2);
+    f.app.close_detail();
+    assert_eq!(f.app.selected, None);
+    assert!(f.app.device_edit.is_none());
+    assert!(f.app.confirm_clear.is_none());
+
+    // L'appareil ouvert disparaît : le panneau se ferme, sans en ouvrir un autre.
+    f.app.selected = Some(2);
+    f.live(WireEvent::DeviceRemoved { node_id: 2 });
+    assert_eq!(f.app.selected, None);
+    assert_eq!(f.app.selected_device(), None);
+
+    // Resynchronisation avec un appareil qui n'existe plus : fermé aussi.
+    f.app.selected = Some(1);
+    f.send(Event::Snapshot(Box::new(snapshot(9, vec![]))));
+    f.app.pump_network();
+    assert_eq!(f.app.selected, None);
+}
+
+#[test]
+fn a_lost_connection_closes_the_detail_and_the_add_window() {
+    let mut f = Fixture::new();
+    let caps = Capabilities {
+        temperature: true,
+        ..Default::default()
+    };
+    f.connect(snapshot(1, vec![view(node(1, "Salon", caps), vec![])]));
+    f.app.selected = Some(1);
+    f.app.add_open = true;
+    // Une simple resynchronisation ne ferme pas la fenêtre.
+    f.send(Event::Link(Link::Resyncing));
+    f.app.pump_network();
+    assert!(f.app.add_open);
+    f.send(Event::Link(Link::Connecting));
+    f.app.pump_network();
+    assert!(!f.app.add_open);
+    assert_eq!(
+        f.app.selected, None,
+        "pas de panneau fantôme à la reconnexion"
+    );
 }

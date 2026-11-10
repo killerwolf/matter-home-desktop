@@ -27,6 +27,7 @@ Usage :
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --temperatures  ouvre directement la page Températures
   matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
+  matter-home-desktop --add      ouvre directement la fenêtre « Ajouter un appareil »
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version
   matter-home-desktop --help      affiche cette aide
@@ -34,7 +35,8 @@ Usage :
 Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
 serveur : matter-home-server --demo.
 
-Variables : RUST_LOG=debug pour des journaux détaillés.";
+Variables : RUST_LOG=debug pour des journaux détaillés ; MATTER_HOME_THEME=light ou dark
+impose le thème (essais), sinon celui du système.";
 
 fn main() -> eframe::Result {
     // Journal filtré : jamais d'en-tête `Authorization`, même avec RUST_LOG=trace.
@@ -78,13 +80,16 @@ fn main() -> eframe::Result {
         }
     }
     let args = flags;
-    if let Some(unknown) = args
-        .iter()
-        .find(|a| !matches!(a.as_str(), "--plan" | "--rules" | "--temperatures"))
-    {
+    if let Some(unknown) = args.iter().find(|a| {
+        !matches!(
+            a.as_str(),
+            "--plan" | "--rules" | "--temperatures" | "--add"
+        )
+    }) {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
+    let open_add = args.iter().any(|a| a == "--add");
     let open_plan = args.iter().any(|a| a == "--plan");
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
@@ -108,6 +113,9 @@ fn main() -> eframe::Result {
                 .ok_or("dossier de données de l'utilisateur introuvable")?;
             let (backend, events) = Backend::start(store, notify);
             let mut app = ui::MatterApp::new(backend, events);
+            if open_add {
+                app.show_add();
+            }
             if open_plan {
                 app.show_plan();
             }

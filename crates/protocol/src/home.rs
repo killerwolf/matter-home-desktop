@@ -286,12 +286,20 @@ impl HomePlan {
     /// Nom de la pièce où l'appareil est posé sur le plan, s'il y est et si le point tombe dans
     /// une pièce.
     pub fn room_name_of(&self, node_id: u64) -> Option<&str> {
+        self.room_of(node_id).map(|(_, r)| r.name.as_str())
+    }
+
+    /// Étage et pièce où l'appareil est posé : la première pose (étages dans l'ordre, puis
+    /// poses dans l'ordre) dont le point tombe dans une pièce. Une pose hors de toute pièce est
+    /// ignorée, une seconde pose ne change rien. C'est la seule règle de « pièce d'un
+    /// appareil » : l'onglet Appareils et les Températures s'en servent.
+    pub fn room_of(&self, node_id: u64) -> Option<(&Floor, &Room)> {
         self.floors.iter().find_map(|f| {
             f.items
                 .iter()
-                .find(|i| matches!(i.kind, ItemKind::Device { node_id: n, .. } if n == node_id))
-                .and_then(|i| f.room_at(i.x, i.y))
-                .map(|r| r.name.as_str())
+                .filter(|i| matches!(i.kind, ItemKind::Device { node_id: n, .. } if n == node_id))
+                .find_map(|i| f.room_at(i.x, i.y))
+                .map(|r| (f, r))
         })
     }
 
@@ -470,6 +478,46 @@ mod tests {
         // Posé hors de toute pièce, ou absent du plan : pas de pièce.
         assert_eq!(plan.room_name_of(43), None);
         assert_eq!(plan.room_name_of(44), None);
+    }
+
+    #[test]
+    fn room_of_is_the_first_pose_that_lands_in_a_room() {
+        let mut plan = HomePlan::default();
+        plan.floors[0].rooms.push(room(5, 0.0, 0.0, 3.0, 3.0));
+        plan.floors.push(Floor {
+            id: 2,
+            name: "Étage".into(),
+            rooms: vec![room(8, 0.0, 0.0, 3.0, 3.0)],
+            items: vec![],
+        });
+        let put = |id, node_id, x| Item {
+            id,
+            kind: ItemKind::Device {
+                node_id,
+                symbol: None,
+                opening: None,
+            },
+            x,
+            y: 1.0,
+            rotation: 0.0,
+        };
+        // Double pose : hors pièce d'abord, puis dans la pièce 5 : la seconde compte.
+        plan.floors[0].items.push(put(1, 42, 9.0));
+        plan.floors[0].items.push(put(2, 42, 1.0));
+        // Deux poses dans des pièces : la première gagne.
+        plan.floors[0].items.push(put(3, 43, 2.0));
+        plan.floors[1].items.push(put(4, 43, 1.0));
+        // Posé hors de toute pièce.
+        plan.floors[0].items.push(put(5, 44, 9.0));
+        // Seulement à l'étage.
+        plan.floors[1].items.push(put(6, 45, 1.0));
+        let of = |n| plan.room_of(n).map(|(f, r)| (f.id, r.id));
+        assert_eq!(of(42), Some((1, 5)));
+        assert_eq!(of(43), Some((1, 5)));
+        assert_eq!(of(44), None);
+        assert_eq!(of(46), None);
+        assert_eq!(of(45), Some((2, 8)));
+        assert_eq!(plan.room_name_of(45), Some("R8"));
     }
 
     #[test]

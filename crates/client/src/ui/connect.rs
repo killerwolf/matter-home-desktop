@@ -4,13 +4,11 @@
 //! Le mot de passe n'est gardé en mémoire que le temps de la saisie, puis effacé dès qu'il est
 //! envoyé ; il n'est jamais écrit sur disque ni dans le journal.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
+use super::theme;
 use matter_home_client::net::tls::normalize_fingerprint;
 use matter_home_client::net::{Backend, Link, ServerAddr};
-
-const RED: Color32 = Color32::from_rgb(210, 60, 50);
-const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
 
 enum Stage {
     Form,
@@ -78,7 +76,14 @@ impl ConnectScreen {
 
     fn show_message(&self, ui: &mut egui::Ui) {
         if let Some((ok, text)) = &self.message {
-            ui.colored_label(if *ok { GREEN } else { RED }, text);
+            ui.colored_label(
+                if *ok {
+                    theme::palette(ui).ok
+                } else {
+                    theme::palette(ui).error
+                },
+                text,
+            );
             ui.add_space(8.0);
         }
     }
@@ -149,7 +154,14 @@ impl ConnectScreen {
 
     fn form(&mut self, ui: &mut egui::Ui, backend: &Backend) {
         if let Some((ok, text)) = &self.message {
-            ui.colored_label(if *ok { GREEN } else { RED }, text);
+            ui.colored_label(
+                if *ok {
+                    theme::palette(ui).ok
+                } else {
+                    theme::palette(ui).error
+                },
+                text,
+            );
             ui.add_space(8.0);
         }
         if let Stage::Confirm { url, fingerprint } = &self.stage {
@@ -271,11 +283,11 @@ impl ConnectScreen {
             && normalize_fingerprint(&self.expected).as_deref() != Some(fingerprint);
         if mismatch {
             ui.colored_label(
-                RED,
+                theme::palette(ui).error,
                 "Cette empreinte est différente de celle que vous avez saisie : n'approuvez pas.",
             );
         } else if !self.expected.trim().is_empty() {
-            ui.colored_label(GREEN, "Identique à l'empreinte saisie.");
+            ui.colored_label(theme::palette(ui).ok, "Identique à l'empreinte saisie.");
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -305,7 +317,7 @@ impl ConnectScreen {
         found: &str,
     ) {
         ui.colored_label(
-            RED,
+            theme::palette(ui).error,
             RichText::new("Le certificat du serveur a changé").heading(),
         );
         ui.add_space(8.0);
@@ -345,7 +357,10 @@ impl ConnectScreen {
     }
 
     fn incompatible(ui: &mut egui::Ui, backend: &Backend, message: &str) {
-        ui.colored_label(RED, RichText::new("Versions incompatibles").heading());
+        ui.colored_label(
+            theme::palette(ui).error,
+            RichText::new("Versions incompatibles").heading(),
+        );
         ui.add_space(8.0);
         ui.label(message);
         ui.add_space(10.0);
