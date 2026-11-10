@@ -1565,7 +1565,7 @@ fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings(
     // Hors de la page : aucune lecture.
     f.app.maintain_temperatures();
     assert!(f.pending_ids().is_empty());
-    f.app.show_temperatures();
+    f.app.show_temperatures(None);
     f.app.maintain_temperatures();
     assert_eq!(
         f.pending_ids().len(),
