@@ -1495,7 +1495,7 @@ fn the_draft_widgets_draw_without_a_window() {
                         .show(ui, &f.app.model.devices, &f.app.model.rule_runs);
                 }
                 View::Temperatures => f.app.temperatures_page(ui),
-                View::Cameras => cameras::show(ui, &f.app.model),
+                View::Cameras => cameras::show(ui, &f.app.model, f.app.plan.plan()),
                 View::Devices => {}
             }
             f.app.close_prompt_window(&ui.ctx().clone());
