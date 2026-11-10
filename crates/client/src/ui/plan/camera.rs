@@ -311,7 +311,6 @@ mod tests {
         let down = view(CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("secret".into()),
-
             since: None,
         });
         assert_eq!(CameraState::of(Some(&down)), CameraState::Unreachable);

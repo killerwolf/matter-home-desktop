@@ -256,6 +256,9 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                         .map(|on| if on { "Allumée" } else { "Éteinte" }.to_string())
                 });
             }
+            // Sans nouvelles de l'appareil, la dernière mesure ne vaut plus rien : icône neutre.
+            let stale = matches!(&d.status, WireStatus::Unreachable { .. })
+                || (matches!(&d.status, WireStatus::Connecting) && d.last_seen.is_none());
             match &d.status {
                 WireStatus::Unreachable { .. } => {
                     fill = GRAY;
@@ -277,7 +280,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                     } else {
                         OpeningKind::Door
                     });
-                    opening::opening_icon(kind, d.open())
+                    opening::opening_icon(kind, if stale { None } else { d.open() })
                 }),
             }
         }
@@ -1700,6 +1703,23 @@ mod tests {
             icon(&devices, Some(OpeningKind::Window), None),
             Some(WindowOpen)
         );
+        // Injoignable (ou jamais joint) : la dernière mesure ne vaut plus rien, icône neutre,
+        // jamais une porte orange à côté de « injoignable ».
+        devices.get_mut(&1).unwrap().status = WireStatus::Unreachable {
+            code: protocol::wire::ErrorCode::DeviceUnreachable,
+            detail: None,
+            retry_in_s: 5,
+        };
+        assert_eq!(icon(&devices, None, None), Some(DoorUnknown));
+        assert_eq!(
+            icon(&devices, Some(OpeningKind::Window), None),
+            Some(WindowUnknown)
+        );
+        devices.get_mut(&1).unwrap().status = WireStatus::Connecting;
+        assert!(devices[&1].last_seen.is_none());
+        assert_eq!(icon(&devices, None, None), Some(DoorUnknown));
+        devices.get_mut(&1).unwrap().status = WireStatus::Online;
+        assert_eq!(icon(&devices, None, None), Some(DoorOpen));
         // Un appareil qui n'est pas un capteur d'ouverture garde son pictogramme.
         devices.insert(2, device(Capabilities::default()));
         let other = Item {
@@ -1915,7 +1935,6 @@ mod tests {
         cameras[0].status = protocol::wire::CameraStatus::Unreachable {
             problem: protocol::wire::CameraProblem::Unreachable,
             detail: None,
-
             since: None,
         };
         let lk = camera_look(&item, &cameras);

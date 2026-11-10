@@ -24,9 +24,9 @@ pub enum OpeningIcon {
 /// L'icône d'une porte ou d'une fenêtre dans cet état (`None` : pas encore de mesure).
 pub fn opening_icon(kind: OpeningKind, open: Option<bool>) -> OpeningIcon {
     match (kind, open) {
-        (OpeningKind::Door, Some(false)) => OpeningIcon::DoorClosed,
-        (OpeningKind::Door, Some(true)) => OpeningIcon::DoorOpen,
-        (OpeningKind::Door, None) => OpeningIcon::DoorUnknown,
+        (OpeningKind::Door | OpeningKind::Other, Some(false)) => OpeningIcon::DoorClosed,
+        (OpeningKind::Door | OpeningKind::Other, Some(true)) => OpeningIcon::DoorOpen,
+        (OpeningKind::Door | OpeningKind::Other, None) => OpeningIcon::DoorUnknown,
         (OpeningKind::Window, Some(false)) => OpeningIcon::WindowClosed,
         (OpeningKind::Window, Some(true)) => OpeningIcon::WindowOpen,
         (OpeningKind::Window, None) => OpeningIcon::WindowUnknown,

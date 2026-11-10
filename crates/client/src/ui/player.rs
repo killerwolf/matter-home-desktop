@@ -118,6 +118,9 @@ fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind,
                         && kind != choice
                     {
                         ui.data_mut(|d| d.insert_temp(choice_id, (requested, choice)));
+                        // L'ancien flux se ferme tout de suite (le lecteur de l'autre flux
+                        // prend le relais), sans attendre le délai d'inactivité.
+                        state.handle = None;
                         ui.request_repaint();
                     }
                 }
@@ -396,7 +399,6 @@ mod tests {
         CameraStatus::Unreachable {
             problem,
             detail: None,
-
             since: None,
         }
     }

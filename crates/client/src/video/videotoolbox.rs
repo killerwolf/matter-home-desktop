@@ -50,13 +50,20 @@ const ERR_NOT_AVAILABLE_NOW: i32 = -12915;
 pub struct VideoToolbox {
     sink: Arc<FrameSink>,
     session: Option<Session>,
+    /// Essais de recréation encore permis après une session perdue (réveil du Mac) : tant qu'il en
+    /// reste, un refus de VideoToolbox n'est pas définitif, on réessaie à l'image clé suivante.
+    retries_after_loss: u8,
 }
+
+/// Nombre d'images clés pendant lesquelles on réessaie de recréer une session perdue.
+const RETRIES_AFTER_LOSS: u8 = 3;
 
 impl VideoToolbox {
     pub fn new(sink: Arc<FrameSink>) -> Self {
         Self {
             sink,
             session: None,
+            retries_after_loss: 0,
         }
     }
 }
@@ -118,7 +125,7 @@ impl Session {
         sink: &Arc<FrameSink>,
     ) -> Result<Session, BackendError> {
         // On demande du BGRA : VideoToolbox convertit lui-même (sur le décodeur matériel, pas sur
-        // le processeur), un seul passage reste à faire ici (BGRA vers RGBA).
+        // le processeur), un seul passage reste à faire ici (BGRA vers `Color32`).
         // SAFETY : lecture d'une constante du système.
         let key: &CFString = unsafe { kCVPixelBufferPixelFormatTypeKey };
         let value = CFNumber::new_i32(kCVPixelFormatType_32BGRA as i32);
@@ -173,8 +180,20 @@ impl H264Backend for VideoToolbox {
             }
         }
         self.session = None;
-        self.session = Some(Session::new(format, &self.sink)?);
-        Ok(())
+        match Session::new(format, &self.sink) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.retries_after_loss = 0;
+                Ok(())
+            }
+            // Juste après une session perdue, le décodeur peut être indisponible un instant : on
+            // attend la prochaine image clé (quelques essais) au lieu de tout abandonner.
+            Err(BackendError::Unavailable(_)) if self.retries_after_loss > 0 => {
+                self.retries_after_loss -= 1;
+                Err(BackendError::BadData)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn decode(&mut self, sample: &[u8], timestamp_ms: u32) -> Result<(), BackendError> {
@@ -251,6 +270,7 @@ impl H264Backend for VideoToolbox {
                 // Jamais de réemploi d'une session morte (réveil du Mac) : `start` en recrée une
                 // à la prochaine image clé au lieu de la juger « acceptable ».
                 self.session = None;
+                self.retries_after_loss = RETRIES_AFTER_LOSS;
                 Err(BackendError::SessionLost)
             }
             _ => Err(BackendError::BadData),
@@ -297,26 +317,63 @@ fn to_rgba(buffer: &CVImageBuffer) -> Option<Image> {
         let height = CVPixelBufferGetHeight(buffer);
         let stride = CVPixelBufferGetBytesPerRow(buffer);
         let base = CVPixelBufferGetBaseAddress(buffer) as *const u8;
-        let converted =
-            (!base.is_null() && width > 0 && height > 0 && stride >= width * 4).then(|| {
-                let source = std::slice::from_raw_parts(base, stride * height);
-                let mut pixels = Vec::with_capacity(width * height);
-                for row in source.chunks_exact(stride) {
-                    pixels.extend(
-                        row[..width * 4]
-                            .as_chunks::<4>()
-                            .0
-                            .iter()
-                            .map(|bgra| Color32::from_rgb(bgra[2], bgra[1], bgra[0])),
-                    );
-                }
-                Image {
-                    width: width as u32,
-                    height: height as u32,
-                    pixels,
-                }
-            });
+        let converted = (!base.is_null()).then(|| {
+            let source = std::slice::from_raw_parts(base, stride * height);
+            convert_bgra(source, width, height, stride).map(|pixels| Image {
+                width: width as u32,
+                height: height as u32,
+                pixels,
+            })
+        });
+        let converted = converted.flatten();
         CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly);
         converted
+    }
+}
+
+/// Des lignes BGRA (`stride` octets chacune, remplissage compris) en pixels opaques.
+fn convert_bgra(source: &[u8], width: usize, height: usize, stride: usize) -> Option<Vec<Color32>> {
+    if width == 0 || height == 0 || stride < width * 4 || source.len() < stride * height {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity(width * height);
+    for row in source.chunks_exact(stride).take(height) {
+        pixels.extend(
+            row[..width * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bgra| Color32::from_rgb(bgra[2], bgra[1], bgra[0])),
+        );
+    }
+    Some(pixels)
+}
+
+#[cfg(test)]
+mod convert_tests {
+    use super::*;
+
+    #[test]
+    fn bgra_rows_with_padding_become_opaque_rgb_in_the_right_order() {
+        // 2 × 2 pixels, lignes de 12 octets (4 de remplissage, rempli de 0xEE).
+        let source: Vec<u8> = vec![
+            10, 20, 30, 255, 40, 50, 60, 0, 0xEE, 0xEE, 0xEE, 0xEE, //
+            70, 80, 90, 7, 100, 110, 120, 255, 0xEE, 0xEE, 0xEE, 0xEE,
+        ];
+        let pixels = convert_bgra(&source, 2, 2, 12).unwrap();
+        // B, G, R en entrée : R, G, B en sortie, alpha toujours opaque.
+        assert_eq!(
+            pixels,
+            vec![
+                Color32::from_rgb(30, 20, 10),
+                Color32::from_rgb(60, 50, 40),
+                Color32::from_rgb(90, 80, 70),
+                Color32::from_rgb(120, 110, 100),
+            ]
+        );
+        assert!(pixels.iter().all(|p| p.a() == 255));
+        // Un tampon trop court ou un pas trop petit ne plante pas.
+        assert!(convert_bgra(&source[..20], 2, 2, 12).is_none());
+        assert!(convert_bgra(&source, 2, 2, 7).is_none());
     }
 }

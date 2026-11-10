@@ -89,6 +89,10 @@ pub enum OpeningKind {
     #[default]
     Door,
     Window,
+    /// Un type que ce programme ne connaît pas (plan écrit par une version plus récente) : lu et
+    /// dessiné comme une porte. Jamais proposé au choix.
+    #[serde(other)]
+    Other,
 }
 
 impl OpeningKind {
@@ -98,6 +102,7 @@ impl OpeningKind {
         match self {
             OpeningKind::Door => "Porte",
             OpeningKind::Window => "Fenêtre",
+            OpeningKind::Other => "Porte",
         }
     }
 }
@@ -245,6 +250,39 @@ impl Default for HomePlan {
 }
 
 impl HomePlan {
+    /// Reprend de `old` le réglage `opening` des appareils que le nouveau plan (envoyé par un
+    /// client plus ancien, qui ne connaît pas ce champ et l'efface) ne porte pas : même objet
+    /// (identifiant) et même appareil.
+    pub fn keep_openings_from(&mut self, old: &HomePlan) {
+        let stored: std::collections::HashMap<u64, (u64, OpeningKind)> = old
+            .floors
+            .iter()
+            .flat_map(|f| &f.items)
+            .filter_map(|i| match i.kind {
+                ItemKind::Device {
+                    node_id,
+                    opening: Some(o),
+                    ..
+                } => Some((i.id, (node_id, o))),
+                _ => None,
+            })
+            .collect();
+        for item in self.floors.iter_mut().flat_map(|f| &mut f.items) {
+            if let ItemKind::Device {
+                node_id,
+                opening: opening @ None,
+                ..
+            } = &mut item.kind
+            {
+                if let Some((stored_node, o)) = stored.get(&item.id) {
+                    if stored_node == node_id {
+                        *opening = Some(*o);
+                    }
+                }
+            }
+        }
+    }
+
     /// Nom de la pièce où l'appareil est posé sur le plan, s'il y est et si le point tombe dans
     /// une pièce.
     pub fn room_name_of(&self, node_id: u64) -> Option<&str> {
@@ -579,5 +617,66 @@ mod tests {
         let json = serde_json::to_string(&window).unwrap();
         assert!(json.contains(r#""opening":"Window""#), "{json}");
         assert_eq!(serde_json::from_str::<Item>(&json).unwrap(), window);
+    }
+
+    #[test]
+    fn an_unknown_opening_kind_reads_as_a_door_and_an_old_client_save_keeps_the_setting() {
+        let item: Item = serde_json::from_str(
+            r#"{"id":1,"kind":{"type":"Device","node_id":42,"symbol":null,"opening":"Skylight"},"x":1.0,"y":2.0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            item.kind,
+            ItemKind::Device {
+                opening: Some(OpeningKind::Other),
+                ..
+            }
+        ));
+        // Un plan enregistré par un client plus ancien (sans `opening`) garde le réglage connu.
+        let device = |id, node_id, opening| Item {
+            id,
+            kind: ItemKind::Device {
+                node_id,
+                symbol: None,
+                opening,
+            },
+            x: 0.0,
+            y: 0.0,
+            rotation: 0.0,
+        };
+        let plan = |items| {
+            let mut p = HomePlan::default();
+            p.floors[0].items = items;
+            p
+        };
+        let old = plan(vec![
+            device(10, 1, Some(OpeningKind::Window)),
+            device(11, 2, Some(OpeningKind::Window)),
+        ]);
+        let mut incoming = plan(vec![
+            device(10, 1, None),
+            device(11, 3, None), // autre appareil, même objet : rien à reprendre
+            device(12, 4, None),
+        ]);
+        incoming.keep_openings_from(&old);
+        let openings: Vec<_> = incoming.floors[0]
+            .items
+            .iter()
+            .map(|i| match i.kind {
+                ItemKind::Device { opening, .. } => opening,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(openings, vec![Some(OpeningKind::Window), None, None]);
+        // Un réglage explicite du nouveau plan n'est jamais écrasé.
+        let mut explicit = plan(vec![device(10, 1, Some(OpeningKind::Door))]);
+        explicit.keep_openings_from(&old);
+        assert!(matches!(
+            explicit.floors[0].items[0].kind,
+            ItemKind::Device {
+                opening: Some(OpeningKind::Door),
+                ..
+            }
+        ));
     }
 }

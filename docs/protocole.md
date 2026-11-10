@@ -269,8 +269,14 @@ Bearer, qui compte parmi les 32 emplacements WebSocket. La version du protocole 
 Un objet `Device` du plan peut porter `"opening": "Door" | "Window"` : Matter ne distingue pas une
 porte d'une fenêtre, c'est l'utilisateur qui le dit (inspecteur du plan, « Porte / Fenêtre »). Le
 champ est facultatif (`#[serde(default)]`, absent des plans anciens ; il n'est pas écrit quand il
-vaut `null`). Absent : porte, ou fenêtre si le pictogramme choisi pour l'appareil en est une. Un
-client plus ancien ignore le champ. La version du protocole reste **2**.
+vaut `null`). Absent : porte, ou fenêtre si le pictogramme choisi pour l'appareil en est une. Une
+valeur inconnue d'une version plus récente est lue comme une porte. La version du protocole reste
+**2**.
+
+**Mettre à jour client et serveur ensemble** : un client plus ancien ignore le champ, donc il
+l'efface quand il enregistre le plan. Pour limiter les dégâts, `PUT /api/plan` garde le réglage
+déjà enregistré pour un objet (même identifiant, même appareil) dont le nouveau plan n'a pas
+`opening`. (On ne peut donc pas « effacer » le réglage : on le change.)
 
 ### Une caméra sur le plan
 

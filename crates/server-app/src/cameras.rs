@@ -262,7 +262,6 @@ mod tests {
         camera.status = CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("La caméra refuse l'identifiant ou le mot de passe.".into()),
-
             since: None,
         };
         assert_eq!(

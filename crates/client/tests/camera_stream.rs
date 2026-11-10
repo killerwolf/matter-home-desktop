@@ -209,6 +209,8 @@ fn the_player_decodes_the_live_video_and_the_server_closes_the_camera_after_it()
     let id = client.camera("Entrée");
 
     let handle = open(id, StreamKind::Sub);
+    // Ouverte sous la session en cours : pas périmée.
+    assert!(!handle.is_stale());
     wait_state(&handle, "la vidéo", |s| *s == StreamState::Live);
     let deadline = Instant::now() + T;
     while handle.frames() < 20 {

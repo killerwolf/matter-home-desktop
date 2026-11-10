@@ -62,6 +62,11 @@ pub(super) fn publish(generation: u64, creds: Option<&Creds>) {
         creds.map(|c| (generation, c.clone()));
 }
 
+/// La session a changé entre l'ouverture d'une liaison et maintenant.
+fn session_changed(opened: Option<u64>, now: Option<u64>) -> bool {
+    opened != now
+}
+
 /// Numéro de la session en cours (`None` : pas de session). Un lecteur ouvert sous un autre
 /// numéro est périmé : il doit rouvrir sa liaison (après une reconnexion, par exemple).
 pub fn current_generation() -> Option<u64> {
@@ -236,15 +241,10 @@ impl StreamHandle {
         handle
     }
 
-    /// La session sous laquelle cette liaison a été ouverte.
-    pub fn generation(&self) -> Option<u64> {
-        self.live.generation
-    }
-
     /// La session a changé depuis l'ouverture (reconnexion, déconnexion) : cette liaison ne vaut
     /// plus rien, même si elle affiche encore un état final (« session terminée »).
     pub fn is_stale(&self) -> bool {
-        self.live.generation != current_generation()
+        session_changed(self.live.generation, current_generation())
     }
 
     /// Le lecteur est affiché : à appeler à chaque image de l'interface.
@@ -445,7 +445,7 @@ fn session(
         match tungstenite::client::client_with_config(request, connected.stream, Some(config)) {
             Ok((socket, _)) => socket,
             Err(HandshakeError::Failure(WsError::Http(response))) => {
-                return refusal(response.status().as_u16(), response.body().as_deref());
+                return refusal(response.status().as_u16(), response.body().as_deref(), kind);
             }
             Err(HandshakeError::Failure(WsError::Io(e))) => {
                 if live.should_stop(Some(generation)) {
@@ -586,18 +586,20 @@ fn decode_failure(error: VideoError) -> StreamState {
 
 /// Réponse HTTP qui refuse la mise à niveau WebSocket. Un `404` **sans détail** est un serveur qui
 /// n'a pas la route (trop ancien) ; avec un détail, c'est une caméra inconnue.
-fn refusal(status: u16, body: Option<&[u8]>) -> Ended {
+fn refusal(status: u16, body: Option<&[u8]>, kind: StreamKind) -> Ended {
     let parsed = body.and_then(|b| serde_json::from_slice::<ErrorBody>(b).ok());
     let detail = parsed.as_ref().and_then(|b| b.error.detail.clone());
-    classify_refusal(status, detail.as_deref())
+    classify_refusal(status, detail.as_deref(), kind)
 }
 
-fn classify_refusal(status: u16, detail: Option<&str>) -> Ended {
+fn classify_refusal(status: u16, detail: Option<&str>, kind: StreamKind) -> Ended {
     match status {
         404 if detail.is_some() => Ended::Final(StreamState::CameraGone),
         404 | 405 | 426 => Ended::Final(StreamState::ServerTooOld),
-        // 400 : identifiant ou `kind` invalide (un client trop ancien ou fautif) ou pas de flux
-        // réduit. Le serveur ne les distingue que par le détail : « flux réduit » = le second.
+        // 400 : identifiant ou `kind` invalide, ou pas de flux réduit. Le principal existe toujours :
+        // un 400 sur lui est donc une demande invalide. Pour le réduit, le serveur ne distingue que
+        // par le détail (« flux réduit » : il n'existe pas) ; sans détail, on le croit absent.
+        400 if kind == StreamKind::Main => Ended::Final(StreamState::BadRequest),
         400 if detail.is_some_and(|d| !d.to_lowercase().contains("réduit")) => {
             Ended::Final(StreamState::BadRequest)
         }
@@ -625,31 +627,56 @@ mod tests {
     fn refusals_tell_an_old_server_from_a_missing_camera() {
         // Un serveur sans la route répond 404 sans détail ; une caméra inconnue, avec un détail.
         assert_eq!(
-            final_state(classify_refusal(404, None)),
+            final_state(classify_refusal(404, None, StreamKind::Sub)),
             Some(StreamState::ServerTooOld)
         );
         assert_eq!(
-            final_state(classify_refusal(404, Some("caméra inconnue"))),
+            final_state(classify_refusal(
+                404,
+                Some("caméra inconnue"),
+                StreamKind::Sub
+            )),
             Some(StreamState::CameraGone)
         );
         assert_eq!(
-            final_state(classify_refusal(400, Some("pas de flux réduit"))),
+            final_state(classify_refusal(
+                400,
+                Some("pas de flux réduit"),
+                StreamKind::Sub
+            )),
             Some(StreamState::NoSuchStream)
         );
         assert_eq!(
-            final_state(classify_refusal(400, Some("kind attend main ou sub"))),
+            final_state(classify_refusal(
+                400,
+                Some("kind attend main ou sub"),
+                StreamKind::Sub
+            )),
+            Some(StreamState::BadRequest)
+        );
+        // Le flux principal existe toujours : un 400 sur lui est une demande invalide.
+        assert_eq!(
+            final_state(classify_refusal(
+                400,
+                Some("cette caméra n'a pas de flux réduit"),
+                StreamKind::Main
+            )),
             Some(StreamState::BadRequest)
         );
         assert_eq!(
-            final_state(classify_refusal(400, None)),
+            final_state(classify_refusal(400, None, StreamKind::Main)),
+            Some(StreamState::BadRequest)
+        );
+        assert_eq!(
+            final_state(classify_refusal(400, None, StreamKind::Sub)),
             Some(StreamState::NoSuchStream)
         );
         assert_eq!(
-            final_state(classify_refusal(401, None)),
+            final_state(classify_refusal(401, None, StreamKind::Sub)),
             Some(StreamState::SessionEnded)
         );
         // Un serveur occupé ou en arrêt : on réessaie.
-        assert!(final_state(classify_refusal(503, None)).is_none());
+        assert!(final_state(classify_refusal(503, None, StreamKind::Sub)).is_none());
         assert!(StreamState::ServerTooOld.is_final());
         assert!(!StreamState::Waiting.is_final());
     }
@@ -658,39 +685,30 @@ mod tests {
     fn the_refusal_body_is_read_for_its_detail() {
         let old = br#"{"error":{"code":"not_found"}}"#;
         assert_eq!(
-            final_state(refusal(404, Some(old))),
+            final_state(refusal(404, Some(old), StreamKind::Sub)),
             Some(StreamState::ServerTooOld)
         );
         let gone = r#"{"error":{"code":"not_found","detail":"caméra inconnue"}}"#.as_bytes();
         assert_eq!(
-            final_state(refusal(404, Some(gone))),
+            final_state(refusal(404, Some(gone), StreamKind::Sub)),
             Some(StreamState::CameraGone)
         );
         assert_eq!(
-            final_state(refusal(404, None)),
+            final_state(refusal(404, None, StreamKind::Sub)),
             Some(StreamState::ServerTooOld)
         );
     }
 
     #[test]
     fn a_handle_opened_under_an_older_session_is_stale() {
-        use super::super::addr::ServerAddr;
-        let creds = Creds {
-            addr: ServerAddr::parse("127.0.0.1:9").unwrap(),
-            fingerprint: String::new(),
-            token: String::new(),
-        };
-        publish(41, None);
-        let handle = StreamHandle::open(1, StreamKind::Sub, || {});
-        assert_eq!(handle.generation(), None);
-        assert!(!handle.is_stale());
-        // Une reconnexion publie une nouvelle session : la liaison ouverte avant est périmée.
-        publish(42, Some(&creds));
-        assert!(handle.is_stale());
-        let fresh = StreamHandle::open(1, StreamKind::Sub, || {});
-        assert_eq!(fresh.generation(), Some(42));
-        assert!(!fresh.is_stale());
-        publish(43, None);
-        assert!(fresh.is_stale());
+        // Fonction pure : le numéro de session est global au processus (publié par le réseau),
+        // un test qui le fixerait se disputerait avec les tests du réseau. L'ouverture sous la
+        // session en cours est vérifiée par le test d'intégration `camera_stream`.
+        assert!(!session_changed(None, None));
+        assert!(!session_changed(Some(42), Some(42)));
+        // Reconnexion (nouveau numéro), déconnexion, ou connexion après un état « pas de session ».
+        assert!(session_changed(Some(42), Some(43)));
+        assert!(session_changed(Some(42), None));
+        assert!(session_changed(None, Some(1)));
     }
 }

@@ -543,7 +543,12 @@ impl Hub {
 
     pub fn set_plan(&self, plan: HomePlan) -> ApiResult<()> {
         validate::plan(&plan)?;
-        self.replace_document(Document::Plan, move |st| st.plan = plan)
+        self.replace_document(Document::Plan, move |st| {
+            // Un client plus ancien efface `opening` sans le savoir : on garde le réglage connu.
+            let mut plan = plan;
+            plan.keep_openings_from(&st.plan);
+            st.plan = plan;
+        })
     }
 
     pub fn set_rules(&self, rules: RuleSet) -> ApiResult<()> {

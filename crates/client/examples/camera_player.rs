@@ -94,7 +94,12 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(path) = &self.shot {
-            let frames = id.map_or(0, |id| player::frames_decoded(&ctx, id, self.kind));
+            // Le lecteur se replie sur le principal pour une caméra sans flux réduit.
+            let kind = match id.and_then(|id| self.model.camera(id)) {
+                Some(c) if self.kind == StreamKind::Sub && !c.has_sub_stream => StreamKind::Main,
+                _ => self.kind,
+            };
+            let frames = id.map_or(0, |id| player::frames_decoded(&ctx, id, kind));
             if !self.requested && frames >= self.after_frames {
                 self.requested = true;
                 let (path, done, repaint) = (path.clone(), self.done.clone(), ctx.clone());

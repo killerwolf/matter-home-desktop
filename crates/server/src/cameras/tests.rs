@@ -288,7 +288,6 @@ fn a_failed_probe_keeps_the_last_known_stream() {
     let down = CameraStatus::Unreachable {
         problem: CameraProblem::Unreachable,
         detail: None,
-
         since: None,
     };
     assert!(book.set_health(id, down.clone(), None));

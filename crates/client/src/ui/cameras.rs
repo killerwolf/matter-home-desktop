@@ -545,7 +545,6 @@ mod tests {
         let down = CameraStatus::Unreachable {
             problem: CameraProblem::Unreachable,
             detail: None,
-
             since: None,
         };
         assert_eq!(tile_video(&cam(A, "a", down, true)), TileVideo::NotOnline);
@@ -589,7 +588,6 @@ mod tests {
                 CameraStatus::Unreachable {
                     problem: CameraProblem::Failed,
                     detail: None,
-
                     since: None,
                 },
             ] {
@@ -615,7 +613,6 @@ mod tests {
         let (label, text, _) = status_text(&CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("401".into()),
-
             since: None,
         });
         assert_eq!(label, "Injoignable");
