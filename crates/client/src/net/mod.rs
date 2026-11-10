@@ -12,6 +12,7 @@ pub mod error;
 pub mod files;
 pub mod http;
 pub mod store;
+pub mod stream;
 pub mod tls;
 mod ws;
 

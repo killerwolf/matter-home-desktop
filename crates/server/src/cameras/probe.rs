@@ -67,7 +67,7 @@ fn probe_error(problem: CameraProblem, message: &str) -> ProbeError {
 
 /// Classe une erreur de `retina` (opaque) d'après son texte. Le texte brut ne sort jamais : il
 /// contient les adresses de la connexion.
-fn classify(error: &retina::Error) -> ProbeError {
+pub(super) fn classify(error: &retina::Error) -> ProbeError {
     let text = error.to_string();
     if text.contains("401 response") || text.contains("403 response") {
         probe_error(
