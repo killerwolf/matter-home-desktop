@@ -56,6 +56,9 @@ fn main() {
         camera: fake_camera::Options::default(),
         client_write_timeout: Duration::from_secs(10),
     });
+    // La surveillance donne leur état aux caméras (sinon elles restent « inconnues »).
+    let _monitor =
+        matter_home_server::cameras::start_monitor(rig.hub.clone()).expect("surveillance");
     println!("Écoute : https://{}", rig.server.addr);
     println!("Empreinte du certificat (SHA-256) : {}", rig.fingerprint);
     println!("Fausse caméra : 127.0.0.1:{}", rig.camera.port);
