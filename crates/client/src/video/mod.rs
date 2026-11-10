@@ -36,12 +36,14 @@ use protocol::wire::{StreamPacket, CODEC_H264};
 
 use nal::ParameterSets;
 
-/// Une image décodée : RGBA, 8 bits par canal, opaque.
+/// Une image décodée : des pixels opaques, déjà dans le format d'`egui` (convertis une seule fois,
+/// dans le fil du décodeur ; l'interface n'a plus qu'à les prendre).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// `width × height` pixels, ligne par ligne.
+    pub pixels: Vec<eframe::egui::Color32>,
 }
 
 /// Là où le décodeur dépose ses images : seule la dernière est gardée.

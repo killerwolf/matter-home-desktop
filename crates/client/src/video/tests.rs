@@ -276,11 +276,15 @@ fn the_sink_keeps_only_the_latest_image_and_wakes_the_interface() {
     let image = |n: u8| Image {
         width: 1,
         height: 1,
-        rgba: vec![n, 0, 0, 255],
+        pixels: vec![eframe::egui::Color32::from_rgb(n, 0, 0)],
     };
     sink.put(image(1));
     sink.put(image(2));
-    assert_eq!(sink.take().unwrap().rgba[0], 2, "la dernière seulement");
+    assert_eq!(
+        sink.take().unwrap().pixels[0].r(),
+        2,
+        "la dernière seulement"
+    );
     assert!(sink.take().is_none());
     assert_eq!((sink.frames(), woken.load(Ordering::SeqCst)), (2, 2));
 }
@@ -316,11 +320,9 @@ mod videotoolbox {
 
     fn mean_luma(image: &Image) -> f64 {
         let sum: u64 = image
-            .rgba
-            .as_chunks::<4>()
-            .0
+            .pixels
             .iter()
-            .map(|p| (u64::from(p[0]) * 3 + u64::from(p[1]) * 6 + u64::from(p[2])) / 10)
+            .map(|p| (u64::from(p.r()) * 3 + u64::from(p.g()) * 6 + u64::from(p.b())) / 10)
             .sum();
         sum as f64 / (image.width * image.height) as f64
     }
@@ -341,18 +343,12 @@ mod videotoolbox {
         assert_eq!(sink.frames(), 45);
         let image = last.unwrap();
         assert_eq!((image.width, image.height), (640, 360));
-        assert_eq!(image.rgba.len(), 640 * 360 * 4);
-        assert!(image.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+        assert_eq!(image.pixels.len(), 640 * 360);
+        assert!(image.pixels.iter().all(|p| p.a() == 255));
         // Les mires de `testsrc` ne sont ni noires ni unies.
         assert!(mean_luma(&image) > 30.0, "image noire ?");
-        let distinct: std::collections::HashSet<[u8; 4]> = image
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .step_by(97)
-            .copied()
-            .collect();
+        let distinct: std::collections::HashSet<eframe::egui::Color32> =
+            image.pixels.iter().step_by(97).copied().collect();
         assert!(distinct.len() > 8, "image unie ?");
         assert_eq!(d.stats().errors, 0);
         assert_eq!(d.stats().sessions, 1, "une seule session pour tout le clip");

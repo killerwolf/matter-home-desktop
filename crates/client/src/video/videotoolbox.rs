@@ -35,6 +35,8 @@ use objc2_video_toolbox::{
     VTDecompressionSession,
 };
 
+use eframe::egui::Color32;
+
 use super::nal::ParameterSets;
 use super::{BackendError, FrameSink, H264Backend, Image};
 
@@ -246,6 +248,9 @@ impl H264Backend for VideoToolbox {
         match status {
             0 => Ok(()),
             ERR_INVALID_SESSION | ERR_MALFUNCTION | ERR_NOT_AVAILABLE_NOW => {
+                // Jamais de réemploi d'une session morte (réveil du Mac) : `start` en recrée une
+                // à la prochaine image clé au lieu de la juger « acceptable ».
+                self.session = None;
                 Err(BackendError::SessionLost)
             }
             _ => Err(BackendError::BadData),
@@ -280,7 +285,7 @@ unsafe extern "C-unwind" fn on_frame(
     }));
 }
 
-/// Un `CVPixelBuffer` BGRA en image RGBA opaque.
+/// Un `CVPixelBuffer` BGRA en image opaque (la seule conversion de la chaîne).
 fn to_rgba(buffer: &CVImageBuffer) -> Option<Image> {
     // SAFETY : l'adresse de base n'est valable que verrouillée ; elle est lue entre le verrou et le
     // déverrouillage, sur `height` lignes de `bytes_per_row` octets.
@@ -295,27 +300,20 @@ fn to_rgba(buffer: &CVImageBuffer) -> Option<Image> {
         let converted =
             (!base.is_null() && width > 0 && height > 0 && stride >= width * 4).then(|| {
                 let source = std::slice::from_raw_parts(base, stride * height);
-                let mut rgba = vec![0u8; width * height * 4];
-                for (row, out) in source
-                    .chunks_exact(stride)
-                    .zip(rgba.chunks_exact_mut(width * 4))
-                {
-                    for (bgra, out) in row[..width * 4]
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .zip(out.as_chunks_mut::<4>().0.iter_mut())
-                    {
-                        out[0] = bgra[2];
-                        out[1] = bgra[1];
-                        out[2] = bgra[0];
-                        out[3] = 255;
-                    }
+                let mut pixels = Vec::with_capacity(width * height);
+                for row in source.chunks_exact(stride) {
+                    pixels.extend(
+                        row[..width * 4]
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|bgra| Color32::from_rgb(bgra[2], bgra[1], bgra[0])),
+                    );
                 }
                 Image {
                     width: width as u32,
                     height: height as u32,
-                    rgba,
+                    pixels,
                 }
             });
         CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly);

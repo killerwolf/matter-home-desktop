@@ -158,7 +158,7 @@ fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind,
     // La dernière image décodée devient la texture.
     if let Some(image) = handle.take_image() {
         let size = [image.width as usize, image.height as usize];
-        let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
+        let color = egui::ColorImage::new(size, image.pixels);
         match &mut state.texture {
             Some(texture) => texture.set(color, egui::TextureOptions::LINEAR),
             None => {
@@ -536,9 +536,11 @@ mod tests {
     #[test]
     fn a_compact_player_only_ever_opens_the_stream_it_is_given() {
         let ctx = egui::Context::default();
-        let mut model = Model::default();
+        let mut model = Model {
+            cameras: vec![camera(7, true)],
+            ..Model::default()
+        };
         // Une caméra avec flux réduit : la tuile lit le réduit, jamais le principal.
-        model.cameras = vec![camera(7, true)];
         draw(&ctx, &model, true, StreamKind::Sub);
         assert!(has_handle(&ctx, 7, StreamKind::Sub));
         assert!(!has_handle(&ctx, 7, StreamKind::Main));
@@ -556,8 +558,10 @@ mod tests {
     #[test]
     fn two_callers_on_the_same_camera_never_share_a_stream_kind() {
         let ctx = egui::Context::default();
-        let mut model = Model::default();
-        model.cameras = vec![camera(7, true)];
+        let model = Model {
+            cameras: vec![camera(7, true)],
+            ..Model::default()
+        };
         draw(&ctx, &model, false, StreamKind::Main);
         draw(&ctx, &model, true, StreamKind::Sub);
         assert!(has_handle(&ctx, 7, StreamKind::Main));
