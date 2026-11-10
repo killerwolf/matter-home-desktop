@@ -23,6 +23,16 @@ couleur ou une taille ailleurs.
 Aucune information ni commande existante n'est supprimée : elle est déplacée ou cachée derrière un
 clic.
 
+## La pièce d'un appareil
+
+Une seule règle, `HomePlan::room_of` (crate `protocol`), pour tous les écrans (liste Appareils,
+noms des Températures, teinte des pièces du plan) : on parcourt les étages dans l'ordre, puis les
+poses de l'appareil dans l'ordre, et la **première pose qui tombe dans une pièce** donne la pièce.
+Une pose hors de toute pièce est ignorée, une seconde pose ne change rien, et un appareil posé
+seulement hors des pièces est « Sans pièce ». La température d'une pièce est la moyenne de ses
+capteurs joignables, arrondie à la décimale affichée ; la teinte se calcule depuis cette valeur
+arrondie.
+
 ## Les tokens (`design/tokens.json`)
 
 | Groupe | Contenu |

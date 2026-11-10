@@ -7,14 +7,16 @@ mod opening;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2,
+};
 
 use super::customize::{editor, DeviceEdit, EditResult};
 use super::sync::{Failure, Incoming, SyncState};
 use super::theme::{self, Palette};
 use super::Device;
 use matter_home_client::model::Model;
-use protocol::format::{format_position, format_power, format_temperature};
+use protocol::format::{format_position, format_power};
 use protocol::home::{
     self, snap, FovShape, HomePlan, Item, ItemKind, OpeningKind, Room, Symbol, ITEM_SNAP,
     MAX_CAMERA_RANGE, MAX_FOV, MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
@@ -87,6 +89,9 @@ pub struct PlanView {
     /// Coordonnée (m) affichée au coin haut-gauche du canevas.
     offset: Vec2,
     fit_pending: bool,
+    /// Largeur du canevas à la dernière image : un changement (panneau de détail, fenêtre
+    /// redimensionnée) recadre le plan.
+    canvas_width: f32,
     drag: Option<Drag>,
     selection: Option<Selection>,
     /// Modifié pendant cette image : à signaler au suivi de synchronisation.
@@ -218,7 +223,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>, p: &Palette) -> Look {
                 value = Some(if open { "Ouvert" } else { "Fermé" }.to_string());
             } else if let Some(t) = d.temperature() {
                 fill = theme::temperature_color(p, Some(t.value));
-                let mut v = format_temperature(t.value);
+                let mut v = format!("{:.1} °C", t.value).replace('.', ",");
                 if let Some(h) = d.humidity() {
                     v.push_str(&format!(" · {:.0} %", h.value));
                 }
@@ -226,11 +231,8 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>, p: &Palette) -> Look {
             } else if d.info.caps.cover {
                 let mut text = match d.position() {
                     Some(pos) => {
-                        fill = if pos.value <= 0.0 {
-                            p.text_secondary
-                        } else {
-                            p.series_cover
-                        };
+                        // Discret : un gris, la position est écrite en toutes lettres.
+                        fill = p.text_secondary;
                         format_position(pos.value)
                     }
                     None => String::new(),
@@ -311,6 +313,90 @@ fn camera_look(item: &Item, cameras: &[CameraView], p: &Palette) -> Look {
     }
 }
 
+/// Le canevas a changé de largeur (panneau de détail ouvert ou fermé, fenêtre redimensionnée) :
+/// le plan se recadre.
+fn width_changed(before: f32, now: f32) -> bool {
+    (now - before).abs() > 1.0
+}
+
+/// Texte sur une petite pastille `surface` : lisible quelle que soit la teinte de la pièce.
+fn backed_text(
+    painter: &Painter,
+    pos: Pos2,
+    text: &str,
+    size: f32,
+    color: Color32,
+    backing: Color32,
+) -> Rect {
+    backed_text_at(painter, pos, Align2::CENTER_TOP, text, size, color, backing)
+}
+
+fn backed_text_at(
+    painter: &Painter,
+    pos: Pos2,
+    align: Align2,
+    text: &str,
+    size: f32,
+    color: Color32,
+    backing: Color32,
+) -> Rect {
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), color);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.rect_filled(rect.expand2(Vec2::new(3.0, 1.0)), 3.0, backing);
+    painter.galley(rect.min, galley, color);
+    rect
+}
+
+/// Petite légende en bas à gauche du plan : l'échelle de température et « Sans capteur ».
+fn paint_legend(painter: &Painter, rect: Rect, pal: &Palette) {
+    let stops = &theme::tokens().temperature.stops;
+    let (sw, sh, gap) = (22.0, 10.0, 6.0);
+    let font = FontId::proportional(11.0);
+    let low = format!("{:.0}", stops.first().map_or(16.0, |s| s.at));
+    let high = format!("{:.0} °C", stops.last().map_or(24.0, |s| s.at));
+    let galley = |t: &str| painter.layout_no_wrap(t.to_owned(), font.clone(), pal.text_secondary);
+    let (g_low, g_high, g_none) = (galley(&low), galley(&high), galley("Sans capteur"));
+    let scale_w = g_low.size().x + gap + sw * stops.len() as f32 + gap + g_high.size().x;
+    let total = scale_w + 16.0 + sw + gap + g_none.size().x;
+    let height = 22.0;
+    let origin = Pos2::new(rect.left() + 12.0, rect.bottom() - 12.0 - height);
+    painter.rect_filled(
+        Rect::from_min_size(origin, Vec2::new(total + 16.0, height)),
+        4.0,
+        pal.surface,
+    );
+    let mid = origin.y + height / 2.0;
+    let mut x = origin.x + 8.0;
+    painter.galley(
+        Pos2::new(x, mid - g_low.size().y / 2.0),
+        g_low.clone(),
+        pal.text_secondary,
+    );
+    x += g_low.size().x + gap;
+    for stop in stops {
+        let r = Rect::from_min_size(Pos2::new(x, mid - sh / 2.0), Vec2::new(sw, sh));
+        painter.rect_filled(r, 0.0, pal.surface);
+        painter.rect_filled(r, 0.0, theme::temperature_fill(pal, Some(stop.at)));
+        x += sw;
+    }
+    x += gap;
+    painter.galley(
+        Pos2::new(x, mid - g_high.size().y / 2.0),
+        g_high.clone(),
+        pal.text_secondary,
+    );
+    x += g_high.size().x + 16.0;
+    let r = Rect::from_min_size(Pos2::new(x, mid - sh / 2.0), Vec2::new(sw, sh));
+    painter.rect_filled(r, 0.0, theme::temperature_fill(pal, None));
+    painter.rect_stroke(r, 0.0, Stroke::new(1.0, pal.line), StrokeKind::Inside);
+    x += sw + gap;
+    painter.galley(
+        Pos2::new(x, mid - g_none.size().y / 2.0),
+        g_none.clone(),
+        pal.text_secondary,
+    );
+}
+
 /// Sans nouvelles de l'appareil : sa dernière mesure ne compte plus.
 fn is_stale(d: &Device) -> bool {
     super::devices::is_stale(d)
@@ -331,8 +417,9 @@ fn room_temperatures(plan: &HomePlan, devices: &BTreeMap<u64, Device>) -> HashMa
             e.1 += 1;
         }
     }
+    // Arrondie à la décimale affichée : la teinte se calcule depuis la valeur écrite.
     sums.into_iter()
-        .map(|(k, (sum, n))| (k, sum / n as f64))
+        .map(|(k, (sum, n))| (k, (sum / n as f64 * 10.0).round() / 10.0))
         .collect()
 }
 
@@ -387,6 +474,7 @@ impl PlanView {
             scale: 50.0,
             offset: Vec2::new(-1.0, -1.0),
             fit_pending: true,
+            canvas_width: 0.0,
             drag: None,
             selection: None,
             dirty: false,
@@ -1045,6 +1133,10 @@ impl PlanView {
         let size = ui.available_size().max(Vec2::new(200.0, 200.0));
         let (resp, painter) = ui.allocate_painter(size, Sense::click_and_drag());
         let rect = resp.rect;
+        if width_changed(self.canvas_width, rect.width()) {
+            self.canvas_width = rect.width();
+            self.fit_pending = true;
+        }
         if self.fit_pending {
             self.fit(rect);
             self.fit_pending = false;
@@ -1416,12 +1508,14 @@ impl PlanView {
                 y += 28.0;
             }
             if let Some(open) = room_openings(room, &floor.items, devices) {
-                painter.text(
+                backed_text_at(
+                    &painter,
                     r.min + Vec2::new(8.0, y),
                     Align2::LEFT_TOP,
-                    open,
-                    FontId::proportional(12.0),
+                    &open,
+                    12.0,
                     pal.warn,
+                    pal.surface,
                 );
             }
             if self.edit {
@@ -1512,28 +1606,37 @@ impl PlanView {
             if lk.battery_low {
                 painter.circle_filled(c + Vec2::new(radius * 0.75, -radius * 0.75), 5.0, pal.error);
             }
-            let mut y = c.y + radius + 2.0;
-            let name_rect = painter.text(
-                Pos2::new(c.x, y),
-                Align2::CENTER_TOP,
-                &lk.name,
-                FontId::proportional(11.0),
-                text_color,
-            );
-            y = name_rect.bottom();
-            if let Some(v) = &lk.value {
-                painter.text(
+            let is_hover = hover.is_some_and(|h| h.distance(c) <= ITEM_RADIUS + 3.0);
+            // Caméras et volets : leur nom n'apparaît qu'au survol ou à la sélection (en mode
+            // Modifier, il n'y a pas de bulle : les noms restent).
+            if !lk.discreet || self.edit || selected || is_hover {
+                let mut y = c.y + radius + 2.0;
+                let name_rect = backed_text(
+                    &painter,
                     Pos2::new(c.x, y),
-                    Align2::CENTER_TOP,
-                    v,
-                    FontId::proportional(if lk.discreet { 11.0 } else { 12.0 }),
-                    lk.value_color,
+                    &lk.name,
+                    11.0,
+                    text_color,
+                    pal.surface,
                 );
+                y = name_rect.bottom();
+                if let Some(v) = &lk.value {
+                    backed_text(
+                        &painter,
+                        Pos2::new(c.x, y),
+                        v,
+                        if lk.discreet { 11.0 } else { 12.0 },
+                        lk.value_color,
+                        pal.surface,
+                    );
+                }
             }
-            if hover.is_some_and(|h| h.distance(c) <= ITEM_RADIUS + 3.0) {
+            if is_hover {
                 hovered = Some((item, lk));
             }
         }
+
+        paint_legend(&painter, rect, pal);
 
         // Poignées de la caméra sélectionnée (rotation, portée).
         if self.edit {
@@ -1676,7 +1779,7 @@ mod tests {
         let lk = look(&item, &devices, pal());
         assert_eq!(
             (lk.fill, lk.value.as_deref()),
-            (pal().series_cover, Some("Ouvert à 65 % ▲"))
+            (pal().text_secondary, Some("Ouvert à 65 % ▲"))
         );
     }
 
@@ -1962,6 +2065,58 @@ mod tests {
             theme::temperature_color(p, Some(18.9)),
             theme::temperature_color(p, Some(19.1)),
         );
+    }
+
+    #[test]
+    fn the_plan_is_fitted_again_when_the_canvas_width_changes() {
+        assert!(width_changed(0.0, 1180.0), "première image");
+        assert!(width_changed(1180.0, 720.0), "le panneau s'ouvre");
+        assert!(width_changed(720.0, 1180.0), "le panneau se ferme");
+        assert!(
+            !width_changed(1180.0, 1180.4),
+            "pas de recadrage pour un demi-pixel"
+        );
+        let mut view = PlanView::new();
+        view.fit_pending = false;
+        view.start_editing();
+        assert!(view.is_editing());
+    }
+
+    #[test]
+    fn a_shutter_is_a_discreet_grey_and_labels_follow_the_discreet_rule() {
+        let mut devices = BTreeMap::new();
+        let mut shutter = online(
+            device(Capabilities {
+                cover: true,
+                cover_position: true,
+                ..Default::default()
+            }),
+            1,
+        );
+        shutter.apply_reading(Metric::Position, 65.0, 1.0);
+        devices.insert(1, shutter);
+        let lk = look(&at(5, 1, 0.0), &devices, pal());
+        assert!(lk.discreet);
+        assert_eq!(lk.fill, pal().text_secondary, "plus de bleu vif");
+        assert_eq!(lk.value_color, pal().text_secondary);
+        // Un thermomètre n'est pas discret : son étiquette reste visible, à une décimale.
+        let mut t = thermometer(2, 20.86);
+        t.apply_reading(Metric::Humidity, 49.0, 1.0);
+        devices.insert(2, t);
+        let lk = look(&at(6, 2, 0.0), &devices, pal());
+        assert!(!lk.discreet);
+        assert_eq!(lk.value.as_deref(), Some("20,9 °C · 49 %"));
+    }
+
+    #[test]
+    fn the_tint_follows_the_displayed_rounded_average() {
+        let mut devices = BTreeMap::new();
+        devices.insert(1, thermometer(1, 18.96));
+        devices.insert(2, thermometer(2, 18.96));
+        let (plan, room) = salon_plan(vec![at(10, 1, 1.0), at(11, 2, 2.0)]);
+        let key = (plan.floors[0].id, room.id);
+        // 18,96 est écrit « 19,0 » : la teinte est celle de 19,0, pas de 18,96.
+        assert_eq!(room_temperatures(&plan, &devices)[&key], 19.0);
     }
 
     #[test]

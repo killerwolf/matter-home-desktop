@@ -27,7 +27,7 @@ Usage :
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --temperatures  ouvre directement la page Températures
   matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
- matter-home-desktop --edit-plan  ouvre le plan en mode Modifier
+  matter-home-desktop --edit-plan ouvre le plan en mode Modifier
   matter-home-desktop --add      ouvre directement la fenêtre « Ajouter un appareil »
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version

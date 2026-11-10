@@ -215,6 +215,29 @@ pub fn paint_fov(
     ));
 }
 
+/// Apparence de l'icône selon l'état : une caméra que le serveur ne connaît plus est estompée et
+/// sans objectif, pour ne pas passer pour une caméra en ligne.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconStyle {
+    /// Multiplicateur d'opacité du disque, du museau et du contour.
+    pub fade: f32,
+    /// Dessiner l'objectif.
+    pub lens: bool,
+}
+
+pub fn icon_style(state: CameraState) -> IconStyle {
+    match state {
+        CameraState::Missing => IconStyle {
+            fade: 0.4,
+            lens: false,
+        },
+        _ => IconStyle {
+            fade: 1.0,
+            lens: true,
+        },
+    }
+}
+
 /// Icône de la caméra : disque d'état, objectif, et museau tourné vers la direction filmée.
 pub fn paint_icon(
     painter: &Painter,
@@ -234,6 +257,9 @@ pub fn paint_icon(
     } else {
         state.color(pal)
     };
+    let style = icon_style(state);
+    let color = color.gamma_multiply(style.fade);
+    let ring = Stroke::new(ring.width, ring.color.gamma_multiply(style.fade));
     // Museau : triangle sur le bord du disque, dans le sens filmé.
     let nose = vec![
         center + dir * (radius + 7.0),
@@ -248,9 +274,11 @@ pub fn paint_icon(
     painter.circle_filled(center, radius, color);
     painter.circle_stroke(center, radius, ring);
     // Objectif.
-    painter.circle_filled(center, radius * 0.55, pal.bg);
-    painter.circle_stroke(center, radius * 0.55, Stroke::new(1.5, pal.on_accent));
-    painter.circle_filled(center + dir * 2.0, radius * 0.2, pal.accent_text);
+    if style.lens {
+        painter.circle_filled(center, radius * 0.55, pal.bg);
+        painter.circle_stroke(center, radius * 0.55, Stroke::new(1.5, pal.on_accent));
+        painter.circle_filled(center + dir * 2.0, radius * 0.2, pal.accent_text);
+    }
     if state == CameraState::Unreachable {
         // Barre oblique : caméra hors ligne, visible même sans la couleur.
         let off = Vec2::new(1.0, -1.0).normalized() * radius;
@@ -290,6 +318,20 @@ pub fn paint_handles(
 mod tests {
     use super::*;
     use protocol::wire::{CameraProblem, StreamInfo};
+
+    #[test]
+    fn a_camera_missing_on_the_server_is_faded_and_has_no_lens() {
+        let missing = icon_style(CameraState::Missing);
+        assert!(missing.fade < 0.5 && !missing.lens);
+        for state in [
+            CameraState::Online,
+            CameraState::Unreachable,
+            CameraState::Unknown,
+        ] {
+            let style = icon_style(state);
+            assert!(style.fade == 1.0 && style.lens, "{state:?}");
+        }
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-2

@@ -149,7 +149,10 @@ Les téléchargements de chaque version sont sur la
   le minimum et le maximum de la période (calculés par le client), des heures rondes sur l'axe, peu
   de lignes de grille, des noms de pièce courts et des couleurs de courbe issues des tokens. Un
   volet sans position n'a plus de valeur vide dans la liste (« — »). Options d'essai :
-  `--edit-plan`, et `--device` combinable avec `--plan`.
+  `--edit-plan`, et `--device` combinable avec `--plan`. Le plan se recadre quand la largeur change
+  (panneau de détail, fenêtre), une légende de l'échelle de température est sous le plan, les
+  petites étiquettes sont sur une pastille lisible (contraste testé), les heures rondes suivent le
+  changement d'heure et l'axe vertical a un repère tous les 1 ou 2 °C.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.

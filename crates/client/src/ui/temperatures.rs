@@ -10,7 +10,7 @@ use super::theme;
 use super::thermometer::local_time;
 use matter_home_client::series::TimeWindow;
 use matter_home_client::temperatures::{
-    axis_label, local_offset_s, period_range, round_marks, split_gaps, value_at,
+    axis_label, local_offset_s, period_range, round_marks, split_gaps, value_at, y_label, y_marks,
 };
 use protocol::format::format_temperature;
 
@@ -27,6 +27,8 @@ pub struct Curve {
     pub gap_s: f64,
     /// Dernière température connue (état complet, tenu à jour par les événements).
     pub current: Option<f64>,
+    /// Capteur injoignable : sa dernière valeur ne vaut plus rien (affichée « — » en gris).
+    pub stale: bool,
 }
 
 /// Ce que la page rend à l'application.
@@ -81,7 +83,7 @@ pub fn show(
     // En-tête : une colonne par thermomètre (pièce, valeur actuelle en grand, minimum et
     // maximum de la période), les périodes à droite. Un clic sur le nom masque la courbe.
     let sizes = theme::tokens().font.size;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = theme::tokens().space.xl;
         for c in curves {
             let off = hidden.contains(&c.node_id);
@@ -99,8 +101,12 @@ pub fn show(
                 if clicked && !hidden.remove(&c.node_id) {
                     hidden.insert(c.node_id);
                 }
-                let value = c.current.map_or("—".to_string(), one_decimal);
-                ui.label(RichText::new(value).size(sizes.display).color(if off {
+                let value = match c.current {
+                    Some(v) if !c.stale => one_decimal(v),
+                    _ => "—".to_string(),
+                };
+                let grey = off || c.stale || c.current.is_none();
+                ui.label(RichText::new(value).size(sizes.display).color(if grey {
                     p.text_secondary
                 } else {
                     p.text
@@ -114,14 +120,13 @@ pub fn show(
                 }
             });
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for w in TimeWindow::OVERVIEW.into_iter().rev() {
-                ui.selectable_value(window, w, w.overview_label());
-            }
-            if status.loading > 0 {
-                ui.spinner();
-            }
-        });
+        // Les périodes suivent les thermomètres ; elles passent à la ligne si la place manque.
+        for w in TimeWindow::OVERVIEW {
+            ui.selectable_value(window, w, w.overview_label());
+        }
+        if status.loading > 0 {
+            ui.spinner();
+        }
     });
     if curves.is_empty() {
         ui.add_space(theme::tokens().space.md);
@@ -140,20 +145,26 @@ pub fn show(
     }
 
     let mut hover_x: Option<f64> = None;
-    let offset = local_offset_s(now);
     let response = Plot::new(("temperatures_plot", *window as u8))
         .height((ui.available_height() - 8.0).max(260.0))
         // Peu de repères : des heures rondes sur l'axe du temps, quelques lignes sur l'autre.
-        .x_grid_spacer(move |input| {
-            round_marks(input.bounds.0, input.bounds.1, offset)
+        .x_grid_spacer(|input| {
+            round_marks(input.bounds.0, input.bounds.1, &local_offset_s)
                 .into_iter()
                 .map(|(value, step_size)| GridMark { value, step_size })
                 .collect()
         })
-        .grid_spacing(egui::Rangef::new(60.0, 160.0))
+        .y_grid_spacer(|input| {
+            y_marks(input.bounds.0, input.bounds.1)
+                .into_iter()
+                .map(|(value, step_size)| GridMark { value, step_size })
+                .collect()
+        })
         .grid_color(p.line)
-        .x_axis_formatter(move |mark, _| axis_label(mark.value, mark.step_size, offset))
-        .y_axis_formatter(|mark, _| format!("{:.0} °C", mark.value))
+        .x_axis_formatter(|mark, _| {
+            axis_label(mark.value, mark.step_size, local_offset_s(mark.value))
+        })
+        .y_axis_formatter(|mark, _| y_label(mark.value, mark.step_size))
         .show_x(false)
         .show_y(false)
         .label_formatter(|_| None)

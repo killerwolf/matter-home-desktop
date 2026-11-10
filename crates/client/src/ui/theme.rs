@@ -337,7 +337,6 @@ fn style(s: &mut egui::Style) {
 
 /// Teinte du palier le plus proche de `celsius` (à égalité, le plus froid). Sans mesure :
 /// le gris « pas de capteur » du thème.
-#[allow(dead_code)] // le plan s'en servira (phase 2)
 pub fn temperature_color(p: &Palette, celsius: Option<f64>) -> Color32 {
     let Some(c) = celsius.filter(|c| c.is_finite()) else {
         return p.no_sensor;
@@ -352,7 +351,6 @@ pub fn temperature_color(p: &Palette, celsius: Option<f64>) -> Color32 {
 
 /// Aplat transparent d'une pièce : la teinte du palier posée sous le texte. Une pièce sans
 /// capteur reste en gris opaque.
-#[allow(dead_code)] // le plan s'en servira (phase 2)
 pub fn temperature_fill(p: &Palette, celsius: Option<f64>) -> Color32 {
     let color = temperature_color(p, celsius);
     if celsius.is_some_and(f64::is_finite) {
@@ -718,8 +716,67 @@ mod tests {
                 (p.error, p.surface, "pastille d'erreur"),
             ] {
                 let c = contrast(fg, bg);
-                assert!(c >= 4.4, "{name} ({}) : contraste {c:.1}", dark_name(dark));
+                assert!(c >= 4.5, "{name} ({}) : contraste {c:.1}", dark_name(dark));
             }
+        }
+    }
+
+    /// Couleur d'un aplat transparent posé sur `under`.
+    fn over(under: Color32, tint: Color32, alpha: f32) -> Color32 {
+        let mix =
+            |a: u8, b: u8| (f32::from(a) * (1.0 - alpha) + f32::from(b) * alpha).round() as u8;
+        Color32::from_rgb(
+            mix(under.r(), tint.r()),
+            mix(under.g(), tint.g()),
+            mix(under.b(), tint.b()),
+        )
+    }
+
+    #[test]
+    fn labels_on_tinted_rooms_stay_readable() {
+        let t = tokens();
+        for dark in [false, true] {
+            let p = t.palette(dark);
+            // Le texte directement sur la pièce : nom et température de la pièce.
+            let mut grounds: Vec<(Color32, String)> = t
+                .temperature
+                .stops
+                .iter()
+                .map(|s| {
+                    (
+                        over(p.surface, s.color, t.temperature.fill_alpha),
+                        format!("palier {}", s.at),
+                    )
+                })
+                .collect();
+            grounds.push((p.no_sensor, "sans capteur".into()));
+            for (ground, what) in grounds {
+                let c = contrast(p.text, ground);
+                assert!(c >= 4.5, "texte sur {what} ({}) : {c:.1}", dark_name(dark));
+            }
+            // Les petites étiquettes (valeurs, « ouvert », « injoignable ») sont sur une
+            // pastille `surface`.
+            for (fg, what) in [
+                (p.text_secondary, "valeur"),
+                (p.warn, "ouvert"),
+                (p.error, "injoignable"),
+                (p.text, "nom"),
+            ] {
+                let c = contrast(fg, p.surface);
+                assert!(
+                    c >= 4.5,
+                    "{what} sur pastille ({}) : {c:.1}",
+                    dark_name(dark)
+                );
+            }
+        }
+        // Sans capteur est plus léger qu'une pièce teintée, en clair.
+        let p = t.palette(false);
+        let lum = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
+        for s in &t.temperature.stops {
+            assert!(
+                lum(p.no_sensor) > lum(over(p.surface, s.color, t.temperature.fill_alpha)) - 30
+            );
         }
     }
 

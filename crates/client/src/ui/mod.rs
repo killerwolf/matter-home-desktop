@@ -779,6 +779,7 @@ impl MatterApp {
                     points,
                     gap_s: temps::gap_threshold(device.mode.as_ref(), window, buckets),
                     current: device.temperature().map(|r| r.value),
+                    stale: devices::is_stale(device),
                 })
             })
             .collect();
@@ -1602,6 +1603,13 @@ impl MatterApp {
         }
     }
 
+    /// Entrer en mode Modifier ferme le détail : sélection, nom en cours, confirmation.
+    fn sync_edit_mode(&mut self, was_editing: bool) {
+        if !was_editing && self.plan.is_editing() {
+            self.close_detail();
+        }
+    }
+
     /// Ferme le panneau de détail (et ce qui s'y préparait).
     fn close_detail(&mut self) {
         self.selected = None;
@@ -2290,6 +2298,7 @@ impl eframe::App for MatterApp {
                 .show(ui, |ui| self.details(ui, &layout));
         }
 
+        let was_editing = self.plan.is_editing();
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Devices => {
                 if let Some(id) = devices::show(ui, &self.model.devices, &layout, self.selected) {
@@ -2321,6 +2330,7 @@ impl eframe::App for MatterApp {
                 }
             }
         });
+        self.sync_edit_mode(was_editing);
     }
 }
 

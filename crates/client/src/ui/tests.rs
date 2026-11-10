@@ -1712,6 +1712,7 @@ fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_windo
         points,
         gap_s: 1200.0,
         current: Some(20.5),
+        stale: false,
     };
     let curves = vec![
         // Un trou au milieu, un point isolé à la fin ; une courbe vide ; une courbe masquée.
@@ -1814,4 +1815,31 @@ fn a_lost_connection_closes_the_detail_and_the_add_window() {
         f.app.selected, None,
         "pas de panneau fantôme à la reconnexion"
     );
+}
+
+#[test]
+fn entering_the_plan_edit_mode_closes_the_detail() {
+    let mut f = Fixture::new();
+    let caps = Capabilities {
+        temperature: true,
+        ..Default::default()
+    };
+    f.connect(snapshot(1, vec![view(node(1, "Salon", caps), vec![])]));
+    f.app.view = View::Plan;
+    f.app.selected = Some(1);
+    f.app.device_edit = Some(customize::DeviceEdit::from_info(
+        &f.app.model.devices[&1].info,
+    ));
+    f.app.confirm_clear = Some(1);
+    // Rien ne change tant que le mode Modifier n'est pas entré.
+    f.app.sync_edit_mode(false);
+    assert_eq!(f.app.selected, Some(1));
+    f.app.plan.start_editing();
+    f.app.sync_edit_mode(false);
+    assert_eq!(f.app.selected, None);
+    assert!(f.app.device_edit.is_none() && f.app.confirm_clear.is_none());
+    // Déjà en mode Modifier : une sélection de la palette n'est pas fermée à chaque image.
+    f.app.selected = Some(1);
+    f.app.sync_edit_mode(true);
+    assert_eq!(f.app.selected, Some(1));
 }

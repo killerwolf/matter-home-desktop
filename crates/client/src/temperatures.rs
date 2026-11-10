@@ -161,17 +161,61 @@ pub fn axis_step(span_s: f64) -> f64 {
 }
 
 /// Repères de l'axe entre `start` et `end` (secondes Unix) : les multiples du pas à l'heure
-/// locale (`offset_s` = écart du fuseau à UTC), avec leur pas.
-pub fn round_marks(start: f64, end: f64, offset_s: i64) -> Vec<(f64, f64)> {
+/// locale, avec leur pas. `offset_at(t)` donne l'écart du fuseau à UTC à l'instant `t` : il est
+/// relu pour chaque repère, de sorte qu'un changement d'heure en milieu de période tombe juste.
+pub fn round_marks(start: f64, end: f64, offset_at: &dyn Fn(f64) -> i64) -> Vec<(f64, f64)> {
     let step = axis_step(end - start);
-    let offset = offset_s as f64;
-    let mut t = ((start + offset) / step).ceil() * step - offset;
+    let first_offset = offset_at(start) as f64;
+    let mut k = ((start + first_offset) / step).ceil();
     let mut marks = Vec::new();
-    while t <= end {
-        marks.push((t, step));
-        t += step;
+    loop {
+        // Heure locale voulue, convertie avec l'écart en vigueur à l'instant trouvé. Une heure
+        // locale qui n'existe pas (saut du changement d'heure) n'a pas de repère.
+        let local = k * step;
+        let first = local - offset_at(local - first_offset) as f64;
+        let second = local - offset_at(first) as f64;
+        let found = [second, first]
+            .into_iter()
+            .find(|t| *t + offset_at(*t) as f64 == local);
+        if found.unwrap_or(first) > end {
+            break;
+        }
+        if let Some(t) = found.filter(|t| *t >= start) {
+            marks.push((t, step));
+        }
+        k += 1.0;
     }
     marks
+}
+
+/// Repères de l'axe vertical (°C) entre `lo` et `hi` : un tous les 0,5, 1, 2, 5 ou 10 degrés, au
+/// plus petit pas qui laisse sept repères au plus. Le pas sert de « taille » du repère : une
+/// valeur inférieure à 1 appelle une décimale (voir `y_label`).
+pub fn y_marks(lo: f64, hi: f64) -> Vec<(f64, f64)> {
+    let span = (hi - lo).abs();
+    if !span.is_finite() || span == 0.0 {
+        return Vec::new();
+    }
+    let step = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+        .into_iter()
+        .find(|s| span / s <= 7.0)
+        .unwrap_or(50.0);
+    let mut v = (lo.min(hi) / step).ceil() * step;
+    let mut marks = Vec::new();
+    while v <= hi.max(lo) {
+        marks.push((v, step));
+        v += step;
+    }
+    marks
+}
+
+/// « 21 °C », ou « 20,5 °C » quand le pas des repères est inférieur à un degré.
+pub fn y_label(value: f64, step: f64) -> String {
+    if step < 1.0 {
+        format!("{value:.1} °C").replace('.', ",")
+    } else {
+        format!("{value:.0} °C")
+    }
 }
 
 /// Texte d'un repère : « 18 h », « 0 h » ; « 14:15 » pour un pas de quinze minutes ; « lun. 04/11 »
@@ -230,11 +274,54 @@ mod header_tests {
     }
 
     #[test]
+    fn marks_follow_a_clock_change_in_the_middle_of_the_period() {
+        // Le fuseau passe de UTC+1 à UTC+2 à mi-période : chaque repère est une heure ronde
+        // locale avec l'écart en vigueur à cet instant.
+        let end = 1_700_000_000.0;
+        let change = end - 12.0 * 3600.0;
+        let offset_at = |t: f64| if t < change { 3600 } else { 7200 };
+        let marks = round_marks(end - 86_400.0, end, &offset_at);
+        assert!(marks.len() >= 4);
+        for (t, step) in &marks {
+            let local = *t + offset_at(*t) as f64;
+            assert_eq!(local % *step, 0.0, "{t} n'est pas une heure ronde locale");
+        }
+        // Avec un écart fixe d'une heure, les mêmes instants ne seraient pas tous ronds.
+        let after: Vec<_> = marks.iter().filter(|m| m.0 >= change).collect();
+        assert!(after.iter().all(|m| (m.0 + 7200.0) % (6.0 * 3600.0) == 0.0));
+    }
+
+    #[test]
+    fn y_marks_are_one_or_two_degrees_apart_with_decimals_only_when_needed() {
+        let marks = y_marks(18.2, 21.7);
+        assert!(marks.iter().all(|m| m.0 == m.0.round() || m.1 < 1.0));
+        assert!(marks.len() >= 3 && marks.len() <= 8, "{marks:?}");
+        // Vue d'une heure, étroite : pas de demi-degré, chaque libellé est différent.
+        let narrow = y_marks(20.8, 21.4);
+        assert_eq!(narrow.first().map(|m| m.1), Some(0.5));
+        let labels: Vec<String> = narrow.iter().map(|m| y_label(m.0, m.1)).collect();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(labels, {
+            let mut l = labels.clone();
+            l.dedup();
+            l
+        });
+        assert_eq!(labels.len(), unique.len());
+        assert_eq!(y_label(21.0, 1.0), "21 °C");
+        assert_eq!(y_label(20.5, 0.5), "20,5 °C");
+        assert!(y_marks(5.0, 5.0).is_empty());
+        let wide = y_marks(10.0, 30.0);
+        assert!(wide.iter().all(|m| m.1 >= 5.0) && wide.len() <= 8);
+    }
+
+    #[test]
     fn marks_fall_on_round_local_hours() {
         // 24 h : un repère toutes les 6 h, à 0 h, 6 h, 12 h, 18 h heure locale (UTC+1 ici).
         let offset = 3600;
         let end = 1_700_000_000.0;
-        let marks = round_marks(end - 86_400.0, end, offset);
+        let marks = round_marks(end - 86_400.0, end, &|_| offset);
         assert!(marks.len() == 4 || marks.len() == 5);
         for (t, step) in &marks {
             assert_eq!(*step, 6.0 * 3600.0);
@@ -246,10 +333,10 @@ mod header_tests {
             .iter()
             .all(|l| ["0 h", "6 h", "12 h", "18 h"].contains(&l.as_str())));
         // 1 h : tous les quarts d'heure ; 7 jours : à minuit.
-        let hour = round_marks(end - 3600.0, end, 0);
+        let hour = round_marks(end - 3600.0, end, &|_| 0);
         assert!(hour.iter().all(|m| m.0 % 900.0 == 0.0 && m.1 == 900.0));
         assert_eq!(axis_label(hour[0].0, 900.0, 0).len(), 5);
-        let week = round_marks(end - 7.0 * 86_400.0, end, 0);
+        let week = round_marks(end - 7.0 * 86_400.0, end, &|_| 0);
         assert_eq!(week.len(), 7);
         assert!(week.iter().all(|m| m.0 % 86_400.0 == 0.0));
         assert_eq!(axis_label(week[0].0, 86_400.0, 0), "mer. 08/11");
