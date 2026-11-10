@@ -39,10 +39,19 @@ pub struct Status {
     pub truncated: bool,
 }
 
+/// Couleur préférée d'un appareil : tirée de son identifiant, donc la même d'une session à
+/// l'autre. Deux appareils peuvent tomber sur la même ; l'application en choisit alors une libre
+/// (voir `MatterApp::temperature_curves`).
+pub fn preferred_color_index(node_id: u64) -> usize {
+    (node_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as usize % PALETTE_LEN
+}
+
+pub const PALETTE_LEN: usize = 12;
+
 /// Couleurs bien distinctes, lisibles sur fond clair comme sur fond sombre ; au-delà, des
 /// teintes réparties par l'angle d'or.
 pub fn color_for(index: usize) -> Color32 {
-    const PALETTE: [(u8, u8, u8); 12] = [
+    const PALETTE: [(u8, u8, u8); PALETTE_LEN] = [
         (230, 90, 50),
         (50, 130, 220),
         (40, 165, 90),
@@ -52,7 +61,7 @@ pub fn color_for(index: usize) -> Color32 {
         (215, 70, 130),
         (120, 130, 40),
         (110, 110, 230),
-        (170, 110, 60),
+        (130, 130, 130),
         (90, 160, 150),
         (200, 100, 100),
     ];
@@ -149,15 +158,21 @@ pub fn show(
     let response = Plot::new(("temperatures_plot", *window as u8))
         .height((ui.available_height() - 8.0).max(260.0))
         .x_axis_formatter(move |mark, _| axis_time(mark.value, long_span))
-        .y_axis_formatter(|mark, _| format!("{:.1} °C", mark.value))
+        .y_axis_formatter(|mark, _| format!("{:.1} °C", mark.value).replace('.', ","))
         .show_x(false)
         .show_y(false)
         .label_formatter(|_| None)
-        .include_x(start)
-        .include_x(now)
+        // Axe du temps fixe : la période choisie, jamais celle de l'image précédente.
         .allow_scroll(false)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_boxed_zoom(false)
         .show(ui, |plot_ui| {
-            hover_x = plot_ui.pointer_coordinate().map(|p| p.x);
+            plot_ui.set_plot_bounds_x(start..=now);
+            // Le curseur n'a de valeur que sur le graphique.
+            if plot_ui.response().hovered() {
+                hover_x = plot_ui.pointer_coordinate().map(|p| p.x);
+            }
             for c in &visible {
                 for segment in split_gaps(&c.points, c.gap_s) {
                     if segment.len() == 1 {
@@ -181,6 +196,11 @@ pub fn show(
     if let Some(x) = hover_x {
         response.response.on_hover_ui_at_pointer(|ui| {
             ui.strong(full_time(x));
+            if *window == TimeWindow::All {
+                ui.small(
+                    "Sur 1 semaine, une valeur peut être le minimum ou le maximum de sa tranche.",
+                );
+            }
             let mut rows: Vec<(&Curve, Option<f64>)> = visible
                 .iter()
                 .map(|c| (*c, value_at(&c.points, x, c.gap_s)))
@@ -189,28 +209,37 @@ pub fn show(
                 b.1.unwrap_or(f64::NEG_INFINITY)
                     .total_cmp(&a.1.unwrap_or(f64::NEG_INFINITY))
             });
-            for (c, value) in rows {
-                ui.horizontal(|ui| {
-                    ui.colored_label(c.color, "●");
-                    ui.label(&c.label);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            egui::Grid::new("temperatures_tooltip")
+                .num_columns(3)
+                .spacing([8.0, 2.0])
+                .show(ui, |ui| {
+                    for (c, value) in rows {
+                        ui.colored_label(c.color, "●");
+                        ui.label(&c.label);
                         match value {
                             Some(v) => ui.strong(format_temperature(v)),
                             None => ui.weak("—"),
                         };
-                    });
+                        ui.end_row();
+                    }
                 });
-            }
         });
     }
     outcome
 }
 
 fn axis_time(t: f64, with_date: bool) -> String {
+    use chrono::Datelike;
+    const DAYS: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
     chrono::DateTime::from_timestamp(t as i64, 0)
         .map(|d| {
-            let fmt = if with_date { "%a %d %H:%M" } else { "%H:%M" };
-            d.with_timezone(&chrono::Local).format(fmt).to_string()
+            let d = d.with_timezone(&chrono::Local);
+            if with_date {
+                let day = DAYS[d.weekday().num_days_from_monday() as usize];
+                format!("{day} {}", d.format("%d/%m %H:%M"))
+            } else {
+                d.format("%H:%M").to_string()
+            }
         })
         .unwrap_or_default()
 }

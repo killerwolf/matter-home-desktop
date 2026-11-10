@@ -95,6 +95,15 @@ impl DeviceSeries {
         self.series.get(&metric).map_or(0, Series::len)
     }
 
+    /// Les points lus ne sont plus fiables (resynchronisation) : relecture complète. Une lecture
+    /// déjà partie est abandonnée (sa réponse, au numéro périmé, est ignorée) et l'ancienne
+    /// erreur est oubliée, pour que la relecture parte d'elle-même.
+    pub fn invalidate(&mut self) {
+        self.fetched_since = None;
+        self.loading = None;
+        self.error = None;
+    }
+
     /// Remplace le contenu par une lecture du serveur.
     pub fn load(&mut self, since: f64, truncated: bool, points: &[HistoryPoint]) {
         self.series.clear();

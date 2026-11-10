@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use matter_home_client::net::{Backend, Store};
+use matter_home_client::series::TimeWindow;
 
 const HELP: &str = "\
 matter-home-desktop — client Matter Home (interface)
@@ -25,6 +26,7 @@ Usage :
   matter-home-desktop --plan      ouvre directement le plan de la maison
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --temperatures  ouvre directement la page Températures
+  matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version
   matter-home-desktop --help      affiche cette aide
@@ -49,10 +51,21 @@ fn main() -> eframe::Result {
     }
     // `--device` attend une valeur : on la met de côté avant de vérifier les options.
     let mut device_filter = None;
+    let mut period: Option<TimeWindow> = None;
     let mut flags = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--device" {
+        if a == "--period" {
+            match it.next().map(String::as_str) {
+                Some("1h") => period = Some(TimeWindow::Hour1),
+                Some("24h") => period = Some(TimeWindow::Hour24),
+                Some("1w") => period = Some(TimeWindow::All),
+                _ => {
+                    eprintln!("--period attend 1h, 24h ou 1w\n\n{HELP}");
+                    std::process::exit(2);
+                }
+            }
+        } else if a == "--device" {
             match it.next() {
                 Some(v) => device_filter = Some(v.clone()),
                 None => {
@@ -101,7 +114,7 @@ fn main() -> eframe::Result {
                 app.show_rules();
             }
             if open_temperatures {
-                app.show_temperatures();
+                app.show_temperatures(period);
             }
             if let Some(filter) = device_filter {
                 app.select_device_named(filter);

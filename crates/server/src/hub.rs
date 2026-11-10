@@ -649,11 +649,13 @@ impl Hub {
             .filter(|p| wanted.as_ref().is_none_or(|w| w.contains(&p.metric)))
             .collect();
         points.sort_by(|a, b| a.at.total_cmp(&b.at));
+        let mut truncated = false;
         if let Some(buckets) = buckets {
-            points = reduce_points(points, since, until, buckets);
-        }
-        let truncated = points.len() > limit;
-        if truncated {
+            // `limit` s'applique à chaque grandeur : sinon, avec plusieurs grandeurs, la coupe
+            // « les plus anciens d'abord » de l'ensemble ne couvrirait plus la fenêtre.
+            (points, truncated) = reduce_points(points, since, until, buckets, limit);
+        } else if points.len() > limit {
+            truncated = true;
             points.drain(..points.len() - limit);
         }
         Ok(HistoryResponse {
@@ -669,6 +671,8 @@ impl Hub {
     pub fn history_csv(&self, node_id: u64, query: &HistoryQuery) -> ApiResult<String> {
         let mut query = query.clone();
         query.metrics = Some("temperature,humidity".into());
+        // Un export garde toutes les mesures : jamais de réduction.
+        query.buckets = None;
         let response = self.read_history(node_id, &query, CSV_MAX_POINTS, CSV_MAX_POINTS)?;
         Ok(export::temperature_csv(&response.points))
     }
@@ -805,29 +809,37 @@ fn import_summary(summary: backup::Summary) -> ImportSummary {
     }
 }
 
-/// Réduit chaque grandeur à `buckets` tranches de temps (minimum et maximum de chacune), puis
-/// remet les points dans l'ordre chronologique. Voir `protocol::downsample::min_max`.
+/// Réduit chaque grandeur à `buckets` tranches de temps (minimum et maximum de chacune), garde
+/// au plus `limit` points récents par grandeur, puis remet les points dans l'ordre chronologique.
+/// Rend aussi `true` si une grandeur a dû être coupée. Voir `protocol::downsample::min_max`.
 fn reduce_points(
     points: Vec<HistoryPoint>,
     since: f64,
     until: f64,
     buckets: usize,
-) -> Vec<HistoryPoint> {
+    limit: usize,
+) -> (Vec<HistoryPoint>, bool) {
     let mut by_metric: std::collections::BTreeMap<Metric, Vec<(f64, f64)>> =
         std::collections::BTreeMap::new();
     for p in points {
         by_metric.entry(p.metric).or_default().push((p.at, p.value));
     }
-    let mut out: Vec<HistoryPoint> = by_metric
-        .into_iter()
-        .flat_map(|(metric, series)| {
-            protocol::downsample::min_max(&series, since, until, buckets)
+    let mut truncated = false;
+    let mut out: Vec<HistoryPoint> = Vec::new();
+    for (metric, series) in by_metric {
+        let mut reduced = protocol::downsample::min_max(&series, since, until, buckets);
+        if reduced.len() > limit {
+            truncated = true;
+            reduced.drain(..reduced.len() - limit);
+        }
+        out.extend(
+            reduced
                 .into_iter()
-                .map(move |(at, value)| HistoryPoint { at, metric, value })
-        })
-        .collect();
+                .map(|(at, value)| HistoryPoint { at, metric, value }),
+        );
+    }
     out.sort_by(|a, b| a.at.total_cmp(&b.at));
-    out
+    (out, truncated)
 }
 
 /// Plafond de lignes d'un export CSV.
@@ -1308,6 +1320,66 @@ mod tests {
         // Tranches : zéro refusé, plafond appliqué sans erreur.
         assert!(hub.history(7, &q(Some(0))).is_err());
         assert!(hub.history(7, &q(Some(usize::MAX))).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_buckets_with_several_metrics_apply_the_limit_per_metric() {
+        let dir = temp("hist-buckets-multi");
+        let (hub, _rx) = hub_with(&dir, 16);
+        hub.apply(&node(7));
+        let mut store = HistoryStore::new(dir.join("history"));
+        // Température et humidité, 6 000 mesures chacune sur 6 000 s.
+        for i in 0..6_000 {
+            for (k, v) in [("temperature", 20.0), ("humidity", 50.0)] {
+                let record = crate::history_store::Record {
+                    t: 1_000.0 + f64::from(i),
+                    k: k.into(),
+                    v,
+                };
+                store.append(7, &record).unwrap();
+            }
+        }
+        let q = |buckets, limit| HistoryQuery {
+            since: Some(0.0),
+            until: Some(7_000.0),
+            metrics: None,
+            limit,
+            buckets,
+        };
+        let r = hub.history(7, &q(Some(1_000), Some(2_100))).unwrap();
+        assert!(
+            !r.truncated,
+            "2 002 points par grandeur tiennent dans la limite"
+        );
+        for metric in [Metric::Temperature, Metric::Humidity] {
+            let of: Vec<f64> = r
+                .points
+                .iter()
+                .filter(|p| p.metric == metric)
+                .map(|p| p.at)
+                .collect();
+            assert!(
+                of.len() <= 2_002 && of.len() > 800,
+                "{metric:?} : {}",
+                of.len()
+            );
+            // Les deux grandeurs couvrent toute la fenêtre.
+            assert_eq!(of[0], 1_000.0, "{metric:?}");
+            assert_eq!(*of.last().unwrap(), 6_999.0, "{metric:?}");
+        }
+        // Limite plus basse que la réduction : coupe par grandeur, signalée.
+        let cut = hub.history(7, &q(Some(1_000), Some(500))).unwrap();
+        assert!(cut.truncated);
+        for metric in [Metric::Temperature, Metric::Humidity] {
+            assert_eq!(
+                cut.points.iter().filter(|p| p.metric == metric).count(),
+                500
+            );
+        }
+        // L'export CSV ignore `buckets`.
+        let csv = hub.history_csv(7, &q(Some(10), None)).unwrap();
+        assert_eq!(csv.lines().count(), 6_001);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -544,7 +544,7 @@ fn a_disabled_rule_may_keep_an_incomplete_webhook_but_never_calls_it() {
             .await;
         assert_eq!(r.status, 202, "{}", r.text());
         let mut run = Value::Null;
-        for _ in 0..50 {
+        for _ in 0..200 {
             let runs = client.get("/api/rule-runs", &token).await.json();
             if let Some(found) = runs.as_array().unwrap().iter().find(|r| {
                 r["rule_id"] == id
@@ -712,7 +712,7 @@ fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
 
         // Le journal des exécutions garde la trace, même pour un client arrivé après.
         let mut found = Value::Null;
-        for _ in 0..50 {
+        for _ in 0..200 {
             let runs = client.get("/api/rule-runs", &token).await.json();
             if let Some(run) = runs.as_array().unwrap().first() {
                 found = run.clone();

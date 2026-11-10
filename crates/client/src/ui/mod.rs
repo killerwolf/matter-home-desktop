@@ -74,6 +74,16 @@ enum Pairing {
     Failed(String),
 }
 
+/// Ce dont dépendent les courbes : si rien n'a changé, elles ne sont pas recalculées.
+#[derive(Clone, Copy, PartialEq)]
+struct TempCacheKey {
+    epoch: u64,
+    window: TimeWindow,
+    /// Instant arrondi à 2 s : la fenêtre glisse, sans recalcul à chaque image.
+    second: i64,
+    buckets: usize,
+}
+
 /// À quoi sert une requête en vol : la réponse est aiguillée d'après son numéro.
 enum Pending {
     History {
@@ -83,6 +93,7 @@ enum Pending {
     TempHistory {
         node_id: u64,
         window: TimeWindow,
+        buckets: usize,
     },
     /// Commande dont seul l'échec compte (son effet arrive en événements).
     Command {
@@ -164,6 +175,14 @@ pub struct MatterApp {
     temp_window: TimeWindow,
     temp_series: HashMap<u64, TempFetch>,
     temp_hidden: HashSet<u64>,
+    /// Nombre de tranches voulu, d'après la largeur du graphique à la dernière image.
+    temp_buckets: usize,
+    /// Couleur (rang dans la palette) de chaque thermomètre, gardée tant que le client tourne.
+    temp_colors: HashMap<u64, usize>,
+    /// Compteur qui change à chaque événement ou réponse : invalide `temp_cache`.
+    data_epoch: u64,
+    /// Courbes calculées, avec la clé qui les a produites.
+    temp_cache: Option<(TempCacheKey, Vec<temperatures::Curve>)>,
     export_message: Option<(bool, String)>,
     /// Dernière erreur d'une commande, affichée sous la barre du haut.
     error_banner: Option<(Instant, String)>,
@@ -230,6 +249,10 @@ impl MatterApp {
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
             temp_hidden: HashSet::new(),
+            temp_buckets: 800,
+            temp_colors: HashMap::new(),
+            data_epoch: 0,
+            temp_cache: None,
             export_message: None,
             error_banner: None,
             log: VecDeque::new(),
@@ -261,8 +284,11 @@ impl MatterApp {
     }
 
     /// Ouvre l'onglet « Températures ».
-    pub fn show_temperatures(&mut self) {
+    pub fn show_temperatures(&mut self, period: Option<TimeWindow>) {
         self.view = View::Temperatures;
+        if let Some(period) = period {
+            self.temp_window = period;
+        }
     }
 
     /// Ouvre l'onglet « Plan de la maison ».
@@ -630,7 +656,12 @@ impl MatterApp {
     /// Page Températures : lit l'historique de chaque thermomètre (une requête par appareil,
     /// réduite par tranches côté serveur) quand la page s'ouvre ou que la période change.
     fn maintain_temperatures(&mut self) {
-        if !self.connected() || self.view != View::Temperatures {
+        if self.view != View::Temperatures {
+            // Le plan ou les noms ont pu changer pendant ce temps : courbes à refaire.
+            self.temp_cache = None;
+            return;
+        }
+        if !self.connected() {
             return;
         }
         let ids: Vec<u64> = self
@@ -643,14 +674,21 @@ impl MatterApp {
         self.temp_series.retain(|id, _| ids.contains(id));
         let now = now_unix();
         let window = self.temp_window;
+        let buckets = self.temp_buckets;
         for id in ids {
-            if !self.temp_series.entry(id).or_default().needs_fetch(window) {
+            if !self
+                .temp_series
+                .entry(id)
+                .or_default()
+                .needs_fetch(window, buckets)
+            {
                 continue;
             }
-            let path = temps::history_path(id, window, now);
+            let path = temps::history_path(id, window, now, buckets);
             let pending = Pending::TempHistory {
                 node_id: id,
                 window,
+                buckets,
             };
             if let Some(req_id) = self.request(pending, Request::get(path)) {
                 if let Some(entry) = self.temp_series.get_mut(&id) {
@@ -661,11 +699,10 @@ impl MatterApp {
     }
 
     /// Les courbes de la page : un thermomètre, une courbe, dans l'ordre de leurs noms.
-    fn temperature_curves(&self, now: f64) -> Vec<temperatures::Curve> {
+    fn temperature_curves(&mut self, now: f64) -> Vec<temperatures::Curve> {
         let window = self.temp_window;
+        let buckets = self.temp_buckets;
         let start = window.start(now);
-        // La couleur suit le rang de l'appareil, pas celui du nom : elle ne change pas au
-        // renommage.
         let mut ids: Vec<u64> = self
             .model
             .devices
@@ -674,16 +711,29 @@ impl MatterApp {
             .map(|(id, _)| *id)
             .collect();
         ids.sort_unstable();
+        // Couleur stable : tirée de l'identifiant, décalée à la première couleur libre si un autre
+        // appareil l'a déjà, puis gardée (une couleur ne change plus tant que le client tourne).
+        for id in &ids {
+            if !self.temp_colors.contains_key(id) {
+                let taken: HashSet<usize> = self.temp_colors.values().copied().collect();
+                let first = temperatures::preferred_color_index(*id);
+                let pick = (0..temperatures::PALETTE_LEN)
+                    .map(|k| (first + k) % temperatures::PALETTE_LEN)
+                    .find(|i| !taken.contains(i))
+                    // Plus de couleur libre : au-delà de la palette, des teintes calculées.
+                    .unwrap_or(temperatures::PALETTE_LEN + self.temp_colors.len());
+                self.temp_colors.insert(*id, pick);
+            }
+        }
         let mut curves: Vec<temperatures::Curve> = ids
             .iter()
-            .enumerate()
-            .filter_map(|(rank, id)| {
+            .filter_map(|id| {
                 let device = self.model.devices.get(id)?;
                 let points = self
                     .temp_series
                     .get(id)
                     .and_then(|f| f.data.get(protocol::wire::Metric::Temperature))
-                    .map(|s| temps::curve_points(s, start, now))
+                    .map(|s| temps::curve_points(s, start, now, buckets))
                     .unwrap_or_default();
                 Some(temperatures::Curve {
                     node_id: *id,
@@ -691,9 +741,9 @@ impl MatterApp {
                         &device.info.name,
                         self.plan.plan().room_name_of(*id),
                     ),
-                    color: temperatures::color_for(rank),
+                    color: temperatures::color_for(self.temp_colors[id]),
                     points,
-                    gap_s: temps::gap_threshold(device.mode.as_ref(), window),
+                    gap_s: temps::gap_threshold(device.mode.as_ref(), window, buckets),
                     current: device.temperature().map(|r| r.value),
                 })
             })
@@ -704,7 +754,19 @@ impl MatterApp {
 
     fn temperatures_page(&mut self, ui: &mut egui::Ui) {
         let now = now_unix();
-        let curves = self.temperature_curves(now);
+        // Graphique moins la graduation de l'axe vertical : une tranche par pixel.
+        self.temp_buckets = temps::buckets_for_width(ui.available_width() - 70.0);
+        let key = TempCacheKey {
+            epoch: self.data_epoch,
+            window: self.temp_window,
+            second: (now / 2.0).floor() as i64,
+            buckets: self.temp_buckets,
+        };
+        if self.temp_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let curves = self.temperature_curves(now);
+            self.temp_cache = Some((key, curves));
+        }
+        let (key, curves) = self.temp_cache.take().expect("calculé ci-dessus");
         let mut status = temperatures::Status::default();
         for f in self.temp_series.values() {
             status.loading += usize::from(f.data.loading.is_some());
@@ -724,6 +786,7 @@ impl MatterApp {
             &status,
             now,
         );
+        self.temp_cache = Some((key, curves));
         self.temp_window = window;
         if outcome.retry {
             for f in self.temp_series.values_mut() {
@@ -743,6 +806,7 @@ impl MatterApp {
     }
 
     fn on_event(&mut self, event: Event) {
+        self.data_epoch += 1;
         match event {
             Event::Link(link) => self.on_link(link),
             Event::Snapshot(snapshot) => self.on_snapshot(*snapshot),
@@ -897,7 +961,7 @@ impl MatterApp {
         }
         // Les séries lues avant ne tiennent plus compte de ce qui a pu se passer : relecture.
         for s in self.series.values_mut() {
-            s.fetched_since = None;
+            s.invalidate();
         }
         for s in self.temp_series.values_mut() {
             s.invalidate();
@@ -1006,6 +1070,7 @@ impl MatterApp {
         let Some(pending) = self.pending.remove(&id) else {
             return;
         };
+        self.data_epoch += 1;
         match pending {
             Pending::History { node_id } => {
                 let Some(entry) = self.series.get_mut(&node_id) else {
@@ -1020,7 +1085,11 @@ impl MatterApp {
                     Err(e) => entry.error = Some(e.message()),
                 }
             }
-            Pending::TempHistory { node_id, window } => {
+            Pending::TempHistory {
+                node_id,
+                window,
+                buckets,
+            } => {
                 let Some(entry) = self.temp_series.get_mut(&node_id) else {
                     return;
                 };
@@ -1032,6 +1101,7 @@ impl MatterApp {
                     Ok(h) => {
                         entry.data.load(h.since, h.truncated, &h.points);
                         entry.window = Some(window);
+                        entry.buckets = buckets;
                     }
                     Err(e) => entry.data.error = Some(e.message()),
                 }

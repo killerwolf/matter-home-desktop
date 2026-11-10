@@ -10,7 +10,7 @@
 /// quelle. Les points hors fenêtre sont rattachés à la première ou à la dernière tranche.
 pub fn min_max(points: &[(f64, f64)], since: f64, until: f64, buckets: usize) -> Vec<(f64, f64)> {
     let buckets = buckets.max(1);
-    if points.len() <= 2 * buckets + 2
+    if points.len() <= buckets.saturating_mul(2).saturating_add(2)
         || until.partial_cmp(&since) != Some(std::cmp::Ordering::Greater)
     {
         return points.to_vec();
@@ -24,7 +24,11 @@ pub fn min_max(points: &[(f64, f64)], since: f64, until: f64, buckets: usize) ->
             (i as usize).min(buckets - 1)
         }
     };
-    let mut out: Vec<(f64, f64)> = Vec::with_capacity(2 * buckets + 2);
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(
+        points
+            .len()
+            .min(buckets.saturating_mul(2).saturating_add(2)),
+    );
     // `lo` / `hi` : positions (dans `points`) du minimum et du maximum de la tranche en cours.
     let mut start = 0;
     while start < points.len() {

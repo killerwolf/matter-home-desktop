@@ -264,7 +264,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         infos.insert(info.node_id, info);
     }
 
-    // Une semaine de température déjà « reçue » (une mesure toutes les 2 minutes, un cycle
+    // Une semaine de température déjà « reçue » (une mesure toutes les 5 minutes, un cycle
     // jour / nuit, une panne de 3 heures de la chambre), pour la page Températures. Elle
     // s'arrête où commencent les 90 minutes ci-dessous.
     let now = now_unix();
@@ -287,7 +287,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                 t,
             );
         }
-        t += 120.0;
+        t += 300.0;
     }
 
     // 90 minutes d'historique déjà « reçu », pour que les graphiques aient de quoi afficher.

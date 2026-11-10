@@ -1641,6 +1641,33 @@ fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings(
     f.app.maintain_temperatures();
     assert_eq!(f.pending_ids().len(), 2);
 
+    // Resynchronisation pendant une lecture en vol : la réponse tardive ne rétablit pas des
+    // points périmés, et la lecture repart d'elle-même.
+    let in_flight = f.pending_ids();
+    assert_eq!(in_flight.len(), 2);
+    for t in f.app.temp_series.values_mut() {
+        t.invalidate();
+    }
+    for id in &in_flight {
+        let node_id = match f.app.pending.get(id) {
+            Some(Pending::TempHistory { node_id, .. }) => *node_id,
+            _ => panic!("requête inattendue"),
+        };
+        f.send(reply(*id, node_id, &[(1.0, 1.0)]));
+    }
+    f.app.pump_network();
+    assert_eq!(
+        f.app.temp_series[&1].data.fetched_since, None,
+        "invalidation conservée"
+    );
+    assert_eq!(f.app.temp_series[&1].data.len(Metric::Temperature), 3);
+    f.app.maintain_temperatures();
+    assert_eq!(
+        f.pending_ids().len(),
+        2,
+        "relecture après la resynchronisation"
+    );
+
     // Appareil retiré : sa lecture est oubliée.
     f.live(WireEvent::DeviceRemoved { node_id: 2 });
     assert!(!f.app.temp_series.contains_key(&2));

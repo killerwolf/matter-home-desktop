@@ -18,7 +18,7 @@ Les téléchargements de chaque version sont sur la
   1 semaine**. Légende cliquable (masquer ou afficher une courbe, avec la température actuelle),
   et au survol l'heure et la valeur de chaque courbe à cet instant. Les courbes sont coupées là où
   il manque des mesures (capteur injoignable, piles vides), jamais reliées à travers un trou. Les
-  nouvelles mesures s'ajoutent en direct. Option `--temperatures` pour ouvrir directement la page.
+  nouvelles mesures s'ajoutent en direct. Option `--temperatures` (avec `--period 1h|24h|1w`) pour ouvrir directement la page.
   La fiche d'un thermomètre gagne aussi la fenêtre « 24 h ».
 - **Historique réduit par tranches** : `GET /api/devices/{id}/history` accepte `buckets=N` (au plus
   2 000). La fenêtre est découpée en N tranches et chaque grandeur garde le **minimum et le
@@ -30,7 +30,6 @@ Les téléchargements de chaque version sont sur la
   Détails dans `docs/protocole.md`.
 - Mode démo : une semaine de températures (salon, chambre avec une panne de 3 heures) est déjà
   là au démarrage, pour la page Températures.
-
 - **Matter Home Server**, le serveur en application de la barre de menus (`crates/server-app`) :
   un DMG à glisser dans Applications, une icône en haut de l'écran (sans icône dans le Dock), toute
   la configuration dans une petite fenêtre, **jamais de Terminal ni de mot de passe
