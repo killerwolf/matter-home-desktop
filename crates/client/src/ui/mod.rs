@@ -785,8 +785,9 @@ impl MatterApp {
                 let points = series
                     .map(|s| temps::curve_points(s, start, now, buckets))
                     .unwrap_or_default();
+                let gap_s = temps::gap_threshold(device.mode.as_ref(), window, buckets);
                 let line = series
-                    .map(|s| temps::line_points(s, start, now, buckets))
+                    .map(|s| temps::line_segments(s, start, now, buckets, gap_s))
                     .unwrap_or_default();
                 Some(temperatures::Curve {
                     node_id: *id,
@@ -887,7 +888,7 @@ impl MatterApp {
             Event::FileRead { id, result } => self.on_file_read(id, result),
             Event::Probed { url, fingerprint } => self.connect.probed(url, fingerprint),
             Event::ProbeFailed(e) | Event::LoginFailed(e) => {
-                self.connect.failed(e.message());
+                self.connect.failed(&e);
             }
             Event::Notice(text) => self.push_log(text),
         }

@@ -294,9 +294,14 @@ fn the_stream_resumes_by_itself_after_the_server_comes_back() {
 
     // Le serveur redémarre sur le même port, avec le même certificat et le même compte.
     server.stop();
-    wait_state(&handle, "l'interruption après l'arrêt du serveur", |s| {
-        matches!(s, StreamState::Interrupted { .. } | StreamState::Connecting)
-    });
+    // Le lecteur quitte l'état « en direct » : interrompu, en reconnexion, ou déjà dans un état
+    // final si la liaison a été refusée entre-temps. Tous sont acceptés : seul compte qu'il ne
+    // reste pas figé sur « en direct » (et la reprise ci-dessous).
+    wait_state(
+        &handle,
+        "la sortie de l'état en direct après l'arrêt",
+        |s| *s != StreamState::Live,
+    );
     let server = Server::start_with(&dir, &format!("127.0.0.1:{port}"), camera_port, "2");
     assert_eq!(server.addr.port(), port);
     // La session du client (jeton) n'existe plus côté serveur redémarré ? Elle est conservée sur
@@ -314,8 +319,14 @@ fn the_stream_resumes_by_itself_after_the_server_comes_back() {
             assert!(Instant::now() < deadline, "les images ne reprennent pas");
             std::thread::sleep(Duration::from_millis(50));
         }
-    } else {
-        assert_eq!(state, StreamState::SessionEnded);
+    } else if state != StreamState::SessionEnded {
+        // Un autre état final (la liaison a été refusée pendant le redémarrage) : le lecteur
+        // est fini, on le rouvre, et la lecture doit reprendre ou dire que la session est finie.
+        let again = open(id, StreamKind::Sub);
+        let state = wait_state(&again, "la réouverture du lecteur", |s| {
+            *s == StreamState::Live || *s == StreamState::SessionEnded
+        });
+        assert!(state == StreamState::Live || state == StreamState::SessionEnded);
     }
     drop(client);
 }

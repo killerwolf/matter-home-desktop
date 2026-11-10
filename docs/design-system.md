@@ -39,6 +39,7 @@ arrondie.
 |---|---|
 | `meta` | version et commentaires ; ignoré par le client et par le générateur CSS |
 | `colors.light`, `colors.dark` | `bg` (fond), `surface`, `surface_alt`, `line`, `text`, `text_secondary`, `accent`, `accent_soft`, `accent_text`, `on_accent`, `ok`, `warn` (alerte), `on_warn`, `error`, `banner_warn`, `banner_info` (bandeaux), `no_sensor` (gris « pas de capteur »), `series_*` (courbes) |
+| (dans `colors`) | `video_bg` et `video_text` : le fond sombre d'une image vidéo et son texte, les mêmes dans les deux thèmes (voulu) ; `series_1` à `series_8` : les courbes |
 | `temperature` | `stops` : cinq paliers de 2 °C, du bleu à 16 °C au rouge à 24 °C ; `step` ; `fill_alpha` (transparence de l'aplat d'une pièce) |
 | `space` | `xs` 4, `sm` 8, `md` 12, `lg` 16, `xl` 24 |
 | `radius` | `sm` 4, `md` 6, `lg` 8 |

@@ -35,6 +35,9 @@ pub struct RulesView {
     confirm_delete: bool,
     /// L'historique des exécutions est ouvert (depuis la barre d'état).
     history_open: bool,
+    /// Rectangle du premier interrupteur de la liste (tests : où cliquer).
+    #[cfg(test)]
+    first_switch: egui::Rect,
     /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
     sync: SyncState<RuleSet>,
 }
@@ -192,14 +195,62 @@ fn bool_picker(
     changed
 }
 
-fn hhmm(ui: &mut egui::Ui, h: &mut u8, m: &mut u8) -> bool {
-    let a = ui
-        .add(egui::DragValue::new(h).range(0..=23).suffix(" h"))
-        .changed();
-    let b = ui
-        .add(egui::DragValue::new(m).range(0..=59).suffix(" min"))
-        .changed();
-    a || b
+/// « 22:00 », « 7:05 » : une heure et des minutes valides, sinon `None`.
+pub fn parse_hhmm(text: &str) -> Option<(u8, u8)> {
+    let (h, m) = text.trim().split_once(':')?;
+    let digits = |t: &str| (1..=2).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit());
+    if !digits(h) || !digits(m) {
+        return None;
+    }
+    let (h, m): (u8, u8) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// Un seul champ « hh:mm ». Tant qu'on écrit, le texte est gardé tel quel ; une valeur invalide
+/// est entourée en rouge et ne change rien à la règle ; en quittant le champ, le texte reprend
+/// la valeur de la règle.
+fn hhmm(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    h: &mut u8,
+    m: &mut u8,
+) -> bool {
+    let id = ui.make_persistent_id(salt);
+    let editing = ui.memory(|mem| mem.has_focus(id));
+    let mut text: String = if editing {
+        ui.data_mut(|d| d.get_temp(id))
+            .unwrap_or_else(|| format!("{h:02}:{m:02}"))
+    } else {
+        format!("{h:02}:{m:02}")
+    };
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .hint_text("hh:mm")
+            .desired_width(52.0),
+    );
+    let parsed = parse_hhmm(&text);
+    let mut changed = false;
+    match parsed {
+        Some((nh, nm)) => {
+            if (nh, nm) != (*h, *m) {
+                *h = nh;
+                *m = nm;
+                changed = true;
+            }
+        }
+        None => {
+            ui.painter().rect_stroke(
+                response.rect,
+                theme::tokens().radius.sm,
+                egui::Stroke::new(1.5, theme::palette(ui).error),
+                egui::StrokeKind::Outside,
+            );
+            response.on_hover_text("Heure invalide : écrivez hh:mm, par exemple 22:00.");
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, text));
+    changed
 }
 
 fn trigger_kind(t: &Trigger) -> usize {
@@ -306,9 +357,50 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
             Action::Delay { seconds } => format!("attendre {seconds} s"),
         })
         .collect();
-    // Une phrase : « Quand Porte s'ouvre, allumer Lampe, attendre 30 s. »
+    let conditions: Vec<String> = rule
+        .conditions
+        .iter()
+        .map(|c| match c {
+            Condition::TimeBetween { from, to } => format!(
+                "il est entre {:02}:{:02} et {:02}:{:02}",
+                from.0, from.1, to.0, to.1
+            ),
+            Condition::Contact { node_id, open } => format!(
+                "{} est {}",
+                name(*node_id),
+                super::devices::open_label(*open).to_lowercase()
+            ),
+            Condition::Switch { node_id, on } => format!(
+                "{} est {}",
+                name(*node_id),
+                if *on { "allumée" } else { "éteinte" }
+            ),
+            Condition::Threshold {
+                node_id,
+                measure,
+                above,
+                value,
+            } => format!(
+                "{} : {} {} {value}",
+                name(*node_id),
+                measure_label(*measure),
+                if *above { ">" } else { "<" }
+            ),
+        })
+        .collect();
+    // Une phrase : « Quand Porte s'ouvre, seulement si il est entre 22:00 et 07:00, allumer
+    // Lampe. » ; une règle à heure fixe commence par l'heure : « À 23:00, éteindre Prise. »
+    let lead = match &rule.trigger {
+        Trigger::Time { .. } => when.replace("à ", "À "),
+        _ => format!("Quand {when}"),
+    };
+    let only = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(", seulement si {}", conditions.join(" et "))
+    };
     format!(
-        "Quand {when}, {}.",
+        "{lead}{only}, {}.",
         if then.is_empty() {
             "ne rien faire".into()
         } else {
@@ -325,6 +417,8 @@ impl RulesView {
             selected: None,
             confirm_delete: false,
             history_open: false,
+            #[cfg(test)]
+            first_switch: egui::Rect::NOTHING,
             sync: SyncState::with_check(rules_problem),
         }
     }
@@ -459,8 +553,13 @@ impl RulesView {
                 self.selected = Some(id);
                 changed = true;
             }
+            // Une ligne discrète, au lieu d'un paragraphe sous le titre.
+            ui.label(
+                RichText::new("Les règles s'exécutent sur le serveur, tant qu'il tourne.")
+                    .small()
+                    .color(theme::palette(ui).text_secondary),
+            );
         });
-        ui.small("Les règles s'exécutent sur le serveur, tant qu'il tourne.");
         self.remote_banner(ui);
         self.draft_banner(ui);
         ui.separator();
@@ -539,7 +638,8 @@ impl RulesView {
                     if self.set.rules.is_empty() {
                         ui.label("Aucune règle. Cliquez sur « + Nouvelle règle ».");
                     }
-                    for rule in &mut self.set.rules {
+                    for (row, rule) in self.set.rules.iter_mut().enumerate() {
+                        let _ = row; // (utilisé seulement par les tests)
                         let selected = self.selected == Some(rule.id);
                         let p = theme::palette(ui);
                         let fill = if selected {
@@ -547,41 +647,82 @@ impl RulesView {
                         } else {
                             Color32::TRANSPARENT
                         };
-                        let resp = egui::Frame::new()
-                            .fill(fill)
-                            .corner_radius(theme::tokens().radius.md)
-                            .inner_margin(egui::Margin::same(theme::tokens().space.sm as i8))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    changed |= theme::toggle_switch(ui, &mut rule.enabled)
-                                        .on_hover_text("Activée")
-                                        .changed();
-                                    ui.label(RichText::new(&rule.name).strong());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if let Some(last) =
-                                                runs.iter().rev().find(|r| r.rule_id == rule.id)
-                                            {
-                                                let color = if last.ok { p.ok } else { p.error };
-                                                ui.label(
-                                                    RichText::new(ago(now_unix() - last.at))
-                                                        .small()
-                                                        .color(color),
-                                                );
+                        // Le clic de la ligne est posé AVANT son contenu (`sense` du scope) : un
+                        // clic sur l'interrupteur, posé après, l'emporte sur lui.
+                        let row_scope = ui.scope_builder(
+                            egui::UiBuilder::new().sense(egui::Sense::click()),
+                            |ui| {
+                                egui::Frame::new()
+                                    .fill(fill)
+                                    .corner_radius(theme::tokens().radius.md)
+                                    .inner_margin(egui::Margin::same(
+                                        theme::tokens().space.sm as i8,
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            let switch = theme::toggle_switch(
+                                                ui,
+                                                &mut rule.enabled,
+                                                "Activée",
+                                            )
+                                            .on_hover_text("Activée");
+                                            #[cfg(test)]
+                                            if row == 0 {
+                                                self.first_switch = switch.rect;
                                             }
-                                        },
-                                    );
-                                });
-                                ui.label(
-                                    RichText::new(summary(rule, devices))
-                                        .small()
-                                        .color(p.text_secondary),
-                                );
-                            })
-                            .response;
-                        if resp.interact(egui::Sense::click()).clicked() {
+                                            changed |= switch.changed();
+                                            let name_color = if rule.enabled {
+                                                p.text
+                                            } else {
+                                                p.text_secondary
+                                            };
+                                            ui.label(
+                                                RichText::new(&rule.name)
+                                                    .strong()
+                                                    .color(name_color),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if let Some(last) = runs
+                                                        .iter()
+                                                        .rev()
+                                                        .find(|r| r.rule_id == rule.id)
+                                                    {
+                                                        // Une réussite reste discrète ; un échec le dit avec le mot.
+                                                        let (text, color) = if last.ok {
+                                                            (
+                                                                ago(now_unix() - last.at),
+                                                                p.text_secondary,
+                                                            )
+                                                        } else {
+                                                            (
+                                                                format!(
+                                                                    "échec {}",
+                                                                    ago(now_unix() - last.at)
+                                                                ),
+                                                                p.warn,
+                                                            )
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(text)
+                                                                .small()
+                                                                .color(color),
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.label(
+                                            RichText::new(summary(rule, devices))
+                                                .small()
+                                                .color(p.text_secondary),
+                                        );
+                                    })
+                            },
+                        );
+                        if row_scope.response.clicked() {
                             self.selected = Some(rule.id);
                             self.confirm_delete = false;
                         }
@@ -689,7 +830,7 @@ impl RulesView {
             changed |= ui
                 .add(egui::TextEdit::singleline(&mut rule.name).desired_width(260.0))
                 .changed();
-            changed |= theme::toggle_switch(ui, &mut rule.enabled).changed();
+            changed |= theme::toggle_switch(ui, &mut rule.enabled, "Activée").changed();
             ui.label("Activée");
             if ui
                 .button("Essayer maintenant")
@@ -796,7 +937,7 @@ impl RulesView {
                 }
             }
             Trigger::Time { hour, minute, days } => {
-                changed |= hhmm(ui, hour, minute);
+                changed |= hhmm(ui, ("t_time", rid), hour, minute);
                 for (i, d) in DAYS.iter().enumerate() {
                     changed |= ui.toggle_value(&mut days[i], *d).changed();
                 }
@@ -805,16 +946,16 @@ impl RulesView {
         ui.add_space(6.0);
 
         // SI
-        ui.heading("Seulement si (toutes les conditions)");
+        ui.heading("Seulement si");
         let mut remove_cond = None;
         for (i, cond) in rule.conditions.iter_mut().enumerate() {
             ui.horizontal_wrapped(|ui| {
                 match cond {
                     Condition::TimeBetween { from, to } => {
                         ui.label("entre");
-                        changed |= hhmm(ui, &mut from.0, &mut from.1);
+                        changed |= hhmm(ui, ("c_from", rid, i), &mut from.0, &mut from.1);
                         ui.label("et");
-                        changed |= hhmm(ui, &mut to.0, &mut to.1);
+                        changed |= hhmm(ui, ("c_to", rid, i), &mut to.0, &mut to.1);
                     }
                     Condition::Contact { node_id, open } => {
                         changed |=
@@ -1102,6 +1243,73 @@ mod tests {
     use protocol::events::Capabilities;
     use protocol::wire::WireNode;
 
+    /// Un clic sur l'interrupteur de la liste bascule la règle, et ne la sélectionne pas : le clic
+    /// de la ligne, posé après celui de l'interrupteur, ne doit pas l'emporter.
+    #[test]
+    fn clicking_the_switch_in_the_list_toggles_the_rule() {
+        use eframe::egui::{Context, Event, PointerButton, Pos2, RawInput, Rect};
+        let ctx = Context::default();
+        let mut view = RulesView::new();
+        let mut rule = Rule::new(1);
+        rule.enabled = false;
+        view.set.rules.push(rule);
+        let devices = BTreeMap::new();
+        let runs = VecDeque::new();
+        let frame = |view: &mut RulesView, events: Vec<Event>| {
+            let mut input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 600.0))),
+                ..Default::default()
+            };
+            input.events = events;
+            let mut out = ctx.run_ui(input, |ui| {
+                view.show(ui, &devices, &runs);
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut view, vec![]);
+        frame(&mut view, vec![]);
+        let at = view.first_switch.center();
+        assert!(view.first_switch != Rect::NOTHING, "interrupteur dessiné");
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut view, vec![Event::PointerMoved(at)]);
+        frame(&mut view, vec![button(true)]);
+        frame(&mut view, vec![button(false)]);
+        frame(&mut view, vec![]);
+        assert!(view.set.rules[0].enabled, "la règle s'active");
+        assert_eq!(view.selected, None, "et n'est pas sélectionnée");
+        // Un clic ailleurs sur la ligne la sélectionne toujours.
+        let elsewhere = at + egui::vec2(140.0, 0.0);
+        let press = |pressed| Event::PointerButton {
+            pos: elsewhere,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut view, vec![Event::PointerMoved(elsewhere)]);
+        frame(&mut view, vec![press(true)]);
+        frame(&mut view, vec![press(false)]);
+        frame(&mut view, vec![]);
+        assert_eq!(view.selected, Some(1));
+        assert!(view.set.rules[0].enabled, "sans la basculer");
+    }
+
+    #[test]
+    fn a_time_is_one_valid_hh_mm_field() {
+        assert_eq!(parse_hhmm("22:00"), Some((22, 0)));
+        assert_eq!(parse_hhmm("7:05"), Some((7, 5)));
+        assert_eq!(parse_hhmm(" 07:5 "), Some((7, 5)));
+        for bad in [
+            "", "24:00", "12:60", "12", "12:", ":30", "ab:cd", "1:2:3", "123:00",
+        ] {
+            assert_eq!(parse_hhmm(bad), None, "{bad:?}");
+        }
+    }
+
     fn webhook_rule(id: u64, enabled: bool, url: &str) -> Rule {
         let mut rule = Rule::new(id);
         rule.enabled = enabled;
@@ -1203,6 +1411,32 @@ mod tests {
                 command: CoverCommand::Position(30),
             },
         ];
+        // Une règle à heure fixe commence par l'heure ; les conditions sont dans la phrase.
+        let mut timed = Rule::new(2);
+        timed.trigger = Trigger::Time {
+            hour: 23,
+            minute: 0,
+            days: [true; 7],
+        };
+        timed.actions = vec![Action::SetOnOff {
+            node_id: 8,
+            command: OnOffCommand::Off,
+        }];
+        assert_eq!(summary(&timed, &devices), "À 23:00, éteindre Lampe.");
+        timed.conditions = vec![
+            Condition::Contact {
+                node_id: 7,
+                open: false,
+            },
+            Condition::TimeBetween {
+                from: (22, 0),
+                to: (7, 0),
+            },
+        ];
+        assert_eq!(
+            summary(&timed, &devices),
+            "À 23:00, seulement si Porte est fermée et il est entre 22:00 et 07:00, éteindre Lampe."
+        );
         assert_eq!(
             summary(&r, &devices),
             "Quand Porte s'ouvre, allumer Lampe, attendre 30 s, ouvrir à 30 % Volet."

@@ -168,7 +168,12 @@ Les téléchargements de chaque version sont sur la
   sur toute la période (une moyenne par tranche de trois pixels, au lieu du minimum et du maximum
   qui faisaient des barres épaisses là où les mesures sont serrées et un trait fin ailleurs ; le
   minimum et le maximum affichés restent exacts, et un vrai trou de mesures reste un trou).
-  Options d'essai : `--cameras`, `--camera X`.
+  Options d'essai : `--cameras`, `--camera X`. Corrections de revue : la ligne n'est plus coupée
+  en morceaux sur une semaine (elle ne l'est que sur une vraie plage sans mesure) et une bande
+  pâle du minimum au maximum garde les pics visibles ; l'interrupteur d'une règle bascule
+  vraiment (le clic de la ligne ne le recouvre plus) ; une caméra hors ligne est signalée en
+  orange et son nom grisé ; un seul champ d'heure « 22:00 » validé ; les règles disent leurs
+  conditions et leur heure dans la phrase ; l'erreur de connexion est placée d'après sa nature.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.

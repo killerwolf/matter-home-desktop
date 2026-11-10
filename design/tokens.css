@@ -29,6 +29,8 @@
   --color-surface-alt: #ecebe7;
   --color-text: #1d1f23;
   --color-text-secondary: #62676f;
+  --color-video-bg: #141414;
+  --color-video-text: #dcdcdc;
   --color-warn: #b3590a;
   --temp-16: #3b7fc4;
   --temp-18: #4f9fc0;
@@ -95,6 +97,8 @@
     --color-surface-alt: #2c2c2c;
     --color-text: #e6e6e6;
     --color-text-secondary: #9a9a9a;
+    --color-video-bg: #141414;
+    --color-video-text: #dcdcdc;
     --color-warn: #e8853a;
   }
 }

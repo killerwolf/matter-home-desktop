@@ -88,32 +88,82 @@ pub fn curve_points(series: &Series, start: f64, now: f64, buckets: usize) -> Ve
     protocol::downsample::min_max(&raw, start, now, buckets)
 }
 
-/// Points de la **ligne** : un point par tranche d'environ trois pixels, à la moyenne des mesures
-/// de la tranche. Les points de `curve_points` (minimum et maximum de chaque tranche, pour le
-/// minimum et le maximum affichés) donnent, là où les mesures sont serrées, des barres épaisses,
-/// et, là où elles sont espacées, un trait fin : la ligne n'a ainsi pas la même épaisseur selon
-/// la période. Avec une seule densité partout, le trait reste le même sur toute la période. Une
-/// tranche sans mesure n'a pas de point : un vrai trou reste un trou (voir `split_gaps`).
-pub fn line_points(series: &Series, start: f64, now: f64, buckets: usize) -> Vec<(f64, f64)> {
+/// Un morceau continu de la ligne : la moyenne par tranche, et pour chaque tranche le minimum et
+/// le maximum (la bande pâle sous la ligne, pour que les pics restent visibles).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LineSegment {
+    /// `(instant, moyenne)`.
+    pub mean: Vec<(f64, f64)>,
+    /// `(instant, minimum, maximum)`.
+    pub band: Vec<(f64, f64, f64)>,
+}
+
+/// La **ligne** d'une courbe : un point par tranche d'environ trois pixels, à la moyenne des
+/// mesures de la tranche (une seule densité sur toute la période : les points minimum et maximum
+/// de `curve_points` donnaient des barres épaisses là où les mesures sont serrées et un trait fin
+/// ailleurs). Elle est coupée sur les **tranches vides** : seule une plage de tranches sans
+/// aucune mesure, plus longue que `gap_s`, est un vrai trou. Le décalage d'un instant moyen d'une
+/// tranche à l'autre n'en fait jamais un.
+pub fn line_segments(
+    series: &Series,
+    start: f64,
+    now: f64,
+    buckets: usize,
+    gap_s: f64,
+) -> Vec<LineSegment> {
     let n = (buckets / 3).max(1);
     let span = now - start;
     if span <= 0.0 {
         return Vec::new();
     }
-    let mut sums = vec![(0.0_f64, 0.0_f64, 0_u32); n];
+    let width = span / n as f64;
+    #[derive(Clone, Copy)]
+    struct Cell {
+        t: f64,
+        v: f64,
+        lo: f64,
+        hi: f64,
+        count: u32,
+    }
+    let mut cells = vec![
+        Cell {
+            t: 0.0,
+            v: 0.0,
+            lo: f64::INFINITY,
+            hi: f64::NEG_INFINITY,
+            count: 0,
+        };
+        n
+    ];
     for s in series.since(start).filter(|s| s.value.is_finite()) {
         let i = (((s.t - start) / span) * n as f64)
             .floor()
             .clamp(0.0, (n - 1) as f64) as usize;
-        let cell = &mut sums[i];
-        cell.0 += s.t;
-        cell.1 += s.value;
-        cell.2 += 1;
+        let c = &mut cells[i];
+        c.t += s.t;
+        c.v += s.value;
+        c.lo = c.lo.min(s.value);
+        c.hi = c.hi.max(s.value);
+        c.count += 1;
     }
-    sums.into_iter()
-        .filter(|c| c.2 > 0)
-        .map(|c| (c.0 / f64::from(c.2), c.1 / f64::from(c.2)))
-        .collect()
+    let mut segments: Vec<LineSegment> = Vec::new();
+    let mut empty_run = 0_usize;
+    for c in cells {
+        if c.count == 0 {
+            empty_run += 1;
+            continue;
+        }
+        let k = f64::from(c.count);
+        if segments.is_empty() || empty_run as f64 * width > gap_s {
+            segments.push(LineSegment::default());
+        }
+        empty_run = 0;
+        if let Some(seg) = segments.last_mut() {
+            seg.mean.push((c.t / k, c.v / k));
+            seg.band.push((c.t / k, c.lo, c.hi));
+        }
+    }
+    segments
 }
 
 /// Coupe une courbe là où deux mesures successives sont séparées de plus de `gap` secondes :
@@ -299,14 +349,12 @@ mod header_tests {
     #[test]
     fn the_line_has_one_density_over_the_whole_period_and_keeps_real_gaps() {
         // 24 h : une mesure toutes les 5 minutes les 22 premières heures, puis toutes les 2
-        // secondes sur la dernière demi-heure ; un trou de 3 h au milieu des mesures espacées.
+        // secondes sur la dernière demi-heure.
         let (start, now) = (0.0, 86_400.0);
         let mut raw = Vec::new();
         let mut t = 0.0;
         while t < 79_200.0 {
-            if !(30_000.0..40_800.0).contains(&t) {
-                raw.push((t, 20.0 + (t / 300.0) % 2.0));
-            }
+            raw.push((t, 20.0 + (t / 300.0) % 2.0));
             t += 300.0;
         }
         let mut t = 84_600.0;
@@ -316,30 +364,67 @@ mod header_tests {
         }
         let data = series_of(&raw);
         let series = data.get(Metric::Temperature).unwrap();
-        let buckets = 900; // largeur du graphique : 300 tranches pour la ligne
-        let line = line_points(series, start, now, buckets);
-        // Pas plus d'un point par tranche, donc la zone dense n'est pas plus épaisse.
+        let buckets = 900;
+        let gap = gap_threshold(None, TimeWindow::Hour24, buckets);
+        let segments = line_segments(series, start, now, buckets, gap);
+        // Pas plus d'un point par tranche, donc la zone dense n'est pas plus épaisse ; un trou
+        // de 1 h 30 sans mesure (de 79 200 s à 84 600 s) coupe la ligne.
         let bucket = (now - start) / 300.0;
         let mut per_bucket = std::collections::HashMap::new();
-        for p in &line {
+        for p in segments.iter().flat_map(|s| &s.mean) {
             *per_bucket.entry((p.0 / bucket) as usize).or_insert(0) += 1;
         }
         assert!(per_bucket.values().all(|n| *n == 1));
-        assert!(line.len() <= 300);
-        // Le trou de 3 h reste un trou : la ligne est coupée avec le même seuil qu'avant.
-        let gap = gap_threshold(None, TimeWindow::Hour24, buckets);
-        assert!(gap < 3.0 * 3600.0);
-        let segments = split_gaps(&line, gap);
-        assert!(segments.len() >= 2, "le trou réel est relié");
-        // La valeur d'une tranche est la moyenne de ses mesures.
-        let dense: Vec<f64> = line
+        assert_eq!(segments.len(), 2, "un trou réel coupe la ligne en deux");
+        for seg in &segments {
+            assert_eq!(seg.mean.len(), seg.band.len());
+            assert!(seg.band.iter().all(|b| b.1 <= b.2));
+        }
+        // La bande suit les extrêmes de chaque tranche : la zone dense va de 21 à 24 degrés.
+        let dense = segments.last().unwrap();
+        assert!(dense.band.iter().all(|b| b.1 >= 21.0 && b.2 < 24.0));
+        // Période vide : rien.
+        assert!(line_segments(series, 10.0, 10.0, 900, gap).is_empty());
+    }
+
+    #[test]
+    fn a_week_of_continuous_data_is_one_segment_and_a_real_gap_makes_two() {
+        // 7 jours, 900 tranches : la tranche de la ligne dure 33,6 minutes (le même seuil de
+        // trou qu'avant en vaut 33,6) ; une mesure toutes les 10 minutes, dont l'instant moyen
+        // d'une tranche à l'autre varie, ne doit jamais couper la ligne.
+        let (start, now) = (0.0, 7.0 * 86_400.0);
+        let mut continuous = Vec::new();
+        let mut t = 100.0;
+        while t < now {
+            continuous.push((t, 18.0 + (t / 3600.0_f64).sin()));
+            t += 600.0;
+        }
+        let gap = gap_threshold(None, TimeWindow::All, 900);
+        let data = series_of(&continuous);
+        let one = line_segments(data.get(Metric::Temperature).unwrap(), start, now, 900, gap);
+        assert_eq!(one.len(), 1, "des données continues sont une seule ligne");
+
+        // Un vrai trou de 3 h : deux morceaux.
+        let with_gap: Vec<(f64, f64)> = continuous
             .iter()
-            .filter(|p| p.0 > 84_600.0)
-            .map(|p| p.1)
+            .copied()
+            .filter(|p| !(300_000.0..310_800.0).contains(&p.0))
             .collect();
-        assert!(dense.iter().all(|v| (21.0..24.0).contains(v)));
-        // Sans mesure ou période vide : rien.
-        assert!(line_points(series, 10.0, 10.0, 900).is_empty());
+        let data = series_of(&with_gap);
+        let two = line_segments(data.get(Metric::Temperature).unwrap(), start, now, 900, gap);
+        assert_eq!(two.len(), 2, "un trou de trois heures coupe la ligne");
+        // Sur une heure avec un rapport toutes les 5 minutes, aucune coupure.
+        let hourly: Vec<(f64, f64)> = (0..12).map(|i| (f64::from(i) * 300.0, 20.0)).collect();
+        let data = series_of(&hourly);
+        let gap = gap_threshold(None, TimeWindow::Hour1, 900);
+        let one = line_segments(
+            data.get(Metric::Temperature).unwrap(),
+            0.0,
+            3600.0,
+            900,
+            gap,
+        );
+        assert_eq!(one.len(), 1);
     }
 
     #[test]

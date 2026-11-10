@@ -4,13 +4,13 @@
 use std::collections::HashSet;
 
 use eframe::egui::{self, RichText};
-use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
+use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, Polygon, VLine};
 
 use super::theme;
 use super::thermometer::local_time;
 use matter_home_client::series::TimeWindow;
 use matter_home_client::temperatures::{
-    axis_label, local_offset_s, period_range, round_marks, split_gaps, value_at, y_label, y_marks,
+    axis_label, local_offset_s, period_range, round_marks, value_at, y_label, y_marks,
 };
 use protocol::format::format_temperature;
 
@@ -24,7 +24,7 @@ pub struct Curve {
     /// Points réduits à la largeur du graphique, du plus ancien au plus récent.
     pub points: Vec<(f64, f64)>,
     /// Points de la ligne : une densité unique sur toute la période (voir `line_points`).
-    pub line: Vec<(f64, f64)>,
+    pub line: Vec<matter_home_client::temperatures::LineSegment>,
     /// Trou de données (s) au-delà duquel la ligne est coupée.
     pub gap_s: f64,
     /// Dernière température connue (état complet, tenu à jour par les événements).
@@ -183,15 +183,29 @@ pub fn show(
             }
             for c in &visible {
                 let color = color_of(c);
-                for segment in split_gaps(&c.line, c.gap_s) {
-                    if segment.len() == 1 {
+                for segment in &c.line {
+                    let mean = &segment.mean;
+                    if mean.len() == 1 {
                         plot_ui.points(
-                            Points::new(c.label.as_str(), vec![[segment[0].0, segment[0].1]])
+                            Points::new(c.label.as_str(), vec![[mean[0].0, mean[0].1]])
                                 .color(color)
                                 .radius(2.5),
                         );
                     } else {
-                        let pts: PlotPoints = segment.iter().map(|&(t, v)| [t, v]).collect();
+                        // Une bande pâle du minimum au maximum de chaque tranche, sous la
+                        // ligne de moyenne : les pics restent visibles.
+                        // Un quadrilatère par paire de tranches (le remplissage d'egui ne sait
+                        // dessiner que des formes convexes).
+                        for pair in segment.band.windows(2) {
+                            let (a, b) = (pair[0], pair[1]);
+                            let quad = vec![[a.0, a.1], [b.0, b.1], [b.0, b.2], [a.0, a.2]];
+                            plot_ui.polygon(
+                                Polygon::new("", PlotPoints::from(quad))
+                                    .fill_color(color.gamma_multiply(0.16))
+                                    .stroke(egui::Stroke::NONE),
+                            );
+                        }
+                        let pts: PlotPoints = mean.iter().map(|&(t, v)| [t, v]).collect();
                         plot_ui.line(Line::new(c.label.as_str(), pts).color(color).width(2.0));
                     }
                 }

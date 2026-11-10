@@ -17,6 +17,9 @@ mod camera_text;
 #[path = "../src/ui/player.rs"]
 #[allow(dead_code)]
 mod player;
+#[path = "../src/ui/theme.rs"]
+#[allow(dead_code)]
+mod theme;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;

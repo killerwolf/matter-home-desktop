@@ -81,6 +81,8 @@ palette!(
     series_6,
     series_7,
     series_8,
+    video_bg,
+    video_text,
 );
 
 /// Nombre de couleurs de courbe dans les tokens (`series_1` à `series_8`).
@@ -284,7 +286,7 @@ pub fn visuals(dark: bool) -> egui::Visuals {
     // Sans ombre : un aplat et un trait fin.
     v.window_shadow = egui::Shadow::NONE;
     v.popup_shadow = egui::Shadow::NONE;
-    v.extreme_bg_color = if dark { p.bg } else { p.surface };
+    v.extreme_bg_color = if dark { p.surface_alt } else { p.surface };
     v.faint_bg_color = p.surface_alt;
     v.hyperlink_color = p.accent_text;
     v.warn_fg_color = p.warn;
@@ -412,6 +414,25 @@ pub fn primary_button(ui: &mut Ui, label: &str) -> Response {
     )
 }
 
+/// Bouton principal sur toute la largeur (écran de connexion), grisé quand `enabled` est faux.
+pub fn primary_button_wide(ui: &mut Ui, label: &str, enabled: bool, width: f32) -> Response {
+    let p = palette(ui);
+    let fill = if enabled { p.accent } else { p.surface_alt };
+    let color = if enabled {
+        p.on_accent
+    } else {
+        p.text_secondary
+    };
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(color).strong())
+            .fill(fill)
+            .stroke(Stroke::NONE)
+            .min_size(Vec2::new(width, tokens().size.control + 6.0))
+            .corner_radius(radius(tokens().radius.md)),
+    )
+}
+
 /// En-tête de pièce : petites capitales discrètes, sans cadre. `note` : à droite, en gris.
 pub fn room_header(ui: &mut Ui, name: &str, note: Option<&str>) {
     let t = tokens();
@@ -440,7 +461,8 @@ pub fn room_header(ui: &mut Ui, name: &str, note: Option<&str>) {
 pub fn status_pill(ui: &mut Ui, severity: Severity, text: &str) -> Response {
     let t = tokens();
     let color = severity.color(palette(ui));
-    ui.horizontal(|ui| {
+    // De gauche à droite, même dans une mise en page de droite à gauche : le point, puis le mot.
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = t.space.xs;
         let (dot, _) = ui.allocate_exact_size(Vec2::splat(t.size.dot), Sense::hover());
         ui.painter()
@@ -592,6 +614,8 @@ pub struct Thumb<'a> {
     pub caption: &'a str,
     /// Anomalie à signaler (injoignable), jamais l'état normal.
     pub badge: Option<(Severity, &'a str)>,
+    /// Nom grisé (caméra hors ligne).
+    pub dim: bool,
 }
 
 /// Vignette : une image 16/9 et, dessous, le nom, la pièce en légende et l'éventuelle anomalie.
@@ -620,7 +644,8 @@ pub fn thumbnail(ui: &mut Ui, width: f32, thumb: &Thumb<'_>) -> egui::Rect {
         Vec2::new(width, t.size.caption_row),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.label(RichText::new(thumb.name).color(p.text));
+            let name_color = if thumb.dim { p.text_secondary } else { p.text };
+            ui.label(RichText::new(thumb.name).color(name_color));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(thumb.caption)
@@ -636,8 +661,10 @@ pub fn thumbnail(ui: &mut Ui, width: f32, thumb: &Thumb<'_>) -> egui::Rect {
     rect
 }
 
-/// Interrupteur : une piste et un rond, sans animation.
-pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
+/// Interrupteur : une piste et un rond, sans animation. Annoncé comme une case à cocher
+/// (`label`), avec un contour au focus clavier et au survol. La piste éteinte et la piste
+/// allumée contrastent au moins 3:1 avec la surface (testé).
+pub fn toggle_switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let t = tokens();
     let p = palette(ui);
     let (rect, mut response) =
@@ -646,13 +673,26 @@ pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
         *on = !*on;
         response.mark_changed();
     }
-    let track = if *on {
-        p.ok
-    } else {
-        p.text_secondary.gamma_multiply(0.5)
-    };
+    let checked = *on;
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, checked, label));
+    let track = if *on { p.ok } else { p.text_secondary };
     let h = t.size.switch_h;
     ui.painter().rect_filled(rect, h / 2.0, track);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            h / 2.0 + 2.0,
+            Stroke::new(2.0, p.accent_text),
+            egui::StrokeKind::Outside,
+        );
+    } else if response.hovered() {
+        ui.painter().rect_stroke(
+            rect.expand(1.0),
+            h / 2.0 + 1.0,
+            Stroke::new(1.0, p.text_secondary),
+            egui::StrokeKind::Outside,
+        );
+    }
     let knob = h / 2.0 - 2.0;
     let x = if *on {
         rect.right() - h / 2.0
@@ -790,6 +830,22 @@ mod tests {
             mix(under.g(), tint.g()),
             mix(under.b(), tint.b()),
         )
+    }
+
+    #[test]
+    fn the_switch_tracks_and_the_video_text_have_enough_contrast() {
+        for dark in [false, true] {
+            let p = tokens().palette(dark);
+            for (track, what) in [(p.ok, "allumée"), (p.text_secondary, "éteinte")] {
+                assert!(
+                    contrast(track, p.surface) >= 3.0,
+                    "piste {what} ({})",
+                    dark_name(dark)
+                );
+                assert!(contrast(p.surface, track) >= 3.0, "rond sur piste {what}");
+            }
+            assert!(contrast(p.video_text, p.video_bg) >= 4.5, "texte vidéo");
+        }
     }
 
     #[test]

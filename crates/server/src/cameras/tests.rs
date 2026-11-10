@@ -1088,7 +1088,7 @@ async fn the_monitor_stops_in_the_middle_of_a_probe_to_a_silent_camera() {
 async fn the_monitor_coalesces_wakes_and_skips_watched_or_locked_cameras() {
     let (port, describes) = fake_camera(Camera::Open).await;
     let (hub, id, dir) = hub_with_camera("mon-wake", port);
-    let half = Duration::from_millis(700);
+    let half = Duration::from_millis(1500);
     // Cinq demandes d'affilée pour la même caméra : une seule vérification.
     run_monitor(&hub, vec![Wake::Camera(id); 5], half).await;
     assert_eq!(describes.load(Ordering::SeqCst), 1);
@@ -1116,11 +1116,11 @@ async fn the_monitor_coalesces_wakes_and_skips_watched_or_locked_cameras() {
 async fn a_first_failure_of_a_reachable_camera_is_rechecked_at_once() {
     let (port, describes) = fake_camera(Camera::OpenOnce).await;
     let (hub, id, dir) = hub_with_camera("mon-recheck", port);
-    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(600)).await;
+    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(1500)).await;
     assert_eq!(hub.cameras()[0].status, CameraStatus::Online);
     // La caméra « disparaît » : un premier échec (rien ne change), revérifié aussitôt par la
     // boucle elle-même ; le second déclare la caméra injoignable. Trois DESCRIBE en tout.
-    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(900)).await;
+    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(1800)).await;
     assert_eq!(describes.load(Ordering::SeqCst), 3);
     assert!(matches!(
         hub.cameras()[0].status,

@@ -182,7 +182,7 @@ fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind,
     let area = ui.available_rect_before_wrap();
     let (rect, _) = ui.allocate_exact_size(area.size(), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
+    painter.rect_filled(rect, 4.0, super::theme::palette(ui).video_bg);
     if let (Some(texture), Some((size, (par_n, par_d)))) = (&state.texture, state.shown) {
         let picture = fit(rect, size, (par_n, par_d));
         painter.image(
@@ -253,7 +253,7 @@ fn paint_notice(
         }
         ui.label(
             egui::RichText::new(&notice.text)
-                .color(egui::Color32::from_gray(230))
+                .color(super::theme::palette(ui).video_text)
                 .size(15.0),
         );
         if retry {

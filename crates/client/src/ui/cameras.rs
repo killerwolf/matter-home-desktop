@@ -11,7 +11,7 @@
 //! L'état de la page (caméra ouverte, flux principal demandé) vit dans la mémoire d'egui, pour ne
 //! rien ajouter à l'application : il disparaît avec la caméra (supprimée) ou la session.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use protocol::home::HomePlan;
 use protocol::wire::{CameraStatus, CameraView, StreamKind};
 
@@ -172,6 +172,15 @@ pub fn live_slots(tiles: &[(bool, bool)], max: usize) -> Vec<bool> {
         .collect()
 }
 
+/// `detail` redit le motif `problem` : ses trois premiers mots s'y trouvent déjà.
+fn repeats(detail: &str, problem: &str) -> bool {
+    let lead: Vec<&str> = problem.split_whitespace().take(3).collect();
+    !lead.is_empty()
+        && detail
+            .to_lowercase()
+            .contains(&lead.join(" ").to_lowercase())
+}
+
 /// Phrase d'état d'une caméra : (état, détail éventuel, gravité si anormal).
 pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Option<Severity>) {
     match status {
@@ -182,13 +191,17 @@ pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Opti
             since,
         } => {
             let mut text = format!("Injoignable : {}", problem_text(*problem));
-            if let Some(detail) = detail.as_deref().filter(|d| !d.is_empty()) {
+            // Le détail du serveur répète souvent le motif : on ne le dit qu'une fois.
+            if let Some(detail) = detail
+                .as_deref()
+                .filter(|d| !d.is_empty() && !repeats(d, problem_text(*problem)))
+            {
                 text.push_str(&format!(" ({detail})"));
             }
             if let Some(since) = since {
                 text.push_str(&format!(" · {}", offline_since_now(*since)));
             }
-            ("Injoignable", Some(text), Some(Severity::Error))
+            ("Injoignable", Some(text), Some(Severity::Warn))
         }
         CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), None),
     }
@@ -252,10 +265,18 @@ fn empty_state(ui: &mut egui::Ui) {
     });
 }
 
-/// Anomalie à signaler sur une vignette : seulement « injoignable ».
-fn badge_of(camera: &CameraView) -> Option<(Severity, &'static str)> {
+/// Le mot d'une caméra qui ne répond pas : « hors ligne » (la maquette), alors que les appareils
+/// disent « injoignable ».
+pub const CAMERA_OFFLINE: &str = "hors ligne";
+
+/// Une caméra hors ligne : « hors ligne » en orange et un nom grisé.
+fn is_offline(camera: &CameraView) -> bool {
     matches!(camera.status, CameraStatus::Unreachable { .. })
-        .then_some((Severity::Error, super::devices::UNREACHABLE))
+}
+
+/// Anomalie à signaler sur une vignette : seulement « hors ligne ».
+fn badge_of(camera: &CameraView) -> Option<(Severity, &'static str)> {
+    is_offline(camera).then_some((Severity::Warn, CAMERA_OFFLINE))
 }
 
 /// Les caméras dans l'ordre des pièces, avec leur pièce (vide si elle n'est posée nulle part).
@@ -318,10 +339,6 @@ fn mosaic(ui: &mut egui::Ui, model: &Model, plan: &HomePlan, state: &mut PageSta
         });
 }
 
-/// Fond d'une image vidéo : sombre dans les deux thèmes, voulu.
-const VIDEO_BG: Color32 = Color32::from_gray(24);
-const VIDEO_TEXT: Color32 = Color32::from_gray(190);
-
 /// Une tuile : l'image, le nom, la pièce en légende, et « injoignable » seulement si besoin.
 /// Rend `true` si on a cliqué dessus.
 fn tile(
@@ -356,12 +373,13 @@ fn tile(
                 ui,
                 rect.width(),
                 &Thumb {
-                    fill: VIDEO_BG,
+                    fill: theme::palette(ui).video_bg,
                     inside: &text,
-                    inside_color: VIDEO_TEXT,
+                    inside_color: theme::palette(ui).video_text,
                     name: &camera.name,
                     caption: room,
                     badge: badge_of(camera),
+                    dim: is_offline(camera),
                 },
             )
         })
@@ -412,6 +430,9 @@ fn detail(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let high = detail_stream(camera, state.main) == StreamKind::Main;
+            let label_after = |ui: &mut egui::Ui| {
+                ui.label(RichText::new("Qualité").color(theme::palette(ui).text_secondary));
+            };
             // Ajoutés de droite à gauche : « Fluide » puis « Haute » à l'écran.
             if ui.selectable_label(high, QUALITY_HIGH).clicked() {
                 state.main = true;
@@ -425,6 +446,7 @@ fn detail(
                     state.main = false;
                 }
             });
+            label_after(ui);
         });
     });
     let kind = detail_stream(camera, state.main);
@@ -435,7 +457,8 @@ fn detail(
         egui::vec2(avail.x, (avail.y - bar_h - 4.0).max(120.0)),
         egui::Sense::hover(),
     );
-    ui.painter().rect_filled(rect, 4.0, VIDEO_BG);
+    ui.painter()
+        .rect_filled(rect, 4.0, theme::palette(ui).video_bg);
     // Toujours appelé, même hors ligne : le lecteur dit l'état (injoignable, reprise…) et le
     // serveur reprend la caméra tout seul. Le seul choix du flux est le réglage de l'en-tête.
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {

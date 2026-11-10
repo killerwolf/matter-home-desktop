@@ -5,10 +5,11 @@
 //! envoyé ; il n'est jamais écrit sur disque ni dans le journal.
 
 use eframe::egui::{self, RichText};
+use protocol::wire::ErrorCode;
 
 use super::theme;
 use matter_home_client::net::tls::normalize_fingerprint;
-use matter_home_client::net::{Backend, Link, ServerAddr};
+use matter_home_client::net::{Backend, Link, NetError, ServerAddr};
 
 enum Stage {
     Form,
@@ -32,6 +33,8 @@ pub struct ConnectScreen {
     /// Empreinte attendue, collée par l'utilisateur pour la comparer (facultatif).
     expected: String,
     message: Option<(bool, String)>,
+    /// Sous quel champ s'affiche le message (`General` : en tête, pour tout message, même `ok`).
+    message_field: Field,
     /// Case à cocher avant de réinitialiser l'empreinte épinglée.
     confirm_reset: bool,
     /// La note de sécurité est dépliée (« Détails »).
@@ -49,20 +52,19 @@ pub enum Field {
     General,
 }
 
-/// Le champ concerné par un message d'erreur, d'après ce qu'il dit.
-pub fn field_of(message: &str) -> Field {
-    let m = message.to_lowercase();
-    if m.contains("mot de passe") || m.contains("identifiant") {
-        Field::Password
-    } else if m.contains("adresse")
-        || m.contains("serveur")
-        || m.contains("injoignable")
-        || m.contains("certificat")
-        || m.contains("port")
-    {
-        Field::Server
-    } else {
-        Field::General
+/// Le champ concerné par une erreur, d'après sa nature (jamais d'après son texte).
+pub fn field_of(error: &NetError) -> Field {
+    match error {
+        NetError::BadAddress(_)
+        | NetError::Unreachable(_)
+        | NetError::Timeout
+        | NetError::CertificateChanged { .. }
+        | NetError::Protocol(_) => Field::Server,
+        NetError::Api {
+            code: Some(ErrorCode::InvalidCredentials | ErrorCode::TooManyAttempts),
+            ..
+        } => Field::Password,
+        NetError::Api { .. } | NetError::Local(_) => Field::General,
     }
 }
 
@@ -76,6 +78,7 @@ impl ConnectScreen {
             stage: Stage::Form,
             expected: String::new(),
             message: None,
+            message_field: Field::General,
             confirm_reset: false,
             show_security: false,
         }
@@ -90,6 +93,7 @@ impl ConnectScreen {
             self.url = url;
         }
         self.message = reason.map(|r| (false, r));
+        self.message_field = Field::General;
         self.confirm_reset = false;
     }
 
@@ -98,6 +102,7 @@ impl ConnectScreen {
     /// `None` efface le message précédent.
     pub fn note(&mut self, text: Option<String>) {
         self.message = text.map(|t| (false, t));
+        self.message_field = Field::General;
     }
 
     #[cfg(test)]
@@ -131,10 +136,11 @@ impl ConnectScreen {
         self.stage = Stage::Confirm { url, fingerprint };
     }
 
-    pub fn failed(&mut self, message: String) {
+    pub fn failed(&mut self, error: &NetError) {
         self.password.clear();
         self.stage = Stage::Form;
-        self.message = Some((false, message));
+        self.message = Some((false, error.message()));
+        self.message_field = field_of(error);
     }
 
     /// Oublier le certificat épinglé arrête la session : pas pendant qu'une connexion
@@ -158,7 +164,7 @@ impl ConnectScreen {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(theme::tokens().space.xl * 2.0);
-                ui.heading("Matter Home Desktop");
+                ui.heading("Maison");
                 ui.label(
                     RichText::new("Connexion à votre serveur Matter Home")
                         .color(theme::palette(ui).text_secondary),
@@ -193,7 +199,7 @@ impl ConnectScreen {
     fn form(&mut self, ui: &mut egui::Ui, backend: &Backend) {
         // Un message qui ne vise aucun champ reste en tête ; les autres sont sous leur champ.
         let message = self.message.clone();
-        let at = message.as_ref().map(|(_, t)| field_of(t));
+        let at = message.as_ref().map(|_| self.message_field);
         if let Some((ok, text)) = message.as_ref().filter(|_| at == Some(Field::General)) {
             ui.colored_label(
                 if *ok {
@@ -232,12 +238,9 @@ impl ConnectScreen {
         error(ui, Field::Server);
         ui.add_space(2.0);
         ui.label(
-            RichText::new(
-                "Où la trouver : dans le menu de Matter Home Server (barre des menus du Mac), \
-                 « Connecter un client ».",
-            )
-            .small()
-            .color(p.text_secondary),
+            RichText::new("Elle s'affiche dans le menu du serveur, sur l'autre Mac.")
+                .small()
+                .color(p.text_secondary),
         );
         ui.add_space(theme::tokens().space.md);
 
@@ -262,18 +265,14 @@ impl ConnectScreen {
         let ready = !self.url.trim().is_empty()
             && !self.username.trim().is_empty()
             && !self.password.is_empty();
-        ui.horizontal(|ui| {
-            let go = ui
-                .add_enabled(!busy && ready, egui::Button::new("Se connecter"))
-                .clicked()
-                || (enter && !busy && ready);
-            if busy {
-                ui.spinner();
-            }
-            if go {
-                self.submit(backend);
-            }
-        });
+        let go = theme::primary_button_wide(ui, "Se connecter", !busy && ready, full).clicked()
+            || (enter && !busy && ready);
+        if busy {
+            ui.vertical_centered(|ui| ui.spinner());
+        }
+        if go {
+            self.submit(backend);
+        }
         ui.add_space(theme::tokens().space.md);
         if self.pinned_url.is_some() && !self.url_is_pinned() {
             ui.small("Autre adresse : son certificat devra être approuvé.");
@@ -294,7 +293,7 @@ impl ConnectScreen {
         }
         ui.add_space(theme::tokens().space.md);
         // Note de sécurité : une ligne, dépliable.
-        ui.horizontal_wrapped(|ui| {
+        ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new("La connexion est chiffrée ; le mot de passe n'est jamais conservé.")
                     .small()
@@ -328,6 +327,7 @@ impl ConnectScreen {
         let url = self.url.trim().to_string();
         if let Err(e) = ServerAddr::parse(&url) {
             self.message = Some((false, e.message()));
+            self.message_field = Field::Server;
             return;
         }
         if self.url_is_pinned() {
@@ -463,17 +463,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_error_goes_under_the_field_it_is_about() {
+    fn an_error_goes_under_the_field_it_is_about_by_its_kind_not_its_text() {
+        let api = |code| NetError::Api {
+            status: 401,
+            code,
+            detail: None,
+            retry_after_s: None,
+        };
         assert_eq!(
-            field_of("Identifiant ou mot de passe incorrect."),
+            field_of(&api(Some(ErrorCode::InvalidCredentials))),
             Field::Password
         );
         assert_eq!(
-            field_of("Serveur injoignable : connexion refusée"),
+            field_of(&api(Some(ErrorCode::TooManyAttempts))),
+            Field::Password
+        );
+        assert_eq!(field_of(&api(Some(ErrorCode::BadRequest))), Field::General);
+        assert_eq!(field_of(&api(None)), Field::General);
+        assert_eq!(
+            field_of(&NetError::Unreachable("refusée".into())),
             Field::Server
         );
-        assert_eq!(field_of("Adresse invalide : port manquant"), Field::Server);
-        assert_eq!(field_of("Le certificat du serveur a changé"), Field::Server);
-        assert_eq!(field_of("Votre session a expiré."), Field::General);
+        assert_eq!(field_of(&NetError::Timeout), Field::Server);
+        assert_eq!(field_of(&NetError::BadAddress("x".into())), Field::Server);
+        assert_eq!(field_of(&NetError::Local("fichier".into())), Field::General);
+    }
+
+    #[test]
+    fn a_failure_keeps_its_field_and_a_note_is_general() {
+        let mut screen = ConnectScreen::new();
+        screen.failed(&NetError::Timeout);
+        assert_eq!(screen.message_field, Field::Server);
+        screen.note(Some("Version incompatible.".into()));
+        assert_eq!(screen.message_field, Field::General);
+        screen.logged_out(None, false, Some("Votre session a expiré.".into()));
+        assert_eq!(screen.message_field, Field::General);
+        assert_eq!(screen.message_text(), Some("Votre session a expiré."));
     }
 }
