@@ -220,7 +220,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>, p: &Palette) -> Look {
                 if open {
                     value_color = p.warn;
                 }
-                value = Some(if open { "Ouvert" } else { "Fermé" }.to_string());
+                value = Some(super::devices::open_label(open).to_string());
             } else if let Some(t) = d.temperature() {
                 fill = theme::temperature_color(p, Some(t.value));
                 let mut v = format!("{:.1} °C", t.value).replace('.', ",");
@@ -434,7 +434,7 @@ fn room_openings(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) -
         })
         .filter(|d| !is_stale(d) && d.open() == Some(true))
         .count();
-    (open > 0).then(|| format!("{open} ouvert{}", if open > 1 { "s" } else { "" }))
+    (open > 0).then(|| format!("{open} ouverte{}", if open > 1 { "s" } else { "" }))
 }
 
 /// Ce qui empêche d'envoyer un plan : le serveur exige au moins un étage.
@@ -1888,7 +1888,7 @@ mod tests {
         let lk = look(&item, &devices, pal());
         assert_eq!(
             (lk.symbol, lk.fill, lk.value.as_deref(), lk.battery_low),
-            (Some(Symbol::Door), pal().warn, Some("Ouvert"), true)
+            (Some(Symbol::Door), pal().warn, Some("Ouverte"), true)
         );
 
         devices
@@ -2017,7 +2017,7 @@ mod tests {
         assert_eq!(averages[&(plan.floors[0].id, room.id)], 21.0);
         assert_eq!(
             room_openings(&room, &plan.floors[0].items, &devices).as_deref(),
-            Some("1 ouvert")
+            Some("1 ouverte")
         );
         assert_eq!(room_openings(&room, &[], &devices), None);
         // 21 °C tombe sur le palier de 20 ou de 22 : jamais le gris des pièces sans capteur.

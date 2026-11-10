@@ -8,8 +8,8 @@
 use std::sync::OnceLock;
 
 use eframe::egui::{
-    self, text::LayoutJob, Align2, Color32, CornerRadius, FontId, Margin, Response, RichText,
-    Sense, Stroke, TextFormat, TextStyle, Theme, Ui, Vec2,
+    self, text::LayoutJob, Color32, CornerRadius, FontId, Margin, Response, RichText, Sense,
+    Stroke, TextFormat, TextStyle, Theme, Ui, Vec2,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -161,6 +161,11 @@ pub struct Size {
     pub item_gap_y: f32,
     pub button_pad_x: f32,
     pub button_pad_y: f32,
+    /// Interrupteur : largeur et hauteur.
+    pub switch_w: f32,
+    pub switch_h: f32,
+    /// Hauteur de la légende sous une vignette.
+    pub caption_row: f32,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -432,7 +437,6 @@ pub fn room_header(ui: &mut Ui, name: &str, note: Option<&str>) {
 }
 
 /// Pastille d'état anormal : un point de couleur et un mot (« pile faible », « injoignable »).
-#[allow(dead_code)] // la ligne d'appareil dessine la sienne ; les vignettes s'en serviront
 pub fn status_pill(ui: &mut Ui, severity: Severity, text: &str) -> Response {
     let t = tokens();
     let color = severity.color(palette(ui));
@@ -576,32 +580,88 @@ pub fn detail_row(ui: &mut Ui, key: &str, value: impl Into<String>) {
     ui.end_row();
 }
 
-/// Vignette : une image (ici un aplat) et, dessous, le nom et la pièce en légende.
-#[allow(dead_code)] // les caméras s'en serviront (phase 2)
-pub fn thumbnail(ui: &mut Ui, width: f32, fill: Color32, inside: &str, name: &str, caption: &str) {
+/// Ce que montre une vignette.
+pub struct Thumb<'a> {
+    /// Fond de l'image (un fond vidéo sombre, voulu dans les deux thèmes).
+    pub fill: Color32,
+    /// Texte centré dans l'image quand elle n'a rien à montrer (« Hors ligne depuis 14:02 »).
+    pub inside: &'a str,
+    pub inside_color: Color32,
+    pub name: &'a str,
+    /// La pièce, en légende à droite.
+    pub caption: &'a str,
+    /// Anomalie à signaler (injoignable), jamais l'état normal.
+    pub badge: Option<(Severity, &'a str)>,
+}
+
+/// Vignette : une image 16/9 et, dessous, le nom, la pièce en légende et l'éventuelle anomalie.
+/// Rend le rectangle de l'image : le lecteur vidéo s'y dessine.
+pub fn thumbnail(ui: &mut Ui, width: f32, thumb: &Thumb<'_>) -> egui::Rect {
     let t = tokens();
     let p = palette(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, width * 9.0 / 16.0), Sense::hover());
-    ui.painter().rect_filled(rect, radius(t.radius.md), fill);
-    if !inside.is_empty() {
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            inside,
-            FontId::proportional(t.font.size.caption),
-            p.text_secondary,
+    ui.painter()
+        .rect_filled(rect, radius(t.radius.md), thumb.fill);
+    if !thumb.inside.is_empty() {
+        // Le texte passe à la ligne dans la largeur de l'image.
+        let galley = ui.painter().layout(
+            thumb.inside.to_owned(),
+            FontId::proportional(t.font.size.body),
+            thumb.inside_color,
+            rect.width() - 2.0 * t.space.md,
+        );
+        ui.painter().galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            thumb.inside_color,
         );
     }
-    ui.horizontal(|ui| {
-        ui.label(name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                RichText::new(caption)
-                    .size(t.font.size.caption)
-                    .color(p.text_secondary),
-            );
-        });
-    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, t.size.caption_row),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(RichText::new(thumb.name).color(p.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(thumb.caption)
+                        .size(t.font.size.caption)
+                        .color(p.text_secondary),
+                );
+                if let Some((severity, text)) = thumb.badge {
+                    status_pill(ui, severity, text);
+                }
+            });
+        },
+    );
+    rect
+}
+
+/// Interrupteur : une piste et un rond, sans animation.
+pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
+    let t = tokens();
+    let p = palette(ui);
+    let (rect, mut response) =
+        ui.allocate_exact_size(Vec2::new(t.size.switch_w, t.size.switch_h), Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let track = if *on {
+        p.ok
+    } else {
+        p.text_secondary.gamma_multiply(0.5)
+    };
+    let h = t.size.switch_h;
+    ui.painter().rect_filled(rect, h / 2.0, track);
+    let knob = h / 2.0 - 2.0;
+    let x = if *on {
+        rect.right() - h / 2.0
+    } else {
+        rect.left() + h / 2.0
+    };
+    ui.painter()
+        .circle_filled(egui::pos2(x, rect.center().y), knob, p.surface);
+    response
 }
 
 #[cfg(test)]

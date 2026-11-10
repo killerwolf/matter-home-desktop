@@ -28,6 +28,8 @@ Usage :
   matter-home-desktop --temperatures  ouvre directement la page Températures
   matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
   matter-home-desktop --edit-plan ouvre le plan en mode Modifier
+  matter-home-desktop --cameras   ouvre directement la mosaïque des caméras
+  matter-home-desktop --camera X  ouvre en grand la première caméra dont le nom contient X
   matter-home-desktop --add      ouvre directement la fenêtre « Ajouter un appareil »
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version
@@ -54,6 +56,7 @@ fn main() -> eframe::Result {
     }
     // `--device` attend une valeur : on la met de côté avant de vérifier les options.
     let mut device_filter = None;
+    let mut camera_filter: Option<String> = None;
     let mut period: Option<TimeWindow> = None;
     let mut flags = Vec::new();
     let mut it = args.iter();
@@ -65,6 +68,14 @@ fn main() -> eframe::Result {
                 Some("1w") => period = Some(TimeWindow::All),
                 _ => {
                     eprintln!("--period attend 1h, 24h ou 1w\n\n{HELP}");
+                    std::process::exit(2);
+                }
+            }
+        } else if a == "--camera" {
+            match it.next() {
+                Some(v) => camera_filter = Some(v.clone()),
+                None => {
+                    eprintln!("--camera attend un nom de caméra\n\n{HELP}");
                     std::process::exit(2);
                 }
             }
@@ -84,7 +95,7 @@ fn main() -> eframe::Result {
     if let Some(unknown) = args.iter().find(|a| {
         !matches!(
             a.as_str(),
-            "--plan" | "--rules" | "--temperatures" | "--add" | "--edit-plan"
+            "--plan" | "--rules" | "--temperatures" | "--add" | "--edit-plan" | "--cameras"
         )
     }) {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
@@ -92,6 +103,7 @@ fn main() -> eframe::Result {
     }
     let open_add = args.iter().any(|a| a == "--add");
     let open_edit_plan = args.iter().any(|a| a == "--edit-plan");
+    let open_cameras = args.iter().any(|a| a == "--cameras");
     let open_plan = args.iter().any(|a| a == "--plan");
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
@@ -125,6 +137,12 @@ fn main() -> eframe::Result {
             }
             if open_plan {
                 app.show_plan();
+            }
+            if open_cameras {
+                app.show_cameras();
+            }
+            if let Some(filter) = camera_filter {
+                app.open_camera_named(filter);
             }
             if open_edit_plan {
                 app.show_plan_editing();

@@ -33,11 +33,13 @@ pub struct RulesView {
     set: RuleSet,
     selected: Option<u64>,
     confirm_delete: bool,
+    /// L'historique des exécutions est ouvert (depuis la barre d'état).
+    history_open: bool,
     /// Suivi de la synchronisation avec le serveur (dernière modification gagnante).
     sync: SyncState<RuleSet>,
 }
 
-/// Ce qui empêche d'envoyer ces règles : le serveur refuse (400) une action « Appeler une URL »
+/// Ce qui empêche d'envoyer ces règles : le serveur refuse (400) une action « Appeler une adresse web »
 /// dont l'adresse n'est pas une adresse http(s) sans espace. Tant qu'elle est vide ou à moitié
 /// saisie, l'ensemble reste un brouillon visible, et rien ne part (ni ne revient en arrière).
 ///
@@ -50,7 +52,7 @@ fn rules_problem(set: &RuleSet) -> Option<String> {
         .find_map(|rule| {
             rule.actions.iter().find_map(|action| match action {
                 Action::Webhook { url, .. } if !is_webhook_url(url) => Some(format!(
-                    "l'action « Appeler une URL » de la règle « {} » n'a pas d'adresse valable \
+                    "l'action « Appeler une adresse web » de la règle « {} » n'a pas d'adresse valable \
                  (http:// ou https://, sans espace)",
                     rule.name
                 )),
@@ -293,21 +295,22 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
         .actions
         .iter()
         .map(|a| match a {
-            Action::Notify { .. } => "notifier".to_string(),
+            Action::Notify { .. } => "envoyer une notification".to_string(),
             Action::SetOnOff { node_id, command } => {
                 format!("{} {}", command.label().to_lowercase(), name(*node_id))
             }
             Action::SetCover { node_id, command } => {
                 format!("{} {}", command.label().to_lowercase(), name(*node_id))
             }
-            Action::Webhook { .. } => "webhook".to_string(),
+            Action::Webhook { .. } => "appeler une adresse web".to_string(),
             Action::Delay { seconds } => format!("attendre {seconds} s"),
         })
         .collect();
+    // Une phrase : « Quand Porte s'ouvre, allumer Lampe, attendre 30 s. »
     format!(
-        "Quand {when} → {}",
+        "Quand {when}, {}.",
         if then.is_empty() {
-            "rien".into()
+            "ne rien faire".into()
         } else {
             then.join(", ")
         }
@@ -321,11 +324,12 @@ impl RulesView {
             set: RuleSet::default(),
             selected: None,
             confirm_delete: false,
+            history_open: false,
             sync: SyncState::with_check(rules_problem),
         }
     }
 
-    /// Simule « + Nouvelle règle » puis une action « Appeler une URL » (tests).
+    /// Simule « + Nouvelle règle » puis une action « Appeler une adresse web » (tests).
     #[cfg(test)]
     pub fn add_webhook_rule(&mut self, url: &str) {
         let id = self.set.next_id();
@@ -461,35 +465,70 @@ impl RulesView {
         self.draft_banner(ui);
         ui.separator();
 
-        egui::Panel::bottom("rules_journal")
-            .resizable(true)
-            .default_size(140.0)
+        // Barre d'état : la dernière exécution et un bouton qui ouvre l'historique.
+        let history_open = &mut self.history_open;
+        egui::Panel::bottom("rules_status")
+            .resizable(false)
             .show(ui, |ui| {
-                ui.strong("Dernières exécutions");
-                egui::ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        if runs.is_empty() {
-                            ui.small("Aucune exécution depuis le démarrage du serveur.");
-                        }
-                        let now = now_unix();
-                        for r in runs.iter().rev() {
-                            let color = if r.ok {
-                                theme::palette(ui).ok
-                            } else {
-                                theme::palette(ui).error
-                            };
-                            ui.horizontal_wrapped(|ui| {
-                                ui.colored_label(color, if r.ok { "✔" } else { "✖" });
-                                ui.small(format!(
-                                    "{} — {} ({})",
+                let p = theme::palette(ui);
+                ui.horizontal(|ui| {
+                    let now = now_unix();
+                    match runs.back() {
+                        Some(r) => {
+                            let color = if r.ok { p.ok } else { p.error };
+                            ui.colored_label(color, "●");
+                            ui.label(
+                                RichText::new(format!(
+                                    "Dernière exécution : {} ({})",
                                     r.name,
-                                    r.detail,
                                     ago(now - r.at)
-                                ));
-                            });
+                                ))
+                                .small()
+                                .color(p.text_secondary),
+                            );
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("Aucune exécution depuis le démarrage du serveur.")
+                                    .small()
+                                    .color(p.text_secondary),
+                            );
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let text = if *history_open {
+                            "Historique ▾"
+                        } else {
+                            "Historique ▸"
+                        };
+                        if ui.small_button(text).clicked() {
+                            *history_open = !*history_open;
                         }
                     });
+                });
+                if *history_open {
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            let now = now_unix();
+                            if runs.is_empty() {
+                                ui.small("Aucune exécution depuis le démarrage du serveur.");
+                            }
+                            for r in runs.iter().rev() {
+                                let color = if r.ok { p.ok } else { p.error };
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.colored_label(color, if r.ok { "✔" } else { "✖" });
+                                    ui.small(format!(
+                                        "{} — {} ({})",
+                                        r.name,
+                                        r.detail,
+                                        ago(now - r.at)
+                                    ));
+                                });
+                            }
+                        });
+                }
             });
 
         egui::Panel::left("rules_list")
@@ -502,34 +541,44 @@ impl RulesView {
                     }
                     for rule in &mut self.set.rules {
                         let selected = self.selected == Some(rule.id);
-                        let resp = egui::Frame::group(ui.style())
-                            .fill(if selected {
-                                ui.visuals().selection.bg_fill.linear_multiply(0.35)
-                            } else {
-                                Color32::TRANSPARENT
-                            })
+                        let p = theme::palette(ui);
+                        let fill = if selected {
+                            theme::tokens().selected(p)
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        let resp = egui::Frame::new()
+                            .fill(fill)
+                            .corner_radius(theme::tokens().radius.md)
+                            .inner_margin(egui::Margin::same(theme::tokens().space.sm as i8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    changed |= ui
-                                        .checkbox(&mut rule.enabled, "")
+                                    changed |= theme::toggle_switch(ui, &mut rule.enabled)
                                         .on_hover_text("Activée")
                                         .changed();
                                     ui.label(RichText::new(&rule.name).strong());
-                                });
-                                ui.small(summary(rule, devices));
-                                if let Some(last) = runs.iter().rev().find(|r| r.rule_id == rule.id)
-                                {
-                                    let color = if last.ok {
-                                        theme::palette(ui).ok
-                                    } else {
-                                        theme::palette(ui).error
-                                    };
-                                    ui.colored_label(
-                                        color,
-                                        format!("Dernière exécution {}", ago(now_unix() - last.at)),
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if let Some(last) =
+                                                runs.iter().rev().find(|r| r.rule_id == rule.id)
+                                            {
+                                                let color = if last.ok { p.ok } else { p.error };
+                                                ui.label(
+                                                    RichText::new(ago(now_unix() - last.at))
+                                                        .small()
+                                                        .color(color),
+                                                );
+                                            }
+                                        },
                                     );
-                                }
+                                });
+                                ui.label(
+                                    RichText::new(summary(rule, devices))
+                                        .small()
+                                        .color(p.text_secondary),
+                                );
                             })
                             .response;
                         if resp.interact(egui::Sense::click()).clicked() {
@@ -640,11 +689,12 @@ impl RulesView {
             changed |= ui
                 .add(egui::TextEdit::singleline(&mut rule.name).desired_width(260.0))
                 .changed();
-            changed |= ui.checkbox(&mut rule.enabled, "Activée").changed();
+            changed |= theme::toggle_switch(ui, &mut rule.enabled).changed();
+            ui.label("Activée");
             if ui
-                .button("▶ Tester")
+                .button("Essayer maintenant")
                 .on_hover_text(
-                    "Exécute les actions tout de suite, sans vérifier « Quand » ni « Si ».",
+                    "Exécute les actions tout de suite, sans vérifier « Quand » ni « Seulement si ».",
                 )
                 .clicked()
             {
@@ -755,7 +805,7 @@ impl RulesView {
         ui.add_space(6.0);
 
         // SI
-        ui.heading("Si (toutes les conditions)");
+        ui.heading("Seulement si (toutes les conditions)");
         let mut remove_cond = None;
         for (i, cond) in rule.conditions.iter_mut().enumerate() {
             ui.horizontal_wrapped(|ui| {
@@ -932,7 +982,7 @@ impl RulesView {
                                 device_picker(ui, ("a_dev", rid, i), node_id, Need::Cover, devices);
                         }
                         Action::Webhook { url, body } => {
-                            ui.label("Appeler :");
+                            ui.label("Appeler une adresse web :");
                             changed |= ui
                                 .add(
                                     egui::TextEdit::singleline(url)
@@ -1004,7 +1054,7 @@ impl RulesView {
                 changed = true;
                 ui.close();
             }
-            if ui.button("Appeler une URL (webhook)").clicked() {
+            if ui.button("Appeler une adresse web").clicked() {
                 rule.actions.push(Action::Webhook {
                     url: String::new(),
                     body: String::new(),
@@ -1155,7 +1205,7 @@ mod tests {
         ];
         assert_eq!(
             summary(&r, &devices),
-            "Quand Porte s'ouvre → allumer Lampe, attendre 30 s, ouvrir à 30 % Volet"
+            "Quand Porte s'ouvre, allumer Lampe, attendre 30 s, ouvrir à 30 % Volet."
         );
         assert_eq!(first_device(&devices, Need::Switch), 8);
         assert_eq!(first_device(&devices, Need::Cover), 9);

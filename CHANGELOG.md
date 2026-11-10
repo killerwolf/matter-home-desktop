@@ -153,6 +153,22 @@ Les téléchargements de chaque version sont sur la
   (panneau de détail, fenêtre), une légende de l'échelle de température est sous le plan, les
   petites étiquettes sont sur une pastille lisible (contraste testé), les heures rondes suivent le
   changement d'heure et l'axe vertical a un repère tous les 1 ou 2 °C.
+- **Refonte de l'interface du client, phase 3** (ticket n° 13) : **Caméras, Connexion,
+  Automatisations**. Caméras : une grille de vignettes qui remplit la largeur (image, nom, pièce en
+  légende ; seul « injoignable » est signalé, avec « Hors ligne depuis … ») ; en grand, une seule
+  ligne d'en-tête (retour, nom, pièce) avec le réglage **Fluide / Haute** à la place de « flux
+  réduit / principal », l'image sur toute la largeur et le codec et la résolution dans une barre
+  d'état. Le lecteur ne change pas. Connexion : un formulaire centré, la dernière adresse
+  préremplie, une aide qui dit où la trouver (menu du serveur, « Connecter un client »), les
+  erreurs sous le champ concerné et une note de sécurité d'une ligne avec « Détails ».
+  Automatisations : chaque règle se lit comme une phrase, avec un interrupteur et sa dernière
+  exécution sur la ligne ; vocabulaire « Seulement si », « Essayer maintenant », « Appeler une
+  adresse web » ; l'historique s'ouvre depuis la barre d'état. Une porte ou une fenêtre est
+  « Ouverte » ou « Fermée » partout (liste et plan). Températures : la ligne a la même épaisseur
+  sur toute la période (une moyenne par tranche de trois pixels, au lieu du minimum et du maximum
+  qui faisaient des barres épaisses là où les mesures sont serrées et un trait fin ailleurs ; le
+  minimum et le maximum affichés restent exacts, et un vrai trou de mesures reste un trou).
+  Options d'essai : `--cameras`, `--camera X`.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.

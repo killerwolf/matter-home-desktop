@@ -1,12 +1,7 @@
 //! Ce que toutes les vues de caméras (plan, page, lecteur) disent et colorent de la même façon :
-//! la phrase de chaque motif d'injoignabilité et les couleurs des états.
+//! la phrase de chaque motif d'injoignabilité (les couleurs sont dans les tokens).
 
-use eframe::egui::Color32;
 use protocol::wire::CameraProblem;
-
-pub const ONLINE: Color32 = Color32::from_rgb(40, 160, 70);
-pub const OFFLINE: Color32 = Color32::from_rgb(210, 60, 50);
-pub const NEUTRAL: Color32 = Color32::from_rgb(140, 140, 140);
 
 /// Pourquoi une caméra est injoignable, en un morceau de phrase (sans adresse ni détail technique).
 pub fn problem_text(problem: CameraProblem) -> &'static str {

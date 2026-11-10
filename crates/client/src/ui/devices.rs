@@ -112,6 +112,16 @@ pub fn is_stale(d: &Device) -> bool {
         || (matches!(d.status, WireStatus::Connecting) && d.last_seen.is_none())
 }
 
+/// « Ouverte » ou « Fermée » : une porte ou une fenêtre (féminin). Un seul libellé pour la liste
+/// Appareils et le plan.
+pub fn open_label(open: bool) -> &'static str {
+    if open {
+        "Ouverte"
+    } else {
+        "Fermée"
+    }
+}
+
 /// Valeur d'une ligne quand l'appareil n'en a aucune à donner.
 pub const NO_VALUE: &str = "—";
 
@@ -125,7 +135,7 @@ pub fn headline(d: &Device) -> String {
         return format!("{:.1} °C", t.value).replace('.', ",");
     }
     if let Some(open) = d.open() {
-        return if open { "Ouverte" } else { "Fermée" }.into();
+        return open_label(open).into();
     }
     if d.info.caps.cover {
         let mut text = match d.position() {

@@ -23,6 +23,8 @@ pub struct Curve {
     pub color_index: usize,
     /// Points réduits à la largeur du graphique, du plus ancien au plus récent.
     pub points: Vec<(f64, f64)>,
+    /// Points de la ligne : une densité unique sur toute la période (voir `line_points`).
+    pub line: Vec<(f64, f64)>,
     /// Trou de données (s) au-delà duquel la ligne est coupée.
     pub gap_s: f64,
     /// Dernière température connue (état complet, tenu à jour par les événements).
@@ -181,7 +183,7 @@ pub fn show(
             }
             for c in &visible {
                 let color = color_of(c);
-                for segment in split_gaps(&c.points, c.gap_s) {
+                for segment in split_gaps(&c.line, c.gap_s) {
                     if segment.len() == 1 {
                         plot_ui.points(
                             Points::new(c.label.as_str(), vec![[segment[0].0, segment[0].1]])

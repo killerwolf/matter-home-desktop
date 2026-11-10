@@ -34,6 +34,36 @@ pub struct ConnectScreen {
     message: Option<(bool, String)>,
     /// Case à cocher avant de réinitialiser l'empreinte épinglée.
     confirm_reset: bool,
+    /// La note de sécurité est dépliée (« Détails »).
+    show_security: bool,
+}
+
+/// Sous quel champ s'affiche un message d'erreur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// Sous l'adresse du serveur.
+    Server,
+    /// Sous le mot de passe (identifiants refusés).
+    Password,
+    /// Pas de champ en cause : en tête du formulaire.
+    General,
+}
+
+/// Le champ concerné par un message d'erreur, d'après ce qu'il dit.
+pub fn field_of(message: &str) -> Field {
+    let m = message.to_lowercase();
+    if m.contains("mot de passe") || m.contains("identifiant") {
+        Field::Password
+    } else if m.contains("adresse")
+        || m.contains("serveur")
+        || m.contains("injoignable")
+        || m.contains("certificat")
+        || m.contains("port")
+    {
+        Field::Server
+    } else {
+        Field::General
+    }
 }
 
 impl ConnectScreen {
@@ -47,6 +77,7 @@ impl ConnectScreen {
             expected: String::new(),
             message: None,
             confirm_reset: false,
+            show_security: false,
         }
     }
 
@@ -126,34 +157,44 @@ impl ConnectScreen {
     pub fn show(&mut self, ui: &mut egui::Ui, link: &Link, backend: &Backend) {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
+                ui.add_space(theme::tokens().space.xl * 2.0);
                 ui.heading("Matter Home Desktop");
-                ui.label("Connexion à votre serveur Matter Home");
-                ui.add_space(16.0);
+                ui.label(
+                    RichText::new("Connexion à votre serveur Matter Home")
+                        .color(theme::palette(ui).text_secondary),
+                );
+                ui.add_space(theme::tokens().space.lg);
             });
-            let width = 460.0_f32.min(ui.available_width());
+            let width = 400.0_f32.min(ui.available_width());
             ui.vertical_centered(|ui| {
-                ui.allocate_ui(egui::vec2(width, 0.0), |ui| match link {
-                    Link::CertificateChanged {
-                        url,
-                        expected,
-                        found,
-                    } => {
-                        self.show_message(ui);
-                        self.certificate_changed(ui, backend, url, expected, found);
-                    }
-                    Link::Incompatible { message } => {
-                        self.show_message(ui);
-                        Self::incompatible(ui, backend, message);
-                    }
-                    _ => self.form(ui, backend),
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| match link {
+                        Link::CertificateChanged {
+                            url,
+                            expected,
+                            found,
+                        } => {
+                            self.show_message(ui);
+                            self.certificate_changed(ui, backend, url, expected, found);
+                        }
+                        Link::Incompatible { message } => {
+                            self.show_message(ui);
+                            Self::incompatible(ui, backend, message);
+                        }
+                        _ => self.form(ui, backend),
+                    },
+                );
             });
         });
     }
 
     fn form(&mut self, ui: &mut egui::Ui, backend: &Backend) {
-        if let Some((ok, text)) = &self.message {
+        // Un message qui ne vise aucun champ reste en tête ; les autres sont sous leur champ.
+        let message = self.message.clone();
+        let at = message.as_ref().map(|(_, t)| field_of(t));
+        if let Some((ok, text)) = message.as_ref().filter(|_| at == Some(Field::General)) {
             ui.colored_label(
                 if *ok {
                     theme::palette(ui).ok
@@ -170,52 +211,70 @@ impl ConnectScreen {
             return;
         }
         let busy = matches!(self.stage, Stage::Probing | Stage::LoggingIn);
-        egui::Grid::new("connect_form")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Serveur :");
-                ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut self.url)
-                        .hint_text("192.168.1.20:8443 ou mac-mini.local")
-                        .desired_width(300.0),
-                );
-                ui.end_row();
-                ui.label("Identifiant :");
-                ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut self.username).desired_width(300.0),
-                );
-                ui.end_row();
-                ui.label("Mot de passe :");
-                let password = ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(true)
-                        .desired_width(300.0),
-                );
-                ui.end_row();
-                let enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.label("");
-                ui.horizontal(|ui| {
-                    let ready = !self.url.trim().is_empty()
-                        && !self.username.trim().is_empty()
-                        && !self.password.is_empty();
-                    let go = ui
-                        .add_enabled(!busy && ready, egui::Button::new("Se connecter"))
-                        .clicked()
-                        || (enter && !busy && ready);
-                    if busy {
-                        ui.spinner();
-                    }
-                    if go {
-                        self.submit(backend);
-                    }
-                });
-                ui.end_row();
-            });
-        ui.add_space(12.0);
+        let p = theme::palette(ui);
+        let error = |ui: &mut egui::Ui, which: Field| {
+            if let Some((false, text)) = message.as_ref().filter(|_| at == Some(which)) {
+                ui.colored_label(p.error, RichText::new(text).small());
+            }
+        };
+        let label = |ui: &mut egui::Ui, text: &str| {
+            ui.label(RichText::new(text).color(p.text_secondary));
+        };
+        let full = ui.available_width();
+
+        label(ui, "Adresse du serveur");
+        ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut self.url)
+                .hint_text("192.168.1.20:8443 ou mac-mini.local")
+                .desired_width(full),
+        );
+        error(ui, Field::Server);
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "Où la trouver : dans le menu de Matter Home Server (barre des menus du Mac), \
+                 « Connecter un client ».",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+        ui.add_space(theme::tokens().space.md);
+
+        label(ui, "Identifiant");
+        ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut self.username).desired_width(full),
+        );
+        ui.add_space(theme::tokens().space.sm);
+
+        label(ui, "Mot de passe");
+        let password = ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut self.password)
+                .password(true)
+                .desired_width(full),
+        );
+        error(ui, Field::Password);
+        ui.add_space(theme::tokens().space.md);
+
+        let enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let ready = !self.url.trim().is_empty()
+            && !self.username.trim().is_empty()
+            && !self.password.is_empty();
+        ui.horizontal(|ui| {
+            let go = ui
+                .add_enabled(!busy && ready, egui::Button::new("Se connecter"))
+                .clicked()
+                || (enter && !busy && ready);
+            if busy {
+                ui.spinner();
+            }
+            if go {
+                self.submit(backend);
+            }
+        });
+        ui.add_space(theme::tokens().space.md);
         if self.pinned_url.is_some() && !self.url_is_pinned() {
             ui.small("Autre adresse : son certificat devra être approuvé.");
         } else if self.pinned_url.is_some() {
@@ -233,11 +292,35 @@ impl ConnectScreen {
                 backend.reset_pinned_certificate(self.pinned_url.clone());
             }
         }
-        ui.add_space(12.0);
-        ui.small(
-            "La connexion est toujours chiffrée. Le mot de passe n'est jamais conservé : seuls \
-             l'adresse, l'empreinte du certificat et un jeton de session sont gardés sur ce Mac.",
-        );
+        ui.add_space(theme::tokens().space.md);
+        // Note de sécurité : une ligne, dépliable.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("La connexion est chiffrée ; le mot de passe n'est jamais conservé.")
+                    .small()
+                    .color(p.text_secondary),
+            );
+            let text = if self.show_security {
+                "Masquer"
+            } else {
+                "Détails"
+            };
+            if ui.small_button(text).clicked() {
+                self.show_security = !self.show_security;
+            }
+        });
+        if self.show_security {
+            ui.label(
+                RichText::new(
+                    "Seuls l'adresse, l'empreinte du certificat et un jeton de session sont \
+                     gardés sur ce Mac. Le mot de passe n'est lu que le temps de la connexion, \
+                     puis effacé de la mémoire ; il n'est jamais écrit sur le disque ni dans le \
+                     journal.",
+                )
+                .small()
+                .color(p.text_secondary),
+            );
+        }
     }
 
     fn submit(&mut self, backend: &Backend) {
@@ -372,5 +455,25 @@ impl ConnectScreen {
                 backend.logout();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_error_goes_under_the_field_it_is_about() {
+        assert_eq!(
+            field_of("Identifiant ou mot de passe incorrect."),
+            Field::Password
+        );
+        assert_eq!(
+            field_of("Serveur injoignable : connexion refusée"),
+            Field::Server
+        );
+        assert_eq!(field_of("Adresse invalide : port manquant"), Field::Server);
+        assert_eq!(field_of("Le certificat du serveur a changé"), Field::Server);
+        assert_eq!(field_of("Votre session a expiré."), Field::General);
     }
 }

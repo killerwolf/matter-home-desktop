@@ -46,10 +46,13 @@
   --radius-sm: 4px;
   --size-button-pad-x: 10px;
   --size-button-pad-y: 3px;
+  --size-caption-row: 26px;
   --size-control: 24px;
   --size-dot: 7px;
   --size-item-gap-y: 6px;
   --size-row: 30px;
+  --size-switch-h: 14px;
+  --size-switch-w: 26px;
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-line-height: 1.4;
   --font-weight-normal: 400;

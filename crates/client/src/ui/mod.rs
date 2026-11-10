@@ -189,6 +189,8 @@ pub struct MatterApp {
     /// Option `--edit-plan` : passer en mode Modifier dès l'arrivée de l'état complet (le plan
     /// est remis à zéro à la connexion).
     edit_plan_on_arrival: bool,
+    /// Option `--camera` : nom (en minuscules) de la caméra à ouvrir en grand.
+    open_camera_on_arrival: Option<String>,
     window: TimeWindow,
     /// Page Températures : période choisie, lectures par appareil, courbes masquées.
     temp_window: TimeWindow,
@@ -268,6 +270,7 @@ impl MatterApp {
             add_open: false,
             add_on_arrival: false,
             edit_plan_on_arrival: false,
+            open_camera_on_arrival: None,
             window: TimeWindow::Min15,
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
@@ -317,6 +320,18 @@ impl MatterApp {
     /// Ouvre la fenêtre « Ajouter un appareil ».
     pub fn show_add(&mut self) {
         self.add_on_arrival = true;
+    }
+
+    /// Ouvre l'onglet « Caméras ».
+    pub fn show_cameras(&mut self) {
+        self.view = View::Cameras;
+    }
+
+    /// Ouvre en grand la première caméra dont le nom contient `filter`, dès qu'elle est connue
+    /// (essais, captures).
+    pub fn open_camera_named(&mut self, filter: String) {
+        self.view = View::Cameras;
+        self.open_camera_on_arrival = Some(filter.to_lowercase());
     }
 
     /// Ouvre l'onglet « Plan » directement en mode Modifier (essais, captures).
@@ -763,11 +778,15 @@ impl MatterApp {
             .iter()
             .filter_map(|id| {
                 let device = self.model.devices.get(id)?;
-                let points = self
+                let series = self
                     .temp_series
                     .get(id)
-                    .and_then(|f| f.data.get(protocol::wire::Metric::Temperature))
+                    .and_then(|f| f.data.get(protocol::wire::Metric::Temperature));
+                let points = series
                     .map(|s| temps::curve_points(s, start, now, buckets))
+                    .unwrap_or_default();
+                let line = series
+                    .map(|s| temps::line_points(s, start, now, buckets))
                     .unwrap_or_default();
                 Some(temperatures::Curve {
                     node_id: *id,
@@ -777,6 +796,7 @@ impl MatterApp {
                     ),
                     color_index: self.temp_colors[id],
                     points,
+                    line,
                     gap_s: temps::gap_threshold(device.mode.as_ref(), window, buckets),
                     current: device.temperature().map(|r| r.value),
                     stale: devices::is_stale(device),
@@ -2275,6 +2295,17 @@ impl eframe::App for MatterApp {
         }
 
         self.add_window(&ui.ctx().clone());
+        if let Some(filter) = &self.open_camera_on_arrival {
+            if let Some(c) = self
+                .model
+                .cameras
+                .iter()
+                .find(|c| c.name.to_lowercase().contains(filter))
+            {
+                cameras::open(ui.ctx(), c.id);
+                self.open_camera_on_arrival = None;
+            }
+        }
 
         // Onglet Appareils : la liste rangée est calculée une fois par image, pour la liste et
         // pour le panneau de détail, qui s'ouvre à droite au clic sur une ligne.

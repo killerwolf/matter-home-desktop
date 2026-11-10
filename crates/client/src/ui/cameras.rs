@@ -15,8 +15,9 @@ use eframe::egui::{self, Color32, RichText};
 use protocol::home::HomePlan;
 use protocol::wire::{CameraStatus, CameraView, StreamKind};
 
-use super::camera_text::{offline_since_now, problem_text, NEUTRAL, OFFLINE, ONLINE};
+use super::camera_text::{offline_since_now, problem_text};
 use super::player::{is_active, player_compact};
+use super::theme::{self, Severity, Thumb};
 use matter_home_client::model::Model;
 
 /// Nombre maximal de tuiles qui lisent un flux en même temps (le décodage se fait sur le client,
@@ -28,9 +29,8 @@ pub const MAX_LIVE_TILES: usize = 4;
 /// Largeur minimale d'une tuile.
 const TILE_MIN_WIDTH: f32 = 260.0;
 const TILE_GAP: f32 = 10.0;
-/// Hauteur de la légende sous l'image.
-const CAPTION_HEIGHT: f32 = 58.0;
-/// Nom de la pièce quand la caméra n'est posée dans aucune.
+/// Nom de la pièce quand la caméra n'est posée dans aucune (tests : la vignette n'écrit rien).
+#[cfg(test)]
 pub const NO_ROOM: &str = "Sans pièce";
 
 /// État de la page : la caméra ouverte en grand et le flux demandé.
@@ -38,6 +38,19 @@ pub const NO_ROOM: &str = "Sans pièce";
 struct PageState {
     open: Option<u64>,
     main: bool,
+}
+
+/// Ouvre une caméra en grand (option `--camera`).
+pub fn open(ctx: &egui::Context, id: u64) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            page_id(),
+            PageState {
+                open: Some(id),
+                main: false,
+            },
+        )
+    });
 }
 
 fn page_id() -> egui::Id {
@@ -81,6 +94,7 @@ pub struct Group<'a> {
 }
 
 impl Group<'_> {
+    #[cfg(test)]
     pub fn title(&self) -> &str {
         self.room.as_deref().unwrap_or(NO_ROOM)
     }
@@ -158,10 +172,10 @@ pub fn live_slots(tiles: &[(bool, bool)], max: usize) -> Vec<bool> {
         .collect()
 }
 
-/// Phrase d'état d'une caméra : (badge, détail éventuel, couleur).
-pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Color32) {
+/// Phrase d'état d'une caméra : (état, détail éventuel, gravité si anormal).
+pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Option<Severity>) {
     match status {
-        CameraStatus::Online => ("En ligne", None, ONLINE),
+        CameraStatus::Online => ("En ligne", None, None),
         CameraStatus::Unreachable {
             problem,
             detail,
@@ -174,9 +188,9 @@ pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Colo
             if let Some(since) = since {
                 text.push_str(&format!(" · {}", offline_since_now(*since)));
             }
-            ("Injoignable", Some(text), OFFLINE)
+            ("Injoignable", Some(text), Some(Severity::Error))
         }
-        CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), NEUTRAL),
+        CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), None),
     }
 }
 
@@ -196,8 +210,11 @@ fn placeholder_text(video: TileVideo, camera: &CameraView, capped: bool) -> Stri
         TileVideo::NoSubStream => {
             "Pas de flux réduit : ouvrez la caméra pour voir le direct".into()
         }
-        TileVideo::NotOnline => match camera.status {
+        TileVideo::NotOnline => match &camera.status {
             CameraStatus::Unknown => "Vérification en cours…".into(),
+            CameraStatus::Unreachable {
+                since: Some(since), ..
+            } => offline_since_now(*since),
             _ => "Caméra injoignable".into(),
         },
         TileVideo::Live(_) if capped => {
@@ -216,7 +233,7 @@ pub fn show(ui: &mut egui::Ui, model: &Model, plan: &HomePlan) {
         state = PageState::default();
     }
     match state.open.and_then(|c| model.camera(c)) {
-        Some(camera) => detail(ui, model, camera, &mut state),
+        Some(camera) => detail(ui, model, camera, plan, &mut state),
         None => mosaic(ui, model, plan, &mut state),
     }
     ui.data_mut(|d| d.insert_temp(id, state));
@@ -235,19 +252,31 @@ fn empty_state(ui: &mut egui::Ui) {
     });
 }
 
-fn badge(ui: &mut egui::Ui, camera: &CameraView) {
-    let (label, _, color) = status_text(&camera.status);
-    ui.label(RichText::new(format!("● {label}")).color(color).strong());
+/// Anomalie à signaler sur une vignette : seulement « injoignable ».
+fn badge_of(camera: &CameraView) -> Option<(Severity, &'static str)> {
+    matches!(camera.status, CameraStatus::Unreachable { .. })
+        .then_some((Severity::Error, super::devices::UNREACHABLE))
+}
+
+/// Les caméras dans l'ordre des pièces, avec leur pièce (vide si elle n'est posée nulle part).
+fn flatten<'a>(groups: &'a [Group<'a>]) -> Vec<(&'a CameraView, &'a str)> {
+    groups
+        .iter()
+        .flat_map(|g| {
+            let room = g.room.as_deref().unwrap_or("");
+            g.cameras.iter().map(move |c| (*c, room))
+        })
+        .collect()
 }
 
 fn mosaic(ui: &mut egui::Ui, model: &Model, plan: &HomePlan, state: &mut PageState) {
-    ui.heading("Caméras");
-    ui.add_space(6.0);
     if model.cameras.is_empty() {
         empty_state(ui);
         return;
     }
     let groups = group_cameras(&model.cameras, plan);
+    let cameras = flatten(&groups);
+    let caption_h = theme::tokens().size.caption_row;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -255,54 +284,52 @@ fn mosaic(ui: &mut egui::Ui, model: &Model, plan: &HomePlan, state: &mut PageSta
             let columns = columns_for(width);
             let tile_w = ((width - TILE_GAP * (columns as f32 - 1.0)) / columns as f32).floor();
             let video_h = (tile_w * 9.0 / 16.0).round();
+            let tile_h = video_h + caption_h + 4.0;
             let clip = ui.clip_rect();
             let mut live_budget = MAX_LIVE_TILES;
-            for group in &groups {
-                ui.add_space(4.0);
-                ui.label(RichText::new(group.title()).strong().size(16.0));
-                ui.add_space(4.0);
-                for row in group.cameras.chunks(columns) {
-                    let (row_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(width, video_h + CAPTION_HEIGHT),
-                        egui::Sense::hover(),
-                    );
-                    // Visibilité de toute la rangée d'abord : le plafond se partage dans l'ordre.
-                    let rects: Vec<egui::Rect> = (0..row.len())
-                        .map(|i| {
-                            egui::Rect::from_min_size(
-                                row_rect.min + egui::vec2(i as f32 * (tile_w + TILE_GAP), 0.0),
-                                egui::vec2(tile_w, video_h + CAPTION_HEIGHT),
-                            )
-                        })
-                        .collect();
-                    let wants: Vec<(bool, bool)> = row
-                        .iter()
-                        .zip(&rects)
-                        .map(|(c, r)| (tile_wants_stream(ui.ctx(), c), tile_visible(clip, *r)))
-                        .collect();
-                    let live = live_slots(&wants, live_budget);
-                    live_budget -= live.iter().filter(|l| **l).count();
-                    for (i, camera) in row.iter().enumerate() {
-                        if tile(ui, model, camera, rects[i], video_h, live[i], wants[i].1) {
-                            *state = PageState {
-                                open: Some(camera.id),
-                                main: false,
-                            };
-                        }
+            for row in cameras.chunks(columns) {
+                let (row_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(width, tile_h), egui::Sense::hover());
+                // Visibilité de toute la rangée d'abord : le plafond se partage dans l'ordre.
+                let rects: Vec<egui::Rect> = (0..row.len())
+                    .map(|i| {
+                        egui::Rect::from_min_size(
+                            row_rect.min + egui::vec2(i as f32 * (tile_w + TILE_GAP), 0.0),
+                            egui::vec2(tile_w, tile_h),
+                        )
+                    })
+                    .collect();
+                let wants: Vec<(bool, bool)> = row
+                    .iter()
+                    .zip(&rects)
+                    .map(|((c, _), r)| (tile_wants_stream(ui.ctx(), c), tile_visible(clip, *r)))
+                    .collect();
+                let live = live_slots(&wants, live_budget);
+                live_budget -= live.iter().filter(|l| **l).count();
+                for (i, (camera, room)) in row.iter().enumerate() {
+                    if tile(ui, model, camera, room, rects[i], live[i], wants[i].1) {
+                        *state = PageState {
+                            open: Some(camera.id),
+                            main: false,
+                        };
                     }
                 }
-                ui.add_space(6.0);
             }
         });
 }
 
-/// Une tuile. Rend `true` si on a cliqué dessus.
+/// Fond d'une image vidéo : sombre dans les deux thèmes, voulu.
+const VIDEO_BG: Color32 = Color32::from_gray(24);
+const VIDEO_TEXT: Color32 = Color32::from_gray(190);
+
+/// Une tuile : l'image, le nom, la pièce en légende, et « injoignable » seulement si besoin.
+/// Rend `true` si on a cliqué dessus.
 fn tile(
     ui: &mut egui::Ui,
     model: &Model,
     camera: &CameraView,
+    room: &str,
     rect: egui::Rect,
-    video_h: f32,
     live: bool,
     visible: bool,
 ) -> bool {
@@ -315,106 +342,114 @@ fn tile(
         ui.scope_id().with(("camera-tile", camera.id)),
         egui::Sense::click(),
     );
-    let visuals = ui.style().visuals.clone();
-    let painter = ui.painter();
-    let radius = 6.0;
-    painter.rect_filled(rect, radius, visuals.faint_bg_color);
-    painter.rect_stroke(
-        rect,
-        radius,
-        if response.hovered() {
-            visuals.widgets.hovered.bg_stroke
-        } else {
-            visuals.widgets.noninteractive.bg_stroke
-        },
-        egui::StrokeKind::Inside,
-    );
-    let video_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), video_h));
     let video = tile_video(camera);
-    painter.rect_filled(video_rect.shrink(1.0), radius, Color32::from_gray(24));
-    if let (true, Some(kind)) = (live, tile_stream(camera)) {
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(video_rect.shrink(1.0)),
-            |ui| {
-                player_compact(ui, model, camera.id, kind);
-            },
-        );
+    let stream = tile_stream(camera).filter(|_| live);
+    let capped = matches!(video, TileVideo::Live(_));
+    let text = if stream.is_some() {
+        String::new()
     } else {
-        let capped = matches!(video, TileVideo::Live(_));
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(video_rect.shrink(8.0)),
-            |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label(
-                        RichText::new(placeholder_text(video, camera, capped))
-                            .color(Color32::from_gray(190)),
-                    );
-                });
-            },
+        placeholder_text(video, camera, capped)
+    };
+    let image = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            theme::thumbnail(
+                ui,
+                rect.width(),
+                &Thumb {
+                    fill: VIDEO_BG,
+                    inside: &text,
+                    inside_color: VIDEO_TEXT,
+                    name: &camera.name,
+                    caption: room,
+                    badge: badge_of(camera),
+                },
+            )
+        })
+        .inner;
+    if let Some(kind) = stream {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(image), |ui| {
+            player_compact(ui, model, camera.id, kind);
+        });
+    }
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            image,
+            theme::tokens().radius.md,
+            egui::Stroke::new(1.5, theme::palette(ui).accent_text),
+            egui::StrokeKind::Outside,
         );
     }
-    let caption = egui::Rect::from_min_max(
-        egui::pos2(rect.min.x + 8.0, video_rect.max.y + 4.0),
-        egui::pos2(rect.max.x - 8.0, rect.max.y - 2.0),
-    );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(caption), |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&camera.name).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                badge(ui, camera);
-            });
-        });
-        let mut meta = Vec::new();
-        if let Some(s) = stream_summary(camera) {
-            meta.push(s);
-        }
-        if let (_, Some(detail), _) = status_text(&camera.status) {
-            meta.push(detail);
-        }
-        if !meta.is_empty() {
-            ui.add(egui::Label::new(RichText::new(meta.join(" — ")).small().weak()).truncate());
-        }
-    });
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
 }
 
-fn detail(ui: &mut egui::Ui, model: &Model, camera: &CameraView, state: &mut PageState) {
+/// Les deux réglages de qualité du direct : « Fluide » (flux réduit) et « Haute » (principal).
+pub const QUALITY_SMOOTH: &str = "Fluide";
+pub const QUALITY_HIGH: &str = "Haute";
+
+fn detail(
+    ui: &mut egui::Ui,
+    model: &Model,
+    camera: &CameraView,
+    plan: &HomePlan,
+    state: &mut PageState,
+) {
+    let p = theme::palette(ui);
+    let room = plan.camera_room(camera.id).map(|r| r.name.clone());
+    // Une seule ligne d'en-tête : retour, nom, pièce, et le réglage de qualité à droite.
     ui.horizontal(|ui| {
-        if ui.button("← Toutes les caméras").clicked() {
+        if ui.button("← Caméras").clicked() {
             *state = PageState::default();
         }
-        ui.heading(&camera.name);
-        badge(ui, camera);
-    });
-    if let (_, Some(text), _) = status_text(&camera.status) {
-        ui.label(text);
-    }
-    let kind = detail_stream(camera, state.main);
-    ui.horizontal(|ui| {
-        ui.add_enabled_ui(camera.has_sub_stream, |ui| {
-            let mut main = kind == StreamKind::Main;
-            if ui
-                .checkbox(&mut main, "Flux principal")
-                .on_disabled_hover_text("Cette caméra n'a qu'un flux : le principal.")
-                .changed()
-            {
-                state.main = main;
-            }
-        });
-        if let Some(s) = stream_summary(camera) {
-            ui.weak(s);
+        ui.label(
+            RichText::new(&camera.name)
+                .size(theme::tokens().font.size.heading)
+                .strong(),
+        );
+        if let Some(room) = room {
+            ui.label(RichText::new(room).color(p.text_secondary));
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let high = detail_stream(camera, state.main) == StreamKind::Main;
+            // Ajoutés de droite à gauche : « Fluide » puis « Haute » à l'écran.
+            if ui.selectable_label(high, QUALITY_HIGH).clicked() {
+                state.main = true;
+            }
+            ui.add_enabled_ui(camera.has_sub_stream, |ui| {
+                if ui
+                    .selectable_label(!high, QUALITY_SMOOTH)
+                    .on_disabled_hover_text("Cette caméra n'a qu'un flux : la qualité haute.")
+                    .clicked()
+                {
+                    state.main = false;
+                }
+            });
+        });
     });
+    let kind = detail_stream(camera, state.main);
     ui.add_space(4.0);
-    let size = ui.available_size();
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, 4.0, Color32::from_gray(24));
+    let bar_h = theme::tokens().size.control;
+    let avail = ui.available_size();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail.x, (avail.y - bar_h - 4.0).max(120.0)),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, 4.0, VIDEO_BG);
     // Toujours appelé, même hors ligne : le lecteur dit l'état (injoignable, reprise…) et le
-    // serveur reprend la caméra tout seul. Le seul choix du flux est la case de cette page.
+    // serveur reprend la caméra tout seul. Le seul choix du flux est le réglage de l'en-tête.
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         player_compact(ui, model, camera.id, kind);
+    });
+    // Barre d'état : codec et résolution, et ce qui ne va pas.
+    ui.horizontal(|ui| {
+        if let Some(s) = stream_summary(camera) {
+            ui.label(RichText::new(s).small().color(p.text_secondary));
+        }
+        if let (_, Some(text), severity) = status_text(&camera.status) {
+            let color = severity.map_or(p.text_secondary, |s| s.color(p));
+            ui.label(RichText::new(text).small().color(color));
+        }
     });
 }
 

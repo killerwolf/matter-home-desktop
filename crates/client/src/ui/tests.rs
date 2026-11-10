@@ -1709,6 +1709,7 @@ fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_windo
         node_id,
         label: format!("Capteur {node_id}"),
         color_index: node_id as usize,
+        line: points.clone(),
         points,
         gap_s: 1200.0,
         current: Some(20.5),

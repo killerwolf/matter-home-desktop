@@ -88,6 +88,34 @@ pub fn curve_points(series: &Series, start: f64, now: f64, buckets: usize) -> Ve
     protocol::downsample::min_max(&raw, start, now, buckets)
 }
 
+/// Points de la **ligne** : un point par tranche d'environ trois pixels, à la moyenne des mesures
+/// de la tranche. Les points de `curve_points` (minimum et maximum de chaque tranche, pour le
+/// minimum et le maximum affichés) donnent, là où les mesures sont serrées, des barres épaisses,
+/// et, là où elles sont espacées, un trait fin : la ligne n'a ainsi pas la même épaisseur selon
+/// la période. Avec une seule densité partout, le trait reste le même sur toute la période. Une
+/// tranche sans mesure n'a pas de point : un vrai trou reste un trou (voir `split_gaps`).
+pub fn line_points(series: &Series, start: f64, now: f64, buckets: usize) -> Vec<(f64, f64)> {
+    let n = (buckets / 3).max(1);
+    let span = now - start;
+    if span <= 0.0 {
+        return Vec::new();
+    }
+    let mut sums = vec![(0.0_f64, 0.0_f64, 0_u32); n];
+    for s in series.since(start).filter(|s| s.value.is_finite()) {
+        let i = (((s.t - start) / span) * n as f64)
+            .floor()
+            .clamp(0.0, (n - 1) as f64) as usize;
+        let cell = &mut sums[i];
+        cell.0 += s.t;
+        cell.1 += s.value;
+        cell.2 += 1;
+    }
+    sums.into_iter()
+        .filter(|c| c.2 > 0)
+        .map(|c| (c.0 / f64::from(c.2), c.1 / f64::from(c.2)))
+        .collect()
+}
+
 /// Coupe une courbe là où deux mesures successives sont séparées de plus de `gap` secondes :
 /// pas de ligne à travers un trou de données.
 pub fn split_gaps(points: &[(f64, f64)], gap: f64) -> Vec<Vec<(f64, f64)>> {
@@ -252,6 +280,67 @@ pub fn local_offset_s(t: f64) -> i64 {
 #[cfg(test)]
 mod header_tests {
     use super::*;
+
+    fn series_of(points: &[(f64, f64)]) -> DeviceSeries {
+        use protocol::wire::HistoryPoint;
+        let mut data = DeviceSeries::default();
+        let pts: Vec<HistoryPoint> = points
+            .iter()
+            .map(|&(at, value)| HistoryPoint {
+                at,
+                metric: Metric::Temperature,
+                value,
+            })
+            .collect();
+        data.load(0.0, false, &pts);
+        data
+    }
+
+    #[test]
+    fn the_line_has_one_density_over_the_whole_period_and_keeps_real_gaps() {
+        // 24 h : une mesure toutes les 5 minutes les 22 premières heures, puis toutes les 2
+        // secondes sur la dernière demi-heure ; un trou de 3 h au milieu des mesures espacées.
+        let (start, now) = (0.0, 86_400.0);
+        let mut raw = Vec::new();
+        let mut t = 0.0;
+        while t < 79_200.0 {
+            if !(30_000.0..40_800.0).contains(&t) {
+                raw.push((t, 20.0 + (t / 300.0) % 2.0));
+            }
+            t += 300.0;
+        }
+        let mut t = 84_600.0;
+        while t < now {
+            raw.push((t, 21.0 + (t % 3.0)));
+            t += 2.0;
+        }
+        let data = series_of(&raw);
+        let series = data.get(Metric::Temperature).unwrap();
+        let buckets = 900; // largeur du graphique : 300 tranches pour la ligne
+        let line = line_points(series, start, now, buckets);
+        // Pas plus d'un point par tranche, donc la zone dense n'est pas plus épaisse.
+        let bucket = (now - start) / 300.0;
+        let mut per_bucket = std::collections::HashMap::new();
+        for p in &line {
+            *per_bucket.entry((p.0 / bucket) as usize).or_insert(0) += 1;
+        }
+        assert!(per_bucket.values().all(|n| *n == 1));
+        assert!(line.len() <= 300);
+        // Le trou de 3 h reste un trou : la ligne est coupée avec le même seuil qu'avant.
+        let gap = gap_threshold(None, TimeWindow::Hour24, buckets);
+        assert!(gap < 3.0 * 3600.0);
+        let segments = split_gaps(&line, gap);
+        assert!(segments.len() >= 2, "le trou réel est relié");
+        // La valeur d'une tranche est la moyenne de ses mesures.
+        let dense: Vec<f64> = line
+            .iter()
+            .filter(|p| p.0 > 84_600.0)
+            .map(|p| p.1)
+            .collect();
+        assert!(dense.iter().all(|v| (21.0..24.0).contains(v)));
+        // Sans mesure ou période vide : rien.
+        assert!(line_points(series, 10.0, 10.0, 900).is_empty());
+    }
 
     #[test]
     fn short_labels_prefer_the_room() {
