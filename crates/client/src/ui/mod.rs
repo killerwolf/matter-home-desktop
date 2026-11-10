@@ -2207,7 +2207,7 @@ impl eframe::App for MatterApp {
                 plan::PlanAction::None => {}
             },
             View::Temperatures => self.temperatures_page(ui),
-            View::Cameras => cameras::show(ui, &self.model),
+            View::Cameras => cameras::show(ui, &self.model, self.plan.plan()),
             View::Rules => {
                 if let rules::RulesAction::Test(id) =
                     self.rules
