@@ -4,6 +4,7 @@
 pub mod app;
 pub mod automation;
 pub mod backup;
+pub mod cameras;
 pub mod demo;
 pub mod events;
 pub mod export;

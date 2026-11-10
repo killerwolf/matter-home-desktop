@@ -9,9 +9,12 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 
 ## Règles
 
-- **Version** : `protocol_version` (1 aujourd'hui). `GET /api/version` la donne sans jeton ;
-  la connexion et le WebSocket (`?protocol=1`) l'exigent identique, sinon l'erreur
-  `version_incompatible` (HTTP 426). Ajouter un champ optionnel ne change pas la version.
+- **Version** : `protocol_version` (2 aujourd'hui). `GET /api/version` la donne sans jeton ;
+  la connexion et le WebSocket (`?protocol=2`) l'exigent identique, sinon l'erreur
+  `version_incompatible` (HTTP 426). Ajouter un champ optionnel ne change pas la version ;
+  ajouter une **variante** d'énumération (un type d'événement, un code d'erreur) la change, car
+  `serde` refuse les variantes inconnues. Historique : **2** = caméras (ticket n° 4, événement
+  `cameras_changed`) ; 1 = la v1.0.0.
 - **Identifiants en texte** : appareils, règles, étages, pièces, objets sont des chaînes
   décimales (`"18446744073709551615"`), car un `u64` dépasse 2^53 et JavaScript l'arrondirait.
   Un identifiant numérique, ou avec zéro initial, est refusé. Les compteurs (`seq`) restent
@@ -69,7 +72,8 @@ aux essais et aux tests.
 | `POST /api/login` | `{username, password, protocol_version}` → `{token, expires_at, …}` (sans jeton) |
 | `POST /api/logout` | révoque le jeton (204) ; le WebSocket de cette session se ferme |
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
-| `GET /api/ws?protocol=1` | temps réel (WebSocket) |
+| `GET /api/ws?protocol=2` | temps réel (WebSocket) |
+| `GET /api/cameras` | les caméras, **sans adresse ni mot de passe** (voir « Caméras ») |
 | `POST /api/pairing` | `{code}` : appairer (202 ; la suite arrive en événements) |
 | `POST /api/devices/{id}/retry` | réessayer la connexion (202) |
 | `DELETE /api/devices/{id}` | oublier l'appareil (202) |
@@ -83,7 +87,7 @@ aux essais et aux tests.
 | `GET`, `PUT /api/rules` | lire, remplacer les règles |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
-| `GET /api/export` | sauvegarde `.matterhome` (**clés privées en clair**) |
+| `GET /api/export` | sauvegarde `.matterhome` (**clés privées et mots de passe des caméras en clair**) |
 | `POST /api/import` | corps = fichier `.matterhome` ; 202, puis le serveur quitte (code 75). Une autre identité Matter est refusée (`identity_mismatch`, 409) sans `?replace_identity=1` |
 | `POST /api/import?dry_run=1` | même corps ; inspecte sans rien engager : 200 avec le résumé (voir ci-dessous) |
 
@@ -117,8 +121,8 @@ tronquées) ; un client plus ancien ne l'envoie pas : la réponse garde la même
 
 Aucun message ne part du client (ses commandes passent par l'API). Le serveur envoie :
 
-1. `{"type": "hello", "protocol_version": 1, "server_version": "…"}`
-2. `{"type": "snapshot", "seq": N, "devices": […], "plan": {…}, "rules": {…}, "rule_runs": […], "pairing_busy": false}` :
+1. `{"type": "hello", "protocol_version": 2, "server_version": "…"}`
+2. `{"type": "snapshot", "seq": N, "devices": […], "plan": {…}, "rules": {…}, "rule_runs": […], "pairing_busy": false, "cameras": […]}` :
    l'**état complet** (description, état de liaison et dernière valeur de chaque grandeur ; pas
    de séries, qui se lisent en historique) ;
 3. `{"type": "event", "seq": N+1, "event": {"type": "reading", …}}` pour chaque changement.
@@ -128,7 +132,7 @@ Aucun message ne part du client (ses commandes passent par l'API). Le serveur en
 
 Événements (`event.type`) : `device_updated`, `device_removed`, `status`, `seen`, `mode`,
 `reading` (mesure ou état), `cover_motion`, `rule_run`, `pairing_progress`, `pairing_done`,
-`pairing_failed`, `notice`, `notification`, `plan_changed`, `rules_changed`.
+`pairing_failed`, `notice`, `notification`, `plan_changed`, `rules_changed`, `cameras_changed`.
 
 Le `seq` croît de 1 à chaque événement : un client qui voit un trou rouvre une connexion.
 **Client lent** : le serveur ne l'attend jamais. S'il prend du retard, il reçoit un nouveau
@@ -137,15 +141,97 @@ s'il y retombe plus de 3 fois par minute, ou n'avance plus (écriture bloquée 1
 déconnecté. Il se reconnecte alors et repart d'un état complet. Un client fermé ne reçoit
 rien, notifications comprises : le serveur n'a pas de file d'attente pour les absents.
 
+## Caméras
+
+Ticket n° 4. Le serveur est le **seul** à parler aux caméras (RTSP). Le client ne reçoit que de
+quoi les lister et dire si elles répondent : **jamais l'adresse RTSP ni le mot de passe**, qui
+restent sur le serveur (`cameras.json`, voir plus bas). Ce n'est pas une règle de discipline : les
+types de `crates/protocol/src/wire/camera.rs` n'ont aucun champ qui puisse les porter (un test
+fige la liste des clés).
+
+```json
+{"cameras": [
+  {"id": "18446744004990074881", "name": "Entrée",
+   "status": {"state": "online"},
+   "has_sub_stream": true,
+   "stream": {"codec": "h264", "width": 1280, "height": 720}},
+  {"id": "18446744004990074883", "name": "Garage",
+   "status": {"state": "unreachable", "problem": "unreachable",
+              "detail": "La caméra ne répond pas (éteinte, hors réseau, RTSP désactivé ou mauvais port)."},
+   "has_sub_stream": true}
+]}
+```
+
+- **Où** : `GET /api/cameras` (`{"cameras": […]}`, triées par nom), le champ `cameras` de l'état
+  complet (HTTPS et WebSocket) et l'événement `{"type": "cameras_changed", "cameras": […]}`.
+  L'événement porte **la liste complète** (32 caméras au plus) : le client remplace la sienne. Il
+  part à chaque ajout, modification, suppression, et quand l'état d'une caméra change (jamais si
+  une vérification redonne le même résultat).
+- **Identifiant** (`id`) : texte décimal d'un `u64`, tiré dans la plage réservée
+  `0xFFFF_FFF8_0000_0000..=0xFFFF_FFFF_FFFF_FFFF` (`CAMERA_ID_MIN`, `CAMERA_ID_MAX`,
+  `is_camera_id`). Les appareils derrière un pont tirent les leurs juste en dessous
+  (`0xFFFF_FFF0_0000_0000..=0xFFFF_FFF7_FFFF_FFFF`) : aucun recoupement, et jamais un identifiant
+  de nœud Matter.
+- **État** (`status.state`) : `unknown` (pas encore vérifiée), `online`, ou `unreachable` avec
+  `problem` (code stable : `unreachable`, `unauthorized`, `not_found`, `protocol`, `failed`) et
+  `detail`, une phrase française sans adresse ni mot de passe. Le serveur **ne garde aucune
+  connexion ouverte** vers une caméra : il fait un `DESCRIBE` bref (jamais `SETUP` ni `PLAY`),
+  une caméra à la fois, à l'ajout puis environ chaque minute, avec 8 s de délai. Une caméra
+  injoignable n'a aucun effet sur les appareils Matter (autre fil, autre runtime).
+- **Flux** (`stream`) : ce que la caméra annonce pour le flux surveillé (le réduit s'il existe,
+  sinon le principal) : `codec` en minuscules (`h264`, `h265`, `jpeg`), et `width`/`height` si la
+  description les contient (SPS). Il garde la dernière valeur connue quand la caméra devient
+  injoignable. Un client qui ne décode pas le codec doit le dire (« H.265 non pris en charge »).
+- **Lecture seule** : aucune route n'ajoute, ne modifie ni ne supprime une caméra (`POST`, `PUT`,
+  `DELETE` sur `/api/cameras` : 405). On les gère dans la fenêtre du serveur (« Caméras… »). Un
+  porteur de jeton ne peut donc ni lire un mot de passe de caméra, ni faire connecter le serveur à
+  une adresse de son choix.
+- **Compatibilité** : un serveur de version 1 n'a pas `cameras` (à lire comme vide) ; ce champ,
+  et ceux qu'on ajouterait aux types de caméra, sont ignorés par qui ne les connaît pas. Mais
+  `cameras_changed` est une nouvelle variante d'événement : un client de version 1 la refuserait.
+  C'est pourquoi la version du protocole passe à **2** (client et serveur sortent ensemble).
+
+**Données du serveur** (jamais envoyées) : `cameras.json` dans le dossier de données, créé en
+**0600** (dossier en 0700), écriture atomique. Pour chaque caméra : `id` (numérique dans le
+fichier, comme `maison.json`), `name`, `url` (flux principal, **sans** `user:mdp@`), `sub_url`
+(flux réduit, facultatif), `username`, `password`. On peut coller `rtsp://user:mdp@ip:554/…` dans le
+formulaire : les identifiants sont rangés dans leurs champs et retirés de l'adresse (`retina` refuse
+d'ailleurs une adresse qui en porte). Aqara G100 (recherche, non vérifié sur l'appareil) :
+`rtsp://ip:554/live/ch00_0` (principal, environ 2304 × 1296, signalé instable) et `ch00_1` (720p,
+stable) ; ne pas lire plus de deux flux à la fois par caméra. `Debug` masque tout (adresse,
+identifiant, mot de passe) ; ni le journal ni un message d'erreur ne reprennent ce qui a été saisi.
+Le fichier est dans la sauvegarde `.matterhome` : **les mots de passe des caméras y sont en clair**,
+comme les clés de la maison (la fenêtre « Caméras… » et le message d'export du client le disent).
+L'import le valide (version, plage et unicité des identifiants, adresses `rtsp://` sans
+identifiants) et refuse la sauvegarde sans répéter d'adresse ni de mot de passe. Le résumé
+(`ImportSummary.cameras`, 0 si absent) compte les caméras.
+
+**Pour #5 (lecture), #6 (plan), #7 (liste)** :
+
+- *Transport de la vidéo, non décidé ici.* Le ticket n° 5 propose que le serveur se connecte à la
+  caméra seulement tant que quelqu'un regarde et **relaie les images H.264 telles quelles**
+  (WebSocket binaire par caméra, sans décodage ni réencodage), le client décodant. L'autre option
+  est une connexion RTSP directe du client à la caméra, qui exigerait de lui donner l'adresse et le
+  mot de passe : contraire à la règle ci-dessus. Le point d'entrée côté serveur est
+  `Hub::camera_target(id, StreamKind::{Main, Sub})` (adresse sans identifiants + identifiants),
+  qui ne sort jamais du serveur ; le flux réduit est le défaut (`StoredCamera::preferred_kind`).
+  Une route de flux serait `GET /api/cameras/{id}/stream` (404 aujourd'hui), sous le même jeton.
+- *Placement* : il ne va **pas** dans la caméra mais dans le plan (`home::Item`) : #6 ajoute
+  `ItemKind::Camera { camera_id }` et `Item::rotation` (`#[serde(default)]`). Contrôle côté serveur :
+  `is_camera_id` et existence de la caméra ; à la suppression, `Hub::delete_camera` est l'endroit
+  où la retirer du plan (repère `#6` dans le code). La version du protocole est **déjà à 2** : ne
+  pas la relever de nouveau pour un ticket de la même livraison.
+- *Client* : `Model::cameras` (remplacé par `cameras_changed`) et `Model::camera(id)`.
+
 ## Export et import
 
-`GET /api/export` renvoie le fichier `.matterhome` (appareils, plan, règles, historique, **et les
-clés privées du contrôleur en clair** : le canal est chiffré et authentifié, le fichier doit
+`GET /api/export` renvoie le fichier `.matterhome` (appareils, plan, règles, caméras, historique, **les
+clés privées du contrôleur et les mots de passe des caméras en clair** : le canal est chiffré et authentifié, le fichier doit
 être gardé comme un secret).
 
 `POST /api/import` valide **à fond** la sauvegarde : identité du contrôleur (clés et certificats
 lisibles), `maison.json` et `regles.json` (désérialisés, puis mêmes bornes que `PUT /api/plan` et
-`PUT /api/rules`). Une sauvegarde invalide est refusée (`invalid_import`, 400) sans rien écrire. Une vraie
+`PUT /api/rules`), `cameras.json` (voir « Caméras »). Une sauvegarde invalide est refusée (`invalid_import`, 400) sans rien écrire. Une vraie
 sauvegarde dont le plan n'a aucun étage (`floors: []`) n'est pas refusée : son plan est remplacé
 par le plan par défaut, avant d'être déposée (le même remplacement a lieu au chargement d'un
 `maison.json` sans étage).

@@ -43,8 +43,16 @@ argon2 = "0.5"
 sha2 = "0.10"
 subtle = "2"
 rpassword = "7"
+# Caméras RTSP (#4) : `retina` est une bibliothèque cliente RTSP en Rust pur (tokio, sans TLS ni
+# FFmpeg), licence MIT ou Apache-2.0, qui décrit les flux (DESCRIBE, authentification Basic et
+# Digest, lecture du SPS H.264 et H.265) et relaie les paquets sans décoder. Voir `cameras.rs`.
+retina = "0.4"
+url = "2"
+percent-encoding = "2"
 # Course des essais de connexion (FuturesUnordered) ; déjà dans l'arbre via axum.
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
+# Fausse caméra RTSP des tests : en-tête d'authentification Basic.
+base64 = "0.22"

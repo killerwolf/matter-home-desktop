@@ -203,7 +203,7 @@ impl WireEvent {
     }
 
     /// Événement interne correspondant, pour un client qui réutilise son modèle actuel.
-    /// `None` pour `PlanChanged` et `RulesChanged`, que le client traite à part.
+    /// `None` pour `PlanChanged`, `RulesChanged` et `CamerasChanged`, que le client traite à part.
     pub fn into_event(self) -> Option<Event> {
         Some(match self {
             WireEvent::DeviceUpdated { device } => Event::Node(device.into()),
@@ -250,7 +250,9 @@ impl WireEvent {
             WireEvent::Notification { title, message, at } => {
                 Event::Notification { title, message, at }
             }
-            WireEvent::PlanChanged { .. } | WireEvent::RulesChanged { .. } => return None,
+            WireEvent::PlanChanged { .. }
+            | WireEvent::RulesChanged { .. }
+            | WireEvent::CamerasChanged { .. } => return None,
         })
     }
 }

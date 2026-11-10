@@ -48,6 +48,7 @@ fn snapshot(seq: u64, devices: Vec<DeviceView>) -> Snapshot {
         rules: TextIds(protocol::automation::RuleSet::default()),
         rule_runs: vec![],
         pairing_busy: false,
+        cameras: vec![],
     }
 }
 
@@ -570,6 +571,7 @@ fn backup_summary_reads_naturally() {
         devices: 12,
         rooms: 7,
         rules: 1,
+        cameras: 0,
         history_files: 12,
         has_plan: true,
         has_rules: true,
@@ -581,6 +583,17 @@ fn backup_summary_reads_naturally() {
         "{text}"
     );
     assert!(!text.contains("désactivée"), "{text}");
+    // Les caméras sont comptées quand il y en a.
+    let with_cameras = ImportSummary {
+        cameras: 2,
+        ..s.clone()
+    };
+    assert!(
+        describe_backup(&with_cameras)
+            .starts_with("12 appareils, 7 pièces, 1 règle, 2 caméras, sauvegarde du "),
+        "{}",
+        describe_backup(&with_cameras)
+    );
     // Les brouillons désactivés par l'import sont nommés.
     let with_drafts = ImportSummary {
         disabled_rules: vec!["Alerte porte".into(), "Test".into()],

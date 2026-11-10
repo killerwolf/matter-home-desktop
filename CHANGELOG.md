@@ -12,6 +12,26 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Caméras RTSP, 1/5 : les ajouter depuis le serveur** (ticket n° 4). Le menu de **Matter Home
+  Server** gagne **« Caméras… »** : une fenêtre pour ajouter, modifier et supprimer des caméras
+  (nom, adresse du flux principal, adresse du flux réduit facultative, identifiant, mot de passe)
+  et un bouton **Tester**, qui se connecte à la caméra (un `DESCRIBE`, jamais de flux) et dit le
+  codec et la résolution, ou une erreur compréhensible (caméra éteinte, mot de passe refusé,
+  mauvaise adresse de flux). On peut coller `rtsp://identifiant:mot-de-passe@adresse/…` : les
+  identifiants sont rangés dans leurs champs. Le serveur vérifie ensuite chaque caméra environ une
+  fois par minute, sans garder de connexion ouverte, et le client voit pour chacune « joignable »
+  ou « injoignable ». Une caméra qui ne répond pas n'a aucun effet sur les appareils Matter.
+  Bibliothèque RTSP : [`retina`](https://docs.rs/retina) (Rust pur, MIT ou Apache-2.0).
+- **Le mot de passe d'une caméra ne quitte jamais le serveur** : le client ne reçoit que
+  l'identifiant, le nom, l'état et le codec, jamais l'adresse RTSP ni le mot de passe (`GET
+  /api/cameras`, l'état complet et l'événement `cameras_changed`), et aucune route de l'API ne
+  les modifie. Ils sont dans `cameras.json` (droits 0600, écriture atomique), masqués dans
+  `Debug`, jamais dans les journaux. Ils sont **inclus en clair dans la sauvegarde `.matterhome`**,
+  comme les clés de la maison : la fenêtre « Caméras… » et le message d'export du client le disent.
+  L'export puis l'import conservent les caméras. Détails dans `docs/protocole.md`.
+- Mode démo : trois caméras fictives (une injoignable, une sans flux réduit) pour essayer la
+  fenêtre et les clients sans caméra ni trafic réseau.
+
 - **Onglet Températures** (ticket n° 3) : toutes les températures sur **un seul graphique**, une
   courbe de couleur par thermomètre, nommée d'après l'appareil et sa pièce sur le plan, pour
   comparer les pièces et vérifier le réglage de la chaudière. Période au choix : **1 h, 24 h ou
@@ -72,6 +92,14 @@ Les téléchargements de chaque version sont sur la
   cachée (réveil par les clics du menu, puis toutes les 2 s). La confirmation « Quitter » s'ouvre
   hors de ce rappel, la fenêtre s'ouvre avec son contenu, et ne reste plus à l'écran, noire et vide, au lancement
   (eframe l'y montrait après sa première image : elle est recachée tout de suite, sans boucler).
+
+### Modifié
+
+- **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
+  `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
+  inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.
+  Les identifiants d'appareils derrière un pont ne sont plus tirés dans le dernier huitième de leur
+  plage, réservé aux caméras (les identifiants déjà attribués restent valables).
 
 ## [1.0.0] - 2026-11-09
 

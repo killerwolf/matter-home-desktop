@@ -24,6 +24,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+/// La version du protocole que parle le serveur de test.
+pub const PROTOCOL: u32 = protocol::wire::PROTOCOL_VERSION;
+
 pub const USER: &str = "hamdi";
 pub const PASSWORD: &str = "un-mot-de-passe-solide-pour-les-tests";
 
@@ -395,7 +398,7 @@ impl Client {
 
     /// Ouvre une session avec le compte de test et rend le jeton.
     pub async fn login(&self) -> String {
-        let resp = self.login_as(USER, PASSWORD, 1).await;
+        let resp = self.login_as(USER, PASSWORD, PROTOCOL).await;
         assert_eq!(resp.status, 200, "{}", resp.text());
         resp.json()["token"].as_str().unwrap().to_string()
     }

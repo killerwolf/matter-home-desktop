@@ -36,6 +36,7 @@ est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tour
 | `controller.json` | identité du contrôleur (fabric, clés et certificats), appareils appairés, noms et icônes choisis |
 | `maison.json` | plan de la maison |
 | `regles.json` | automatisations |
+| `cameras.json` | caméras RTSP : nom, adresses, identifiant et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.matterhome` |
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
 
 En mode démo, l'application utilise `maison-demo.json` et `regles-demo.json`, et n'écrit

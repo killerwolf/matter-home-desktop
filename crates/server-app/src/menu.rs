@@ -9,6 +9,7 @@ pub enum Action {
     CopyFingerprint,
     OpenLog,
     ToggleLogin,
+    Cameras,
     Settings,
     Quit,
 }
@@ -20,6 +21,7 @@ impl Action {
             Action::CopyFingerprint => "copy-fingerprint",
             Action::OpenLog => "open-log",
             Action::ToggleLogin => "toggle-login",
+            Action::Cameras => "cameras",
             Action::Settings => "settings",
             Action::Quit => "quit",
         }
@@ -31,6 +33,7 @@ impl Action {
             Action::CopyFingerprint,
             Action::OpenLog,
             Action::ToggleLogin,
+            Action::Cameras,
             Action::Settings,
             Action::Quit,
         ]
@@ -117,6 +120,12 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
         enabled: i.login_available,
         checked: Some(i.login_enabled),
     });
+    // Les caméras se gèrent depuis le hub du serveur : seulement quand il tourne.
+    m.push(item(
+        Action::Cameras,
+        "Caméras…",
+        matches!(i.phase, Phase::Running),
+    ));
     m.push(item(Action::Settings, "Compte et réglages…", true));
     m.push(Entry::Separator);
     m.push(item(Action::Quit, "Quitter Matter Home Server…", true));
@@ -166,6 +175,7 @@ mod tests {
                 Action::CopyFingerprint,
                 Action::OpenLog,
                 Action::ToggleLogin,
+                Action::Cameras,
                 Action::Settings,
                 Action::Quit
             ]
@@ -198,6 +208,36 @@ mod tests {
     }
 
     #[test]
+    fn the_cameras_entry_is_only_enabled_while_the_server_runs() {
+        let health = Health::default();
+        let entry = |phase: &Phase| {
+            build(&MenuInput {
+                phase,
+                health: &health,
+                url: None,
+                fingerprint: None,
+                login_enabled: false,
+                desktop_doubt: false,
+                login_available: true,
+            })
+            .into_iter()
+            .find_map(|e| match e {
+                Entry::Item {
+                    action: Action::Cameras,
+                    label,
+                    enabled,
+                    ..
+                } => Some((label, enabled)),
+                _ => None,
+            })
+            .expect("entrée Caméras")
+        };
+        assert_eq!(entry(&Phase::Running), ("Caméras…".to_string(), true));
+        assert!(!entry(&Phase::Starting).1);
+        assert!(!entry(&Phase::Blocked(Blocker::Service)).1);
+    }
+
+    #[test]
     fn running_menu_mentions_an_uncertain_desktop_process() {
         let health = Health::default();
         let build_with = |doubt| {
@@ -226,6 +266,7 @@ mod tests {
             Action::CopyFingerprint,
             Action::OpenLog,
             Action::ToggleLogin,
+            Action::Cameras,
             Action::Settings,
             Action::Quit,
         ] {

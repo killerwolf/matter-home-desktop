@@ -17,19 +17,25 @@
 //! dépendance à tokio, axum ou TLS, pour que le client le réutilise tel quel.
 
 mod api;
+mod camera;
 mod convert;
 mod error;
 mod message;
 mod text_ids;
 
 pub use api::*;
+pub use camera::*;
 pub use error::*;
 pub use message::*;
 pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 
 /// Version du protocole. Elle change quand un message existant change de sens ou de forme ;
 /// ajouter un champ optionnel ou un message que l'on peut ignorer ne la change pas.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// - 2 : caméras RTSP (#4) : `cameras` dans l'état complet et l'événement `cameras_changed`.
+///   Un client de version 1 ne connaît pas cet événement (les énumérations serde refusent les
+///   variantes inconnues) : client et serveur sortent ensemble.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Fenêtre maximale d'une lecture d'historique (la rétention du serveur : 7 jours).
 pub const HISTORY_MAX_WINDOW_S: u64 = 7 * 24 * 3600;
@@ -244,11 +250,26 @@ mod tests {
                 detail: "d".into(),
             }],
             pairing_busy: false,
+            cameras: vec![CameraView {
+                id: CAMERA_ID_MIN + 1,
+                name: "Entrée".into(),
+                status: CameraStatus::Online,
+                has_sub_stream: true,
+                stream: Some(StreamInfo {
+                    codec: "h264".into(),
+                    width: Some(1280),
+                    height: Some(720),
+                }),
+            }],
         };
         let message = ServerMessage::Snapshot(Box::new(snapshot));
         let json = serde_json::to_value(&message).unwrap();
         assert_no_big_numbers(&json);
         assert_eq!(json["type"], "snapshot");
+        assert_eq!(
+            json["cameras"][0]["id"],
+            Value::String((CAMERA_ID_MIN + 1).to_string())
+        );
         assert_eq!(
             json["devices"][0]["device"]["node_id"],
             Value::String(BRIDGED.to_string())
@@ -359,5 +380,134 @@ mod tests {
             code: "12345678901".into(),
         };
         assert!(!format!("{pair:?}").contains("12345678901"));
+    }
+
+    fn camera(id: u64, status: CameraStatus) -> CameraView {
+        CameraView {
+            id,
+            name: "Salon".into(),
+            status,
+            has_sub_stream: false,
+            stream: None,
+        }
+    }
+
+    #[test]
+    fn camera_ids_are_reserved_text_ids() {
+        assert!(is_camera_id(CAMERA_ID_MIN) && is_camera_id(CAMERA_ID_MAX));
+        assert!(!is_camera_id(CAMERA_ID_MIN - 1) && !is_camera_id(0) && !is_camera_id(42));
+        const { assert!(CAMERA_ID_MIN > 1 << 53) };
+        let view = camera(CAMERA_ID_MAX, CameraStatus::Unknown);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_no_big_numbers(&json);
+        assert_eq!(json["id"], Value::String(u64::MAX.to_string()));
+        assert_eq!(serde_json::from_value::<CameraView>(json).unwrap(), view);
+        // Un identifiant numérique est refusé, comme partout.
+        let bad = serde_json::json!({"id": 5, "name": "x", "status": {"state": "unknown"}, "has_sub_stream": false});
+        assert!(serde_json::from_value::<CameraView>(bad).is_err());
+    }
+
+    #[test]
+    fn camera_events_and_statuses_round_trip() {
+        let event = WireEvent::CamerasChanged {
+            cameras: vec![
+                camera(CAMERA_ID_MIN + 1, CameraStatus::Online),
+                camera(
+                    CAMERA_ID_MIN + 2,
+                    CameraStatus::Unreachable {
+                        problem: CameraProblem::Unauthorized,
+                        detail: Some("identifiant refusé".into()),
+                    },
+                ),
+            ],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_no_big_numbers(&json);
+        assert_eq!(json["type"], "cameras_changed");
+        assert_eq!(json["cameras"][1]["status"]["problem"], "unauthorized");
+        assert_eq!(serde_json::from_value::<WireEvent>(json).unwrap(), event);
+        // Ce n'est pas un événement du moteur : le client le traite à part.
+        assert!(event.into_event().is_none());
+    }
+
+    /// Un client ne doit jamais pouvoir recevoir une adresse ou un secret : aucun champ des
+    /// types de caméra n'a de quoi les porter. Ce test fige la liste des clés possibles ; en
+    /// ajouter une oblige à relire cette règle.
+    #[test]
+    fn camera_view_has_no_field_for_an_address_or_a_secret() {
+        let view = CameraView {
+            id: CAMERA_ID_MIN,
+            name: "n".into(),
+            status: CameraStatus::Unreachable {
+                problem: CameraProblem::Failed,
+                detail: Some("d".into()),
+            },
+            has_sub_stream: true,
+            stream: Some(StreamInfo {
+                codec: "h264".into(),
+                width: Some(1),
+                height: Some(2),
+            }),
+        };
+        let json = serde_json::to_value(&view).unwrap();
+        let mut keys: Vec<String> = Vec::new();
+        fn walk(v: &Value, keys: &mut Vec<String>) {
+            match v {
+                Value::Object(o) => {
+                    for (k, v) in o {
+                        keys.push(k.clone());
+                        walk(v, keys);
+                    }
+                }
+                Value::Array(a) => a.iter().for_each(|v| walk(v, keys)),
+                _ => {}
+            }
+        }
+        walk(&json, &mut keys);
+        keys.sort();
+        keys.dedup();
+        assert_eq!(
+            keys,
+            [
+                "codec",
+                "detail",
+                "has_sub_stream",
+                "height",
+                "id",
+                "name",
+                "problem",
+                "state",
+                "status",
+                "stream",
+                "width"
+            ]
+        );
+    }
+
+    /// Compatibilité : l'état complet d'un serveur de version 1 (sans `cameras`) se lit, et
+    /// un champ inconnu (ajouté plus tard) est ignoré.
+    #[test]
+    fn snapshots_without_cameras_and_with_unknown_fields_still_parse() {
+        let snapshot = Snapshot {
+            seq: 1,
+            server_time: 1.0,
+            devices: vec![],
+            plan: TextIds(sample_plan()),
+            rules: TextIds(sample_rules()),
+            rule_runs: vec![],
+            pairing_busy: false,
+            cameras: vec![camera(CAMERA_ID_MIN, CameraStatus::Online)],
+        };
+        let mut json = serde_json::to_value(&snapshot).unwrap();
+        json.as_object_mut().unwrap().remove("cameras");
+        let old: Snapshot = serde_json::from_value(json.clone()).unwrap();
+        assert!(old.cameras.is_empty());
+        // Champ inconnu au niveau de l'état complet, d'une caméra et d'un état de caméra.
+        let mut json = serde_json::to_value(&snapshot).unwrap();
+        json["futur"] = Value::Bool(true);
+        json["cameras"][0]["orientation"] = Value::from(90);
+        json["cameras"][0]["status"]["since"] = Value::from(1.5);
+        let new: Snapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(new, snapshot);
     }
 }

@@ -2,7 +2,8 @@
 //! (`.matterhome`), pour changer de Mac sans réappairer les appareils.
 //!
 //! Le fichier est un JSON qui embarque les fichiers du dossier de données :
-//! `controller.json`, `maison.json`, `regles.json` et `history/*.jsonl`.
+//! `controller.json`, `maison.json`, `regles.json`, `cameras.json` (adresses et **mots de passe**
+//! des caméras RTSP, en clair comme les clés du contrôleur) et `history/*.jsonl`.
 //!
 //! # Import
 //!
@@ -51,6 +52,7 @@ const VERSION: u32 = 1;
 const PENDING: &str = "import-en-attente.matterhome";
 const PLAN: &str = "maison.json";
 const RULES: &str = "regles.json";
+const CAMERAS: &str = crate::cameras::FILE_NAME;
 /// Suffixes des dossiers voisins du dossier de données pendant un import.
 const PARTIAL_SUFFIX: &str = ".import-partiel";
 const NEW_SUFFIX: &str = ".import-nouveau";
@@ -74,6 +76,8 @@ pub struct Summary {
     pub devices: usize,
     pub rooms: usize,
     pub rules: usize,
+    /// Caméras RTSP (leurs mots de passe sont dans la sauvegarde).
+    pub cameras: usize,
     pub history_files: usize,
     pub has_plan: bool,
     pub has_rules: bool,
@@ -91,6 +95,9 @@ impl Summary {
         }
         if self.has_rules {
             parts.push(format!("{} automatisation(s)", self.rules));
+        }
+        if self.cameras > 0 {
+            parts.push(format!("{} caméra(s)", self.cameras));
         }
         if self.history_files > 0 {
             parts.push(format!("historique de {} appareil(s)", self.history_files));
@@ -152,7 +159,7 @@ impl std::error::Error for StageError {}
 
 /// Seuls ces fichiers sont exportés et acceptés à l'import : jamais de chemin libre.
 fn is_allowed(name: &str) -> bool {
-    if matches!(name, FILE_NAME | PLAN | RULES) {
+    if matches!(name, FILE_NAME | PLAN | RULES | CAMERAS) {
         return true;
     }
     name.strip_prefix("history/")
@@ -216,6 +223,21 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
         })
         .transpose()?;
 
+    let cameras = bundle
+        .files
+        .get(CAMERAS)
+        .map(|text| -> Result<crate::cameras::CameraFile, Invalid> {
+            let file: crate::cameras::CameraFile =
+                serde_json::from_str(text).map_err(|_| Invalid(format!("{CAMERAS} illisible")))?;
+            if strict {
+                // Les messages de `validate` citent le nom de la caméra, jamais son adresse.
+                file.validate()
+                    .map_err(|e| Invalid(format!("{CAMERAS} refusé : {e}")))?;
+            }
+            Ok(file)
+        })
+        .transpose()?;
+
     Ok(Summary {
         created: bundle.created.clone(),
         devices: state.device_ids().len(),
@@ -223,6 +245,7 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
             .as_ref()
             .map_or(0, |p| p.floors.iter().map(|f| f.rooms.len()).sum()),
         rules: rules.as_ref().map_or(0, |r| r.rules.len()),
+        cameras: cameras.as_ref().map_or(0, |c| c.cameras.len()),
         history_files: bundle
             .files
             .keys()
@@ -395,7 +418,7 @@ pub fn export(dir: &Path, dest: &Path) -> Result<Summary> {
 /// Elle contient les clés privées en clair.
 pub fn export_to_string(dir: &Path) -> Result<(String, Summary)> {
     let mut files = BTreeMap::new();
-    for name in [FILE_NAME, PLAN, RULES] {
+    for name in [FILE_NAME, PLAN, RULES, CAMERAS] {
         let path = dir.join(name);
         if path.exists() {
             let text = std::fs::read_to_string(&path)
@@ -1446,6 +1469,97 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(PLAN)).unwrap()).unwrap();
         assert_eq!(applied, HomePlan::default());
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    fn camera_file(names: &[&str]) -> String {
+        let mut book = crate::cameras::CameraBook::default();
+        for name in names {
+            book.add(&crate::cameras::CameraDraft {
+                name: (*name).into(),
+                url: "rtsp://192.0.2.9:554/live/ch00_0".into(),
+                sub_url: "rtsp://192.0.2.9:554/live/ch00_1".into(),
+                username: "admin".into(),
+                password: Some("mdp-de-la-camera".into()),
+            })
+            .unwrap();
+        }
+        serde_json::to_string(&crate::cameras::CameraFile {
+            version: 1,
+            cameras: book.cameras().to_vec(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn cameras_are_part_of_the_backup_and_survive_export_and_import() {
+        assert!(is_allowed("cameras.json"));
+        let base = temp("cameras");
+        let old = sample_dir(&base);
+        let cameras = camera_file(&["Entrée", "Jardin"]);
+        std::fs::write(old.join(crate::cameras::FILE_NAME), &cameras).unwrap();
+        let file = base.join("sauvegarde.matterhome");
+        let summary = export(&old, &file).unwrap();
+        assert_eq!(summary.cameras, 2);
+        assert!(
+            summary.describe().contains("2 caméra(s)"),
+            "{}",
+            summary.describe()
+        );
+        assert_eq!(inspect(&file).unwrap().cameras, 2);
+        // Les mots de passe voyagent dans le fichier (c'est dit à l'utilisateur) : il se garde
+        // comme les clés du contrôleur.
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("mdp-de-la-camera"));
+
+        let new = base
+            .join("neuf")
+            .join("dev.matter-home-desktop.MatterHomeDesktop");
+        std::fs::create_dir_all(&new).unwrap();
+        stage_import(&new, &file).unwrap();
+        apply_pending(&new).unwrap().unwrap();
+        let restored = new.join(crate::cameras::FILE_NAME);
+        assert_eq!(std::fs::read_to_string(&restored).unwrap(), cameras);
+        assert_eq!(
+            std::fs::metadata(&restored).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(crate::cameras::load(&new).len(), 2);
+        // Une sauvegarde sans caméras (ancienne version) reste valable : zéro caméra.
+        let plain = bundle_text(&[(FILE_NAME, controller("Capteur"))]);
+        assert_eq!(inspect_text(&plain).unwrap().cameras, 0);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn invalid_cameras_refuse_the_backup_without_repeating_the_secret() {
+        let good = camera_file(&["Entrée"]);
+        for (what, text) in [
+            ("illisible", "pas du json".to_string()),
+            ("version", good.replace("\"version\":1", "\"version\":9")),
+            (
+                "adresse avec identifiants",
+                good.replace(
+                    "rtsp://192.0.2.9:554/live/ch00_0",
+                    "rtsp://admin:mdp-de-la-camera@192.0.2.9/x",
+                ),
+            ),
+            (
+                "http",
+                good.replace("rtsp://192.0.2.9:554/live/ch00_0", "http://192.0.2.9/x"),
+            ),
+        ] {
+            let bundle = bundle_text(&[
+                (FILE_NAME, controller("X")),
+                (crate::cameras::FILE_NAME, text),
+            ]);
+            let why = inspect_text(&bundle).unwrap_err().0;
+            assert!(why.contains("cameras.json"), "{what} : {why}");
+            assert!(
+                !why.contains("mdp-de-la-camera") && !why.contains("192.0.2.9"),
+                "{what} : {why}"
+            );
+        }
     }
 
     #[test]

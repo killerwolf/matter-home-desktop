@@ -93,7 +93,9 @@ fn failed_login_is_slightly_delayed() {
     let client = server.client();
     runtime().block_on(async {
         let start = std::time::Instant::now();
-        let bad = client.login_as(USER, "un-mauvais-mot-de-passe", 1).await;
+        let bad = client
+            .login_as(USER, "un-mauvais-mot-de-passe", PROTOCOL)
+            .await;
         assert_eq!(bad.code(), "invalid_credentials");
         assert!(
             start.elapsed() >= Duration::from_millis(250),
@@ -137,7 +139,7 @@ fn stalled_request_body_times_out_but_slow_progress_does_not() {
         assert!(started.elapsed() < Duration::from_secs(5));
 
         // Corps envoyé en trois morceaux espacés de 450 ms (au total plus que le délai) : accepté.
-        let body = json!({"username": USER, "password": PASSWORD, "protocol_version": 1}).to_string();
+        let body = json!({"username": USER, "password": PASSWORD, "protocol_version": PROTOCOL}).to_string();
         let (a, rest) = body.split_at(10);
         let (b, c) = rest.split_at(20);
         let mut stream = client.connect().await;
@@ -198,6 +200,6 @@ fn connections_per_address_are_capped() {
         drop(held);
         // Tout relâché : une requête complète passe.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(client.login_as(USER, PASSWORD, 1).await.status, 200);
+        assert_eq!(client.login_as(USER, PASSWORD, PROTOCOL).await.status, 200);
     });
 }

@@ -6,6 +6,7 @@
 //! - `--data-dir DOSSIER`     : autre dossier de données (essais)
 //! - `--listen ADRESSE:PORT`  : adresse d'écoute (défaut 0.0.0.0:8443 ; en démo 127.0.0.1:0)
 
+mod cameras_ui;
 mod ui;
 
 use std::net::SocketAddr;

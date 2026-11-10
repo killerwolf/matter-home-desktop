@@ -15,9 +15,9 @@ use serde::de::DeserializeOwned;
 use protocol::automation::RuleSet;
 use protocol::home::HomePlan;
 use protocol::wire::{
-    self, Accepted, ApiError, CoverRequest, CustomizeRequest, ErrorBody, ErrorCode, HistoryQuery,
-    HistoryResponse, ImportResponse, LoginRequest, LoginResponse, OnOffRequest, PairRequest,
-    Snapshot, TextIds, VersionInfo,
+    self, Accepted, ApiError, CamerasResponse, CoverRequest, CustomizeRequest, ErrorBody,
+    ErrorCode, HistoryQuery, HistoryResponse, ImportResponse, LoginRequest, LoginResponse,
+    OnOffRequest, PairRequest, Snapshot, TextIds, VersionInfo,
 };
 
 use super::AppState;
@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/state", get(full_state))
         .route("/api/ws", get(super::ws::upgrade))
         .route("/api/rule-runs", get(rule_runs))
+        .route("/api/cameras", get(get_cameras))
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))
         .route("/api/rules/{id}/test", post(test_rule))
@@ -362,6 +363,14 @@ async fn full_state(State(state): State<AppState>) -> Json<Snapshot> {
 
 async fn rule_runs(State(state): State<AppState>) -> Json<Vec<wire::RuleRunView>> {
     Json(state.hub.rule_runs())
+}
+
+/// Les caméras : identifiant, nom, état, codec. Jamais d'adresse ni de mot de passe. Aucune route
+/// d'écriture : on les gère depuis la fenêtre du serveur.
+async fn get_cameras(State(state): State<AppState>) -> Json<CamerasResponse> {
+    Json(CamerasResponse {
+        cameras: state.hub.cameras(),
+    })
 }
 
 async fn get_plan(State(state): State<AppState>) -> Json<TextIds<HomePlan>> {

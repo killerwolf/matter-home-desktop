@@ -8,8 +8,8 @@ use protocol::automation::RuleSet;
 use protocol::events::{Capabilities, CoverMotion};
 use protocol::home::HomePlan;
 use protocol::wire::{
-    DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent, WireMode, WireNode,
-    WireStatus, RULE_RUNS_KEPT,
+    CameraView, DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent, WireMode,
+    WireNode, WireStatus, RULE_RUNS_KEPT,
 };
 
 /// Dernière valeur connue d'une grandeur, et l'instant de la mesure.
@@ -215,6 +215,9 @@ pub struct Model {
     pub devices: BTreeMap<u64, Device>,
     /// Les plus récentes en dernier.
     pub rule_runs: VecDeque<RuleRunView>,
+    /// Les caméras (sans adresse ni mot de passe : le serveur ne les envoie jamais), triées par
+    /// nom. Remplacées d'un bloc à chaque `cameras_changed` (voir `docs/protocole.md`).
+    pub cameras: Vec<CameraView>,
     pub pairing_busy: bool,
     /// Numéro du dernier événement pris en compte.
     pub seq: u64,
@@ -241,6 +244,7 @@ impl Model {
         self.rule_runs = snapshot.rule_runs.into();
         self.rule_runs.truncate_front(RULE_RUNS_KEPT);
         self.pairing_busy = snapshot.pairing_busy;
+        self.cameras = snapshot.cameras;
         self.seq = snapshot.seq;
         (snapshot.plan.0, snapshot.rules.0)
     }
@@ -352,7 +356,16 @@ impl Model {
             }
             WireEvent::PlanChanged { plan } => Change::PlanChanged(Box::new(plan.0)),
             WireEvent::RulesChanged { rules } => Change::RulesChanged(Box::new(rules.0)),
+            WireEvent::CamerasChanged { cameras } => {
+                self.cameras = cameras;
+                Change::Nothing
+            }
         }
+    }
+
+    /// Une caméra par son identifiant.
+    pub fn camera(&self, id: u64) -> Option<&CameraView> {
+        self.cameras.iter().find(|c| c.id == id)
     }
 }
 
@@ -413,6 +426,7 @@ mod tests {
             rules: TextIds(RuleSet::default()),
             rule_runs: vec![],
             pairing_busy: false,
+            cameras: vec![],
         }
     }
 
@@ -678,5 +692,39 @@ mod tests {
         d.apply_reading(Metric::Battery, 87.0, 2.0);
         d.apply_reading(Metric::BatteryLow, 1.0, 2.0);
         assert!(d.summary().contains("pile 87 % (faible)"));
+    }
+
+    fn camera_view(id: u64, name: &str) -> protocol::wire::CameraView {
+        protocol::wire::CameraView {
+            id,
+            name: name.into(),
+            status: protocol::wire::CameraStatus::Online,
+            has_sub_stream: true,
+            stream: None,
+        }
+    }
+
+    #[test]
+    fn cameras_come_with_the_snapshot_and_are_replaced_by_events() {
+        let mut m = Model::default();
+        let first = protocol::wire::CAMERA_ID_MIN + 1;
+        let mut snap = snapshot(1, vec![]);
+        snap.cameras = vec![camera_view(first, "Entrée")];
+        m.apply_snapshot(snap);
+        assert_eq!(m.camera(first).unwrap().name, "Entrée");
+        // Un événement remplace la liste d'un bloc.
+        let second = first + 1;
+        let change = m.apply_event(WireEvent::CamerasChanged {
+            cameras: vec![camera_view(second, "Jardin")],
+        });
+        assert!(matches!(change, Change::Nothing));
+        assert!(m.camera(first).is_none());
+        assert_eq!(m.camera(second).unwrap().name, "Jardin");
+        // Une resynchronisation les remplace aussi, et la déconnexion les efface.
+        m.apply_snapshot(snapshot(5, vec![]));
+        assert!(m.cameras.is_empty());
+        m.cameras = vec![camera_view(first, "x")];
+        m.clear();
+        assert!(m.cameras.is_empty());
     }
 }

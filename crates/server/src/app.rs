@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
+use crate::cameras::{self, CameraMonitor};
 use crate::events::{Event, EventSink};
 use crate::history_store::{self, HistoryStore};
 use crate::hub::{ExitReason, Hub, HubConfig};
@@ -66,6 +67,8 @@ pub struct Server {
     backend: Option<Backend>,
     pump: Option<JoinHandle<()>>,
     demo_history_writer: Option<JoinHandle<()>>,
+    /// Vérifie la joignabilité des caméras (aucune connexion gardée ouverte). Absent en démo.
+    camera_monitor: Option<CameraMonitor>,
     stop_pump: Arc<AtomicBool>,
     fatal: Arc<AtomicBool>,
     pub addr: SocketAddr,
@@ -143,6 +146,19 @@ impl Server {
                 return Err(e);
             }
         };
+        // Les caméras ne doivent jamais empêcher le serveur de démarrer : sans surveillance, leur
+        // état reste « inconnu », le reste fonctionne.
+        let camera_monitor = if config.demo {
+            None
+        } else {
+            match cameras::start_monitor(hub.clone()) {
+                Ok(monitor) => Some(monitor),
+                Err(e) => {
+                    log::error!("surveillance des caméras non démarrée : {e}");
+                    None
+                }
+            }
+        };
         Ok(Server {
             addr: net.addr,
             hub,
@@ -150,6 +166,7 @@ impl Server {
             backend: Some(backend),
             pump: Some(pump),
             demo_history_writer,
+            camera_monitor,
             stop_pump,
             fatal,
             fingerprint: identity.fingerprint,
@@ -201,6 +218,9 @@ impl Server {
         self.hub.close_commands();
         self.stop_pump.store(true, Ordering::SeqCst);
         let mut clean = true;
+        if let Some(monitor) = self.camera_monitor.take() {
+            clean &= monitor.stop();
+        }
         if let Some(backend) = self.backend.take() {
             clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
         }

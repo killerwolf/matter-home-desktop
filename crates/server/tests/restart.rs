@@ -103,7 +103,14 @@ fn token_and_fingerprint_survive_a_restart() {
     runtime().block_on(async {
         assert_eq!(third.client().get("/api/state", &token).await.status, 401);
         // Le compte, lui, fonctionne toujours.
-        assert_eq!(third.client().login_as(USER, PASSWORD, 1).await.status, 200);
+        assert_eq!(
+            third
+                .client()
+                .login_as(USER, PASSWORD, PROTOCOL)
+                .await
+                .status,
+            200
+        );
     });
 }
 
@@ -227,7 +234,7 @@ fn import_keeps_account_certificate_and_sessions() {
     runtime().block_on(async {
         let client = second.client();
         assert_eq!(
-            client.login_as(USER, PASSWORD, 1).await.status,
+            client.login_as(USER, PASSWORD, PROTOCOL).await.status,
             200,
             "le compte existe encore"
         );
@@ -280,10 +287,13 @@ fn account_creation_command() {
     let server = Server::start(&dir);
     runtime().block_on(async {
         let client = server.client();
-        assert_eq!(client.login_as("hamdi", PASSWORD, 1).await.status, 401);
+        assert_eq!(
+            client.login_as("hamdi", PASSWORD, PROTOCOL).await.status,
+            401
+        );
         assert_eq!(
             client
-                .login_as("autre", "un-autre-mot-de-passe", 1)
+                .login_as("autre", "un-autre-mot-de-passe", PROTOCOL)
                 .await
                 .status,
             200

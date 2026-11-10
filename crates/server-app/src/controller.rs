@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use matter_home_server::app::{Outcome, Server, ServerConfig};
 use matter_home_server::backup::{self, PendingKind};
+use matter_home_server::hub::Hub;
 use matter_home_server::persistence::{self, LockHeld};
 use matter_home_server::security::{self, account};
 use matter_home_server::setup::{self, IdentityState};
@@ -58,6 +59,19 @@ pub struct State {
     pub data_dir: PathBuf,
     pub log_path: PathBuf,
     pub demo: bool,
+    /// `Some` tant que le serveur tourne.
+    pub hub: Option<HubHandle>,
+}
+
+/// Le hub du serveur qui tourne, pour la fenêtre des caméras (qui les modifie directement : c'est
+/// le seul endroit, aucune route de l'API ne le fait). `Debug` n'en montre rien.
+#[derive(Clone)]
+pub struct HubHandle(pub Arc<Hub>);
+
+impl std::fmt::Debug for HubHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HubHandle")
+    }
 }
 
 pub type Shared = Arc<Mutex<State>>;
@@ -221,6 +235,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle 
         data_dir: config.data_dir.clone(),
         log_path: config.log_path.clone(),
         demo: config.demo,
+        hub: None,
     }));
     let (tx, rx) = mpsc::channel();
     let exited = ExitSignal::default();
@@ -309,6 +324,7 @@ impl Controller {
             s.fingerprint = None;
             s.health = Health::default();
             s.desktop_doubt = false;
+            s.hub = None;
         });
         let demo_skips_setup = self.cfg.demo && !self.cfg.demo_setup;
         // Le service launchd installé : on ne prend même pas le verrou (il le reprendrait en vain
@@ -407,6 +423,7 @@ impl Controller {
                     s.url = Some(url);
                     s.fingerprint = Some(server.fingerprint.clone());
                     s.setup = None;
+                    s.hub = Some(HubHandle(server.hub().clone()));
                 });
                 self.server = Some(server);
             }
@@ -421,6 +438,7 @@ impl Controller {
 
     fn stop_server(&mut self) -> bool {
         self.sleep = None;
+        self.set(|s| s.hub = None);
         match self.server.take() {
             Some(server) => {
                 self.set(|s| s.phase = Phase::Stopping);

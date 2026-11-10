@@ -15,6 +15,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cameras_ui::CamerasUi;
 use eframe::egui::{self, Color32, RichText};
 use matter_home_server::backup;
 use matter_home_server::setup::{self, IdentityComparison, IdentityState};
@@ -265,6 +266,9 @@ struct App {
     picking: Option<Receiver<Result<Restore, String>>>,
     // Interrupteur : l'écran de fin a déjà activé l'ouverture à la connexion.
     login_defaulted: bool,
+    /// La page « Caméras » remplace les réglages (menu « Caméras… »).
+    cameras_open: bool,
+    cameras: CamerasUi,
     /// La confirmation « Quitter » est à l'écran : un second clic n'en ouvre pas une autre.
     quit_dialog_open: Arc<AtomicBool>,
 }
@@ -293,6 +297,8 @@ impl App {
             local_notice: None,
             login_defaulted: false,
             picking: None,
+            cameras_open: false,
+            cameras: CamerasUi::default(),
             quit_dialog_open: Arc::new(AtomicBool::new(false)),
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
@@ -432,7 +438,16 @@ impl App {
                     self.set_login(on);
                 }
             }
-            Action::Settings => self.show_window(ctx),
+            Action::Cameras => {
+                if st.hub.is_some() {
+                    self.cameras_open = true;
+                    self.show_window(ctx);
+                }
+            }
+            Action::Settings => {
+                self.cameras_open = false;
+                self.show_window(ctx);
+            }
             Action::Quit => self.ask_quit(),
         }
     }
@@ -677,6 +692,14 @@ impl App {
             }
             (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st, false),
             (Phase::Running, _) if self.show_done => self.done_page(ui, ctx, st),
+            (Phase::Running, _) if self.cameras_open && st.hub.is_some() => {
+                if let Some(hub) = &st.hub {
+                    if self.cameras.show(ui, ctx, &hub.0) {
+                        self.cameras_open = false;
+                        self.cameras.reset();
+                    }
+                }
+            }
             _ => self.settings_page(ui, st),
         }
         if let Some(n) = &self.local_notice {
@@ -970,6 +993,12 @@ impl App {
                     }
                     ui.add_space(6.0);
                 }
+                ui.separator();
+                ui.label(RichText::new("Caméras").strong());
+                if st.hub.is_some() && ui.button("Caméras…").clicked() {
+                    self.cameras_open = true;
+                }
+                ui.add_space(6.0);
                 ui.separator();
                 ui.label(RichText::new("Compte").strong());
                 if self.change_account {

@@ -5,6 +5,7 @@
 //! (icône de barre de menus et fenêtre egui) sur le [`controller`].
 
 pub mod agent;
+pub mod cameras;
 pub mod controller;
 pub mod icon;
 pub mod menu;

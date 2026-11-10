@@ -89,8 +89,12 @@ pub struct StoredBridgedDevice {
 
 /// Plage des identifiants des appareils pontés : identifiants de nœud que Matter réserve
 /// (groupes, CASE temporaires…) et que l'appairage ne tire donc jamais.
+///
+/// Le haut de la plage (`CAMERA_ID_MIN` et au-delà, voir `protocol::wire`) est réservé aux
+/// caméras (#4) : aucun nouvel identifiant d'appareil ponté n'y est tiré. Les identifiants déjà
+/// attribués plus haut restent valables, ce sont des appareils et non des caméras.
 pub const BRIDGED_ID_MIN: u64 = 0xFFFF_FFF0_0000_0000;
-pub const BRIDGED_ID_MAX: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+pub const BRIDGED_ID_MAX: u64 = protocol::wire::CAMERA_ID_MIN - 1;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StoredNode {
@@ -281,7 +285,7 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
 }
 
 /// Refuse de créer une nouvelle identité (fabric) quand `controller.json` manque alors que
-/// d'autres données existent dans `dir` : plan (`maison.json`), règles (`regles.json`) ou
+/// d'autres données existent dans `dir` : plan (`maison.json`), règles (`regles.json`), caméras (`cameras.json`) ou
 /// historique (`history/` avec au moins un `*.jsonl`). Une nouvelle fabric ne reconnaîtrait plus aucun
 /// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
 /// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
@@ -304,7 +308,7 @@ pub fn check_fresh_start(dir: &Path) -> Result<()> {
         );
     }
     let mut found = Vec::new();
-    for name in ["maison.json", "regles.json"] {
+    for name in ["maison.json", "regles.json", crate::cameras::FILE_NAME] {
         if dir.join(name).exists() {
             found.push(name.to_string());
         }
@@ -538,6 +542,9 @@ mod tests {
     #[test]
     fn bridged_ids_exceed_js_safe_integers() {
         const { assert!(BRIDGED_ID_MIN > 1 << 53) };
+        // Les caméras ont leur plage, juste au-dessus : aucun recoupement avec les appareils pontés.
+        const { assert!(BRIDGED_ID_MAX < protocol::wire::CAMERA_ID_MIN) };
+        const { assert!(BRIDGED_ID_MAX > BRIDGED_ID_MIN) };
         // Deux identifiants voisins ne seraient plus distincts une fois passés par un f64.
         assert_eq!((BRIDGED_ID_MIN + 1) as f64, (BRIDGED_ID_MIN + 2) as f64);
     }
@@ -568,6 +575,11 @@ mod tests {
         std::fs::write(base.join("regles.json"), "{}").unwrap();
         assert!(check_fresh_start(&base).is_err());
         std::fs::remove_file(base.join("regles.json")).unwrap();
+        // Les caméras (adresses et mots de passe, qu'aucune autre source ne redonne) aussi.
+        std::fs::write(base.join("cameras.json"), "{}").unwrap();
+        let err = check_fresh_start(&base).unwrap_err().to_string();
+        assert!(err.contains("cameras.json"), "{err}");
+        std::fs::remove_file(base.join("cameras.json")).unwrap();
         // Un fichier parasite (.DS_Store) dans history/ ne bloque pas un démarrage neuf.
         std::fs::write(base.join("history").join(".DS_Store"), "").unwrap();
         assert!(check_fresh_start(&base).is_ok());

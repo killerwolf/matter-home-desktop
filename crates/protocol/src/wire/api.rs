@@ -156,6 +156,10 @@ pub struct ImportSummary {
     /// Règles d'automatisation.
     #[serde(default)]
     pub rules: usize,
+    /// Caméras RTSP. Leurs **mots de passe** sont dans la sauvegarde. Absent d'un serveur de
+    /// version 1 (lu comme 0).
+    #[serde(default)]
+    pub cameras: usize,
     pub history_files: usize,
     pub has_plan: bool,
     pub has_rules: bool,

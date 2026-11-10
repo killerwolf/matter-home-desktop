@@ -1195,7 +1195,8 @@ impl MatterApp {
                             ok: true,
                             text: format!(
                                 "Exporté dans {}\n\nCe fichier contient les clés privées de \
-                                 votre maison et les heures d'ouverture des portes : \
+                                 votre maison, les mots de passe de vos caméras et les heures \
+                                 d'ouverture des portes : \
                                  transférez-le par AirDrop ou clé USB, ne le partagez pas, et \
                                  supprimez-le une fois l'import fait.",
                                 path.display()
@@ -2058,6 +2059,12 @@ fn describe_backup(s: &ImportSummary) -> String {
         plural(s.rooms, "pièce", "pièces"),
         plural(s.rules, "règle", "règles"),
     );
+    if s.cameras > 0 {
+        text.insert_str(
+            text.find(", sauvegarde du").unwrap_or(text.len()),
+            &format!(", {}", plural(s.cameras, "caméra", "caméras")),
+        );
+    }
     if !s.disabled_rules.is_empty() {
         let names: Vec<String> = s
             .disabled_rules

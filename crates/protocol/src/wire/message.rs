@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::camera::CameraView;
 use super::error::ErrorCode;
 use super::text_ids::{text_id, TextIds};
 use crate::automation::RuleSet;
@@ -240,6 +241,11 @@ pub enum WireEvent {
     RulesChanged {
         rules: TextIds<RuleSet>,
     },
+    /// La liste des caméras ou l'état de l'une d'elles a changé : la liste **complète**
+    /// (une trentaine d'entrées au plus), à appliquer en remplaçant la précédente.
+    CamerasChanged {
+        cameras: Vec<CameraView>,
+    },
 }
 
 /// État complet, envoyé à la connexion puis chaque fois qu'un client a pris du retard.
@@ -255,6 +261,10 @@ pub struct Snapshot {
     pub rule_runs: Vec<RuleRunView>,
     /// Un appairage est en cours.
     pub pairing_busy: bool,
+    /// Les caméras, triées par nom, sans adresse ni mot de passe. Absent d'un serveur de
+    /// version 1 (lu comme vide).
+    #[serde(default)]
+    pub cameras: Vec<CameraView>,
 }
 
 /// Message envoyé sur le WebSocket.

@@ -30,21 +30,23 @@ fn login_succeeds_and_is_refused() {
         // La version est publique.
         let version = client.request("GET", "/api/version", None, None).await;
         assert_eq!(version.status, 200);
-        assert_eq!(version.json()["protocol_version"], 1);
+        assert_eq!(version.json()["protocol_version"], PROTOCOL);
 
-        let ok = client.login_as(USER, PASSWORD, 1).await;
+        let ok = client.login_as(USER, PASSWORD, PROTOCOL).await;
         assert_eq!(ok.status, 200, "{}", ok.text());
         let token = ok.json()["token"].as_str().unwrap().to_string();
         assert_eq!(token.len(), 64);
         assert_eq!(client.get("/api/state", &token).await.status, 200);
 
         // Mauvais mot de passe, mauvais identifiant : même réponse, rien de plus.
-        let bad_password = client.login_as(USER, "un-mauvais-mot-de-passe", 1).await;
+        let bad_password = client
+            .login_as(USER, "un-mauvais-mot-de-passe", PROTOCOL)
+            .await;
         assert_eq!(
             (bad_password.status, bad_password.code().as_str()),
             (401, "invalid_credentials")
         );
-        let bad_user = client.login_as("inconnu", PASSWORD, 1).await;
+        let bad_user = client.login_as("inconnu", PASSWORD, PROTOCOL).await;
         assert_eq!(
             (bad_user.status, bad_user.code().as_str()),
             (401, "invalid_credentials")
@@ -52,7 +54,8 @@ fn login_succeeds_and_is_refused() {
         assert_eq!(bad_user.json(), bad_password.json());
 
         // Version du protocole incompatible : signalé proprement, avant tout test d'identifiants.
-        let mismatch = client.login_as(USER, PASSWORD, 2).await;
+        // Un client de version 1 (avant les caméras) est refusé.
+        let mismatch = client.login_as(USER, PASSWORD, PROTOCOL - 1).await;
         assert_eq!(
             (mismatch.status, mismatch.code().as_str()),
             (426, "version_incompatible")
@@ -75,16 +78,16 @@ fn login_attempts_are_limited() {
     let client = server.client();
     runtime().block_on(async {
         for _ in 0..4 {
-            let r = client.login_as(USER, "faux-mot-de-passe", 1).await;
+            let r = client.login_as(USER, "faux-mot-de-passe", PROTOCOL).await;
             assert_eq!(r.code(), "invalid_credentials");
             assert!(r.json()["error"]["retry_after_s"].is_null());
         }
         // Le 5e échec déclenche l'attente...
-        let fifth = client.login_as(USER, "faux-mot-de-passe", 1).await;
+        let fifth = client.login_as(USER, "faux-mot-de-passe", PROTOCOL).await;
         assert_eq!(fifth.code(), "invalid_credentials");
         assert!(fifth.json()["error"]["retry_after_s"].as_u64().unwrap() >= 29);
         // ...pendant laquelle même le bon mot de passe est refusé, avec le délai à attendre.
-        let locked = client.login_as(USER, PASSWORD, 1).await;
+        let locked = client.login_as(USER, PASSWORD, PROTOCOL).await;
         assert_eq!(
             (locked.status, locked.code().as_str()),
             (429, "too_many_attempts")
@@ -101,7 +104,7 @@ fn parallel_login_attempts_are_limited_too() {
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
-        let attempts = (0..12).map(|_| client.login_as(USER, "faux-mot-de-passe", 1));
+        let attempts = (0..12).map(|_| client.login_as(USER, "faux-mot-de-passe", PROTOCOL));
         let answers = futures_util::future::join_all(attempts).await;
         let refused = answers
             .iter()
@@ -119,7 +122,7 @@ fn parallel_login_attempts_are_limited_too() {
         );
         // Et le bon mot de passe est refusé pendant l'attente.
         assert_eq!(
-            client.login_as(USER, PASSWORD, 1).await.code(),
+            client.login_as(USER, PASSWORD, PROTOCOL).await.code(),
             "too_many_attempts"
         );
     });
@@ -139,6 +142,7 @@ fn every_route_requires_the_token() {
             ("GET", "/api/rules"),
             ("PUT", "/api/rules"),
             ("GET", "/api/rule-runs"),
+            ("GET", "/api/cameras"),
             ("POST", "/api/rules/1/test"),
             ("POST", "/api/pairing"),
             ("POST", "/api/logout"),
@@ -153,7 +157,7 @@ fn every_route_requires_the_token() {
             ("GET", "/api/export"),
             ("POST", "/api/import"),
             ("POST", "/api/import?dry_run=1"),
-            ("GET", "/api/ws?protocol=1"),
+            ("GET", "/api/ws?protocol=2"),
         ];
         for (method, path) in routes {
             let none = client.request(method, path, None, Some(b"{}")).await;
@@ -202,16 +206,16 @@ fn websocket_needs_token_and_matching_version() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
-        let no_token = client.ws("", 1).await.err().unwrap();
+        let no_token = client.ws("", PROTOCOL).await.err().unwrap();
         assert_eq!(no_token.status, 401);
-        let wrong = client.ws(&"a".repeat(64), 1).await.err().unwrap();
+        let wrong = client.ws(&"a".repeat(64), PROTOCOL).await.err().unwrap();
         assert_eq!(wrong.status, 401);
-        let old = client.ws(&token, 2).await.err().unwrap();
+        let old = client.ws(&token, PROTOCOL - 1).await.err().unwrap();
         assert_eq!(
             (old.status, old.code().as_str()),
             (426, "version_incompatible")
         );
-        assert!(client.ws(&token, 1).await.is_ok());
+        assert!(client.ws(&token, PROTOCOL).await.is_ok());
     });
 }
 
@@ -222,10 +226,10 @@ fn websocket_sends_full_state_then_events_with_text_ids() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
-        let mut ws = client.ws(&token, 1).await.unwrap();
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
         let hello = next_json(&mut ws, 10 * SECOND).await.unwrap();
         assert_eq!(hello["type"], "hello");
-        assert_eq!(hello["protocol_version"], 1);
+        assert_eq!(hello["protocol_version"], PROTOCOL);
         let snapshot = next_json(&mut ws, 10 * SECOND).await.unwrap();
         assert_eq!(snapshot["type"], "snapshot");
 
@@ -271,8 +275,8 @@ fn two_clients_see_the_same_changes_and_last_write_wins() {
         let t1 = client.login().await;
         let t2 = client.login().await;
         assert_ne!(t1, t2);
-        let mut a = client.ws(&t1, 1).await.unwrap();
-        let mut b = client.ws(&t2, 1).await.unwrap();
+        let mut a = client.ws(&t1, PROTOCOL).await.unwrap();
+        let mut b = client.ws(&t2, PROTOCOL).await.unwrap();
         for ws in [&mut a, &mut b] {
             assert_eq!(next_json(ws, 10 * SECOND).await.unwrap()["type"], "hello");
             assert_eq!(
@@ -382,7 +386,7 @@ fn commands_reach_devices_and_results_come_back_as_events() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
-        let mut ws = client.ws(&token, 1).await.unwrap();
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
         for _ in 0..2 {
             next_json(&mut ws, 10 * SECOND).await.unwrap();
         }
@@ -724,7 +728,7 @@ fn rule_test_runs_and_notifications_go_to_connected_clients_only() {
         assert_eq!(found["ok"], true);
 
         // Client connecté : il reçoit la notification, puis le compte rendu.
-        let mut ws = client.ws(&token, 1).await.unwrap();
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
         let snapshot = {
             next_json(&mut ws, 10 * SECOND).await.unwrap();
             next_json(&mut ws, 10 * SECOND).await.unwrap()
@@ -860,7 +864,7 @@ fn logout_revokes_the_token_and_closes_the_stream() {
     runtime().block_on(async {
         let token = client.login().await;
         let other = client.login().await;
-        let mut ws = client.ws(&token, 1).await.unwrap();
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
         for _ in 0..2 {
             next_json(&mut ws, 10 * SECOND).await.unwrap();
         }
@@ -906,8 +910,8 @@ fn slow_client_is_dropped_without_blocking_others() {
         // Le test porte sur la déconnexion d'un client dont la connexion est bloquée : il ne doit
         // pas dépendre de la rafale de démarrage de la démo, qui saturerait la file de diffusion.
         client.wait_startup_burst_over(&token).await;
-        let mut slow = client.ws_slow(&token, 1).await.unwrap();
-        let mut fast = client.ws(&token, 1).await.unwrap();
+        let mut slow = client.ws_slow(&token, PROTOCOL).await.unwrap();
+        let mut fast = client.ws(&token, PROTOCOL).await.unwrap();
         for ws in [&mut slow, &mut fast] {
             next_json(ws, 10 * SECOND).await.unwrap();
             next_json(ws, 10 * SECOND).await.unwrap();
@@ -993,7 +997,7 @@ fn lagging_client_gets_a_fresh_snapshot() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
-        let mut lagging = client.ws(&token, 1).await.unwrap();
+        let mut lagging = client.ws(&token, PROTOCOL).await.unwrap();
         next_json(&mut lagging, 10 * SECOND).await.unwrap();
         let first = next_json(&mut lagging, 10 * SECOND).await.unwrap();
         let first_seq = first["seq"].as_u64().unwrap();
@@ -1051,7 +1055,7 @@ fn lagging_client_gets_a_fresh_snapshot() {
                 server.log().contains("client trop lent"),
                 "flux fermé sans raison dans le journal du serveur"
             );
-            let mut again = client.ws(&token, 1).await.unwrap();
+            let mut again = client.ws(&token, PROTOCOL).await.unwrap();
             next_json(&mut again, 10 * SECOND).await.unwrap();
             let fresh = next_json(&mut again, 30 * SECOND).await.unwrap();
             assert_eq!(fresh["type"], "snapshot");
@@ -1074,9 +1078,9 @@ fn log_never_contains_secrets() {
     let (token, token2) = runtime().block_on(async {
         let token = client.login().await;
         let _ = client
-            .login_as(USER, "un-mauvais-mot-de-passe-secret", 1)
+            .login_as(USER, "un-mauvais-mot-de-passe-secret", PROTOCOL)
             .await;
-        let mut ws = client.ws(&token, 1).await.unwrap();
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
         next_json(&mut ws, 10 * SECOND).await.unwrap();
         let token2 = client.login().await;
         client
@@ -1099,4 +1103,89 @@ fn log_never_contains_secrets() {
     assert!(!sessions.contains(&token));
     let account = std::fs::read_to_string(dir.join("serveur/compte.json")).unwrap();
     assert!(!account.contains(PASSWORD) && account.contains("$argon2id$"));
+}
+
+/// Les caméras de démonstration portent une adresse et un mot de passe fictifs : ils ne doivent
+/// apparaître nulle part, ni dans une réponse, ni dans un événement, ni dans le journal (niveau
+/// debug) du vrai binaire.
+#[test]
+fn cameras_are_listed_without_any_address_or_secret() {
+    let dir = temp_dir("cameras");
+    let server = Server::start(&dir);
+    let client = server.client();
+    let forbidden = [
+        "rtsp",
+        "192.0.2.",
+        "demo-camera-mdp",
+        "ch00_",
+        "\"password\"",
+        "\"url\"",
+    ];
+    runtime().block_on(async {
+        let token = client.login().await;
+        let list = client.get("/api/cameras", &token).await;
+        assert_eq!(list.status, 200, "{}", list.text());
+        let body = list.json();
+        let cameras = body["cameras"].as_array().unwrap();
+        assert_eq!(cameras.len(), 3);
+        let names: Vec<_> = cameras
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Entrée", "Garage", "Jardin"]);
+        for camera in cameras {
+            // Identifiant en texte, dans la plage réservée aux caméras.
+            let id: u64 = camera["id"]
+                .as_str()
+                .expect("identifiant en texte")
+                .parse()
+                .unwrap();
+            assert!(protocol::wire::is_camera_id(id));
+            assert!(camera["status"]["state"].is_string());
+        }
+        assert_eq!(cameras[0]["status"]["state"], "online");
+        assert_eq!(cameras[0]["has_sub_stream"], true);
+        assert_eq!(cameras[0]["stream"]["codec"], "h264");
+        assert_eq!(cameras[0]["stream"]["width"], 1280);
+        assert_eq!(cameras[1]["status"]["state"], "unreachable");
+        assert_eq!(cameras[1]["status"]["problem"], "unreachable");
+        let mut texts = vec![list.text()];
+
+        // L'état complet, en HTTPS et sur le WebSocket, porte la même liste.
+        let state = client.get("/api/state", &token).await;
+        assert_eq!(state.json()["cameras"], body["cameras"]);
+        texts.push(state.text());
+        let mut ws = client.ws(&token, PROTOCOL).await.unwrap();
+        let _hello = next_json(&mut ws, 10 * SECOND).await.unwrap();
+        let snapshot = next_json(&mut ws, 10 * SECOND).await.unwrap();
+        assert_eq!(snapshot["cameras"], body["cameras"]);
+        texts.push(snapshot.to_string());
+
+        // Aucune route n'écrit : on ajoute les caméras depuis la fenêtre du serveur.
+        for method in ["POST", "PUT", "DELETE"] {
+            let r = client
+                .request(method, "/api/cameras", Some(&token), Some(b"{}"))
+                .await;
+            assert_eq!(
+                (r.status, r.code().as_str()),
+                (405, "method_not_allowed"),
+                "{method}"
+            );
+            texts.push(r.text());
+        }
+        let not_there = client
+            .request("GET", "/api/cameras/1/stream", Some(&token), None)
+            .await;
+        assert_eq!(not_there.status, 404);
+
+        for text in &texts {
+            for needle in forbidden {
+                assert!(!text.contains(needle), "{needle} dans {text}");
+            }
+        }
+    });
+    let log = std::fs::read_to_string(&server.log_path).unwrap();
+    for needle in ["rtsp", "192.0.2.", "demo-camera-mdp", "ch00_"] {
+        assert!(!log.contains(needle), "{needle} dans le journal");
+    }
 }
