@@ -12,6 +12,25 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Onglet Températures** (ticket n° 3) : toutes les températures sur **un seul graphique**, une
+  courbe de couleur par thermomètre, nommée d'après l'appareil et sa pièce sur le plan, pour
+  comparer les pièces et vérifier le réglage de la chaudière. Période au choix : **1 h, 24 h ou
+  1 semaine**. Légende cliquable (masquer ou afficher une courbe, avec la température actuelle),
+  et au survol l'heure et la valeur de chaque courbe à cet instant. Les courbes sont coupées là où
+  il manque des mesures (capteur injoignable, piles vides), jamais reliées à travers un trou. Les
+  nouvelles mesures s'ajoutent en direct. Option `--temperatures` pour ouvrir directement la page.
+  La fiche d'un thermomètre gagne aussi la fenêtre « 24 h ».
+- **Historique réduit par tranches** : `GET /api/devices/{id}/history` accepte `buckets=N` (au plus
+  2 000). La fenêtre est découpée en N tranches et chaque grandeur garde le **minimum et le
+  maximum** de chaque tranche, avant la limite de points. Une semaine d'un capteur qui rapporte
+  toutes les 10 s (environ 60 000 mesures) tient ainsi en moins de 1 600 points, sans perdre les
+  pointes de chauffe, au lieu de ne montrer que les derniers jours. **Compatible** : sans
+  `buckets` la réponse est inchangée ; un serveur rc.4 ignore le paramètre (le client réduit alors
+  lui-même et signale que la période peut être incomplète) et un client rc.4 ne l'envoie pas.
+  Détails dans `docs/protocole.md`.
+- Mode démo : une semaine de températures (salon, chambre avec une panne de 3 heures) est déjà
+  là au démarrage, pour la page Températures.
+
 - **Matter Home Server**, le serveur en application de la barre de menus (`crates/server-app`) :
   un DMG à glisser dans Applications, une icône en haut de l'écran (sans icône dans le Dock), toute
   la configuration dans une petite fenêtre, **jamais de Terminal ni de mot de passe

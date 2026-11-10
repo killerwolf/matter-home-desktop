@@ -297,6 +297,11 @@ impl PlanView {
     }
 
     /// Une modification locale n'est pas encore arrivée au serveur.
+    /// Le plan tel qu'il est affiché (brouillon local compris).
+    pub fn plan(&self) -> &HomePlan {
+        &self.plan
+    }
+
     pub fn editing(&self) -> bool {
         self.dirty || self.sync.editing()
     }

@@ -628,6 +628,11 @@ impl Hub {
                     .collect::<Result<_, _>>()?,
             ),
         };
+        let buckets = match query.buckets {
+            Some(0) => return Err(bad("nombre de tranches invalide")),
+            Some(n) => Some(n.min(wire::HISTORY_MAX_BUCKETS)),
+            None => None,
+        };
         let store = HistoryStore::new(self.history_dir.clone());
         let mut points: Vec<HistoryPoint> = store
             .load(node_id, since)
@@ -644,6 +649,9 @@ impl Hub {
             .filter(|p| wanted.as_ref().is_none_or(|w| w.contains(&p.metric)))
             .collect();
         points.sort_by(|a, b| a.at.total_cmp(&b.at));
+        if let Some(buckets) = buckets {
+            points = reduce_points(points, since, until, buckets);
+        }
         let truncated = points.len() > limit;
         if truncated {
             points.drain(..points.len() - limit);
@@ -795,6 +803,31 @@ fn import_summary(summary: backup::Summary) -> ImportSummary {
         has_rules: summary.has_rules,
         disabled_rules: summary.disabled_rules,
     }
+}
+
+/// Réduit chaque grandeur à `buckets` tranches de temps (minimum et maximum de chacune), puis
+/// remet les points dans l'ordre chronologique. Voir `protocol::downsample::min_max`.
+fn reduce_points(
+    points: Vec<HistoryPoint>,
+    since: f64,
+    until: f64,
+    buckets: usize,
+) -> Vec<HistoryPoint> {
+    let mut by_metric: std::collections::BTreeMap<Metric, Vec<(f64, f64)>> =
+        std::collections::BTreeMap::new();
+    for p in points {
+        by_metric.entry(p.metric).or_default().push((p.at, p.value));
+    }
+    let mut out: Vec<HistoryPoint> = by_metric
+        .into_iter()
+        .flat_map(|(metric, series)| {
+            protocol::downsample::min_max(&series, since, until, buckets)
+                .into_iter()
+                .map(move |(at, value)| HistoryPoint { at, metric, value })
+        })
+        .collect();
+    out.sort_by(|a, b| a.at.total_cmp(&b.at));
+    out
 }
 
 /// Plafond de lignes d'un export CSV.
@@ -1190,6 +1223,7 @@ mod tests {
             until: Some(until),
             metrics: metrics.map(str::to_string),
             limit,
+            buckets: None,
         };
         let all = hub.history(7, &q(0.0, 2000.0, None, None)).unwrap();
         assert_eq!(all.points.len(), 100);
@@ -1222,6 +1256,58 @@ mod tests {
         assert_eq!(big.points.len(), 100);
         let csv = hub.history_csv(7, &q(0.0, 2000.0, None, None)).unwrap();
         assert_eq!(csv.lines().count(), 51);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_buckets_cover_the_window_and_keep_extremes() {
+        let dir = temp("hist-buckets");
+        let (hub, _rx) = hub_with(&dir, 16);
+        hub.apply(&node(7));
+        let mut store = HistoryStore::new(dir.join("history"));
+        // Un capteur bavard : 30 000 mesures (toutes les 20 s sur 7 jours), un pic et un creux.
+        let n = 30_000;
+        for i in 0..n {
+            let v = match i {
+                4_000 => 35.0,
+                21_000 => -3.0,
+                _ => 20.0,
+            };
+            let record = crate::history_store::Record {
+                t: 1_000.0 + f64::from(i) * 20.0,
+                k: "temperature".into(),
+                v,
+            };
+            store.append(7, &record).unwrap();
+        }
+        let last = 1_000.0 + f64::from(n - 1) * 20.0;
+        let q = |buckets| HistoryQuery {
+            since: Some(0.0),
+            until: Some(last),
+            metrics: Some("temperature".into()),
+            limit: Some(wire::HISTORY_MAX_LIMIT),
+            buckets,
+        };
+        // Sans réduction : la limite ne garde que les plus récentes (comportement d'avant).
+        let raw = hub.history(7, &q(None)).unwrap();
+        assert!(raw.truncated);
+        assert!(raw.points.first().unwrap().at > 1_000.0 + 9_000.0 * 20.0);
+        // Avec réduction : toute la fenêtre est couverte, peu de points, extrêmes gardés.
+        let reduced = hub.history(7, &q(Some(600))).unwrap();
+        assert!(!reduced.truncated);
+        assert!(
+            reduced.points.len() <= 2 * 600 + 2,
+            "{}",
+            reduced.points.len()
+        );
+        assert_eq!(reduced.points.first().unwrap().at, 1_000.0);
+        assert_eq!(reduced.points.last().unwrap().at, last);
+        assert!(reduced.points.iter().any(|p| p.value == 35.0));
+        assert!(reduced.points.iter().any(|p| p.value == -3.0));
+        assert!(reduced.points.windows(2).all(|w| w[0].at <= w[1].at));
+        // Tranches : zéro refusé, plafond appliqué sans erreur.
+        assert!(hub.history(7, &q(Some(0))).is_err());
+        assert!(hub.history(7, &q(Some(usize::MAX))).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

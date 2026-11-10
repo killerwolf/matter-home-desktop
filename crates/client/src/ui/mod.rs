@@ -12,9 +12,10 @@ mod plan;
 mod rules;
 mod sensors;
 mod sync;
+mod temperatures;
 mod thermometer;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -28,6 +29,7 @@ use matter_home_client::net::error::api_message;
 use matter_home_client::net::files::MAX_BACKUP_BYTES;
 use matter_home_client::net::{Backend, Body, Event, Link, NetError, Request, Response};
 use matter_home_client::series::{metrics_for, needs_fetch, DeviceSeries, TimeWindow};
+use matter_home_client::temperatures::{self as temps, TempFetch};
 use protocol::automation::CoverCommand;
 use protocol::events::now_unix;
 use protocol::home::{HomePlan, Symbol};
@@ -50,6 +52,7 @@ enum View {
     Devices,
     Plan,
     Rules,
+    Temperatures,
 }
 
 impl View {
@@ -59,6 +62,7 @@ impl View {
             View::Devices => "Appareils",
             View::Plan => "Plan de la maison",
             View::Rules => "Automatisations",
+            View::Temperatures => "Températures",
         }
     }
 }
@@ -74,6 +78,11 @@ enum Pairing {
 enum Pending {
     History {
         node_id: u64,
+    },
+    /// Historique de température d'un appareil pour la page Températures (réduit par tranches).
+    TempHistory {
+        node_id: u64,
+        window: TimeWindow,
     },
     /// Commande dont seul l'échec compte (son effet arrive en événements).
     Command {
@@ -151,6 +160,10 @@ pub struct MatterApp {
     code: String,
     pairing: Pairing,
     window: TimeWindow,
+    /// Page Températures : période choisie, lectures par appareil, courbes masquées.
+    temp_window: TimeWindow,
+    temp_series: HashMap<u64, TempFetch>,
+    temp_hidden: HashSet<u64>,
     export_message: Option<(bool, String)>,
     /// Dernière erreur d'une commande, affichée sous la barre du haut.
     error_banner: Option<(Instant, String)>,
@@ -214,6 +227,9 @@ impl MatterApp {
             code: String::new(),
             pairing: Pairing::Idle,
             window: TimeWindow::Min15,
+            temp_window: TimeWindow::Hour24,
+            temp_series: HashMap::new(),
+            temp_hidden: HashSet::new(),
             export_message: None,
             error_banner: None,
             log: VecDeque::new(),
@@ -242,6 +258,11 @@ impl MatterApp {
     /// Ouvre l'onglet « Automatisations ».
     pub fn show_rules(&mut self) {
         self.view = View::Rules;
+    }
+
+    /// Ouvre l'onglet « Températures ».
+    pub fn show_temperatures(&mut self) {
+        self.view = View::Temperatures;
     }
 
     /// Ouvre l'onglet « Plan de la maison ».
@@ -606,6 +627,111 @@ impl MatterApp {
         }
     }
 
+    /// Page Températures : lit l'historique de chaque thermomètre (une requête par appareil,
+    /// réduite par tranches côté serveur) quand la page s'ouvre ou que la période change.
+    fn maintain_temperatures(&mut self) {
+        if !self.connected() || self.view != View::Temperatures {
+            return;
+        }
+        let ids: Vec<u64> = self
+            .model
+            .devices
+            .iter()
+            .filter(|(_, d)| d.info.caps.temperature)
+            .map(|(id, _)| *id)
+            .collect();
+        self.temp_series.retain(|id, _| ids.contains(id));
+        let now = now_unix();
+        let window = self.temp_window;
+        for id in ids {
+            if !self.temp_series.entry(id).or_default().needs_fetch(window) {
+                continue;
+            }
+            let path = temps::history_path(id, window, now);
+            let pending = Pending::TempHistory {
+                node_id: id,
+                window,
+            };
+            if let Some(req_id) = self.request(pending, Request::get(path)) {
+                if let Some(entry) = self.temp_series.get_mut(&id) {
+                    entry.data.loading = Some(req_id);
+                }
+            }
+        }
+    }
+
+    /// Les courbes de la page : un thermomètre, une courbe, dans l'ordre de leurs noms.
+    fn temperature_curves(&self, now: f64) -> Vec<temperatures::Curve> {
+        let window = self.temp_window;
+        let start = window.start(now);
+        // La couleur suit le rang de l'appareil, pas celui du nom : elle ne change pas au
+        // renommage.
+        let mut ids: Vec<u64> = self
+            .model
+            .devices
+            .iter()
+            .filter(|(_, d)| d.info.caps.temperature)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        let mut curves: Vec<temperatures::Curve> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, id)| {
+                let device = self.model.devices.get(id)?;
+                let points = self
+                    .temp_series
+                    .get(id)
+                    .and_then(|f| f.data.get(protocol::wire::Metric::Temperature))
+                    .map(|s| temps::curve_points(s, start, now))
+                    .unwrap_or_default();
+                Some(temperatures::Curve {
+                    node_id: *id,
+                    label: temps::display_label(
+                        &device.info.name,
+                        self.plan.plan().room_name_of(*id),
+                    ),
+                    color: temperatures::color_for(rank),
+                    points,
+                    gap_s: temps::gap_threshold(device.mode.as_ref(), window),
+                    current: device.temperature().map(|r| r.value),
+                })
+            })
+            .collect();
+        curves.sort_by_key(|c| c.label.to_lowercase());
+        curves
+    }
+
+    fn temperatures_page(&mut self, ui: &mut egui::Ui) {
+        let now = now_unix();
+        let curves = self.temperature_curves(now);
+        let mut status = temperatures::Status::default();
+        for f in self.temp_series.values() {
+            status.loading += usize::from(f.data.loading.is_some());
+            status.truncated |= f.data.truncated;
+            if let Some(e) = &f.data.error {
+                if !status.errors.contains(e) {
+                    status.errors.push(e.clone());
+                }
+            }
+        }
+        let mut window = self.temp_window;
+        let outcome = temperatures::show(
+            ui,
+            &curves,
+            &mut self.temp_hidden,
+            &mut window,
+            &status,
+            now,
+        );
+        self.temp_window = window;
+        if outcome.retry {
+            for f in self.temp_series.values_mut() {
+                f.data.error = None;
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Ce que le réseau remonte
     // -----------------------------------------------------------------------
@@ -639,6 +765,7 @@ impl MatterApp {
     fn clear_data(&mut self, keep_drafts: bool, wipe_texts: bool) {
         self.model.clear();
         self.series.clear();
+        self.temp_series.clear();
         self.pending.clear();
         let now = Instant::now();
         if keep_drafts {
@@ -772,6 +899,9 @@ impl MatterApp {
         for s in self.series.values_mut() {
             s.fetched_since = None;
         }
+        for s in self.temp_series.values_mut() {
+            s.invalidate();
+        }
         if !self
             .selected
             .is_some_and(|id| self.model.devices.contains_key(&id))
@@ -808,6 +938,8 @@ impl MatterApp {
             }
             Change::DeviceRemoved(id) => {
                 self.series.remove(&id);
+                self.temp_series.remove(&id);
+                self.temp_hidden.remove(&id);
                 if self.selected == Some(id) {
                     self.selected = self.model.devices.keys().next().copied();
                 }
@@ -818,8 +950,14 @@ impl MatterApp {
                 value,
                 at,
             } => {
+                let sample = matter_home_client::series::Sample { t: at, value };
                 if let Some(series) = self.series.get_mut(&node_id) {
-                    series.push_live(metric, matter_home_client::series::Sample { t: at, value });
+                    series.push_live(metric, sample);
+                }
+                if metric == protocol::wire::Metric::Temperature {
+                    if let Some(fetch) = self.temp_series.get_mut(&node_id) {
+                        fetch.data.push_live(metric, sample);
+                    }
                 }
             }
             Change::Journal(line) => self.push_log(line),
@@ -880,6 +1018,22 @@ impl MatterApp {
                 match result.and_then(|r| r.json::<HistoryResponse>()) {
                     Ok(h) => entry.load(h.since, h.truncated, &h.points),
                     Err(e) => entry.error = Some(e.message()),
+                }
+            }
+            Pending::TempHistory { node_id, window } => {
+                let Some(entry) = self.temp_series.get_mut(&node_id) else {
+                    return;
+                };
+                if entry.data.loading != Some(id) {
+                    return;
+                }
+                entry.data.loading = None;
+                match result.and_then(|r| r.json::<HistoryResponse>()) {
+                    Ok(h) => {
+                        entry.data.load(h.since, h.truncated, &h.points);
+                        entry.window = Some(window);
+                    }
+                    Err(e) => entry.data.error = Some(e.message()),
                 }
             }
             Pending::Command { what } => {
@@ -1676,6 +1830,11 @@ impl MatterApp {
                     ui.selectable_value(&mut self.view, View::Devices, View::Devices.title());
                     ui.selectable_value(&mut self.view, View::Plan, View::Plan.title());
                     ui.selectable_value(&mut self.view, View::Rules, View::Rules.title());
+                    ui.selectable_value(
+                        &mut self.view,
+                        View::Temperatures,
+                        View::Temperatures.title(),
+                    );
                 }
                 // Un brouillon ou un choix en attente reste visible depuis toutes les vues.
                 for alert in self.sync_alerts() {
@@ -1957,6 +2116,7 @@ impl eframe::App for MatterApp {
                 } => self.customize(node_id, name, icon),
                 plan::PlanAction::None => {}
             },
+            View::Temperatures => self.temperatures_page(ui),
             View::Rules => {
                 if let rules::RulesAction::Test(id) =
                     self.rules
@@ -1977,6 +2137,7 @@ impl MatterApp {
         let holding = ctx.input(|i| i.pointer.any_down());
         self.save_documents(now, holding);
         self.maintain_series();
+        self.maintain_temperatures();
     }
 
     /// Un envoi est à faire ou en vol : l'interface se réveille pour le déclencher à temps.

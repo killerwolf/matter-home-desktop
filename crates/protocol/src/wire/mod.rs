@@ -36,6 +36,8 @@ pub const HISTORY_MAX_WINDOW_S: u64 = 7 * 24 * 3600;
 /// Nombre de mesures renvoyées par défaut, et maximum accepté, pour une lecture d'historique.
 pub const HISTORY_DEFAULT_LIMIT: usize = 5_000;
 pub const HISTORY_MAX_LIMIT: usize = 20_000;
+/// Nombre maximal de tranches de temps (`buckets`) pour une lecture d'historique réduite.
+pub const HISTORY_MAX_BUCKETS: usize = 2_000;
 /// Nombre d'exécutions de règles gardées par le serveur (et envoyées avec l'état complet).
 pub const RULE_RUNS_KEPT: usize = 200;
 
@@ -305,6 +307,44 @@ mod tests {
             );
         }
         assert_eq!(Metric::from_key("inconnu"), None);
+    }
+
+    #[test]
+    fn history_query_buckets_round_trip_and_stay_compatible() {
+        let q = HistoryQuery {
+            since: Some(10.0),
+            until: Some(20.0),
+            metrics: Some("temperature".into()),
+            limit: Some(5),
+            buckets: Some(800),
+        };
+        let json = serde_json::to_string(&q).unwrap();
+        assert_eq!(serde_json::from_str::<HistoryQuery>(&json).unwrap(), q);
+        // Une requête d'un client rc.4 (sans `buckets`) reste valide : pas de réduction.
+        let old: HistoryQuery =
+            serde_json::from_str(r#"{"since":1.0,"until":2.0,"metrics":"temperature","limit":3}"#)
+                .unwrap();
+        assert_eq!(old.buckets, None);
+        // Un serveur rc.4 (sans `buckets`) reçoit une requête qu'il comprend : la réponse garde
+        // la même forme, avec ou sans réduction.
+        let response = HistoryResponse {
+            node_id: 7,
+            since: 1.0,
+            until: 2.0,
+            truncated: false,
+            points: vec![HistoryPoint {
+                at: 1.5,
+                metric: Metric::Temperature,
+                value: 20.5,
+            }],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["node_id"], "7");
+        assert_eq!(
+            serde_json::from_value::<HistoryResponse>(json).unwrap(),
+            response
+        );
+        const { assert!(HISTORY_MAX_BUCKETS >= 800 && HISTORY_MAX_BUCKETS * 2 + 2 <= HISTORY_MAX_LIMIT) };
     }
 
     #[test]

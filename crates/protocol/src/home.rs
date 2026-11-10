@@ -125,6 +125,18 @@ impl Default for HomePlan {
 }
 
 impl HomePlan {
+    /// Nom de la pièce où l'appareil est posé sur le plan, s'il y est et si le point tombe dans
+    /// une pièce.
+    pub fn room_name_of(&self, node_id: u64) -> Option<&str> {
+        self.floors.iter().find_map(|f| {
+            f.items
+                .iter()
+                .find(|i| matches!(i.kind, ItemKind::Device { node_id: n, .. } if n == node_id))
+                .and_then(|i| f.room_at(i.x, i.y))
+                .map(|r| r.name.as_str())
+        })
+    }
+
     /// Un plan a toujours au moins un étage. Remplace un plan sans étage (`floors: []`) par le
     /// plan par défaut ; `true` si c'était le cas. Sert à lire une ancienne sauvegarde ou un
     /// ancien fichier, jamais à accepter un plan envoyé par un client (refusé).
@@ -239,6 +251,27 @@ mod tests {
         assert!(plan.remove_device(42));
         assert!(!plan.remove_device(42));
         assert_eq!(plan.floors[0].items.len(), 1);
+    }
+
+    #[test]
+    fn room_name_of_device() {
+        let mut plan = HomePlan::default();
+        plan.floors[0].rooms.push(room(5, 0.0, 0.0, 3.0, 3.0));
+        let put = |id, node_id, x| Item {
+            id,
+            kind: ItemKind::Device {
+                node_id,
+                symbol: None,
+            },
+            x,
+            y: 1.0,
+        };
+        plan.floors[0].items.push(put(6, 42, 1.0));
+        plan.floors[0].items.push(put(7, 43, 9.0));
+        assert_eq!(plan.room_name_of(42), Some("R5"));
+        // Posé hors de toute pièce, ou absent du plan : pas de pièce.
+        assert_eq!(plan.room_name_of(43), None);
+        assert_eq!(plan.room_name_of(44), None);
     }
 
     #[test]

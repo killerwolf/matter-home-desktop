@@ -1461,7 +1461,7 @@ fn the_draft_widgets_draw_without_a_window() {
         panic!("question attendue");
     };
     let ctx = egui::Context::default();
-    for view in [View::Devices, View::Plan, View::Rules] {
+    for view in [View::Devices, View::Plan, View::Rules, View::Temperatures] {
         f.app.view = view;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             f.app.top_bar(ui);
@@ -1475,6 +1475,7 @@ fn the_draft_widgets_draw_without_a_window() {
                         .rules
                         .show(ui, &f.app.model.devices, &f.app.model.rule_runs);
                 }
+                View::Temperatures => f.app.temperatures_page(ui),
                 View::Devices => {}
             }
             f.app.close_prompt_window(&ui.ctx().clone());
@@ -1540,4 +1541,156 @@ fn a_different_identity_is_only_sent_after_a_separate_confirmation() {
     // Le chemin demandé : l'option n'existe que pour ce cas.
     assert_eq!(import_path(true), "/api/import?replace_identity=1");
     assert_eq!(import_path(false), "/api/import");
+}
+
+#[test]
+fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings() {
+    let mut f = Fixture::new();
+    let thermo = Capabilities {
+        temperature: true,
+        ..Default::default()
+    };
+    let plug = Capabilities {
+        power: true,
+        ..Default::default()
+    };
+    f.connect(snapshot(
+        1,
+        vec![
+            view(node(1, "Salon", thermo), vec![]),
+            view(node(2, "Chambre", thermo), vec![]),
+            view(node(3, "Prise", plug), vec![]),
+        ],
+    ));
+    // Hors de la page : aucune lecture.
+    f.app.maintain_temperatures();
+    assert!(f.pending_ids().is_empty());
+    f.app.show_temperatures();
+    f.app.maintain_temperatures();
+    assert_eq!(
+        f.pending_ids().len(),
+        2,
+        "un thermomètre, une lecture ; pas la prise"
+    );
+    f.app.maintain_temperatures();
+    assert_eq!(f.pending_ids().len(), 2, "pas de lecture en double");
+    assert!(f.app.temp_series.contains_key(&1) && !f.app.temp_series.contains_key(&3));
+
+    // Réponses : chaque lecture est rangée sous son appareil.
+    let reply = |id: u64, node_id: u64, values: &[(f64, f64)]| {
+        let body = serde_json::to_vec(&HistoryResponse {
+            node_id,
+            since: 0.0,
+            until: 1000.0,
+            truncated: false,
+            points: values
+                .iter()
+                .map(|&(at, value)| HistoryPoint {
+                    at,
+                    metric: Metric::Temperature,
+                    value,
+                })
+                .collect(),
+        })
+        .unwrap();
+        Event::Reply {
+            id,
+            result: Ok(Response {
+                status: 200,
+                headers: vec![],
+                body,
+            }),
+        }
+    };
+    let ids = f.pending_ids();
+    let (mut id_of_1, mut id_of_2) = (0, 0);
+    for id in ids {
+        match f.app.pending.get(&id) {
+            Some(Pending::TempHistory { node_id: 1, .. }) => id_of_1 = id,
+            Some(Pending::TempHistory { node_id: 2, .. }) => id_of_2 = id,
+            _ => panic!("requête inattendue"),
+        }
+    }
+    f.send(reply(id_of_1, 1, &[(100.0, 20.0), (200.0, 21.0)]));
+    f.send(reply(id_of_2, 2, &[(100.0, 18.0)]));
+    f.app.pump_network();
+    assert_eq!(f.app.temp_series[&1].data.len(Metric::Temperature), 2);
+    assert_eq!(f.app.temp_series[&2].data.len(Metric::Temperature), 1);
+    assert_eq!(f.app.temp_series[&1].window, Some(f.app.temp_window));
+
+    // Les nouvelles mesures s'ajoutent en direct ; celles d'une autre grandeur sont ignorées.
+    f.live(WireEvent::Reading {
+        node_id: 1,
+        metric: Metric::Temperature,
+        value: 22.0,
+        at: 300.0,
+    });
+    f.live(WireEvent::Reading {
+        node_id: 1,
+        metric: Metric::Humidity,
+        value: 50.0,
+        at: 301.0,
+    });
+    assert_eq!(f.app.temp_series[&1].data.len(Metric::Temperature), 3);
+    assert_eq!(f.app.temp_series[&1].data.len(Metric::Humidity), 0);
+
+    // Changer de période relit tout, à la bonne fenêtre.
+    f.app.maintain_temperatures();
+    assert!(f.pending_ids().is_empty());
+    f.app.temp_window = matter_home_client::series::TimeWindow::All;
+    f.app.maintain_temperatures();
+    assert_eq!(f.pending_ids().len(), 2);
+
+    // Appareil retiré : sa lecture est oubliée.
+    f.live(WireEvent::DeviceRemoved { node_id: 2 });
+    assert!(!f.app.temp_series.contains_key(&2));
+}
+
+#[test]
+fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_window() {
+    use matter_home_client::series::TimeWindow;
+    let ctx = egui::Context::default();
+    let now = now_unix();
+    let curve = |node_id: u64, points: Vec<(f64, f64)>| temperatures::Curve {
+        node_id,
+        label: format!("Capteur {node_id}"),
+        color: temperatures::color_for(node_id as usize),
+        points,
+        gap_s: 1200.0,
+        current: Some(20.5),
+    };
+    let curves = vec![
+        // Un trou au milieu, un point isolé à la fin ; une courbe vide ; une courbe masquée.
+        curve(
+            1,
+            vec![
+                (now - 3000.0, 20.0),
+                (now - 2900.0, 20.5),
+                (now - 900.0, 21.0),
+                (now - 10.0, 21.5),
+            ],
+        ),
+        curve(2, vec![]),
+        curve(3, vec![(now - 100.0, 18.0), (now - 50.0, 18.5)]),
+    ];
+    let mut hidden = std::collections::HashSet::from([3_u64]);
+    let status = temperatures::Status {
+        loading: 1,
+        errors: vec!["Introuvable".into()],
+        truncated: true,
+    };
+    for window in TimeWindow::OVERVIEW {
+        let mut window = window;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let outcome = temperatures::show(ui, &curves, &mut hidden, &mut window, &status, now);
+            assert!(!outcome.retry);
+        });
+        output.textures_delta.clear();
+    }
+    // Sans thermomètre : un message, pas de graphique.
+    let mut window = TimeWindow::Hour24;
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        temperatures::show(ui, &[], &mut hidden, &mut window, &Default::default(), now);
+    });
+    output.textures_delta.clear();
 }

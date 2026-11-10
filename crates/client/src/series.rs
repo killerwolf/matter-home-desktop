@@ -148,18 +148,35 @@ impl DeviceSeries {
 pub enum TimeWindow {
     Min15,
     Hour1,
+    Hour24,
     /// Tout ce que le serveur garde (7 jours).
     All,
 }
 
 impl TimeWindow {
-    pub const ALL: [TimeWindow; 3] = [TimeWindow::Min15, TimeWindow::Hour1, TimeWindow::All];
+    pub const ALL: [TimeWindow; 4] = [
+        TimeWindow::Min15,
+        TimeWindow::Hour1,
+        TimeWindow::Hour24,
+        TimeWindow::All,
+    ];
+    /// Les trois périodes de la page Températures.
+    pub const OVERVIEW: [TimeWindow; 3] = [TimeWindow::Hour1, TimeWindow::Hour24, TimeWindow::All];
 
     pub fn label(self) -> &'static str {
         match self {
             TimeWindow::Min15 => "15 min",
             TimeWindow::Hour1 => "1 h",
+            TimeWindow::Hour24 => "24 h",
             TimeWindow::All => "7 jours",
+        }
+    }
+
+    /// Libellé du sélecteur de la page Températures.
+    pub fn overview_label(self) -> &'static str {
+        match self {
+            TimeWindow::All => "1 semaine",
+            other => other.label(),
         }
     }
 
@@ -168,6 +185,7 @@ impl TimeWindow {
         match self {
             TimeWindow::Min15 => 15.0 * 60.0,
             TimeWindow::Hour1 => 3600.0,
+            TimeWindow::Hour24 => 24.0 * 3600.0,
             TimeWindow::All => HISTORY_MAX_WINDOW_S as f64,
         }
     }
@@ -182,6 +200,7 @@ impl TimeWindow {
     pub fn fetch_start(self, now: f64) -> f64 {
         match self {
             TimeWindow::Min15 | TimeWindow::Hour1 => now - TimeWindow::Hour1.length_s(),
+            TimeWindow::Hour24 => now - TimeWindow::Hour24.length_s(),
             TimeWindow::All => now - TimeWindow::All.length_s(),
         }
     }
@@ -358,6 +377,14 @@ mod tests {
         assert!(!needs_fetch(Some(hour), TimeWindow::Min15, now));
         assert!(!needs_fetch(Some(hour), TimeWindow::Hour1, now));
         assert!(needs_fetch(Some(hour), TimeWindow::All, now));
+        assert!(needs_fetch(Some(hour), TimeWindow::Hour24, now));
+        let day = TimeWindow::Hour24.fetch_start(now);
+        assert!(!needs_fetch(Some(day), TimeWindow::Hour24, now));
+        assert!(!needs_fetch(Some(day), TimeWindow::Hour1, now));
+        assert!(needs_fetch(Some(day), TimeWindow::All, now));
+        assert_eq!(TimeWindow::Hour24.length_s(), 86_400.0);
+        assert_eq!(TimeWindow::All.overview_label(), "1 semaine");
+        assert_eq!(TimeWindow::Hour24.overview_label(), "24 h");
         let all = TimeWindow::All.fetch_start(now);
         assert!(!needs_fetch(Some(all), TimeWindow::All, now + 200.0));
         assert!(!needs_fetch(Some(all), TimeWindow::Hour1, now));

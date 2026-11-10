@@ -5,6 +5,7 @@
 //! `wire` définit ce qui circule réellement sur le réseau (voir `docs/protocole.md`).
 
 pub mod automation;
+pub mod downsample;
 pub mod events;
 pub mod format;
 pub mod home;

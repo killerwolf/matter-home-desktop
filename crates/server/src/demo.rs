@@ -264,8 +264,33 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         infos.insert(info.node_id, info);
     }
 
-    // 90 minutes d'historique déjà « reçu », pour que les graphiques aient de quoi afficher.
+    // Une semaine de température déjà « reçue » (une mesure toutes les 2 minutes, un cycle
+    // jour / nuit, une panne de 3 heures de la chambre), pour la page Températures. Elle
+    // s'arrête où commencent les 90 minutes ci-dessous.
     let now = now_unix();
+    let week_end = now - 90.0 * 60.0;
+    let mut t = now - 7.0 * 24.0 * 3600.0 + 600.0;
+    while t < week_end {
+        let daily = 1.5 * (TAU * (t - 8.0 * 3600.0) / 86_400.0).sin();
+        measure(
+            LIVING,
+            MeasureKind::Temperature,
+            simulated(t, 21.0 + daily, &mut rng),
+            t,
+        );
+        let outage = (now - 52.0 * 3600.0..now - 49.0 * 3600.0).contains(&t);
+        if !outage {
+            measure(
+                BEDROOM,
+                MeasureKind::Temperature,
+                simulated(t, 18.0 + daily, &mut rng),
+                t,
+            );
+        }
+        t += 120.0;
+    }
+
+    // 90 minutes d'historique déjà « reçu », pour que les graphiques aient de quoi afficher.
     let mut energy_kwh = 12.4;
     let mut t = now - 90.0 * 60.0;
     let mut last_door = None;

@@ -789,7 +789,32 @@ fn history_is_read_on_demand_with_window_and_volume_limits() {
             wide["until"].as_f64().unwrap() - wide["since"].as_f64().unwrap(),
             7.0 * 86400.0
         );
+        // Réduction par tranches : la semaine entière en peu de points, extrémités gardées.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let week = client
+            .get(
+                &format!(
+                    "/api/devices/{LIVING}/history?metrics=temperature&since={}&until={now}&buckets=100",
+                    now - 7.0 * 86400.0
+                ),
+                &token,
+            )
+            .await
+            .json();
+        let pts = week["points"].as_array().unwrap();
+        assert!(pts.len() <= 202, "{} points", pts.len());
+        assert_eq!(week["truncated"], false);
+        let first = pts[0]["at"].as_f64().unwrap();
+        let since = week["since"].as_f64().unwrap();
+        // La démo a une semaine d'historique : la fenêtre est couverte dès son début, pas
+        // seulement les dernières heures (ce que ferait une simple limite de points).
+        assert!(first < since + 86400.0, "premier point à {first}, fenêtre depuis {since}");
         for bad in [
+            "buckets=0",
+            "buckets=abc",
             "since=abc",
             "metrics=couleur",
             "limit=0",

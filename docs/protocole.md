@@ -103,6 +103,14 @@ points, les **plus récents** sont renvoyés avec `"truncated": true` : relire a
 grandeurs sont `temperature`, `humidity`, `power`, `energy`, `battery`, `position`, et les
 états binaires `open`, `on_off`, `battery_low` (valeur 0 ou 1).
 
+**Réduction par tranches** (optionnelle, ajoutée après la v1.0.0-rc.4) : `buckets=N` (au plus
+2 000) découpe la fenêtre en N tranches égales ; chaque grandeur ne garde que le **minimum et
+le maximum** de chaque tranche (au plus 2 N + 2 points, extrémités comprises), avant `limit`.
+Toute la fenêtre est donc couverte, même pour un capteur qui rapporte toutes les 10 s, et les
+pointes survivent. Aucune valeur n'est calculée (pas de moyenne) et un trou de données reste un
+trou. Un serveur plus ancien ignore le paramètre et renvoie les mesures brutes (éventuellement
+tronquées) ; un client plus ancien ne l'envoie pas : la réponse garde la même forme.
+
 ## WebSocket
 
 Aucun message ne part du client (ses commandes passent par l'API). Le serveur envoie :

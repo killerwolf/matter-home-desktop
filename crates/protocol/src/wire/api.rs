@@ -112,6 +112,13 @@ pub struct HistoryQuery {
     /// davantage, ce sont les plus récentes qui sont renvoyées (`truncated`).
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Réduction par tranches de temps : la fenêtre est découpée en `buckets` tranches (au plus
+    /// `HISTORY_MAX_BUCKETS`) et chaque grandeur garde le minimum et le maximum de chaque tranche
+    /// (au plus `2 × buckets + 2` points par grandeur). Toute la fenêtre est ainsi couverte, même
+    /// pour un capteur très bavard, avant l'application de `limit`. Absent : toutes les mesures.
+    /// Un serveur plus ancien ignore ce paramètre et renvoie les mesures brutes.
+    #[serde(default)]
+    pub buckets: Option<usize>,
 }
 
 /// Une mesure de l'historique.

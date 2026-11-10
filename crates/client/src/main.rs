@@ -7,6 +7,7 @@
 //! - `matter-home-desktop`           : lance l'interface
 //! - `matter-home-desktop --plan`    : ouvre directement le plan de la maison
 //! - `matter-home-desktop --rules`   : ouvre directement les automatisations
+//! - `matter-home-desktop --temperatures` : ouvre directement la page Températures
 //! - `matter-home-desktop --device X`: ouvre la fiche du premier appareil dont le nom contient X
 
 mod ui;
@@ -23,6 +24,7 @@ Usage :
   matter-home-desktop             lance l'interface et se connecte au serveur
   matter-home-desktop --plan      ouvre directement le plan de la maison
   matter-home-desktop --rules     ouvre directement les automatisations
+  matter-home-desktop --temperatures  ouvre directement la page Températures
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version
   matter-home-desktop --help      affiche cette aide
@@ -65,13 +67,14 @@ fn main() -> eframe::Result {
     let args = flags;
     if let Some(unknown) = args
         .iter()
-        .find(|a| !matches!(a.as_str(), "--plan" | "--rules"))
+        .find(|a| !matches!(a.as_str(), "--plan" | "--rules" | "--temperatures"))
     {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
     let open_plan = args.iter().any(|a| a == "--plan");
     let open_rules = args.iter().any(|a| a == "--rules");
+    let open_temperatures = args.iter().any(|a| a == "--temperatures");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -96,6 +99,9 @@ fn main() -> eframe::Result {
             }
             if open_rules {
                 app.show_rules();
+            }
+            if open_temperatures {
+                app.show_temperatures();
             }
             if let Some(filter) = device_filter {
                 app.select_device_named(filter);

@@ -8,3 +8,4 @@ pub mod logging;
 pub mod model;
 pub mod net;
 pub mod series;
+pub mod temperatures;
