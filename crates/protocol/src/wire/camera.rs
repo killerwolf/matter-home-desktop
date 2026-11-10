@@ -24,10 +24,16 @@ use serde::{Deserialize, Serialize};
 
 use super::text_ids::text_id;
 
-/// Plage des identifiants de caméra : 2^35 valeurs tout en haut de l'espace des identifiants
-/// 64 bits, que Matter réserve (jamais attribuée à un nœud appairé, voir `matter::pair`). Les
-/// appareils derrière un pont tirent les leurs juste en dessous (`BRIDGED_ID_MIN..=BRIDGED_ID_MAX`,
-/// `persistence.rs`) : aucun recoupement. Tous dépassent 2^53 : en JSON ils sont du texte.
+/// Plage dans laquelle le serveur tire les identifiants de **nouvelles** caméras : 2^35 valeurs
+/// tout en haut de l'espace 64 bits, que Matter réserve (jamais attribuée à un nœud appairé).
+/// Tous dépassent 2^53 : en JSON ils sont du texte.
+///
+/// **Cette plage n'est pas exclusive.** Avant les caméras, les appareils derrière un pont tiraient
+/// leurs identifiants sur toute la plage `0xFFFF_FFF0_0000_0000..` : environ la moitié des appareils
+/// pontés déjà attribués tombent donc ici. Un identifiant dans cette plage ne prouve **pas** que
+/// c'est une caméra. Ce qui le prouve, c'est sa présence dans la liste des caméras du serveur ; et
+/// le serveur ne tire jamais pour une caméra un identifiant déjà pris par un appareil connu (ni
+/// l'import d'une sauvegarde n'en accepte un).
 pub const CAMERA_ID_MIN: u64 = 0xFFFF_FFF8_0000_0000;
 pub const CAMERA_ID_MAX: u64 = u64::MAX;
 
@@ -35,9 +41,54 @@ pub const CAMERA_ID_MAX: u64 = u64::MAX;
 /// de toute façon pas plus de quelques flux (voir #5).
 pub const MAX_CAMERAS: usize = 32;
 
-/// `true` si `id` est dans la plage réservée aux caméras (cela ne dit pas qu'elle existe).
+/// `true` si `id` est dans la plage de tirage des caméras. **Un simple contrôle de plage** : il ne
+/// dit ni que la caméra existe, ni que l'identifiant n'est pas celui d'un appareil ponté (voir
+/// [`CAMERA_ID_MIN`]). Pour valider une référence, chercher la caméra dans la liste du serveur.
 pub fn is_camera_id(id: u64) -> bool {
     (CAMERA_ID_MIN..=CAMERA_ID_MAX).contains(&id)
+}
+
+/// Le flux d'une caméra : le principal (plein format) ou le réduit (mosaïque, lecture par défaut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamKind {
+    Main,
+    Sub,
+}
+
+impl StreamKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            StreamKind::Main => "Flux principal",
+            StreamKind::Sub => "Flux réduit",
+        }
+    }
+
+    /// Valeur du paramètre `kind` de la route du flux (`main` ou `sub`).
+    pub fn key(self) -> &'static str {
+        match self {
+            StreamKind::Main => "main",
+            StreamKind::Sub => "sub",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<StreamKind> {
+        match key {
+            "main" => Some(StreamKind::Main),
+            "sub" => Some(StreamKind::Sub),
+            _ => None,
+        }
+    }
+}
+
+/// Modèle de la route du flux vidéo d'une caméra (ticket n° 5), sous le même jeton que le reste :
+/// `GET /api/cameras/{id}/stream?kind=main|sub` (`sub` par défaut). **Réservée** : le serveur
+/// répond 404 tant que #5 ne l'a pas implémentée.
+pub const CAMERA_STREAM_PATH: &str = "/api/cameras/{id}/stream";
+
+/// Chemin concret de la route du flux : `/api/cameras/<id>/stream?kind=sub`.
+pub fn camera_stream_path(id: u64, kind: StreamKind) -> String {
+    format!("/api/cameras/{id}/stream?kind={}", kind.key())
 }
 
 /// Pourquoi une caméra est injoignable. Codes stables (`snake_case`) : le client choisit sa
@@ -53,7 +104,8 @@ pub enum CameraProblem {
     NotFound,
     /// La caméra répond, mais pas comme une caméra RTSP.
     Protocol,
-    /// Autre échec.
+    /// Autre échec. Aussi lu quand un serveur plus récent envoie un code que ce client ne connaît pas.
+    #[serde(other)]
     Failed,
 }
 
@@ -62,8 +114,6 @@ pub enum CameraProblem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CameraStatus {
-    /// Pas encore vérifiée (ajout ou démarrage récent).
-    Unknown,
     /// La dernière vérification a réussi.
     Online,
     /// La dernière vérification a échoué.
@@ -72,6 +122,10 @@ pub enum CameraStatus {
         #[serde(default)]
         detail: Option<String>,
     },
+    /// Pas encore vérifiée (ajout ou démarrage récent). Aussi lu quand un serveur plus récent
+    /// envoie un état que ce client ne connaît pas : il l'affiche comme « inconnu ».
+    #[serde(other)]
+    Unknown,
 }
 
 /// Ce qu'un flux annonce de lui-même (décrit par la caméra, avant toute lecture).

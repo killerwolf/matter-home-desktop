@@ -61,6 +61,10 @@ pub enum ItemKind {
     },
     /// Objet non connecté, pour la lisibilité du plan.
     Decor { symbol: Symbol, label: String },
+    /// Caméra du serveur (`CameraView::id`), posée et orientée avec `Item::rotation`. Ticket n° 6.
+    /// Un client plus ancien ne connaît pas cette variante : le protocole est en version 2 pour
+    /// cette raison, et il n'y a pas de variante de repli ici (un plan reçu serait illisible).
+    Camera { camera_id: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +73,11 @@ pub struct Item {
     pub kind: ItemKind,
     pub x: f32,
     pub y: f32,
+    /// Orientation en degrés, `0.0 <= rotation < 360.0`, dans le sens des aiguilles d'une montre,
+    /// 0 = vers le haut du plan (y négatif). Utile aux caméras (direction filmée). Absent des plans
+    /// enregistrés avant les caméras : 0.
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,9 +174,43 @@ impl HomePlan {
             .flat_map(|f| &f.items)
             .filter_map(|i| match i.kind {
                 ItemKind::Device { node_id, .. } => Some(node_id),
-                ItemKind::Decor { .. } => None,
+                ItemKind::Decor { .. } | ItemKind::Camera { .. } => None,
             })
             .collect()
+    }
+
+    /// Nom de la pièce où la caméra est posée sur le plan (même règle que [`Self::room_name_of`]).
+    pub fn camera_room(&self, camera_id: u64) -> Option<&Room> {
+        self.floors.iter().find_map(|f| {
+            f.items
+                .iter()
+                .find(|i| matches!(i.kind, ItemKind::Camera { camera_id: c } if c == camera_id))
+                .and_then(|i| f.room_at(i.x, i.y))
+        })
+    }
+
+    /// Caméras déjà placées, tous étages confondus.
+    pub fn placed_cameras(&self) -> HashSet<u64> {
+        self.floors
+            .iter()
+            .flat_map(|f| &f.items)
+            .filter_map(|i| match i.kind {
+                ItemKind::Camera { camera_id } => Some(camera_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Retire une caméra supprimée du serveur ; `true` si le plan a changé.
+    pub fn remove_camera(&mut self, camera_id: u64) -> bool {
+        let mut changed = false;
+        for f in &mut self.floors {
+            let before = f.items.len();
+            f.items
+                .retain(|i| !matches!(i.kind, ItemKind::Camera { camera_id: c } if c == camera_id));
+            changed |= f.items.len() != before;
+        }
+        changed
     }
 
     /// Retire un appareil oublié ; `true` si le plan a changé.
@@ -236,6 +279,7 @@ mod tests {
             },
             x: 1.0,
             y: 1.0,
+            rotation: 0.0,
         });
         plan.floors[0].items.push(Item {
             id: 7,
@@ -245,6 +289,7 @@ mod tests {
             },
             x: 2.0,
             y: 0.0,
+            rotation: 0.0,
         });
         assert_eq!(plan.next_id(), 8);
         assert!(plan.placed_devices().contains(&42));
@@ -265,6 +310,7 @@ mod tests {
             },
             x,
             y: 1.0,
+            rotation: 0.0,
         };
         plan.floors[0].items.push(put(6, 42, 1.0));
         plan.floors[0].items.push(put(7, 43, 9.0));
@@ -286,10 +332,38 @@ mod tests {
             },
             x: 1.5,
             y: 0.0,
+            rotation: 0.0,
         });
         let text = serde_json::to_string(&plan).unwrap();
         assert!(text.contains("\"type\":\"Device\""));
         let back: HomePlan = serde_json::from_str(&text).unwrap();
         assert_eq!(back, plan);
+    }
+
+    #[test]
+    fn camera_items_round_trip_and_old_plans_stay_valid() {
+        let cam = 0xFFFF_FFF8_0000_0001u64;
+        let mut plan = HomePlan::default();
+        plan.floors[0].rooms.push(room(10, 0.0, 0.0, 4.0, 3.0));
+        plan.floors[0].items.push(Item {
+            id: 20,
+            kind: ItemKind::Camera { camera_id: cam },
+            x: 1.0,
+            y: 1.0,
+            rotation: 135.0,
+        });
+        let json = serde_json::to_string(&plan).unwrap();
+        assert_eq!(serde_json::from_str::<HomePlan>(&json).unwrap(), plan);
+        assert_eq!(plan.camera_room(cam).unwrap().id, 10);
+        assert_eq!(plan.camera_room(cam + 1), None);
+        assert_eq!(plan.placed_cameras(), HashSet::from([cam]));
+        assert!(plan.placed_devices().is_empty());
+        // Un plan d'avant les caméras (sans `rotation`) se lit, rotation 0.
+        let old = r#"{"version":1,"floors":[{"id":1,"name":"RDC","items":[
+            {"id":2,"kind":{"type":"Decor","symbol":"Door","label":""},"x":1.0,"y":2.0}]}]}"#;
+        let old: HomePlan = serde_json::from_str(old).unwrap();
+        assert_eq!(old.floors[0].items[0].rotation, 0.0);
+        assert!(plan.remove_camera(cam));
+        assert!(!plan.remove_camera(cam));
     }
 }

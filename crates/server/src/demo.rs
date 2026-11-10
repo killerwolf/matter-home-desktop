@@ -578,6 +578,7 @@ pub fn demo_plan() -> crate::home::HomePlan {
         kind: ItemKind::Device { node_id, symbol },
         x,
         y,
+        rotation: 0.0,
     };
     let decor = |id, symbol, label: &str, x, y| Item {
         id,
@@ -587,6 +588,7 @@ pub fn demo_plan() -> crate::home::HomePlan {
         },
         x,
         y,
+        rotation: 0.0,
     };
     HomePlan {
         version: 1,

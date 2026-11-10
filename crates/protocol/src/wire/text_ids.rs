@@ -55,7 +55,7 @@ pub mod text_id {
 }
 
 /// Clés JSON qui portent un identifiant dans le plan et les règles.
-const ID_KEYS: [&str; 3] = ["id", "node_id", "rule_id"];
+const ID_KEYS: [&str; 4] = ["id", "node_id", "rule_id", "camera_id"];
 
 fn stringify(value: &mut Value) {
     match value {

@@ -159,6 +159,14 @@ fn default_symbol(d: &Device) -> Option<Symbol> {
 
 fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
     match &item.kind {
+        // #6 : remplacer par le vrai dessin de la caméra (nom, état, cône orienté).
+        ItemKind::Camera { .. } => Look {
+            symbol: None,
+            fill: Color32::from_gray(70),
+            name: "Caméra".into(),
+            value: None,
+            battery_low: false,
+        },
         ItemKind::Decor { symbol, label } => Look {
             symbol: Some(*symbol),
             fill: Color32::from_gray(70),
@@ -667,6 +675,10 @@ impl PlanView {
                     let item = &mut self.plan.floors[floor].items[idx];
                     let mut changed = false;
                     match &mut item.kind {
+                        // #6 : l'éditeur de caméra (choix de la caméra, poignée de rotation).
+                        ItemKind::Camera { .. } => {
+                            ui.label("Caméra");
+                        }
                         ItemKind::Device { node_id, symbol } => match devices.get(node_id) {
                             Some(d) => {
                                 if self.device_edit.as_ref().map(|e| e.node_id) != Some(*node_id) {
@@ -872,6 +884,7 @@ impl PlanView {
                     kind,
                     x: snap(w.x, ITEM_SNAP),
                     y: snap(w.y, ITEM_SNAP),
+                    rotation: 0.0,
                 });
                 self.selection = Some(Selection::Item(id));
                 self.dirty = true;
@@ -1274,6 +1287,7 @@ mod tests {
             },
             x: 0.0,
             y: 0.0,
+            rotation: 0.0,
         };
         let lk = look(&item, &devices);
         assert_eq!(
@@ -1310,6 +1324,7 @@ mod tests {
             },
             x: 0.0,
             y: 0.0,
+            rotation: 0.0,
         };
         let lk = look(&item, &devices);
         assert_eq!(
@@ -1341,6 +1356,7 @@ mod tests {
             },
             x: 0.0,
             y: 0.0,
+            rotation: 0.0,
         };
         assert_eq!(look(&legacy, &devices).symbol, Some(Symbol::Light));
 
@@ -1353,6 +1369,7 @@ mod tests {
             },
             x: 0.0,
             y: 0.0,
+            rotation: 0.0,
         };
         let lk = look(&window, &devices);
         assert_eq!(
@@ -1398,6 +1415,7 @@ mod tests {
             },
             x,
             y: 1.0,
+            rotation: 0.0,
         };
         let items = vec![
             at(10, 1, 1.0),

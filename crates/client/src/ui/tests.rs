@@ -1474,7 +1474,13 @@ fn the_draft_widgets_draw_without_a_window() {
         panic!("question attendue");
     };
     let ctx = egui::Context::default();
-    for view in [View::Devices, View::Plan, View::Rules, View::Temperatures] {
+    for view in [
+        View::Devices,
+        View::Plan,
+        View::Rules,
+        View::Temperatures,
+        View::Cameras,
+    ] {
         f.app.view = view;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             f.app.top_bar(ui);
@@ -1489,6 +1495,7 @@ fn the_draft_widgets_draw_without_a_window() {
                         .show(ui, &f.app.model.devices, &f.app.model.rule_runs);
                 }
                 View::Temperatures => f.app.temperatures_page(ui),
+                View::Cameras => cameras::show(ui, &f.app.model),
                 View::Devices => {}
             }
             f.app.close_prompt_window(&ui.ctx().clone());

@@ -252,7 +252,8 @@ impl WireEvent {
             }
             WireEvent::PlanChanged { .. }
             | WireEvent::RulesChanged { .. }
-            | WireEvent::CamerasChanged { .. } => return None,
+            | WireEvent::CamerasChanged { .. }
+            | WireEvent::Unknown => return None,
         })
     }
 }

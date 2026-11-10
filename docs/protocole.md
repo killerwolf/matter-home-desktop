@@ -167,11 +167,15 @@ fige la liste des clés).
   L'événement porte **la liste complète** (32 caméras au plus) : le client remplace la sienne. Il
   part à chaque ajout, modification, suppression, et quand l'état d'une caméra change (jamais si
   une vérification redonne le même résultat).
-- **Identifiant** (`id`) : texte décimal d'un `u64`, tiré dans la plage réservée
-  `0xFFFF_FFF8_0000_0000..=0xFFFF_FFFF_FFFF_FFFF` (`CAMERA_ID_MIN`, `CAMERA_ID_MAX`,
-  `is_camera_id`). Les appareils derrière un pont tirent les leurs juste en dessous
-  (`0xFFFF_FFF0_0000_0000..=0xFFFF_FFF7_FFFF_FFFF`) : aucun recoupement, et jamais un identifiant
-  de nœud Matter.
+- **Identifiant** (`id`) : texte décimal d'un `u64`, tiré dans la plage
+  `0xFFFF_FFF8_0000_0000..=0xFFFF_FFFF_FFFF_FFFF` (`CAMERA_ID_MIN`, `CAMERA_ID_MAX`), que Matter
+  réserve (jamais un identifiant de nœud appairé). **La plage n'est pas exclusive** : avant les
+  caméras, les appareils derrière un pont tiraient les leurs sur toute la plage
+  `0xFFFF_FFF0_0000_0000..`, donc environ la moitié de ceux déjà attribués s'y trouvent. Aujourd'hui
+  les nouveaux appareils pontés sont tirés juste en dessous. `is_camera_id` n'est qu'un contrôle de
+  plage ; la preuve qu'un identifiant est une caméra est sa présence dans la liste du serveur. Le
+  serveur ne donne jamais à une caméra l'identifiant d'un appareil connu, et l'import d'une
+  sauvegarde refuse une caméra dont l'identifiant est celui d'un appareil de `controller.json`.
 - **État** (`status.state`) : `unknown` (pas encore vérifiée), `online`, ou `unreachable` avec
   `problem` (code stable : `unreachable`, `unauthorized`, `not_found`, `protocol`, `failed`) et
   `detail`, une phrase française sans adresse ni mot de passe. Le serveur **ne garde aucune
@@ -190,6 +194,10 @@ fige la liste des clés).
   et ceux qu'on ajouterait aux types de caméra, sont ignorés par qui ne les connaît pas. Mais
   `cameras_changed` est une nouvelle variante d'événement : un client de version 1 la refuserait.
   C'est pourquoi la version du protocole passe à **2** (client et serveur sortent ensemble).
+  Elle **ne bougera plus pendant les tickets n° 4 à 7**. Pour la suite, les énumérations qui
+  vont grandir ont une variante de repli : un événement inconnu est lu `Unknown` (le client
+  l'ignore mais compte son `seq`), un état de caméra inconnu `unknown`, un motif inconnu `failed`.
+  `ItemKind` n'en a pas (un plan qu'on ne comprend pas ne s'affiche pas à moitié).
 
 **Données du serveur** (jamais envoyées) : `cameras.json` dans le dossier de données, créé en
 **0600** (dossier en 0700), écriture atomique. Pour chaque caméra : `id` (numérique dans le
@@ -219,8 +227,15 @@ identifiants) et refuse la sauvegarde sans répéter d'adresse ni de mot de pass
 - *Placement* : il ne va **pas** dans la caméra mais dans le plan (`home::Item`) : #6 ajoute
   `ItemKind::Camera { camera_id }` et `Item::rotation` (`#[serde(default)]`). Contrôle côté serveur :
   `is_camera_id` et existence de la caméra ; à la suppression, `Hub::delete_camera` est l'endroit
-  où la retirer du plan (repère `#6` dans le code). La version du protocole est **déjà à 2** : ne
-  pas la relever de nouveau pour un ticket de la même livraison.
+  où la retirer du plan (déjà fait, dans la même transaction). La version du protocole est **déjà à
+  2** : ne pas la relever de nouveau pour un ticket de la même livraison.
+- *Route du flux, réservée* : `wire::CAMERA_STREAM_PATH` (`/api/cameras/{id}/stream`) et
+  `camera_stream_path(id, StreamKind::Main | Sub)` (`?kind=main|sub`).
+- *Plan* : `ItemKind::Camera { camera_id }`, `Item::rotation` (degrés, 0 à 360 exclu, sens horaire,
+  0 vers le haut ; absent des anciens plans : 0), `HomePlan::camera_room`, `placed_cameras`,
+  `remove_camera`. `PUT /api/plan` refuse une rotation hors plage et un `camera_id` hors de la plage
+  des caméras. Supprimer une caméra la retire aussi du plan (`plan_changed` suit `cameras_changed`).
+- Répartition des fichiers entre les tickets : [cameras-contrat.md](cameras-contrat.md).
 - *Client* : `Model::cameras` (remplacé par `cameras_changed`) et `Model::camera(id)`.
 
 ## Export et import

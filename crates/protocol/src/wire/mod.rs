@@ -32,6 +32,9 @@ pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 /// Version du protocole. Elle change quand un message existant change de sens ou de forme ;
 /// ajouter un champ optionnel ou un message que l'on peut ignorer ne la change pas.
 ///
+/// **Ne plus la relever pendant les tickets #4 à #7** (caméras) : elle reste à 2, et les types qu'ils
+/// ajoutent (plan, flux) doivent rester lisibles avec les variantes `Unknown` ci-dessous.
+///
 /// - 2 : caméras RTSP (#4) : `cameras` dans l'état complet et l'événement `cameras_changed`.
 ///   Un client de version 1 ne connaît pas cet événement (les énumérations serde refusent les
 ///   variantes inconnues) : client et serveur sortent ensemble.
@@ -102,6 +105,7 @@ mod tests {
             },
             x: 1.0,
             y: 2.0,
+            rotation: 0.0,
         });
         plan
     }
@@ -509,5 +513,49 @@ mod tests {
         json["cameras"][0]["status"]["since"] = Value::from(1.5);
         let new: Snapshot = serde_json::from_value(json).unwrap();
         assert_eq!(new, snapshot);
+    }
+
+    /// Un client doit survivre aux nouveautés d'un serveur plus récent : événement, état de caméra
+    /// et motif d'injoignabilité inconnus sont lus comme `Unknown`, `Unknown` et `Failed`, et le
+    /// `seq` de l'événement reste lisible (il faut le compter pour ne pas voir de trou).
+    #[test]
+    fn unknown_future_variants_are_tolerated() {
+        let message: ServerMessage = serde_json::from_str(
+            r#"{"type":"event","seq":9,"event":{"type":"recording_started","camera":"1","x":[1]}}"#,
+        )
+        .unwrap();
+        let ServerMessage::Event { seq, event } = message else {
+            panic!()
+        };
+        assert_eq!((seq, &event), (9, &WireEvent::Unknown));
+        assert!(event.into_event().is_none());
+        let view: CameraView = serde_json::from_value(serde_json::json!({
+            "id": CAMERA_ID_MIN.to_string(), "name": "x", "has_sub_stream": false,
+            "status": {"state": "asleep", "since": 4}
+        }))
+        .unwrap();
+        assert_eq!(view.status, CameraStatus::Unknown);
+        let status: CameraStatus = serde_json::from_value(
+            serde_json::json!({"state": "unreachable", "problem": "battery_dead"}),
+        )
+        .unwrap();
+        assert_eq!(
+            status,
+            CameraStatus::Unreachable {
+                problem: CameraProblem::Failed,
+                detail: None
+            }
+        );
+    }
+
+    #[test]
+    fn stream_kind_and_route_helpers() {
+        assert_eq!(StreamKind::from_key("sub"), Some(StreamKind::Sub));
+        assert_eq!(StreamKind::from_key("x"), None);
+        assert_eq!(
+            camera_stream_path(CAMERA_ID_MIN + 3, StreamKind::Main),
+            format!("/api/cameras/{}/stream?kind=main", CAMERA_ID_MIN + 3)
+        );
+        assert_eq!(serde_json::to_value(StreamKind::Sub).unwrap(), "sub");
     }
 }

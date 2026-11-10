@@ -3030,6 +3030,7 @@ dependencies = [
  "if-addrs",
  "log",
  "matc",
+ "md-5",
  "p256",
  "percent-encoding",
  "protocol",

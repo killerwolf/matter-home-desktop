@@ -18,17 +18,15 @@ use tokio::sync::{broadcast, mpsc};
 use protocol::automation::{CoverCommand, OnOffCommand, Rule, RuleSet};
 use protocol::home::HomePlan;
 use protocol::wire::{
-    self, ApiError, CameraStatus, CameraView, CustomizeRequest, DeviceView, ErrorCode,
-    HistoryPoint, HistoryQuery, HistoryResponse, IdentityInfo, ImportIdentity, ImportSummary,
-    LatestReading, Metric, RuleRunView, ServerMessage, Snapshot, StreamInfo, TextIds, WireEvent,
-    WireMode, WireNode, WireStatus,
+    self, ApiError, CustomizeRequest, DeviceView, ErrorCode, HistoryPoint, HistoryQuery,
+    HistoryResponse, IdentityInfo, ImportIdentity, ImportSummary, LatestReading, Metric,
+    RuleRunView, ServerMessage, Snapshot, TextIds, WireEvent, WireMode, WireNode, WireStatus,
 };
 
+mod cameras;
+
 use crate::backup;
-use crate::cameras::{
-    self, CameraAdmin, CameraBook, CameraDraft, CameraError, ProbeError, StreamKind, StreamTest,
-    Target, Wake,
-};
+use crate::cameras::{CameraBook, ViewerRegistry, Wake};
 use crate::events::{
     now_unix, Command, CoverMotion, Event, NodeInfo, NodeStatus, ReportingMode, StateKind,
 };
@@ -143,6 +141,10 @@ pub struct Hub {
     /// Réveille le surveillant des caméras (voir `cameras::start_monitor`) ; absent en démo et
     /// avant son démarrage.
     camera_wake: Mutex<Option<mpsc::UnboundedSender<Wake>>>,
+    /// Spectateurs de chaque caméra (voir `hub/cameras.rs`).
+    viewers: Arc<ViewerRegistry>,
+    /// Un verrou par caméra : une seule connexion de vérification à la fois.
+    camera_locks: Mutex<std::collections::HashMap<u64, Arc<Mutex<()>>>>,
     scrubber: Scrubber,
     data_dir: PathBuf,
     history_dir: PathBuf,
@@ -175,7 +177,7 @@ impl Hub {
             (
                 load_plan(&config.data_dir.join(PLAN_FILE)),
                 load_document::<RuleSet>(&config.data_dir.join(RULES_FILE), "règles"),
-                CameraBook::new(cameras::load(&config.data_dir)),
+                CameraBook::new(crate::cameras::load(&config.data_dir)),
             )
         };
         Self {
@@ -192,6 +194,8 @@ impl Hub {
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
             camera_wake: Mutex::new(None),
+            viewers: Arc::new(ViewerRegistry::default()),
+            camera_locks: Mutex::new(std::collections::HashMap::new()),
             scrubber: Scrubber::new(&config.data_dir),
             data_dir: config.data_dir,
             history_dir: config.history_dir,
@@ -390,11 +394,6 @@ impl Hub {
         self.lock().rules.clone()
     }
 
-    /// Les caméras vues par les clients : sans adresse ni mot de passe.
-    pub fn cameras(&self) -> Vec<CameraView> {
-        self.lock().cameras.views()
-    }
-
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
     }
@@ -552,176 +551,6 @@ impl Hub {
         let list: Vec<Rule> = rules.rules.clone();
         self.replace_document(Document::Rules, move |st| st.rules = rules)?;
         self.send(Command::SetRules(list))
-    }
-
-    // -----------------------------------------------------------------------
-    // Caméras : seule la fenêtre du serveur les modifie (aucune route d'écriture), et le serveur
-    // est le seul à connaître leurs adresses et mots de passe. Voir `cameras.rs`.
-    // -----------------------------------------------------------------------
-
-    /// Les caméras pour la fenêtre du serveur (adresses et identifiant, jamais le mot de passe).
-    pub fn camera_admin_list(&self) -> Vec<CameraAdmin> {
-        self.lock().cameras.admin_list()
-    }
-
-    pub fn camera_ids(&self) -> Vec<u64> {
-        self.lock().cameras.ids()
-    }
-
-    pub fn add_camera(&self, draft: &CameraDraft) -> Result<u64, CameraError> {
-        let id = self.change_cameras(|book| book.add(draft))?;
-        self.wake_cameras(Wake::Camera(id));
-        log::info!("caméra ajoutée : {id:#x}");
-        Ok(id)
-    }
-
-    pub fn update_camera(&self, id: u64, draft: &CameraDraft) -> Result<(), CameraError> {
-        self.change_cameras(|book| book.update(id, draft))?;
-        self.wake_cameras(Wake::Camera(id));
-        log::info!("caméra modifiée : {id:#x}");
-        Ok(())
-    }
-
-    /// Supprime une caméra. #6 : c'est ici qu'il faudra aussi la retirer du plan
-    /// (`update_document` avec `Document::Plan`, comme pour un appareil oublié).
-    pub fn delete_camera(&self, id: u64) -> Result<(), CameraError> {
-        self.change_cameras(|book| book.remove(id))?;
-        log::info!("caméra supprimée : {id:#x}");
-        Ok(())
-    }
-
-    /// Adresse et identifiants d'un flux, pour le serveur seulement (lecture, #5). Ne sort
-    /// jamais vers un client.
-    pub fn camera_target(&self, id: u64, kind: StreamKind) -> Option<Target> {
-        self.lock().cameras.get(id)?.target(kind)
-    }
-
-    /// Le flux à vérifier d'une caméra : le réduit s'il existe, sinon le principal.
-    pub(crate) fn camera_probe_target(&self, id: u64) -> Option<(StreamKind, Target)> {
-        let st = self.lock();
-        let camera = st.cameras.get(id)?;
-        let kind = camera.preferred_kind();
-        Some((kind, camera.target(kind)?))
-    }
-
-    /// Enregistre le résultat d'une vérification, et le diffuse s'il change quelque chose. Un
-    /// résultat périmé (caméra supprimée ou modifiée pendant la vérification) est écarté.
-    pub(crate) fn record_camera_probe(
-        &self,
-        id: u64,
-        kind: StreamKind,
-        probed: &Target,
-        outcome: Result<StreamInfo, ProbeError>,
-    ) {
-        let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = self.lock();
-        let Some(camera) = st.cameras.get(id) else {
-            return;
-        };
-        if camera.target(kind).as_ref() != Some(probed) {
-            return;
-        }
-        let name = camera.name.clone();
-        let was_online = st
-            .cameras
-            .views()
-            .iter()
-            .find(|v| v.id == id)
-            .is_some_and(|v| v.status == CameraStatus::Online);
-        let (status, stream) = match outcome {
-            Ok(info) => (CameraStatus::Online, Some(info)),
-            Err(e) => (
-                CameraStatus::Unreachable {
-                    problem: e.problem,
-                    detail: Some(e.message),
-                },
-                None,
-            ),
-        };
-        match (&status, was_online) {
-            (CameraStatus::Online, false) => log::info!("caméra « {name} » joignable"),
-            (CameraStatus::Unreachable { detail, .. }, true) => {
-                log::warn!(
-                    "caméra « {name} » injoignable : {}",
-                    detail.as_deref().unwrap_or("")
-                )
-            }
-            _ => {}
-        }
-        if st.cameras.set_health(id, status, stream) {
-            self.publish_cameras(&mut st);
-        }
-    }
-
-    /// Teste une saisie du formulaire (flux principal puis flux réduit), sans rien enregistrer.
-    /// `editing` : la caméra modifiée, dont le mot de passe enregistré sert si le champ est
-    /// laissé vide. **Bloque** jusqu'au résultat (8 s par flux au plus) : à lancer hors du fil
-    /// de l'interface. En démo, aucun trafic : la réponse est fabriquée.
-    pub fn test_camera_draft(
-        &self,
-        draft: &CameraDraft,
-        editing: Option<u64>,
-    ) -> Result<Vec<StreamTest>, CameraError> {
-        let camera = {
-            let st = self.lock();
-            let existing = editing.and_then(|id| st.cameras.get(id));
-            draft.build(editing.unwrap_or(protocol::wire::CAMERA_ID_MIN), existing)?
-        };
-        if self.demo {
-            return Ok([StreamKind::Main, StreamKind::Sub]
-                .into_iter()
-                .filter(|kind| camera.target(*kind).is_some())
-                .map(|kind| StreamTest {
-                    kind,
-                    outcome: Ok(StreamInfo {
-                        codec: "h264".into(),
-                        width: Some(if kind == StreamKind::Main { 2304 } else { 1280 }),
-                        height: Some(if kind == StreamKind::Main { 1296 } else { 720 }),
-                    }),
-                })
-                .collect());
-        }
-        Ok(cameras::test_camera(&camera))
-    }
-
-    pub(crate) fn set_camera_wake(&self, wake: Option<mpsc::UnboundedSender<Wake>>) {
-        *self.camera_wake.lock().unwrap_or_else(|e| e.into_inner()) = wake;
-    }
-
-    fn wake_cameras(&self, wake: Wake) {
-        if let Some(tx) = &*self.camera_wake.lock().unwrap_or_else(|e| e.into_inner()) {
-            let _ = tx.send(wake);
-        }
-    }
-
-    /// Modifie les caméras, les enregistre (0600, atomique) et diffuse la liste. Si
-    /// l'enregistrement échoue, la modification est annulée : la fenêtre du serveur ne doit pas
-    /// montrer une caméra qui n'existera plus au prochain lancement.
-    fn change_cameras<T>(
-        &self,
-        change: impl FnOnce(&mut CameraBook) -> Result<T, CameraError>,
-    ) -> Result<T, CameraError> {
-        let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = self.lock();
-        let backup = st.cameras.clone();
-        let out = change(&mut st.cameras)?;
-        if !self.demo {
-            if let Err(e) = cameras::save(&self.data_dir, st.cameras.cameras()) {
-                log::error!("enregistrement des caméras : {e:#}");
-                st.cameras = backup;
-                return Err(CameraError(
-                    "Les caméras n'ont pas pu être enregistrées (droits ou espace disque) : rien n'a changé."
-                        .into(),
-                ));
-            }
-        }
-        self.publish_cameras(&mut st);
-        Ok(out)
-    }
-
-    fn publish_cameras(&self, st: &mut HubState) {
-        let cameras = st.cameras.views();
-        self.publish(st, WireEvent::CamerasChanged { cameras });
     }
 
     fn replace_document(
@@ -1090,18 +919,18 @@ fn load_document<T: serde::de::DeserializeOwned + Default>(path: &Path, what: &s
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::events::{MeasureKind, NodeStatus};
 
-    fn temp(tag: &str) -> PathBuf {
+    pub(crate) fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mhd-hub-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
 
-    fn hub_with(dir: &Path, capacity: usize) -> (Hub, mpsc::UnboundedReceiver<Command>) {
+    pub(crate) fn hub_with(dir: &Path, capacity: usize) -> (Hub, mpsc::UnboundedReceiver<Command>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let hub = Hub::new(HubConfig {
             data_dir: dir.to_path_buf(),
@@ -1393,6 +1222,7 @@ mod tests {
             },
             x: 1.0,
             y: 1.0,
+            rotation: 0.0,
         });
         hub.apply(&node(7));
         hub.set_plan(plan).unwrap();
@@ -1600,266 +1430,6 @@ mod tests {
         // À l'arrêt, plus aucune commande n'est transmise.
         hub.close_commands();
         assert_eq!(hub.retry(1).unwrap_err().code, ErrorCode::Unavailable);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // -----------------------------------------------------------------------
-    // Caméras
-    // -----------------------------------------------------------------------
-
-    const CAM_SECRET: &str = "mdp-camera-tres-secret";
-    const CAM_HOST: &str = "192.0.2.55";
-
-    fn cam_draft(name: &str) -> CameraDraft {
-        CameraDraft {
-            name: name.into(),
-            url: format!("rtsp://{CAM_HOST}:554/live/ch00_0"),
-            sub_url: format!("rtsp://{CAM_HOST}:554/live/ch00_1"),
-            username: "admin".into(),
-            password: Some(CAM_SECRET.into()),
-        }
-    }
-
-    /// Journal capturé : tout ce que le serveur écrit pendant les tests de caméras.
-    fn captured_logs() -> &'static Mutex<Vec<String>> {
-        use std::sync::OnceLock;
-        static LOGS: OnceLock<&'static Mutex<Vec<String>>> = OnceLock::new();
-        LOGS.get_or_init(|| {
-            struct Capture(&'static Mutex<Vec<String>>);
-            impl log::Log for Capture {
-                fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-                    true
-                }
-                fn log(&self, record: &log::Record<'_>) {
-                    self.0
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(format!("{}", record.args()));
-                }
-                fn flush(&self) {}
-            }
-            let lines: &'static Mutex<Vec<String>> = Box::leak(Box::new(Mutex::new(Vec::new())));
-            let _ = log::set_logger(Box::leak(Box::new(Capture(lines))));
-            log::set_max_level(log::LevelFilter::Trace);
-            lines
-        })
-    }
-
-    fn drain(sub: &mut Subscription) -> Vec<String> {
-        std::iter::from_fn(|| sub.rx.try_recv().ok().map(|m| m.to_string())).collect()
-    }
-
-    #[test]
-    fn cameras_are_persisted_broadcast_and_reloaded() {
-        let dir = temp("cam-flow");
-        let (hub, _rx) = hub_with(&dir, 32);
-        let mut sub = hub.subscribe();
-        let id = hub.add_camera(&cam_draft("Entrée")).unwrap();
-        assert!(protocol::wire::is_camera_id(id));
-        assert!(dir.join(cameras::FILE_NAME).exists());
-        // Le client reçoit la liste complète, sans secret.
-        let events = drain(&mut sub);
-        assert_eq!(events.len(), 1);
-        let ServerMessage::Event {
-            event: WireEvent::CamerasChanged { cameras },
-            ..
-        } = serde_json::from_str(&events[0]).unwrap()
-        else {
-            panic!("{}", events[0])
-        };
-        assert_eq!(cameras.len(), 1);
-        assert_eq!((cameras[0].id, cameras[0].name.as_str()), (id, "Entrée"));
-        assert!(cameras[0].has_sub_stream);
-        assert_eq!(cameras[0].status, CameraStatus::Unknown);
-        // Un nouveau hub (redémarrage) retrouve la caméra, avec ses secrets côté serveur.
-        let (again, _rx2) = hub_with(&dir, 32);
-        assert_eq!(again.cameras(), cameras);
-        let target = again.camera_target(id, StreamKind::Sub).unwrap();
-        assert_eq!(target.url.path(), "/live/ch00_1");
-        assert_eq!(target.credentials.unwrap().password, CAM_SECRET);
-        assert!(again.camera_target(id, StreamKind::Main).is_some());
-        // Modifier, puis supprimer : chaque changement est diffusé et enregistré.
-        let mut edit = cam_draft("Entrée 2");
-        edit.password = None;
-        hub.update_camera(id, &edit).unwrap();
-        assert_eq!(cameras::load(&dir)[0].password.as_deref(), Some(CAM_SECRET));
-        hub.delete_camera(id).unwrap();
-        assert!(cameras::load(&dir).is_empty());
-        assert!(hub.cameras().is_empty());
-        assert_eq!(drain(&mut sub).len(), 2);
-        assert!(hub.delete_camera(id).is_err());
-        assert!(hub.update_camera(id, &edit).is_err());
-        // Aucune caméra n'a touché aux appareils ni au plan.
-        assert!(hub.current_snapshot().devices.is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn a_failed_save_leaves_the_cameras_unchanged() {
-        let dir = temp("cam-rollback");
-        let (hub, _rx) = hub_with(&dir, 32);
-        let id = hub.add_camera(&cam_draft("Garage")).unwrap();
-        let mut sub = hub.subscribe();
-        // Un dossier à la place du fichier temporaire : l'écriture échoue.
-        std::fs::create_dir(dir.join("cameras.tmp")).unwrap();
-        assert!(hub.add_camera(&cam_draft("Jardin")).is_err());
-        assert!(hub.update_camera(id, &cam_draft("Renommée")).is_err());
-        assert!(hub.delete_camera(id).is_err());
-        assert_eq!(hub.cameras().len(), 1);
-        assert_eq!(hub.cameras()[0].name, "Garage");
-        assert!(
-            drain(&mut sub).is_empty(),
-            "rien n'est diffusé si rien n'a changé"
-        );
-        let message = hub.add_camera(&cam_draft("Jardin")).unwrap_err().0;
-        assert!(!message.contains(CAM_SECRET) && !message.contains(CAM_HOST));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn probe_results_update_the_state_and_stale_ones_are_dropped() {
-        let dir = temp("cam-probe");
-        let (hub, _rx) = hub_with(&dir, 32);
-        let id = hub.add_camera(&cam_draft("Entrée")).unwrap();
-        let mut sub = hub.subscribe();
-        let (kind, target) = hub.camera_probe_target(id).unwrap();
-        assert_eq!(
-            kind,
-            StreamKind::Sub,
-            "on surveille le flux réduit s'il existe"
-        );
-        let info = StreamInfo {
-            codec: "h264".into(),
-            width: Some(1280),
-            height: Some(720),
-        };
-        hub.record_camera_probe(id, kind, &target, Ok(info.clone()));
-        let view = hub.cameras().remove(0);
-        assert_eq!(
-            (view.status, view.stream),
-            (CameraStatus::Online, Some(info.clone()))
-        );
-        assert_eq!(drain(&mut sub).len(), 1);
-        // Même résultat : rien à diffuser.
-        hub.record_camera_probe(id, kind, &target, Ok(info));
-        assert!(drain(&mut sub).is_empty());
-        // Échec : injoignable, avec la phrase de l'utilisateur.
-        let down = ProbeError {
-            problem: protocol::wire::CameraProblem::Unauthorized,
-            message: "La caméra refuse l'identifiant ou le mot de passe.".into(),
-        };
-        hub.record_camera_probe(id, kind, &target, Err(down));
-        assert!(matches!(
-            hub.cameras()[0].status,
-            CameraStatus::Unreachable {
-                problem: protocol::wire::CameraProblem::Unauthorized,
-                ..
-            }
-        ));
-        // La caméra est modifiée pendant une vérification : le résultat obsolète est écarté.
-        let mut edit = cam_draft("Entrée");
-        edit.sub_url = format!("rtsp://{CAM_HOST}:554/live/autre");
-        edit.password = None;
-        hub.update_camera(id, &edit).unwrap();
-        assert_eq!(hub.cameras()[0].status, CameraStatus::Unknown);
-        drain(&mut sub);
-        hub.record_camera_probe(
-            id,
-            kind,
-            &target,
-            Ok(StreamInfo {
-                codec: "h265".into(),
-                width: None,
-                height: None,
-            }),
-        );
-        assert_eq!(hub.cameras()[0].status, CameraStatus::Unknown);
-        assert!(drain(&mut sub).is_empty());
-        // Caméra supprimée pendant la vérification : rien non plus.
-        hub.delete_camera(id).unwrap();
-        hub.record_camera_probe(
-            id,
-            kind,
-            &target,
-            Ok(StreamInfo {
-                codec: "h264".into(),
-                width: None,
-                height: None,
-            }),
-        );
-        assert!(hub.cameras().is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// Critère d'acceptation : ni l'adresse ni le mot de passe dans les réponses de l'API (l'état
-    /// complet), les événements, ni les journaux.
-    #[test]
-    fn neither_the_address_nor_the_password_leave_the_server() {
-        let logs = captured_logs();
-        let dir = temp("cam-secrets");
-        let (hub, _rx) = hub_with(&dir, 32);
-        let mut sub = hub.subscribe();
-        let id = hub.add_camera(&cam_draft("Entrée")).unwrap();
-        let mut edit = cam_draft("Entrée");
-        edit.url = format!("rtsp://admin:{CAM_SECRET}@{CAM_HOST}:554/live/ch00_9");
-        edit.password = Some(String::new());
-        hub.update_camera(id, &edit).unwrap();
-        // Un refus ne répète pas non plus ce qui a été saisi.
-        let mut bad = cam_draft("");
-        bad.url = format!("http://admin:{CAM_SECRET}@{CAM_HOST}/x");
-        let refused = hub.add_camera(&bad).unwrap_err();
-        let (kind, target) = hub.camera_probe_target(id).unwrap();
-        let down = ProbeError {
-            problem: protocol::wire::CameraProblem::Unreachable,
-            message: "La caméra ne répond pas.".into(),
-        };
-        hub.record_camera_probe(id, kind, &target, Err(down));
-        // Test du formulaire (mode réel, mais vers une adresse qui échoue vite : refus de la saisie).
-        let _ = hub.test_camera_draft(&bad, None);
-        hub.delete_camera(id).unwrap();
-
-        let mut seen = drain(&mut sub);
-        seen.push(refused.0);
-        seen.push(serde_json::to_string(&hub.current_snapshot()).unwrap());
-        seen.push(serde_json::to_string(&hub.cameras()).unwrap());
-        seen.push(sub.snapshot.to_string());
-        // Pendant que la caméra existe : l'état complet la montre aussi.
-        let id2 = hub.add_camera(&cam_draft("Autre")).unwrap();
-        seen.push(serde_json::to_string(&hub.current_snapshot()).unwrap());
-        seen.push(hub.subscribe().snapshot.to_string());
-        assert!(hub.current_snapshot().cameras.iter().any(|c| c.id == id2));
-        seen.extend(logs.lock().unwrap().iter().cloned());
-        for text in &seen {
-            for needle in [CAM_SECRET, CAM_HOST, "rtsp://", "ch00_"] {
-                assert!(!text.contains(needle), "{needle} dans : {text}");
-            }
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn the_demo_hub_has_fake_cameras_that_are_never_written() {
-        let dir = temp("cam-demo");
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let hub = Hub::new(HubConfig {
-            data_dir: dir.clone(),
-            demo: true,
-            history_dir: dir.join("history-demo"),
-            demo_history: None,
-            broadcast_capacity: 8,
-            commands: tx,
-        });
-        assert_eq!(hub.cameras().len(), 3);
-        assert_eq!(hub.current_snapshot().cameras.len(), 3);
-        let id = hub.add_camera(&cam_draft("Nouvelle")).unwrap();
-        hub.delete_camera(id).unwrap();
-        assert!(!dir.join(cameras::FILE_NAME).exists());
-        // Le test du formulaire ne fait aucun trafic en démo.
-        let results = hub.test_camera_draft(&cam_draft("x"), None).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.outcome.is_ok()));
-        // Il refuse quand même une saisie invalide.
-        assert!(hub.test_camera_draft(&cam_draft(""), None).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

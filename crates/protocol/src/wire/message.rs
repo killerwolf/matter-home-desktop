@@ -246,6 +246,10 @@ pub enum WireEvent {
     CamerasChanged {
         cameras: Vec<CameraView>,
     },
+    /// Un événement d'un type que ce client ne connaît pas (serveur plus récent). À **ignorer** ;
+    /// son `seq` compte quand même (voir `ServerMessage::Event`). Ne s'envoie jamais.
+    #[serde(other)]
+    Unknown,
 }
 
 /// État complet, envoyé à la connexion puis chaque fois qu'un client a pris du retard.

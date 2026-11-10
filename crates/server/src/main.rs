@@ -108,7 +108,7 @@ fn main() -> ExitCode {
         Err(e) => return usage_error(&e),
     };
     let mut logger = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,matc=warn"),
+        env_logger::Env::default().default_filter_or("info,matc=warn,retina=warn"),
     );
     if let Some(path) = &log_file {
         match matter_home_server::logfile::RotatingLog::open(path) {

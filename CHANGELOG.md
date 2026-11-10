@@ -98,8 +98,18 @@ Les téléchargements de chaque version sont sur la
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.
-  Les identifiants d'appareils derrière un pont ne sont plus tirés dans le dernier huitième de leur
-  plage, réservé aux caméras (les identifiants déjà attribués restent valables).
+  Les nouveaux appareils derrière un pont ne sont plus tirés dans le dernier huitième de leur plage,
+  où le serveur tire les caméras (les identifiants déjà attribués restent valables, et une caméra ne
+  prend jamais l'identifiant d'un appareil connu). Les énumérations qui vont grandir ont une
+  variante de repli (événement, état de caméra, motif) : un client ignore une nouveauté qu'il ne
+  connaît pas au lieu de se déconnecter. Le plan gagne `ItemKind::Camera` et `rotation` (pour le
+  ticket n° 6), la suppression d'une caméra la retire du plan, et un onglet **Caméras** (vide pour
+  l'instant) apparaît dans le client.
+- Caméras : un premier échec de vérification ne change pas l'état affiché, il en faut deux
+  d'affilée ; le bouton **Annuler** du test arrête aussitôt la connexion ; une caméra regardée
+  n'est ni vérifiée ni testée ; un mot de passe enregistré n'est pas réutilisé si l'adresse change
+  de machine (il faut le ressaisir) ; un fichier de caméras illisible ou des caméras écartées au
+  chargement sont conservés à part, jamais écrasés.
 
 ## [1.0.0] - 2026-11-09
 

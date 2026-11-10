@@ -4,6 +4,13 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use std::time::Duration;
+
+use protocol::wire::{
+    CameraProblem, CameraStatus, StreamInfo, StreamKind, CAMERA_ID_MIN, MAX_CAMERAS,
+};
+use url::Url;
+
 use super::*;
 
 const SECRET: &str = "S3cret-mdp-de-camera";
@@ -495,6 +502,14 @@ enum Camera {
     Silent,
     /// SDP sans piste vidéo.
     AudioOnly,
+    /// Répond au premier `DESCRIBE`, puis 404 (la caméra « disparaît »).
+    OpenOnce,
+    /// Exige l'authentification Digest (MD5, `qop=auth`), celle que parlent la plupart des
+    /// caméras IP.
+    Digest {
+        user: &'static str,
+        password: &'static str,
+    },
 }
 
 /// Le SPS de cet exemple (de la suite de tests de `retina`) décrit du 704 × 480.
@@ -579,10 +594,53 @@ fn answer(kind: &Camera, head: &str, describes: &AtomicUsize) -> Option<String> 
     describes.fetch_add(1, Ordering::SeqCst);
     match kind {
         Camera::Open => Some(sdp(SDP_H264)),
+        Camera::OpenOnce => {
+            if describes.load(Ordering::SeqCst) == 1 {
+                Some(sdp(SDP_H264))
+            } else {
+                Some(reply("404 Not Found", "", ""))
+            }
+        }
         Camera::AudioOnly => Some(sdp(SDP_AUDIO_ONLY)),
         Camera::NotFound => Some(reply("404 Not Found", "", "")),
         Camera::Garbage => Some("HTTP/1.1 200 OK\r\n\r\nceci n'est pas du RTSP\r\n\r\n".into()),
         Camera::Silent => None,
+        Camera::Digest { user, password } => {
+            let challenge = "WWW-Authenticate: Digest realm=\"camera\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", algorithm=MD5\r\n";
+            let Some(auth) = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Authorization: Digest "))
+            else {
+                return Some(reply("401 Unauthorized", challenge, ""));
+            };
+            let field = |name: &str| {
+                auth.split(',').find_map(|part| {
+                    let (k, v) = part.trim().split_once('=')?;
+                    (k == name).then(|| v.trim_matches('"').to_string())
+                })
+            };
+            let md5 = |text: String| {
+                use md5::Digest;
+                hex::encode(md5::Md5::digest(text.as_bytes()))
+            };
+            let (Some(uri), Some(nonce), Some(nc), Some(cnonce), Some(response)) = (
+                field("uri"),
+                field("nonce"),
+                field("nc"),
+                field("cnonce"),
+                field("response"),
+            ) else {
+                return Some(reply("401 Unauthorized", challenge, ""));
+            };
+            let ha1 = md5(format!("{user}:camera:{password}"));
+            let ha2 = md5(format!("DESCRIBE:{uri}"));
+            let expected = md5(format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}"));
+            if field("username").as_deref() == Some(*user) && response == expected {
+                Some(sdp(SDP_H264))
+            } else {
+                Some(reply("401 Unauthorized", challenge, ""))
+            }
+        }
         Camera::Basic { user, password } => {
             use base64::Engine;
             let expected = format!(
@@ -708,7 +766,7 @@ fn the_test_button_checks_both_streams_one_after_the_other() {
     ));
     d.sub_url = format!("rtsp://127.0.0.1:{port}/live/ch00_1");
     let camera = d.build(CAMERA_ID_MIN, None).unwrap();
-    let results = test_camera(&camera);
+    let results = CameraTest::spawn(camera, None).wait().unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(describes.load(Ordering::SeqCst), 2);
     assert_eq!(results[0].describe(), "Flux principal : H.264 · 704 × 480");
@@ -717,5 +775,358 @@ fn the_test_button_checks_both_streams_one_after_the_other() {
     let single = draft("x", &format!("rtsp://127.0.0.1:{port}/m"))
         .build(CAMERA_ID_MIN, None)
         .unwrap();
-    assert_eq!(test_camera(&single).len(), 1);
+    assert_eq!(CameraTest::spawn(single, None).wait().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn probe_answers_a_digest_challenge() {
+    let (port, describes) = fake_camera(Camera::Digest {
+        user: "admin",
+        password: SECRET,
+    })
+    .await;
+    let ok = probe(
+        &local_target(port, Some(("admin", SECRET))),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(ok.unwrap().codec, "h264");
+    assert!(describes.load(Ordering::SeqCst) >= 2, "défi puis réponse");
+    let wrong = probe(
+        &local_target(port, Some(("admin", "autre"))),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(wrong.problem, CameraProblem::Unauthorized);
+}
+
+// ---------------------------------------------------------------------------
+// File d'attente, identifiants, hystérésis, fichiers, formulaire
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_queue_coalesces_wakes_and_puts_woken_cameras_first() {
+    let mut q = Queue::default();
+    q.wake_all([1, 2, 3]);
+    // Une demande pour 3 le fait passer devant, une seule fois.
+    for _ in 0..5 {
+        q.wake_camera(3);
+    }
+    q.wake_all([1, 2, 3]);
+    assert_eq!(
+        [q.pop(), q.pop(), q.pop(), q.pop()],
+        [Some(3), Some(1), Some(2), None]
+    );
+    assert!(q.is_empty());
+    // Une caméra réveillée deux fois ne revient pas dans le balayage qui la contient déjà.
+    q.wake_all([7, 8]);
+    q.wake_camera(8);
+    q.wake_all([8]);
+    assert_eq!([q.pop(), q.pop(), q.pop()], [Some(8), Some(7), None]);
+}
+
+#[test]
+fn a_fresh_id_skips_taken_and_foreign_ids() {
+    let book = CameraBook::default();
+    let taken = std::collections::HashSet::from([CAMERA_ID_MIN + 1]);
+    let mut draws = [5, u64::MAX, CAMERA_ID_MIN + 1, CAMERA_ID_MIN + 2].into_iter();
+    // 5 est hors plage, `u64::MAX` est interdit, `+1` est celui d'un appareil.
+    assert_eq!(
+        book.fresh_id_with(&taken, || draws.next().unwrap()),
+        CAMERA_ID_MIN + 2
+    );
+}
+
+#[test]
+fn a_reachable_camera_needs_two_failures_and_the_reason_decides_what_is_news() {
+    let mut book = CameraBook::default();
+    let id = book.add(&draft("x", &format!("rtsp://{HOST}/a"))).unwrap();
+    let info = StreamInfo {
+        codec: "h264".into(),
+        width: Some(1),
+        height: Some(1),
+    };
+    let fail = |p: CameraProblem, text: &str| Err((p, text.to_string()));
+    // Jamais vue joignable : injoignable dès le premier échec.
+    let r = book.record_probe(id, fail(CameraProblem::Unreachable, "a"));
+    assert_eq!((r.changed, r.recheck), (true, false));
+    book.record_probe(id, Ok(info));
+    let r = book.record_probe(id, fail(CameraProblem::Unreachable, "a"));
+    assert_eq!((r.changed, r.recheck), (false, true));
+    assert_eq!(book.status(id), Some(&CameraStatus::Online));
+    // Un succès entre deux échecs remet le compte à zéro.
+    book.record_probe(
+        id,
+        Ok(StreamInfo {
+            codec: "h264".into(),
+            width: Some(1),
+            height: Some(1),
+        }),
+    );
+    let r = book.record_probe(id, fail(CameraProblem::Unreachable, "a"));
+    assert!(r.recheck && !r.changed);
+    let r = book.record_probe(id, fail(CameraProblem::Unreachable, "b"));
+    assert_eq!((r.changed, r.recheck), (true, false));
+    // Même motif, autre phrase : pas une nouvelle. Autre motif : oui.
+    assert!(
+        !book
+            .record_probe(id, fail(CameraProblem::Unreachable, "c"))
+            .changed
+    );
+    assert!(
+        book.record_probe(id, fail(CameraProblem::Unauthorized, "c"))
+            .changed
+    );
+}
+
+#[test]
+fn an_unreadable_file_never_replaces_an_earlier_one_and_dropped_cameras_are_kept() {
+    let dir = temp_dir("aside");
+    std::fs::write(dir.join(FILE_NAME), "{ un").unwrap();
+    assert!(load(&dir).is_empty());
+    std::fs::write(dir.join(FILE_NAME), "{ deux").unwrap();
+    assert!(load(&dir).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cameras.json.illisible")).unwrap(),
+        "{ un"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cameras.json.illisible-2")).unwrap(),
+        "{ deux"
+    );
+    // Une caméra écartée au chargement : le fichier d'origine est copié avant qu'un
+    // enregistrement ne l'écrase.
+    let good = draft("Bonne", &format!("rtsp://{HOST}/a"))
+        .build(CAMERA_ID_MIN + 1, None)
+        .unwrap();
+    let mut bad = good.clone();
+    bad.id = CAMERA_ID_MIN + 2;
+    bad.url = "http://pas-rtsp/".into();
+    let original = serde_json::to_string(&CameraFile {
+        version: 1,
+        cameras: vec![good.clone(), bad],
+    })
+    .unwrap();
+    std::fs::write(dir.join(FILE_NAME), &original).unwrap();
+    assert_eq!(load(&dir), [good]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cameras.json.ecartees")).unwrap(),
+        original
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("cameras.json.ecartees"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "la copie n'est lisible que de son propriétaire"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn moving_a_camera_to_another_host_requires_the_password_again() {
+    let first = with_creds(draft("Salon", &format!("rtsp://{HOST}/m")))
+        .build(CAMERA_ID_MIN + 1, None)
+        .unwrap();
+    let mut edit = draft("Salon", "rtsp://198.51.100.9/m");
+    edit.username = "admin".into();
+    edit.password = None;
+    let e = edit.build(first.id, Some(&first)).unwrap_err();
+    assert!(e.0.contains("saisissez de nouveau le mot de passe"), "{e}");
+    assert!(!e.0.contains("198.51.100.9") && !e.0.contains(SECRET));
+    // Le même hôte (autre port, autre chemin) garde le mot de passe.
+    edit.url = format!("rtsp://{HOST}:8554/autre");
+    assert_eq!(
+        edit.build(first.id, Some(&first))
+            .unwrap()
+            .password
+            .as_deref(),
+        Some(SECRET)
+    );
+    // Un nouveau mot de passe saisi autorise le changement.
+    edit.url = "rtsp://198.51.100.9/m".into();
+    edit.password = Some("neuf".into());
+    assert_eq!(
+        edit.build(first.id, Some(&first))
+            .unwrap()
+            .password
+            .as_deref(),
+        Some("neuf")
+    );
+}
+
+#[test]
+fn refusals_start_with_a_capital_and_credentials_can_be_split_for_the_form() {
+    let e = draft("", &format!("rtsp://{HOST}/m"))
+        .build(CAMERA_ID_MIN, None)
+        .unwrap_err();
+    assert!(e.0.starts_with("Nom"), "{e}");
+    let e = draft("x", "http://a/")
+        .build(CAMERA_ID_MIN, None)
+        .unwrap_err();
+    assert!(e.0.starts_with(|c: char| c.is_uppercase()), "{e}");
+    let (clean, (user, password)) =
+        split_credentials(&format!("rtsp://admin:p%40ss@{HOST}:554/live/ch00_1")).unwrap();
+    assert_eq!(clean, format!("rtsp://{HOST}:554/live/ch00_1"));
+    assert_eq!(
+        (user.as_str(), password.as_deref()),
+        ("admin", Some("p@ss"))
+    );
+    assert!(split_credentials(&format!("rtsp://{HOST}/m")).is_none());
+    assert!(split_credentials("n'importe quoi").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Test annulable et boucle de surveillance (fausses caméras locales)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_cancelled_test_stops_at_once_and_gives_the_camera_lock_back() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (port, _) = runtime.block_on(fake_camera(Camera::Silent));
+    let camera = draft("Muette", &format!("rtsp://127.0.0.1:{port}/m"))
+        .build(CAMERA_ID_MIN, None)
+        .unwrap();
+    let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let test = CameraTest::spawn(camera.clone(), Some(lock.clone()));
+    std::thread::sleep(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    test.cancel();
+    let e = test.wait().unwrap_err();
+    assert_eq!(e.0, "Test annulé.");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "annulé tout de suite, pas après 8 s"
+    );
+    assert!(lock.try_lock().is_ok(), "le verrou est rendu");
+    // Attendre le verrou d'un autre se termine aussi sur annulation.
+    let held = lock.lock().unwrap();
+    let waiting = CameraTest::spawn(camera, Some(lock.clone()));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(waiting.poll().is_none(), "toujours en attente du verrou");
+    waiting.cancel();
+    assert_eq!(waiting.wait().unwrap_err().0, "Test annulé.");
+    drop(held);
+}
+
+fn hub_with_camera(
+    tag: &str,
+    port: u16,
+) -> (std::sync::Arc<crate::hub::Hub>, u64, std::path::PathBuf) {
+    let dir = temp_dir(tag);
+    let (hub, _rx) = crate::hub::tests::hub_with(&dir, 16);
+    let hub = std::sync::Arc::new(hub);
+    let id = hub
+        .add_camera(&draft(
+            "Locale",
+            &format!("rtsp://127.0.0.1:{port}/live/ch00_1"),
+        ))
+        .unwrap();
+    (hub, id, dir)
+}
+
+/// Fait tourner la boucle de surveillance avec ces demandes pendant `for_how_long`, puis l'arrête.
+/// (La boucle n'est pas `Send` : elle tourne ici, dans la tâche du test, avec le pilote.)
+async fn run_monitor(hub: &crate::hub::Hub, wakes: Vec<Wake>, for_how_long: Duration) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for w in wakes {
+        tx.send(w).unwrap();
+    }
+    let stop = tokio::sync::Notify::new();
+    let driver = async {
+        tokio::time::sleep(for_how_long).await;
+        stop.notify_one();
+    };
+    let hour = Duration::from_secs(3600);
+    tokio::join!(monitor_loop(hub, rx, &stop, hour, hour), driver);
+}
+
+#[tokio::test]
+async fn the_monitor_stops_in_the_middle_of_a_probe_to_a_silent_camera() {
+    let (port, describes) = fake_camera(Camera::Silent).await;
+    let (hub, id, dir) = hub_with_camera("mon-stop", port);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(Wake::Camera(id)).unwrap();
+    let stop = tokio::sync::Notify::new();
+    let hour = Duration::from_secs(3600);
+    let started = std::time::Instant::now();
+    let driver = async {
+        // La vérification est en cours (la caméra a reçu son DESCRIBE et ne répond pas)…
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while describes.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "aucune vérification");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // … et l'arrêt ne l'attend pas.
+        stop.notify_one();
+    };
+    tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(monitor_loop(&hub, rx, &stop, hour, hour), driver)
+    })
+    .await
+    .expect("arrêt immédiat");
+    // Le délai d'une vérification est de 8 s : on n'a pas attendu la fin de celle-ci.
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(
+        hub.cameras()[0].status,
+        CameraStatus::Unknown,
+        "rien n'est enregistré"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // le verrou tenu pendant `run_monitor` est le but du test
+async fn the_monitor_coalesces_wakes_and_skips_watched_or_locked_cameras() {
+    let (port, describes) = fake_camera(Camera::Open).await;
+    let (hub, id, dir) = hub_with_camera("mon-wake", port);
+    let half = Duration::from_millis(700);
+    // Cinq demandes d'affilée pour la même caméra : une seule vérification.
+    run_monitor(&hub, vec![Wake::Camera(id); 5], half).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 1);
+    assert_eq!(hub.cameras()[0].status, CameraStatus::Online);
+    // Un balayage complet mêlé de demandes pour la même caméra : encore une seule.
+    run_monitor(&hub, vec![Wake::All, Wake::Camera(id), Wake::All], half).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 2);
+    // Caméra regardée : sautée.
+    let lease = hub.acquire_camera_viewer(id).unwrap();
+    run_monitor(&hub, vec![Wake::Camera(id)], half).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 2);
+    drop(lease);
+    // Caméra en cours de test (verrou pris) : sautée aussi.
+    let lock = hub.camera_probe_lock(id);
+    let guard = lock.lock().unwrap();
+    run_monitor(&hub, vec![Wake::Camera(id)], half).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 2);
+    drop(guard);
+    run_monitor(&hub, vec![Wake::Camera(id)], half).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 3);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_first_failure_of_a_reachable_camera_is_rechecked_at_once() {
+    let (port, describes) = fake_camera(Camera::OpenOnce).await;
+    let (hub, id, dir) = hub_with_camera("mon-recheck", port);
+    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(600)).await;
+    assert_eq!(hub.cameras()[0].status, CameraStatus::Online);
+    // La caméra « disparaît » : un premier échec (rien ne change), revérifié aussitôt par la
+    // boucle elle-même ; le second déclare la caméra injoignable. Trois DESCRIBE en tout.
+    run_monitor(&hub, vec![Wake::Camera(id)], Duration::from_millis(900)).await;
+    assert_eq!(describes.load(Ordering::SeqCst), 3);
+    assert!(matches!(
+        hub.cameras()[0].status,
+        CameraStatus::Unreachable {
+            problem: CameraProblem::NotFound,
+            ..
+        }
+    ));
+    let _ = std::fs::remove_dir_all(dir);
 }

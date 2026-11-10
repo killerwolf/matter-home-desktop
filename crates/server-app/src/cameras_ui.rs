@@ -5,17 +5,14 @@
 //! enregistrée en 0600, diffusée aux clients, et surveillée. Le test d'une saisie fait un
 //! `DESCRIBE` dans un fil à part (jusqu'à 8 s par flux) : la fenêtre ne se fige jamais.
 
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, RichText};
-use matter_home_server::cameras::{CameraAdmin, CameraError, StreamTest};
+use matter_home_server::cameras::{CameraAdmin, CameraTest};
 use matter_home_server::hub::Hub;
 use matter_home_server_app::cameras::{
     status_line, test_lines, Form, Tone, AQARA_HINT, BACKUP_NOTE,
 };
-
-type TestOutcome = Result<Vec<StreamTest>, CameraError>;
 
 #[derive(Default)]
 pub struct CamerasUi {
@@ -23,7 +20,7 @@ pub struct CamerasUi {
     /// Refus de l'enregistrement (texte du serveur, sans adresse ni mot de passe).
     error: Option<String>,
     /// Un test est en cours dans un fil.
-    testing: Option<Receiver<TestOutcome>>,
+    testing: Option<CameraTest>,
     test_lines: Vec<(Tone, String)>,
     confirm_delete: Option<u64>,
 }
@@ -70,23 +67,16 @@ impl CamerasUi {
     }
 
     fn poll_test(&mut self) {
-        let Some(rx) = &self.testing else { return };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.test_lines = match outcome {
-                    Ok(results) if results.is_empty() => {
-                        vec![(Tone::Bad, "Rien à tester.".to_string())]
-                    }
-                    Ok(results) => test_lines(&results),
-                    Err(e) => vec![(Tone::Bad, e.0)],
-                };
-                self.testing = None;
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.test_lines = vec![(Tone::Bad, "Le test s'est interrompu.".to_string())];
-                self.testing = None;
-            }
+        let Some(test) = &self.testing else { return };
+        if let Some(outcome) = test.poll() {
+            self.test_lines = match outcome {
+                Ok(results) if results.is_empty() => {
+                    vec![(Tone::Bad, "Rien à tester.".to_string())]
+                }
+                Ok(results) => test_lines(&results),
+                Err(e) => vec![(Tone::Bad, e.0)],
+            };
+            self.testing = None;
         }
     }
 
@@ -123,8 +113,10 @@ impl CamerasUi {
             ui.colored_label(tone_color(tone), text);
             if camera.sub_url.is_none() {
                 ui.label(
-                    RichText::new("Pas de flux réduit : la mosaïque utilisera le flux principal.")
-                        .weak(),
+                    RichText::new(
+                        "Pas de flux réduit : la mosaïque affichera une image fixe rafraîchie.",
+                    )
+                    .weak(),
                 );
             }
             if self.confirm_delete == Some(camera.id) {
@@ -164,17 +156,29 @@ impl CamerasUi {
         };
         ui.label(RichText::new(form.title()).strong());
         ui.add_space(4.0);
-        ui.label("Nom");
-        ui.add(wide(&mut form.name).hint_text("Entrée"));
-        ui.label("Adresse du flux principal");
-        ui.add(wide(&mut form.url).hint_text("rtsp://192.168.1.20:554/live/ch00_0"));
-        ui.label("Adresse du flux réduit (facultative, utile pour la mosaïque)");
-        ui.add(wide(&mut form.sub_url).hint_text("rtsp://192.168.1.20:554/live/ch00_1"));
-        ui.label("Identifiant");
-        ui.add(wide(&mut form.username));
-        ui.label("Mot de passe");
+        let label = ui.label("Nom");
+        ui.add(wide(&mut form.name).hint_text("Entrée"))
+            .labelled_by(label.id);
+        let label = ui.label("Adresse du flux principal");
+        let url_changed = ui
+            .add(wide(&mut form.url).hint_text("rtsp://192.168.1.20:554/live/ch00_0"))
+            .labelled_by(label.id)
+            .changed();
+        let label = ui.label("Adresse du flux réduit (facultative, utile pour la mosaïque)");
+        let sub_changed = ui
+            .add(wide(&mut form.sub_url).hint_text("rtsp://192.168.1.20:554/live/ch00_1"))
+            .labelled_by(label.id)
+            .changed();
+        // Un mot de passe collé dans l'adresse n'y reste pas : il passe dans son champ.
+        if url_changed || sub_changed {
+            form.absorb_credentials();
+        }
+        let label = ui.label("Identifiant");
+        ui.add(wide(&mut form.username)).labelled_by(label.id);
+        let label = ui.label("Mot de passe");
         let hint = form.password_hint();
-        ui.add(wide(&mut form.password).password(true).hint_text(hint));
+        ui.add(wide(&mut form.password).password(true).hint_text(hint))
+            .labelled_by(label.id);
         if form.editing.is_some() && form.had_password {
             ui.checkbox(
                 &mut form.clear_password,
@@ -210,15 +214,15 @@ impl CamerasUi {
 
         let (draft, editing) = (form.draft(), form.editing);
         if test {
-            let (tx, rx) = mpsc::channel();
-            let (hub, ctx) = (hub.clone(), ctx.clone());
-            std::thread::spawn(move || {
-                let _ = tx.send(hub.test_camera_draft(&draft, editing));
-                ctx.request_repaint();
-            });
-            self.testing = Some(rx);
             self.test_lines.clear();
             self.error = None;
+            match hub.start_camera_test(&draft, editing) {
+                Ok(started) => {
+                    self.testing = Some(started);
+                    ctx.request_repaint();
+                }
+                Err(e) => self.test_lines = vec![(Tone::Bad, e.0)],
+            }
         } else if save {
             let result = match editing {
                 Some(id) => hub.update_camera(id, &draft),
@@ -233,6 +237,7 @@ impl CamerasUi {
                 Err(e) => self.error = Some(e.0),
             }
         } else if cancel {
+            // Lâcher le test l'annule : le fil s'arrête et rend le verrou de la caméra.
             self.form = None;
             self.error = None;
             self.test_lines.clear();

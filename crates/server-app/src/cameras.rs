@@ -7,15 +7,15 @@
 //! de passe » l'efface.
 
 use matter_home_server::cameras::{
-    describe_stream, CameraAdmin, CameraDraft, StreamKind, StreamTest,
+    describe_stream, split_credentials, CameraAdmin, CameraDraft, StreamKind, StreamTest,
 };
 use protocol::wire::CameraStatus;
 
 /// Ce que la fenêtre dit des sauvegardes (demandé par le ticket #4 : « à dire dans l'interface »).
-pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
+pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
 
 /// Aide pour une caméra Aqara G100 (non vérifiée sur l'appareil).
-pub const AQARA_HINT: &str = "Aqara G100 : dans l'application Aqara Home, ouvrez la caméra, Réglages de l'appareil, RTSP, puis activez-le. L'application donne l'adresse, le port (554), l'identifiant et le mot de passe. Flux principal : rtsp://adresse:554/live/ch00_0 (peut être instable) ; flux réduit : …/live/ch00_1 (720p, stable, à préférer pour la mosaïque).";
+pub const AQARA_HINT: &str = "Aqara G100 (à vérifier sur votre caméra) : dans l'application Aqara Home, ouvrez la caméra, Réglages de l'appareil, RTSP, puis activez-le. L'application donne l'adresse, le port (554), l'identifiant et le mot de passe. Flux principal : rtsp://adresse:554/live/ch00_0 (peut être instable) ; flux réduit : …/live/ch00_1 (720p, stable, à préférer pour la mosaïque).";
 
 /// Couleur d'une ligne d'état.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +134,35 @@ impl Form {
     /// Tester ou enregistrer demande au moins un nom et une adresse (le serveur contrôle le reste).
     pub fn is_fillable(&self) -> bool {
         !self.name.trim().is_empty() && !self.url.trim().is_empty()
+    }
+
+    /// Si l'adresse du flux principal ou du flux réduit vient d'être collée avec
+    /// `identifiant:mot-de-passe@`, retire ces identifiants de l'adresse et les range dans leurs
+    /// champs (ce qu'on voit à l'écran ne garde pas le mot de passe en clair dans l'adresse). Un
+    /// champ déjà rempli n'est pas écrasé. `true` si quelque chose a changé.
+    pub fn absorb_credentials(&mut self) -> bool {
+        let mut changed = false;
+        for field in [0, 1] {
+            let text = if field == 0 { &self.url } else { &self.sub_url };
+            let Some((clean, (user, password))) = split_credentials(text) else {
+                continue;
+            };
+            if field == 0 {
+                self.url = clean;
+            } else {
+                self.sub_url = clean;
+            }
+            if self.username.trim().is_empty() {
+                self.username = user;
+            }
+            if self.password.is_empty() {
+                if let Some(p) = password {
+                    self.password = p;
+                }
+            }
+            changed = true;
+        }
+        changed
     }
 
     /// Texte sous le champ du mot de passe.
@@ -279,8 +308,33 @@ mod tests {
     }
 
     #[test]
+    fn pasted_credentials_leave_the_address_at_once() {
+        let mut form = Form::new();
+        form.url = "rtsp://admin:s3cret@192.0.2.4:554/live/ch00_0".into();
+        form.sub_url = "rtsp://admin:s3cret@192.0.2.4:554/live/ch00_1".into();
+        assert!(form.absorb_credentials());
+        assert_eq!(form.url, "rtsp://192.0.2.4:554/live/ch00_0");
+        assert_eq!(form.sub_url, "rtsp://192.0.2.4:554/live/ch00_1");
+        assert_eq!(
+            (form.username.as_str(), form.password.as_str()),
+            ("admin", "s3cret")
+        );
+        // Rien de plus à faire la fois suivante, et un champ rempli n'est pas écrasé.
+        assert!(!form.absorb_credentials());
+        let mut filled = Form::new();
+        filled.username = "moi".into();
+        filled.url = "rtsp://autre:x@192.0.2.4/m".into();
+        assert!(filled.absorb_credentials());
+        assert_eq!(filled.username, "moi");
+        assert_eq!(filled.url, "rtsp://192.0.2.4/m");
+    }
+
+    #[test]
     fn the_notes_say_what_matters() {
         assert!(BACKUP_NOTE.contains("sauvegardes") && BACKUP_NOTE.contains("mots de passe"));
         assert!(AQARA_HINT.contains("ch00_1") && AQARA_HINT.contains("RTSP"));
+        assert!(AQARA_HINT.contains("à vérifier"));
+        // Typographie : espace insécable avant « : », « » et « ? ».
+        assert!(!BACKUP_NOTE.contains(" :") && BACKUP_NOTE.contains(" :"));
     }
 }

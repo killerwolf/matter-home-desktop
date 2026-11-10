@@ -208,6 +208,8 @@ pub enum Change {
     RuleRun(RuleRunView),
     PlanChanged(Box<HomePlan>),
     RulesChanged(Box<RuleSet>),
+    /// La liste des caméras (`Model::cameras`) vient de changer.
+    CamerasChanged,
 }
 
 #[derive(Debug, Default)]
@@ -358,8 +360,10 @@ impl Model {
             WireEvent::RulesChanged { rules } => Change::RulesChanged(Box::new(rules.0)),
             WireEvent::CamerasChanged { cameras } => {
                 self.cameras = cameras;
-                Change::Nothing
+                Change::CamerasChanged
             }
+            // Un événement d'un serveur plus récent : ignoré (son `seq` a déjà été compté).
+            WireEvent::Unknown => Change::Nothing,
         }
     }
 
@@ -717,7 +721,7 @@ mod tests {
         let change = m.apply_event(WireEvent::CamerasChanged {
             cameras: vec![camera_view(second, "Jardin")],
         });
-        assert!(matches!(change, Change::Nothing));
+        assert!(matches!(change, Change::CamerasChanged));
         assert!(m.camera(first).is_none());
         assert_eq!(m.camera(second).unwrap().name, "Jardin");
         // Une resynchronisation les remplace aussi, et la déconnexion les efface.

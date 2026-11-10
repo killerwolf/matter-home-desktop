@@ -133,8 +133,20 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
             if !coord_ok(item.x) || !coord_ok(item.y) {
                 return Err(bad("position d'objet invalide"));
             }
-            if let ItemKind::Decor { label, .. } = &item.kind {
-                check_len(label, MAX_NAME, "libellé")?;
+            if !item.rotation.is_finite() || !(0.0..360.0).contains(&item.rotation) {
+                return Err(bad("orientation d'objet invalide (0 à 360 degrés)"));
+            }
+            match &item.kind {
+                ItemKind::Decor { label, .. } => check_len(label, MAX_NAME, "libellé")?,
+                // Plage de tirage seulement : l'existence de la caméra est à contrôler au
+                // moment voulu par #6 (voir `Hub::set_plan`), car un plan envoyé avant la
+                // suppression d'une caméra ne doit pas bloquer le client.
+                ItemKind::Camera { camera_id } => {
+                    if !protocol::wire::is_camera_id(*camera_id) {
+                        return Err(bad("identifiant de caméra invalide"));
+                    }
+                }
+                ItemKind::Device { .. } => {}
             }
         }
     }
@@ -194,5 +206,34 @@ mod tests {
         assert_eq!(plan(&none).unwrap_err().code, ErrorCode::PlanWithoutFloor);
         p.floors[0].name = "x".repeat(MAX_NAME + 1);
         assert!(plan(&p).is_err());
+    }
+
+    #[test]
+    fn camera_items_are_checked() {
+        let item = |camera_id: u64, rotation: f32| protocol::home::Item {
+            id: 9,
+            kind: ItemKind::Camera { camera_id },
+            x: 1.0,
+            y: 1.0,
+            rotation,
+        };
+        let with = |item| {
+            let mut p = HomePlan::default();
+            p.floors[0].items.push(item);
+            p
+        };
+        let cam = protocol::wire::CAMERA_ID_MIN + 4;
+        assert!(plan(&with(item(cam, 0.0))).is_ok());
+        assert!(plan(&with(item(cam, 359.5))).is_ok());
+        assert!(
+            plan(&with(item(7, 0.0))).is_err(),
+            "hors de la plage des caméras"
+        );
+        for bad_rotation in [-1.0, 360.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                plan(&with(item(cam, bad_rotation))).is_err(),
+                "{bad_rotation}"
+            );
+        }
     }
 }

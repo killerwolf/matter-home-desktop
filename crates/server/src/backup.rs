@@ -233,6 +233,16 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
                 // Les messages de `validate` citent le nom de la caméra, jamais son adresse.
                 file.validate()
                     .map_err(|e| Invalid(format!("{CAMERAS} refusé : {e}")))?;
+                // Un identifiant de caméra ne doit pas être celui d'un appareil : le plan et les
+                // règles ne sauraient plus de quoi ils parlent.
+                let devices: std::collections::HashSet<u64> =
+                    state.device_ids().into_iter().collect();
+                if let Some(c) = file.cameras.iter().find(|c| devices.contains(&c.id)) {
+                    return Err(Invalid(format!(
+                        "{CAMERAS} refusé : l'identifiant de la caméra « {} » est celui d'un appareil",
+                        c.name
+                    )));
+                }
             }
             Ok(file)
         })
@@ -1529,6 +1539,45 @@ mod tests {
         let plain = bundle_text(&[(FILE_NAME, controller("Capteur"))]);
         assert_eq!(inspect_text(&plain).unwrap().cameras, 0);
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_camera_id_that_is_a_device_id_refuses_the_backup() {
+        let clash = protocol::wire::CAMERA_ID_MIN + 5;
+        let controller_with_device =
+            controller("Volet").replace("\"node_id\":7", &format!("\"node_id\":{clash}"));
+        assert!(controller_with_device.contains(&clash.to_string()));
+        let mut book = crate::cameras::CameraBook::default();
+        book.add(&crate::cameras::CameraDraft {
+            name: "Entrée".into(),
+            url: "rtsp://192.0.2.9/m".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut cameras = book.cameras().to_vec();
+        let file = |id: u64, cameras: &mut Vec<crate::cameras::StoredCamera>| {
+            cameras[0].id = id;
+            serde_json::to_string(&crate::cameras::CameraFile {
+                version: 1,
+                cameras: cameras.clone(),
+            })
+            .unwrap()
+        };
+        let refused = bundle_text(&[
+            (FILE_NAME, controller_with_device.clone()),
+            (CAMERAS, file(clash, &mut cameras)),
+        ]);
+        let why = inspect_text(&refused).unwrap_err().0;
+        assert!(
+            why.contains("celui d'un appareil") && why.contains("Entrée"),
+            "{why}"
+        );
+        // Un autre identifiant passe.
+        let accepted = bundle_text(&[
+            (FILE_NAME, controller_with_device),
+            (CAMERAS, file(clash + 1, &mut cameras)),
+        ]);
+        assert_eq!(inspect_text(&accepted).unwrap().cameras, 1);
     }
 
     #[test]

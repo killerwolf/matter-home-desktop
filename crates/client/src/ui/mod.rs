@@ -5,10 +5,12 @@
 //! cache, pas de mode local. Déconnectée, elle affiche « déconnecté » et n'autorise aucune
 //! commande.
 
+mod cameras;
 mod connect;
 mod customize;
 mod notify;
 mod plan;
+mod player;
 mod rules;
 mod sensors;
 mod sync;
@@ -53,6 +55,7 @@ enum View {
     Plan,
     Rules,
     Temperatures,
+    Cameras,
 }
 
 impl View {
@@ -63,6 +66,7 @@ impl View {
             View::Plan => "Plan de la maison",
             View::Rules => "Automatisations",
             View::Temperatures => "Températures",
+            View::Cameras => "Caméras",
         }
     }
 }
@@ -1069,6 +1073,8 @@ impl MatterApp {
             }
             Change::PlanChanged(plan) => self.plan.on_server(*plan),
             Change::RulesChanged(rules) => self.rules.on_server(*rules),
+            // `Model::cameras` est déjà à jour ; les pages caméras le relisent à chaque image.
+            Change::CamerasChanged => {}
         }
     }
 
@@ -1912,6 +1918,7 @@ impl MatterApp {
                         View::Temperatures,
                         View::Temperatures.title(),
                     );
+                    ui.selectable_value(&mut self.view, View::Cameras, View::Cameras.title());
                 }
                 // Un brouillon ou un choix en attente reste visible depuis toutes les vues.
                 for alert in self.sync_alerts() {
@@ -2200,6 +2207,7 @@ impl eframe::App for MatterApp {
                 plan::PlanAction::None => {}
             },
             View::Temperatures => self.temperatures_page(ui),
+            View::Cameras => cameras::show(ui, &self.model),
             View::Rules => {
                 if let rules::RulesAction::Test(id) =
                     self.rules
