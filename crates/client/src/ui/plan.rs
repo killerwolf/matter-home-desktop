@@ -14,8 +14,8 @@ use super::Device;
 use matter_home_client::model::Model;
 use protocol::format::{format_position, format_power, format_temperature};
 use protocol::home::{
-    self, snap, FovShape, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MAX_FOV,
-    MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
+    self, snap, FovShape, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MAX_CAMERA_RANGE,
+    MAX_FOV, MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
 };
 use protocol::wire::{CameraView, StreamKind, WireStatus};
 
@@ -316,9 +316,29 @@ fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) ->
 
 /// Ce qui empêche d'envoyer un plan : le serveur exige au moins un étage.
 fn plan_problem(plan: &HomePlan) -> Option<String> {
-    plan.floors
-        .is_empty()
-        .then(|| "le plan doit avoir au moins un étage".to_string())
+    if plan.floors.is_empty() {
+        return Some("le plan doit avoir au moins un étage".to_string());
+    }
+    // Les mêmes bornes que le serveur : une valeur hors plage ne part jamais (le serveur la
+    // refuserait en bloc, et tout le plan resterait en brouillon).
+    for item in plan.floors.iter().flat_map(|f| &f.items) {
+        if let ItemKind::Camera { fov, range, .. } = &item.kind {
+            if !(MIN_FOV..=MAX_FOV).contains(fov) {
+                return Some(format!(
+                    "l'ouverture d'une caméra doit être entre {MIN_FOV:.0} et {MAX_FOV:.0} °"
+                ));
+            }
+            if !(MIN_CAMERA_RANGE..=MAX_CAMERA_RANGE).contains(range) {
+                return Some(format!(
+                    "la portée d'une caméra doit être entre {MIN_CAMERA_RANGE} et {MAX_CAMERA_RANGE} m"
+                ));
+            }
+        }
+        if !(0.0..360.0).contains(&item.rotation) {
+            return Some("l'orientation d'un objet doit être entre 0 et 360 °".to_string());
+        }
+    }
+    None
 }
 
 impl PlanView {
@@ -759,16 +779,22 @@ impl PlanView {
                                      Portée : tirez la poignée carrée au bout du champ.",
                                 );
                             }
-                            changed |= ui
+                            // Ni plafond à 359 ni 359,x : on laisse dépasser puis on ramène dans
+                            // [0, 360) (359 puis un cran de plus = 0).
+                            let turned = ui
                                 .add(
                                     egui::DragValue::new(&mut item.rotation)
-                                        .range(0.0..=359.0)
+                                        .range(-720.0..=720.0)
                                         .speed(1.0)
                                         .fixed_decimals(0)
                                         .suffix(" °"),
                                 )
                                 .on_hover_text("Orientation (0 ° = vers le haut du plan)")
                                 .changed();
+                            if turned || !(0.0..360.0).contains(&item.rotation) {
+                                item.rotation = protocol::home::normalize_rotation(item.rotation);
+                            }
+                            changed |= turned;
                             changed |= ui
                                 .add(
                                     egui::Slider::new(fov, MIN_FOV..=MAX_FOV)
@@ -779,11 +805,12 @@ impl PlanView {
                                 .changed();
                             changed |= ui
                                 .add(
-                                    egui::Slider::new(range, MIN_CAMERA_RANGE..=20.0)
+                                    egui::Slider::new(range, MIN_CAMERA_RANGE..=MAX_CAMERA_RANGE)
+                                        .logarithmic(true)
                                         .text("Portée")
                                         .suffix(" m")
                                         .step_by(0.25)
-                                        .clamping(egui::SliderClamping::Never),
+                                        .clamping(egui::SliderClamping::Always),
                                 )
                                 .changed();
                             ui.horizontal(|ui| {
@@ -1692,6 +1719,41 @@ mod tests {
             Some("21,00 °C · 1 ouvert")
         );
         assert_eq!(room_summary(&room, &[], &devices), None);
+    }
+
+    #[test]
+    fn a_plan_with_a_bad_camera_value_is_never_sent() {
+        let mut plan = HomePlan::default();
+        assert_eq!(plan_problem(&plan), None);
+        let with = |fov: f32, range: f32, rotation: f32| {
+            let mut plan = HomePlan::default();
+            plan.floors[0].items.push(Item {
+                id: 1,
+                kind: ItemKind::Camera {
+                    camera_id: 5,
+                    fov,
+                    range,
+                    shape: FovShape::Cone,
+                },
+                x: 0.0,
+                y: 0.0,
+                rotation,
+            });
+            plan
+        };
+        assert_eq!(plan_problem(&with(90.0, 3.0, 0.0)), None);
+        assert_eq!(plan_problem(&with(180.0, 50.0, 359.9)), None);
+        assert!(plan_problem(&with(5.0, 3.0, 0.0))
+            .unwrap()
+            .contains("ouverture"));
+        assert!(plan_problem(&with(90.0, 51.0, 0.0))
+            .unwrap()
+            .contains("portée"));
+        assert!(plan_problem(&with(90.0, 0.1, 0.0)).is_some());
+        assert!(plan_problem(&with(f32::NAN, 3.0, 0.0)).is_some());
+        assert!(plan_problem(&with(90.0, 3.0, 360.0)).is_some());
+        plan.floors.clear();
+        assert!(plan_problem(&plan).is_some());
     }
 
     fn camera_item(id: u64, camera_id: u64, x: f32, rotation: f32) -> Item {

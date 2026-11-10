@@ -150,7 +150,7 @@ pub fn range_handle(center: Pos2, rotation: f32, range_px: f32) -> Option<Pos2> 
 pub fn rotation_from_pointer(dx: f32, dy: f32, free: bool) -> Option<f32> {
     let r = protocol::home::rotation_of(dx, dy)?;
     Some(if free {
-        r
+        protocol::home::normalize_rotation(r)
     } else {
         protocol::home::normalize_rotation((r / ROTATION_STEP).round() * ROTATION_STEP)
     })
