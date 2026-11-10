@@ -3,9 +3,11 @@
 //! demande pas.
 //!
 //! Tout ce qui ne dessine pas (clics du menu, icône, infobulle, ligne d'état, phases du serveur,
-//! ouverture à la connexion) se fait dans `App::logic`, pas dans `App::ui` : tant que la fenêtre
-//! est cachée, eframe 0.37 ne lance aucune passe egui (donc pas de `ui()`) mais continue d'appeler
-//! `logic()`, réveillée par les clics du menu (`request_repaint`) et par un minuteur lent.
+//! ouverture à la connexion, croix de la fenêtre) se fait dans `App::logic`, pas dans `App::ui` :
+//! tant que la fenêtre est cachée après son premier affichage, eframe 0.37 n'appelle que `logic()`
+//! (passe « logique seule », sans egui), réveillée par les clics du menu (`request_repaint`) et
+//! par un minuteur lent. Une fenêtre jamais montrée n'en profite pas : elle reçoit une passe
+//! complète (`ui()` compris, qui ne dessine rien) à chaque réveil.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -128,6 +130,58 @@ fn phase_effects(now: &Phase, setup_session: bool) -> PhaseEffects {
     e
 }
 
+/// Comment passer du menu affiché au menu voulu.
+#[derive(Debug, PartialEq, Eq)]
+enum MenuPlan {
+    /// Identique : rien à faire.
+    Keep,
+    /// Même structure (mêmes lignes, mêmes actions, mêmes cases) : on change textes, états et
+    /// coches des éléments existants, sans toucher au menu natif (donc sans le refermer).
+    InPlace,
+    /// Structure différente (ligne ajoutée ou retirée) : il faut un nouveau menu natif.
+    Rebuild,
+}
+
+/// Deux entrées ont la même forme si un élément natif existant peut passer de l'une à l'autre
+/// par `set_text` / `set_enabled` / `set_checked`.
+fn same_shape(a: &Entry, b: &Entry) -> bool {
+    match (a, b) {
+        (Entry::Info(_), Entry::Info(_)) | (Entry::Separator, Entry::Separator) => true,
+        (
+            Entry::Item {
+                action: x,
+                checked: cx,
+                ..
+            },
+            Entry::Item {
+                action: y,
+                checked: cy,
+                ..
+            },
+        ) => x == y && cx.is_some() == cy.is_some(),
+        _ => false,
+    }
+}
+
+fn plan_menu(shown: &[Entry], wanted: &[Entry]) -> MenuPlan {
+    if shown == wanted {
+        MenuPlan::Keep
+    } else if shown.len() == wanted.len() && shown.iter().zip(wanted).all(|(a, b)| same_shape(a, b))
+    {
+        MenuPlan::InPlace
+    } else {
+        MenuPlan::Rebuild
+    }
+}
+
+/// Un élément du menu natif, gardé pour être mis à jour sur place.
+enum Native {
+    Info(MenuItem),
+    Separator,
+    Item(MenuItem),
+    Check(CheckMenuItem),
+}
+
 fn tray_image(kind: IconKind) -> Icon {
     Icon::from_rgba(icon::rgba(kind), icon::SIZE, icon::SIZE).expect("icône valide")
 }
@@ -189,6 +243,8 @@ struct App {
     tray: TrayIcon,
     actions: Receiver<Action>,
     shown_menu: Vec<Entry>,
+    /// Les éléments du menu natif en place, dans l'ordre de `shown_menu`.
+    native_menu: Vec<Native>,
     shown_icon: Option<IconKind>,
     shown_tooltip: String,
     visible: bool,
@@ -221,6 +277,7 @@ impl App {
             tray,
             actions,
             shown_menu: Vec::new(),
+            native_menu: Vec::new(),
             shown_icon: None,
             shown_tooltip: String::new(),
             visible: false,
@@ -324,15 +381,24 @@ impl App {
     }
 
     fn hide_window(&mut self, ctx: &egui::Context) {
+        // Quel que soit le moyen de cacher l'écran de fin (« Terminer » ou la croix), la
+        // configuration de cette session est finie : un `Running` ultérieur (après un blocage
+        // par exemple) ne doit pas le rouvrir sur une machine sans personne.
+        if self.show_done {
+            self.show_done = false;
+            self.setup_session = false;
+        }
         self.visible = false;
         self.hide_sent = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
-    /// Demande confirmation puis arrête le serveur. L'alerte tourne dans un fil à part : rfd la
-    /// fait afficher par le fil principal, mais depuis la boucle d'événements elle-même et non
-    /// depuis l'intérieur d'un rappel d'eframe. Pendant qu'elle est ouverte, la boucle continue
-    /// donc de tourner normalement (menu, icône) sans ré-entrer dans `logic()`.
+    /// Demande confirmation puis arrête le serveur. rfd fait afficher l'alerte par le fil
+    /// principal (`CFUserNotificationDisplayAlert`, synchrone) : tant qu'elle est ouverte, ce fil
+    /// est bloqué, donc ni menu, ni icône, ni `logic()` ne tournent ; les clics arrivés entre-temps
+    /// sont traités à sa fermeture. Le fil à part ne fait qu'attendre la réponse pendant que le fil
+    /// principal affiche l'alerte ; le garde `quit_dialog_open` (pas de seconde alerte) est donc
+    /// sans effet réel ici, mais inoffensif : on le laisse.
     fn ask_quit(&self) {
         if self.quit_dialog_open.swap(true, Ordering::SeqCst) {
             return;
@@ -371,6 +437,88 @@ impl App {
         }
     }
 
+    /// Nouveau menu natif complet (la structure a changé) ; garde les éléments pour les mises à
+    /// jour sur place. Les identifiants des actions restent ceux de `Action::id`.
+    fn rebuild_menu(&mut self, model: &[Entry]) {
+        let menu = Menu::new();
+        let mut native = Vec::with_capacity(model.len());
+        for entry in model {
+            match entry {
+                Entry::Info(text) => {
+                    let item = MenuItem::new(text, false, None);
+                    let _ = menu.append(&item);
+                    native.push(Native::Info(item));
+                }
+                Entry::Separator => {
+                    let _ = menu.append(&PredefinedMenuItem::separator());
+                    native.push(Native::Separator);
+                }
+                Entry::Item {
+                    action,
+                    label,
+                    enabled,
+                    checked: None,
+                } => {
+                    let item = MenuItem::with_id(action.id(), label, *enabled, None);
+                    let _ = menu.append(&item);
+                    native.push(Native::Item(item));
+                }
+                Entry::Item {
+                    action,
+                    label,
+                    enabled,
+                    checked: Some(c),
+                } => {
+                    let item = CheckMenuItem::with_id(action.id(), label, *enabled, *c, None);
+                    let _ = menu.append(&item);
+                    native.push(Native::Check(item));
+                }
+            }
+        }
+        self.tray.set_menu(Some(Box::new(menu)));
+        self.native_menu = native;
+    }
+
+    /// Même structure : on ne touche qu'à ce qui a changé, sur les éléments déjà en place (le
+    /// menu natif, éventuellement ouvert, n'est pas remplacé ; les identifiants ne bougent pas).
+    fn update_menu_in_place(&self, model: &[Entry]) {
+        for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu) {
+            if old == new {
+                continue;
+            }
+            match (new, native) {
+                (Entry::Info(text), Native::Info(item)) => item.set_text(text),
+                (
+                    Entry::Item {
+                        label,
+                        enabled,
+                        checked,
+                        ..
+                    },
+                    Native::Item(item),
+                ) => {
+                    item.set_text(label);
+                    item.set_enabled(*enabled);
+                    debug_assert!(checked.is_none());
+                }
+                (
+                    Entry::Item {
+                        label,
+                        enabled,
+                        checked,
+                        ..
+                    },
+                    Native::Check(item),
+                ) => {
+                    item.set_text(label);
+                    item.set_enabled(*enabled);
+                    item.set_checked(checked.unwrap_or(false));
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Met à jour l'icône, l'infobulle et le menu quand ils ont changé.
     fn sync_tray(&mut self, st: &State) {
         let kind = icon_kind(&st.phase);
@@ -392,43 +540,25 @@ impl App {
             desktop_doubt: st.desktop_doubt,
             login_available: self.login_available(),
         });
-        if model != self.shown_menu {
-            let native = Menu::new();
-            for entry in &model {
-                match entry {
-                    Entry::Info(text) => {
-                        let _ = native.append(&MenuItem::new(text, false, None));
-                    }
-                    Entry::Separator => {
-                        let _ = native.append(&PredefinedMenuItem::separator());
-                    }
-                    Entry::Item {
-                        action,
-                        label,
-                        enabled,
-                        checked: None,
-                    } => {
-                        let _ =
-                            native.append(&MenuItem::with_id(action.id(), label, *enabled, None));
-                    }
-                    Entry::Item {
-                        action,
-                        label,
-                        enabled,
-                        checked: Some(c),
-                    } => {
-                        let _ = native.append(&CheckMenuItem::with_id(
-                            action.id(),
-                            label,
-                            *enabled,
-                            *c,
-                            None,
-                        ));
-                    }
-                }
+        match plan_menu(&self.shown_menu, &model) {
+            MenuPlan::Keep => {}
+            MenuPlan::InPlace => {
+                self.update_menu_in_place(&model);
+                self.shown_menu = model;
             }
-            self.tray.set_menu(Some(Box::new(native)));
-            self.shown_menu = model;
+            MenuPlan::Rebuild => {
+                // `set_menu` détruit l'ancien menu natif, et muda y met fin au suivi en cours
+                // (`cancelTrackingWithoutAnimation`) : le menu ouvert disparaîtrait sous la souris.
+                // `logic()` tourne pendant ce suivi (toutes les 2 s) : on attend donc que la boucle
+                // soit revenue à son mode normal, c'est-à-dire que le menu soit refermé. La
+                // structure ne change que rarement (appareil qui disparaît ou revient).
+                if !system::run_loop_is_default_mode() {
+                    log::debug!("menu : changement de structure différé (menu ouvert)");
+                    return;
+                }
+                self.rebuild_menu(&model);
+                self.shown_menu = model;
+            }
         }
     }
 }
@@ -448,9 +578,21 @@ impl eframe::App for App {
     }
 
     /// Le travail qui ne dessine pas. eframe l'appelle avant chaque `ui()` et aussi, fenêtre
-    /// cachée, à chaque `request_repaint` / `request_repaint_after` (sans passe egui). C'est le
-    /// fil principal : icône, menu et fenêtre se manipulent ici.
+    /// cachée après son premier affichage, à chaque `request_repaint` / `request_repaint_after`
+    /// (passe logique seule, sans egui). C'est le fil principal : icône, menu et fenêtre se
+    /// manipulent ici.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // La croix cache la fenêtre : le serveur continue, seul « Quitter » l'arrête. Cela se
+        // traite ici et non dans `ui()` : dans une passe logique seule, l'évènement de fermeture
+        // est consommé, et un `CancelClose` manquant serait pris par eframe pour une fermeture
+        // définitive (`on_exit`, `Cmd::Quit`, sortie sans confirmation). Le même code sert les
+        // deux types de passe (`ctx.input` voit `viewports` dans les deux ; les commandes
+        // envoyées sont exécutées dans les deux). Cmd+Q, la déconnexion et l'extinction ne
+        // passent pas par là : ce sont des arrêts de l'application, qui finissent dans `on_exit`.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_window(ctx);
+        }
         let st = self.handle.snapshot();
         self.refresh_login();
         self.poll_picking();
@@ -485,11 +627,6 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if ui.input(|i| i.viewport().close_requested()) {
-            // La croix cache la fenêtre : le serveur continue, seul « Quitter » l'arrête.
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.hide_window(&ctx);
-        }
         if !self.visible {
             // eframe montre la fenêtre après sa première image, même créée cachée : on la recache,
             // une seule fois.
@@ -788,8 +925,6 @@ impl App {
         ui.label(SLEEP_NOTE);
         ui.add_space(10.0);
         if ui.button("Terminer").clicked() {
-            self.show_done = false;
-            self.setup_session = false;
             self.hide_window(ctx);
         }
     }
@@ -928,6 +1063,59 @@ mod tests {
         for p in [Phase::Starting, Phase::Stopping, Phase::Problem("x".into())] {
             assert_eq!(phase_effects(&p, true), PhaseEffects::default());
         }
+    }
+
+    fn running_menu(unreachable: &[&str], login: bool) -> Vec<Entry> {
+        let health = matter_home_server_app::status::Health {
+            total: 5,
+            online: 5 - unreachable.len(),
+            unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
+        };
+        menu::build(&MenuInput {
+            phase: &Phase::Running,
+            health: &health,
+            url: Some("https://mac.local:8443"),
+            fingerprint: Some("AB:CD"),
+            login_enabled: login,
+            desktop_doubt: false,
+            login_available: true,
+        })
+    }
+
+    #[test]
+    fn identical_menus_are_kept() {
+        let m = running_menu(&["Salon"], false);
+        assert_eq!(plan_menu(&m, &m.clone()), MenuPlan::Keep);
+    }
+
+    #[test]
+    fn text_and_check_changes_are_updated_in_place() {
+        // Même nombre d'appareils injoignables, un autre nom ; case cochée en plus.
+        let (a, b) = (
+            running_menu(&["Salon"], false),
+            running_menu(&["Cuisine"], true),
+        );
+        assert_ne!(a, b);
+        assert_eq!(plan_menu(&a, &b), MenuPlan::InPlace);
+    }
+
+    #[test]
+    fn a_line_added_or_removed_rebuilds() {
+        let (none, one, two) = (
+            running_menu(&[], false),
+            running_menu(&["Salon"], false),
+            running_menu(&["Salon", "Cuisine"], false),
+        );
+        assert_eq!(plan_menu(&none, &one), MenuPlan::Rebuild);
+        assert_eq!(plan_menu(&one, &two), MenuPlan::Rebuild);
+        assert_eq!(plan_menu(&[], &none), MenuPlan::Rebuild);
+    }
+
+    #[test]
+    fn a_swapped_action_or_kind_rebuilds() {
+        let a = vec![Entry::Info("a".into()), Entry::Separator];
+        let b = vec![Entry::Separator, Entry::Info("a".into())];
+        assert_eq!(plan_menu(&a, &b), MenuPlan::Rebuild);
     }
 
     #[test]

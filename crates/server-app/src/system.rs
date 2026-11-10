@@ -36,6 +36,32 @@ pub fn exe_path_of(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf)))
 }
 
+extern "C" {
+    fn CFRunLoopGetCurrent() -> *const std::ffi::c_void;
+    fn CFRunLoopCopyCurrentMode(rl: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CFEqual(a: *const std::ffi::c_void, b: *const std::ffi::c_void) -> u8;
+    fn CFRelease(cf: *const std::ffi::c_void);
+    static kCFRunLoopDefaultMode: *const std::ffi::c_void;
+}
+
+/// Vrai quand la boucle d'événements tourne dans son mode normal. Pendant qu'un menu de la barre
+/// de menus est ouvert (ou qu'un clic y est suivi), AppKit la fait tourner dans un autre mode
+/// (`NSEventTrackingRunLoopMode`) : c'est le seul signal fiable que muda et tray-icon laissent
+/// (aucun événement « menu ouvert / fermé »). Sert à ne pas remplacer le menu sous les doigts.
+pub fn run_loop_is_default_mode() -> bool {
+    // SAFETY : CoreFoundation est déjà lié (via AppKit) ; appelé sur le fil principal, la boucle
+    // courante est valide, le mode copié (« Copy » : +1) est relâché avant de sortir.
+    unsafe {
+        let mode = CFRunLoopCopyCurrentMode(CFRunLoopGetCurrent());
+        if mode.is_null() {
+            return true;
+        }
+        let is_default = CFEqual(mode, kCFRunLoopDefaultMode) != 0;
+        CFRelease(mode);
+        is_default
+    }
+}
+
 /// Version de l'application dont l'exécutable est `exe` et date de dernier changement de son
 /// `Info.plist` (la plus récente de mtime et ctime : un copier-glisser conserve mtime, jamais ctime).
 pub fn bundle_info_of(exe: &Path) -> BundleInfo {
