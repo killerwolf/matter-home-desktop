@@ -58,15 +58,23 @@ struct Server {
     addr: std::net::SocketAddr,
     fingerprint: String,
     log: PathBuf,
+    /// Port de la fausse caméra : un serveur relancé dans le même dossier la retrouve (ses
+    /// caméras sont gardées dans `cameras.json`, avec cette adresse).
+    camera_port: u16,
 }
 
 impl Server {
     fn start(dir: &Path, listen: &str) -> Server {
-        let log = dir.join(format!("serveur-{}.log", std::process::id()));
+        Server::start_with(dir, listen, 0, "1")
+    }
+
+    fn start_with(dir: &Path, listen: &str, camera_port: u16, run: &str) -> Server {
+        let log = dir.join(format!("serveur-{}-{run}.log", std::process::id()));
         let mut child = Command::new(demo_binary())
             .args(["--data-dir"])
             .arg(dir.join("data"))
             .args(["--listen", listen])
+            .args(["--camera-port", &camera_port.to_string()])
             .env("HOME", dir.join("home"))
             .env("MH_DEMO_PASSWORD", PASSWORD)
             .stdout(Stdio::piped())
@@ -82,13 +90,15 @@ impl Server {
                 }
             }
         });
-        let (mut addr, mut fingerprint) = (None, None);
+        let (mut addr, mut fingerprint, mut camera_port) = (None, None, None);
         let deadline = Instant::now() + Duration::from_secs(60);
-        while addr.is_none() || fingerprint.is_none() {
+        while addr.is_none() || fingerprint.is_none() || camera_port.is_none() {
             let left = deadline.saturating_duration_since(Instant::now());
             let line = rx.recv_timeout(left).expect("le serveur n'a pas démarré");
             if let Some(url) = line.strip_prefix("Écoute : https://") {
                 addr = Some(url.trim().parse().unwrap());
+            } else if let Some(c) = line.strip_prefix("Fausse caméra : 127.0.0.1:") {
+                camera_port = c.trim().parse().ok();
             } else if let Some(f) = line.strip_prefix("Empreinte du certificat (SHA-256) : ") {
                 fingerprint = Some(f.trim().to_string());
             }
@@ -98,6 +108,7 @@ impl Server {
             addr: addr.unwrap(),
             fingerprint: fingerprint.unwrap(),
             log,
+            camera_port: camera_port.unwrap(),
         }
     }
 
@@ -211,10 +222,7 @@ fn the_player_decodes_the_live_video_and_the_server_closes_the_camera_after_it()
     }
     let image = handle.take_image().expect("une image décodée");
     assert_eq!((image.width, image.height), (640, 360));
-    assert!(
-        image.rgba.as_chunks::<4>().0.iter().any(|p| p[0] > 200),
-        "image noire ?"
-    );
+    assert!(image.pixels.iter().any(|p| p.r() > 200), "image noire ?");
     let info = handle.info().expect("taille annoncée");
     assert_eq!(
         (info.width, info.height, info.pixel_aspect),
@@ -272,26 +280,31 @@ fn the_stream_resumes_by_itself_after_the_server_comes_back() {
     let dir = temp_dir("resume");
     let mut server = Server::start(&dir, "127.0.0.1:0");
     let port = server.addr.port();
+    let camera_port = server.camera_port;
     let client = Client::connect(&server, &dir);
     let id = client.camera("Entrée");
 
     let handle = open(id, StreamKind::Sub);
-    wait_state(&handle, "la vidéo", |s| *s == StreamState::Live);
+    wait_state(&handle, "la vidéo avant l'arrêt du serveur", |s| {
+        *s == StreamState::Live
+    });
     let before = handle.frames();
 
     // Le serveur redémarre sur le même port, avec le même certificat et le même compte.
     server.stop();
-    wait_state(&handle, "interruption", |s| {
+    wait_state(&handle, "l'interruption après l'arrêt du serveur", |s| {
         matches!(s, StreamState::Interrupted { .. } | StreamState::Connecting)
     });
-    let server = Server::start(&dir, &format!("127.0.0.1:{port}"));
+    let server = Server::start_with(&dir, &format!("127.0.0.1:{port}"), camera_port, "2");
     assert_eq!(server.addr.port(), port);
     // La session du client (jeton) n'existe plus côté serveur redémarré ? Elle est conservée sur
     // disque : la liaison reprend, ou le serveur répond « session terminée » (état final) si le
     // jeton n'a pas survécu — dans les deux cas, jamais de boucle ni de panique.
-    let state = wait_state(&handle, "reprise", |s| {
-        *s == StreamState::Live || s.is_final()
-    });
+    let state = wait_state(
+        &handle,
+        "la reprise après le redémarrage du serveur",
+        |s| *s == StreamState::Live || s.is_final(),
+    );
     if state == StreamState::Live {
         let deadline = Instant::now() + T;
         while handle.frames() < before + 10 {

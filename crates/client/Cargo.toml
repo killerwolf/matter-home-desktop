@@ -40,7 +40,7 @@ rfd = "0.17.2"
 # embarquer dans le DMG ni à installer. Liaisons générées (objc2), mêmes versions que le reste
 # de l'arbre ; hors macOS, `video` compile un décodeur qui refuse tout (voir `video/mod.rs`).
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = "0.3"
-objc2-core-media = "0.3"
-objc2-core-video = "0.3"
-objc2-video-toolbox = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "objc2", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString", "CFArray"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMBase", "objc2-core-video"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "bitflags", "CVPixelBufferPool", "CVReturn", "CVPixelFormatDescription"] }
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2", "VTDecompressionSession", "VTErrors", "VTSession", "objc2-core-media", "objc2-core-video", "block2", "bitflags"] }
