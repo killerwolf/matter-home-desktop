@@ -610,3 +610,18 @@ async fn an_oversized_group_of_pictures_is_not_kept_for_late_viewers() {
         }
     ));
 }
+
+/// Une nouvelle connexion à la caméra n'hérite pas de la suite gardée de l'ancienne : un
+/// spectateur qui arrive attend la première image clé de la nouvelle (la configuration reste).
+#[tokio::test]
+async fn a_new_camera_connection_forgets_the_old_gop_but_not_the_config() {
+    let session = bare_session(4, 1 << 20);
+    session.publish_config(&config_packet());
+    session.push_frame(true, 0, &[0, 0, 0, 2, 0x65, 1]);
+    session.push_frame(false, 1, &[0, 0, 0, 2, 0x41, 2]);
+    assert_eq!(session.cache().gop.len(), 2);
+    session.clear_gop();
+    assert!(session.cache().gop.is_empty() && session.cache().config.is_some());
+    let late = session.join();
+    assert_eq!(late.backlog.len(), 1, "seulement la configuration");
+}

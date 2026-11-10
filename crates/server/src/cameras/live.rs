@@ -100,7 +100,7 @@ impl Default for LiveConfig {
             retry_max: Duration::from_secs(15),
             target_check: Duration::from_secs(2),
             backlog_frames: 90,
-            gop_cache_bytes: 8 * 1024 * 1024,
+            gop_cache_bytes: 2 * 1024 * 1024,
             write_stall: Duration::from_secs(30),
         }
     }
@@ -335,6 +335,15 @@ impl Session {
             },
             bytes,
         });
+    }
+
+    /// Oublie la suite gardée (pas la configuration) : une nouvelle connexion à la caméra repart de
+    /// sa première image clé, un spectateur qui arrive n'en reçoit pas de l'ancienne.
+    fn clear_gop(&self) {
+        let mut cache = self.cache();
+        cache.gop.clear();
+        cache.gop_bytes = 0;
+        cache.gop_overflow = false;
     }
 
     fn clear_cache(&self) {
@@ -715,6 +724,7 @@ async fn relay(session: &Arc<Session>, hub: &Arc<Hub>, target: &Target) -> Relay
     use retina::codec::h26x::Framing;
     use retina::codec::{CodecItem, FrameFormat, ParameterSetInsertion, ParametersRef};
 
+    session.clear_gop();
     let timeout = session.config.connect_timeout;
     let mut options = SessionOptions::default()
         .user_agent(format!("MatterHomeServer/{}", env!("CARGO_PKG_VERSION")));
