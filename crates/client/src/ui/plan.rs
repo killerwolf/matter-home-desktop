@@ -2,6 +2,7 @@
 //! avec l'état des appareils en direct. Deux modes : consultation et modification.
 
 mod camera;
+mod opening;
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -14,8 +15,8 @@ use super::Device;
 use matter_home_client::model::Model;
 use protocol::format::{format_position, format_power, format_temperature};
 use protocol::home::{
-    self, snap, FovShape, HomePlan, Item, ItemKind, Room, Symbol, ITEM_SNAP, MAX_CAMERA_RANGE,
-    MAX_FOV, MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
+    self, snap, FovShape, HomePlan, Item, ItemKind, OpeningKind, Room, Symbol, ITEM_SNAP,
+    MAX_CAMERA_RANGE, MAX_FOV, MIN_CAMERA_RANGE, MIN_FOV, MIN_ROOM_SIZE, ROOM_SNAP,
 };
 use protocol::wire::{CameraView, StreamKind, WireStatus};
 
@@ -113,6 +114,8 @@ struct Look {
     name: String,
     value: Option<String>,
     battery_low: bool,
+    /// Capteur d'ouverture : porte ou fenêtre, ouverte ou fermée (dessinée à part du pictogramme).
+    opening: Option<opening::OpeningIcon>,
 }
 
 pub fn glyph(symbol: Option<Symbol>) -> &'static str {
@@ -181,6 +184,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
             name: "Caméra".into(),
             value: None,
             battery_low: false,
+            opening: None,
         },
         ItemKind::Decor { symbol, label } => Look {
             symbol: Some(*symbol),
@@ -192,8 +196,13 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
             },
             value: None,
             battery_low: false,
+            opening: None,
         },
-        ItemKind::Device { node_id, symbol } => {
+        ItemKind::Device {
+            node_id,
+            symbol,
+            opening,
+        } => {
             let Some(d) = devices.get(node_id) else {
                 return Look {
                     symbol: *symbol,
@@ -201,6 +210,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                     name: format!("Nœud {node_id:016X}"),
                     value: Some("inconnu".into()),
                     battery_low: false,
+                    opening: None,
                 };
             };
             // L'icône choisie pour l'appareil prime sur un ancien réglage propre au plan.
@@ -260,6 +270,15 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 name: short(&d.info.name),
                 value,
                 battery_low: d.battery_low(),
+                opening: d.info.caps.contact.then(|| {
+                    // Porte par défaut ; fenêtre si le plan ou l'appareil le dit.
+                    let kind = opening.unwrap_or(if symbol == Some(Symbol::Window) {
+                        OpeningKind::Window
+                    } else {
+                        OpeningKind::Door
+                    });
+                    opening::opening_icon(kind, d.open())
+                }),
             }
         }
     }
@@ -283,6 +302,7 @@ fn camera_look(item: &Item, cameras: &[CameraView]) -> Look {
         ))
         .then(|| state.label().to_lowercase()),
         battery_low: false,
+        opening: None,
     }
 }
 
@@ -819,12 +839,40 @@ impl PlanView {
                                 }
                             });
                         }
-                        ItemKind::Device { node_id, symbol } => match devices.get(node_id) {
+                        ItemKind::Device {
+                            node_id,
+                            symbol,
+                            opening,
+                        } => match devices.get(node_id) {
                             Some(d) => {
                                 if self.device_edit.as_ref().map(|e| e.node_id) != Some(*node_id) {
                                     self.device_edit = Some(DeviceEdit::from_info(&d.info));
                                 }
                                 ui.label(format!("{} {}", glyph(icon_of(d)), d.info.name));
+                                if d.info.caps.contact {
+                                    // Matter ne distingue pas une porte d'une fenêtre.
+                                    let current = opening.unwrap_or(
+                                        if d.info.icon.or(*symbol) == Some(Symbol::Window) {
+                                            OpeningKind::Window
+                                        } else {
+                                            OpeningKind::Door
+                                        },
+                                    );
+                                    egui::ComboBox::from_label("Porte / Fenêtre")
+                                        .selected_text(current.label())
+                                        .show_ui(ui, |ui| {
+                                            for k in OpeningKind::ALL {
+                                                if ui
+                                                    .selectable_label(current == k, k.label())
+                                                    .clicked()
+                                                    && current != k
+                                                {
+                                                    *opening = Some(k);
+                                                    changed = true;
+                                                }
+                                            }
+                                        });
+                                }
                                 let edit = self.device_edit.as_mut().expect("brouillon");
                                 match editor(ui, edit, &d.info.device_name) {
                                     Some(EditResult::Save) => {
@@ -1064,6 +1112,7 @@ impl PlanView {
                     Payload::Device(node_id) => ItemKind::Device {
                         node_id,
                         symbol: None,
+                        opening: None,
                     },
                     Payload::Decor(symbol) => ItemKind::Decor {
                         symbol,
@@ -1422,15 +1471,21 @@ impl PlanView {
                 let state = camera::CameraState::of(cameras.iter().find(|c| c.id == *camera_id));
                 camera::paint_icon(&painter, c, ITEM_RADIUS, item.rotation, state, ring);
             } else {
-                painter.circle_filled(c, ITEM_RADIUS, lk.fill);
-                painter.circle_stroke(c, ITEM_RADIUS, ring);
-                painter.text(
-                    c,
-                    Align2::CENTER_CENTER,
-                    glyph(lk.symbol),
-                    FontId::proportional(15.0),
-                    Color32::WHITE,
-                );
+                if let Some(icon) = lk.opening {
+                    painter.circle_filled(c, ITEM_RADIUS, icon.disc());
+                    painter.circle_stroke(c, ITEM_RADIUS, ring);
+                    opening::paint(&painter, c, ITEM_RADIUS, icon);
+                } else {
+                    painter.circle_filled(c, ITEM_RADIUS, lk.fill);
+                    painter.circle_stroke(c, ITEM_RADIUS, ring);
+                    painter.text(
+                        c,
+                        Align2::CENTER_CENTER,
+                        glyph(lk.symbol),
+                        FontId::proportional(15.0),
+                        Color32::WHITE,
+                    );
+                }
             }
             if lk.battery_low {
                 painter.circle_filled(
@@ -1575,6 +1630,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 1,
                 symbol: None,
+                opening: None,
             },
             x: 0.0,
             y: 0.0,
@@ -1596,6 +1652,68 @@ mod tests {
     }
 
     #[test]
+    fn a_contact_sensor_is_a_door_or_a_window_open_or_closed() {
+        use opening::OpeningIcon::*;
+        let mut devices = BTreeMap::new();
+        let mut sensor = device(Capabilities {
+            contact: true,
+            ..Default::default()
+        });
+        sensor.status = WireStatus::Online;
+        devices.insert(1, sensor);
+        let item = |opening, symbol| Item {
+            id: 5,
+            kind: ItemKind::Device {
+                node_id: 1,
+                symbol,
+                opening,
+            },
+            x: 0.0,
+            y: 0.0,
+            rotation: 0.0,
+        };
+        let icon = |devices: &BTreeMap<u64, Device>, opening, symbol| {
+            look(&item(opening, symbol), devices).opening
+        };
+        // Pas encore de mesure : neutre. Porte par défaut.
+        assert_eq!(icon(&devices, None, None), Some(DoorUnknown));
+        devices
+            .get_mut(&1)
+            .unwrap()
+            .apply_reading(Metric::Open, 0.0, 1.0);
+        assert_eq!(icon(&devices, None, None), Some(DoorClosed));
+        assert_eq!(
+            icon(&devices, Some(OpeningKind::Window), None),
+            Some(WindowClosed)
+        );
+        // Un ancien réglage « fenêtre » du plan reste une fenêtre.
+        assert_eq!(
+            icon(&devices, None, Some(Symbol::Window)),
+            Some(WindowClosed)
+        );
+        devices
+            .get_mut(&1)
+            .unwrap()
+            .apply_reading(Metric::Open, 1.0, 2.0);
+        assert_eq!(icon(&devices, None, None), Some(DoorOpen));
+        assert_eq!(
+            icon(&devices, Some(OpeningKind::Window), None),
+            Some(WindowOpen)
+        );
+        // Un appareil qui n'est pas un capteur d'ouverture garde son pictogramme.
+        devices.insert(2, device(Capabilities::default()));
+        let other = Item {
+            kind: ItemKind::Device {
+                node_id: 2,
+                symbol: None,
+                opening: Some(OpeningKind::Window),
+            },
+            ..item(None, None)
+        };
+        assert_eq!(look(&other, &devices).opening, None);
+    }
+
+    #[test]
     fn device_look_follows_live_state() {
         let mut devices = BTreeMap::new();
         let mut door = device(Capabilities {
@@ -1612,6 +1730,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 1,
                 symbol: None,
+                opening: None,
             },
             x: 0.0,
             y: 0.0,
@@ -1644,6 +1763,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 1,
                 symbol: Some(Symbol::Window),
+                opening: None,
             },
             x: 0.0,
             y: 0.0,
@@ -1657,6 +1777,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 99,
                 symbol: Some(Symbol::Window),
+                opening: None,
             },
             x: 0.0,
             y: 0.0,
@@ -1703,6 +1824,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id,
                 symbol: None,
+                opening: None,
             },
             x,
             y: 1.0,

@@ -575,7 +575,11 @@ pub fn demo_plan() -> crate::home::HomePlan {
     };
     let device = |id, node_id, symbol, x, y| Item {
         id,
-        kind: ItemKind::Device { node_id, symbol },
+        kind: ItemKind::Device {
+            node_id,
+            symbol,
+            opening: None,
+        },
         x,
         y,
         rotation: 0.0,

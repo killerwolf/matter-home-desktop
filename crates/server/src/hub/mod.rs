@@ -1219,6 +1219,7 @@ pub(crate) mod tests {
             kind: protocol::home::ItemKind::Device {
                 node_id: 7,
                 symbol: None,
+                opening: None,
             },
             x: 1.0,
             y: 1.0,

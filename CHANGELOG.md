@@ -31,6 +31,12 @@ Les téléchargements de chaque version sont sur la
   L'export puis l'import conservent les caméras. Détails dans `docs/protocole.md`.
 - Mode démo : trois caméras fictives (une injoignable, une sans flux réduit) pour essayer la
   fenêtre et les clients sans caméra ni trafic réseau.
+- **Portes et fenêtres sur le plan** : un capteur d'ouverture s'affiche comme une porte ou une
+  fenêtre, **ouverte ou fermée** (porte fermée, porte entrouverte avec son arc, fenêtre à
+  croisillon, fenêtre aux battants ouverts), dessinée sur le plan. Seul l'état ouvert ressort (disque
+  orange) ; sans mesure, une icône neutre. Matter ne distingue pas une porte d'une fenêtre : le
+  réglage **« Porte / Fenêtre »** est dans l'inspecteur du plan (porte par défaut ; une fenêtre déjà
+  choisie par son pictogramme le reste). Les plans existants s'ouvrent tels quels.
 - **Caméras, 2/5 : le direct dans le client** (ticket n° 5). Le serveur relaie le H.264 de la
   caméra **sans le transcoder**. Une seule connexion à la caméra sert tous les spectateurs **d'un
   même flux** (la session est partagée par caméra et par type de flux, réduit ou principal) ; elle

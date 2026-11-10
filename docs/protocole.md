@@ -257,6 +257,14 @@ Bearer, qui compte parmi les 32 emplacements WebSocket. La version du protocole 
   suivante. Le délai d'écriture de 10 s ne s'applique pas au flux : il a son propre seuil de 30 s
   d'écriture bloquée.
 
+### Porte ou fenêtre sur le plan
+
+Un objet `Device` du plan peut porter `"opening": "Door" | "Window"` : Matter ne distingue pas une
+porte d'une fenêtre, c'est l'utilisateur qui le dit (inspecteur du plan, « Porte / Fenêtre »). Le
+champ est facultatif (`#[serde(default)]`, absent des plans anciens ; il n'est pas écrit quand il
+vaut `null`). Absent : porte, ou fenêtre si le pictogramme choisi pour l'appareil en est une. Un
+client plus ancien ignore le champ. La version du protocole reste **2**.
+
 ### Une caméra sur le plan
 
 `{"type":"Camera","camera_id":"<texte>","fov":90.0,"range":3.0,"shape":"Cone"|"Rectangle"}`.

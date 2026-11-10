@@ -58,6 +58,10 @@ pub enum ItemKind {
     Device {
         node_id: u64,
         symbol: Option<Symbol>,
+        /// Porte ou fenêtre, pour un capteur d'ouverture (Matter ne les distingue pas). Absent :
+        /// porte, ou fenêtre si le pictogramme choisi en est une. Anciens plans : absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opening: Option<OpeningKind>,
     },
     /// Objet non connecté, pour la lisibilité du plan.
     Decor { symbol: Symbol, label: String },
@@ -77,6 +81,25 @@ pub enum ItemKind {
         #[serde(default)]
         shape: FovShape,
     },
+}
+
+/// Ce que ferme un capteur d'ouverture posé sur le plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpeningKind {
+    #[default]
+    Door,
+    Window,
+}
+
+impl OpeningKind {
+    pub const ALL: [OpeningKind; 2] = [OpeningKind::Door, OpeningKind::Window];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OpeningKind::Door => "Porte",
+            OpeningKind::Window => "Fenêtre",
+        }
+    }
 }
 
 /// Ouverture minimale et maximale du champ d'une caméra (degrés).
@@ -365,6 +388,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 42,
                 symbol: None,
+                opening: None,
             },
             x: 1.0,
             y: 1.0,
@@ -396,6 +420,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id,
                 symbol: None,
+                opening: None,
             },
             x,
             y: 1.0,
@@ -418,6 +443,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: 9,
                 symbol: Some(Symbol::Window),
+                opening: None,
             },
             x: 1.5,
             y: 0.0,
@@ -522,5 +548,36 @@ mod tests {
         assert!(close(normalize_rotation(725.0), 5.0));
         assert!(normalize_rotation(-1e-9) < 360.0);
         assert!((0.0..360.0).contains(&normalize_rotation(-1e-9)));
+    }
+
+    #[test]
+    fn the_opening_kind_is_optional_and_round_trips() {
+        // Un plan écrit avant ce réglage se charge : rien, donc le défaut (porte).
+        let old = r#"{"id":1,"kind":{"type":"Device","node_id":42,"symbol":null},"x":1.0,"y":2.0}"#;
+        let item: Item = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            item.kind,
+            ItemKind::Device {
+                node_id: 42,
+                symbol: None,
+                opening: None
+            }
+        );
+        assert_eq!(OpeningKind::default(), OpeningKind::Door);
+        // Sans réglage, rien n'est écrit (le plan reste lisible par un client plus ancien).
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(!json.contains("opening"), "{json}");
+        // Avec un réglage : aller-retour.
+        let window = Item {
+            kind: ItemKind::Device {
+                node_id: 42,
+                symbol: None,
+                opening: Some(OpeningKind::Window),
+            },
+            ..item
+        };
+        let json = serde_json::to_string(&window).unwrap();
+        assert!(json.contains(r#""opening":"Window""#), "{json}");
+        assert_eq!(serde_json::from_str::<Item>(&json).unwrap(), window);
     }
 }

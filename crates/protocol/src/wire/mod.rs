@@ -104,6 +104,7 @@ mod tests {
             kind: ItemKind::Device {
                 node_id: BRIDGED,
                 symbol: None,
+                opening: None,
             },
             x: 1.0,
             y: 2.0,
