@@ -3,12 +3,9 @@
 //! n'utilise que des primitives d'`egui` (lignes, rectangles, polylignes, arc), à la taille des
 //! autres pictogrammes du plan. Seul l'état anormal (ouvert) ressort : disque orange.
 
+use crate::ui::theme::Palette;
 use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use protocol::home::OpeningKind;
-
-const ORANGE: Color32 = Color32::from_rgb(230, 140, 30);
-const CLOSED_DISC: Color32 = Color32::from_gray(70);
-const UNKNOWN_DISC: Color32 = Color32::from_rgb(110, 110, 110);
 
 /// Ce que dessine le plan pour un capteur d'ouverture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +32,13 @@ pub fn opening_icon(kind: OpeningKind, open: Option<bool>) -> OpeningIcon {
 
 impl OpeningIcon {
     /// Couleur du disque : seul l'ouvert ressort.
-    pub fn disc(self) -> Color32 {
+    pub fn disc(self, p: &Palette) -> Color32 {
         match self {
-            OpeningIcon::DoorOpen | OpeningIcon::WindowOpen => ORANGE,
-            OpeningIcon::DoorClosed | OpeningIcon::WindowClosed => CLOSED_DISC,
-            OpeningIcon::DoorUnknown | OpeningIcon::WindowUnknown => UNKNOWN_DISC,
+            OpeningIcon::DoorOpen | OpeningIcon::WindowOpen => p.warn,
+            OpeningIcon::DoorClosed | OpeningIcon::WindowClosed => p.text_secondary,
+            OpeningIcon::DoorUnknown | OpeningIcon::WindowUnknown => {
+                p.text_secondary.gamma_multiply(0.6)
+            }
         }
     }
 
@@ -141,16 +140,25 @@ mod tests {
 
     #[test]
     fn only_an_open_opening_stands_out() {
-        assert_eq!(OpeningIcon::DoorOpen.disc(), OpeningIcon::WindowOpen.disc());
-        assert_ne!(OpeningIcon::DoorOpen.disc(), OpeningIcon::DoorClosed.disc());
-        assert_ne!(
-            OpeningIcon::DoorClosed.disc(),
-            OpeningIcon::DoorUnknown.disc()
-        );
-        assert_eq!(
-            OpeningIcon::WindowClosed.disc(),
-            OpeningIcon::DoorClosed.disc()
-        );
+        for dark in [false, true] {
+            let p = crate::ui::theme::tokens().palette(dark);
+            assert_eq!(
+                OpeningIcon::DoorOpen.disc(p),
+                OpeningIcon::WindowOpen.disc(p)
+            );
+            assert_ne!(
+                OpeningIcon::DoorOpen.disc(p),
+                OpeningIcon::DoorClosed.disc(p)
+            );
+            assert_ne!(
+                OpeningIcon::DoorClosed.disc(p),
+                OpeningIcon::DoorUnknown.disc(p)
+            );
+            assert_eq!(
+                OpeningIcon::WindowClosed.disc(p),
+                OpeningIcon::DoorClosed.disc(p)
+            );
+        }
     }
 
     #[test]

@@ -3,12 +3,15 @@
 
 use std::collections::HashSet;
 
-use eframe::egui::{self, Color32, RichText};
-use egui_plot::{Line, Plot, PlotPoints, Points, VLine};
+use eframe::egui::{self, RichText};
+use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
 
+use super::theme;
 use super::thermometer::local_time;
 use matter_home_client::series::TimeWindow;
-use matter_home_client::temperatures::{split_gaps, value_at};
+use matter_home_client::temperatures::{
+    axis_label, local_offset_s, period_range, round_marks, split_gaps, value_at,
+};
 use protocol::format::format_temperature;
 
 /// Une courbe prête à dessiner.
@@ -16,7 +19,8 @@ pub struct Curve {
     pub node_id: u64,
     /// Nom de l'appareil, avec sa pièce quand elle est connue.
     pub label: String,
-    pub color: Color32,
+    /// Rang dans la palette de courbes des tokens (la couleur suit le thème, clair ou sombre).
+    pub color_index: usize,
     /// Points réduits à la largeur du graphique, du plus ancien au plus récent.
     pub points: Vec<(f64, f64)>,
     /// Trou de données (s) au-delà duquel la ligne est coupée.
@@ -46,33 +50,7 @@ pub fn preferred_color_index(node_id: u64) -> usize {
     (node_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as usize % PALETTE_LEN
 }
 
-pub const PALETTE_LEN: usize = 12;
-
-/// Couleurs bien distinctes, lisibles sur fond clair comme sur fond sombre ; au-delà, des
-/// teintes réparties par l'angle d'or.
-pub fn color_for(index: usize) -> Color32 {
-    const PALETTE: [(u8, u8, u8); PALETTE_LEN] = [
-        (230, 90, 50),
-        (50, 130, 220),
-        (40, 165, 90),
-        (170, 90, 200),
-        (235, 170, 30),
-        (30, 175, 190),
-        (215, 70, 130),
-        (120, 130, 40),
-        (110, 110, 230),
-        (160, 120, 40),
-        (90, 160, 150),
-        (200, 100, 100),
-    ];
-    match PALETTE.get(index) {
-        Some(&(r, g, b)) => Color32::from_rgb(r, g, b),
-        None => {
-            let hue = (index as f32 * 0.618_034).fract();
-            egui::ecolor::Hsva::new(hue, 0.6, 0.85, 1.0).into()
-        }
-    }
-}
+pub const PALETTE_LEN: usize = theme::SERIES_LEN;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -83,23 +61,12 @@ pub fn show(
     now: f64,
 ) -> Outcome {
     let mut outcome = Outcome::default();
-    ui.horizontal(|ui| {
-        ui.heading("Températures");
-        ui.add_space(16.0);
-        for w in TimeWindow::OVERVIEW {
-            ui.selectable_value(window, w, w.overview_label());
-        }
-        if status.loading > 0 {
-            ui.spinner();
-        }
-    });
+    let p = theme::palette(ui);
+    let dark = ui.visuals().dark_mode;
+    let color_of = |c: &Curve| p.series(c.color_index, dark);
+
     for error in &status.errors {
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                Color32::from_rgb(210, 60, 50),
-                format!("Historique indisponible : {error}"),
-            );
-        });
+        ui.colored_label(p.error, format!("Historique indisponible : {error}"));
     }
     if !status.errors.is_empty() && ui.small_button("Réessayer").clicked() {
         outcome.retry = true;
@@ -110,39 +77,58 @@ pub fn show(
              (serveur plus ancien) : la période affichée peut être incomplète.",
         );
     }
+
+    // En-tête : une colonne par thermomètre (pièce, valeur actuelle en grand, minimum et
+    // maximum de la période), les périodes à droite. Un clic sur le nom masque la courbe.
+    let sizes = theme::tokens().font.size;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::tokens().space.xl;
+        for c in curves {
+            let off = hidden.contains(&c.node_id);
+            let color = if off { p.text_secondary } else { color_of(c) };
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut name = RichText::new(&c.label).color(color);
+                if off {
+                    name = name.strikethrough();
+                }
+                let clicked = ui
+                    .add(egui::Button::new(name).frame(false))
+                    .on_hover_text("Cliquer pour masquer ou afficher cette courbe.")
+                    .clicked();
+                if clicked && !hidden.remove(&c.node_id) {
+                    hidden.insert(c.node_id);
+                }
+                let value = c.current.map_or("—".to_string(), one_decimal);
+                ui.label(RichText::new(value).size(sizes.display).color(if off {
+                    p.text_secondary
+                } else {
+                    p.text
+                }));
+                if let Some((lo, hi)) = period_range(&c.points) {
+                    ui.label(
+                        RichText::new(format!("min {} · max {}", one_decimal(lo), one_decimal(hi)))
+                            .size(sizes.caption)
+                            .color(p.text_secondary),
+                    );
+                }
+            });
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            for w in TimeWindow::OVERVIEW.into_iter().rev() {
+                ui.selectable_value(window, w, w.overview_label());
+            }
+            if status.loading > 0 {
+                ui.spinner();
+            }
+        });
+    });
     if curves.is_empty() {
-        ui.add_space(12.0);
+        ui.add_space(theme::tokens().space.md);
         ui.label("Aucun thermomètre sur ce serveur.");
         return outcome;
     }
-
-    // Légende cliquable : un clic masque ou affiche la courbe.
-    ui.horizontal_wrapped(|ui| {
-        for c in curves {
-            let off = hidden.contains(&c.node_id);
-            let mut text = c.label.clone();
-            if let Some(v) = c.current {
-                text.push_str(&format!("  {}", format_temperature(v)));
-            }
-            let mut rich = RichText::new(text);
-            rich = if off {
-                rich.color(Color32::GRAY).strikethrough()
-            } else {
-                rich.color(c.color).strong()
-            };
-            let swatch = RichText::new(if off { "○" } else { "●" }).color(c.color);
-            ui.label(swatch);
-            let clicked = ui
-                .add(egui::Button::new(rich).frame(false))
-                .on_hover_text("Cliquer pour masquer ou afficher cette courbe.")
-                .clicked();
-            if clicked && !hidden.remove(&c.node_id) {
-                hidden.insert(c.node_id);
-            }
-            ui.add_space(10.0);
-        }
-    });
-    ui.add_space(4.0);
+    ui.add_space(theme::tokens().space.sm);
 
     let start = window.start(now);
     let visible: Vec<&Curve> = curves
@@ -154,11 +140,20 @@ pub fn show(
     }
 
     let mut hover_x: Option<f64> = None;
-    let long_span = window.length_s() > 36.0 * 3600.0;
+    let offset = local_offset_s(now);
     let response = Plot::new(("temperatures_plot", *window as u8))
         .height((ui.available_height() - 8.0).max(260.0))
-        .x_axis_formatter(move |mark, _| axis_time(mark.value, long_span))
-        .y_axis_formatter(|mark, _| format!("{:.1} °C", mark.value).replace('.', ","))
+        // Peu de repères : des heures rondes sur l'axe du temps, quelques lignes sur l'autre.
+        .x_grid_spacer(move |input| {
+            round_marks(input.bounds.0, input.bounds.1, offset)
+                .into_iter()
+                .map(|(value, step_size)| GridMark { value, step_size })
+                .collect()
+        })
+        .grid_spacing(egui::Rangef::new(60.0, 160.0))
+        .grid_color(p.line)
+        .x_axis_formatter(move |mark, _| axis_label(mark.value, mark.step_size, offset))
+        .y_axis_formatter(|mark, _| format!("{:.0} °C", mark.value))
         .show_x(false)
         .show_y(false)
         .label_formatter(|_| None)
@@ -174,21 +169,22 @@ pub fn show(
                 hover_x = plot_ui.pointer_coordinate().map(|p| p.x);
             }
             for c in &visible {
+                let color = color_of(c);
                 for segment in split_gaps(&c.points, c.gap_s) {
                     if segment.len() == 1 {
                         plot_ui.points(
                             Points::new(c.label.as_str(), vec![[segment[0].0, segment[0].1]])
-                                .color(c.color)
+                                .color(color)
                                 .radius(2.5),
                         );
                     } else {
                         let pts: PlotPoints = segment.iter().map(|&(t, v)| [t, v]).collect();
-                        plot_ui.line(Line::new(c.label.as_str(), pts).color(c.color).width(2.0));
+                        plot_ui.line(Line::new(c.label.as_str(), pts).color(color).width(2.0));
                     }
                 }
             }
             if let Some(x) = hover_x {
-                plot_ui.vline(VLine::new("", x).color(Color32::from_gray(140)).width(1.0));
+                plot_ui.vline(VLine::new("", x).color(p.text_secondary).width(1.0));
             }
         });
 
@@ -214,7 +210,7 @@ pub fn show(
                 .spacing([8.0, 2.0])
                 .show(ui, |ui| {
                     for (c, value) in rows {
-                        ui.colored_label(c.color, "●");
+                        ui.colored_label(color_of(c), "●");
                         ui.label(&c.label);
                         match value {
                             Some(v) => ui.strong(format_temperature(v)),
@@ -228,20 +224,9 @@ pub fn show(
     outcome
 }
 
-fn axis_time(t: f64, with_date: bool) -> String {
-    use chrono::Datelike;
-    const DAYS: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
-    chrono::DateTime::from_timestamp(t as i64, 0)
-        .map(|d| {
-            let d = d.with_timezone(&chrono::Local);
-            if with_date {
-                let day = DAYS[d.weekday().num_days_from_monday() as usize];
-                format!("{day} {}", d.format("%d/%m %H:%M"))
-            } else {
-                d.format("%H:%M").to_string()
-            }
-        })
-        .unwrap_or_default()
+/// « 19,8 °C ».
+fn one_decimal(v: f64) -> String {
+    format!("{v:.1} °C").replace('.', ",")
 }
 
 fn full_time(t: f64) -> String {

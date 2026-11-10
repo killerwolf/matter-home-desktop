@@ -112,17 +112,20 @@ pub fn is_stale(d: &Device) -> bool {
         || (matches!(d.status, WireStatus::Connecting) && d.last_seen.is_none())
 }
 
-/// La seule valeur de la ligne : température, sinon ouverture, volet, puissance, état. « — »
-/// quand l'appareil est injoignable.
-pub fn headline(d: &Device) -> Option<String> {
+/// Valeur d'une ligne quand l'appareil n'en a aucune à donner.
+pub const NO_VALUE: &str = "—";
+
+/// La seule valeur de la ligne : température, sinon ouverture, volet, puissance, état. Jamais
+/// vide : « — » quand l'appareil est injoignable ou n'a rien mesuré.
+pub fn headline(d: &Device) -> String {
     if is_stale(d) {
-        return Some("—".into());
+        return NO_VALUE.into();
     }
     if let Some(t) = d.temperature() {
-        return Some(format!("{:.1} °C", t.value).replace('.', ","));
+        return format!("{:.1} °C", t.value).replace('.', ",");
     }
     if let Some(open) = d.open() {
-        return Some(if open { "Ouverte" } else { "Fermée" }.into());
+        return if open { "Ouverte" } else { "Fermée" }.into();
     }
     if d.info.caps.cover {
         let mut text = match d.position() {
@@ -136,15 +139,20 @@ pub fn headline(d: &Device) -> Option<String> {
             _ => {}
         }
         let text = text.trim().to_string();
-        return (!text.is_empty()).then_some(text);
+        return if text.is_empty() {
+            NO_VALUE.into()
+        } else {
+            text
+        };
     }
     if d.on_off() == Some(false) {
-        return Some("Éteinte".into());
+        return "Éteinte".into();
     }
     if let Some(p) = d.power() {
-        return Some(format_power(p.value));
+        return format_power(p.value);
     }
-    d.on_off().map(|_| "Allumée".into())
+    d.on_off()
+        .map_or_else(|| NO_VALUE.into(), |_| "Allumée".into())
 }
 
 /// L'anomalie à signaler sur la ligne, s'il y en a une.
@@ -193,7 +201,7 @@ pub fn show(
                     let value = headline(d);
                     let row = DeviceRow {
                         name: &d.info.name,
-                        value: value.as_deref(),
+                        value: Some(&value),
                         badge: anomaly(d),
                         selected: selected == Some(*id),
                         dim: false,
@@ -379,10 +387,10 @@ mod tests {
     #[test]
     fn headline_is_a_single_value() {
         let mut d = online(device(1, "Sonde", temp_caps()));
-        assert_eq!(headline(&d), None);
+        assert_eq!(headline(&d), "—", "jamais de valeur vide");
         d.apply_reading(Metric::Temperature, 19.84, 1.0);
         d.apply_reading(Metric::Battery, 87.0, 1.0);
-        assert_eq!(headline(&d).as_deref(), Some("19,8 °C"));
+        assert_eq!(headline(&d), "19,8 °C");
         assert_eq!(anomaly(&d), None);
         d.apply_reading(Metric::BatteryLow, 1.0, 2.0);
         assert_eq!(anomaly(&d), Some((Severity::Warn, "pile faible")));
@@ -393,7 +401,7 @@ mod tests {
         };
         // Injoignable : le même mot que le plan, et plus de dernière mesure.
         assert_eq!(anomaly(&d), Some((Severity::Error, "injoignable")));
-        assert_eq!(headline(&d).as_deref(), Some("—"));
+        assert_eq!(headline(&d), "—");
     }
 
     #[test]
@@ -401,10 +409,10 @@ mod tests {
         let mut d = device(1, "Sonde", temp_caps());
         d.apply_reading(Metric::Temperature, 20.0, 1.0);
         assert_eq!(d.status, WireStatus::Connecting);
-        assert_eq!(headline(&d).as_deref(), Some("—"));
+        assert_eq!(headline(&d), "—");
         // Joint au moins une fois : la valeur revient.
         d.last_seen = Some(5.0);
-        assert_eq!(headline(&d).as_deref(), Some("20,0 °C"));
+        assert_eq!(headline(&d), "20,0 °C");
     }
 
     #[test]
@@ -415,9 +423,9 @@ mod tests {
         };
         let mut d = online(device(1, "Porte", door));
         d.apply_reading(Metric::Open, 0.0, 1.0);
-        assert_eq!(headline(&d).as_deref(), Some("Fermée"));
+        assert_eq!(headline(&d), "Fermée");
         d.apply_reading(Metric::Open, 1.0, 2.0);
-        assert_eq!(headline(&d).as_deref(), Some("Ouverte"));
+        assert_eq!(headline(&d), "Ouverte");
 
         let plug = Capabilities {
             on_off: true,
@@ -427,9 +435,9 @@ mod tests {
         let mut p = online(device(2, "Prise", plug));
         p.apply_reading(Metric::OnOff, 1.0, 1.0);
         p.apply_reading(Metric::Power, 86.0, 1.0);
-        assert_eq!(headline(&p).as_deref(), Some("86,0 W"));
+        assert_eq!(headline(&p), "86,0 W");
         p.apply_reading(Metric::OnOff, 0.0, 2.0);
-        assert_eq!(headline(&p).as_deref(), Some("Éteinte"));
+        assert_eq!(headline(&p), "Éteinte");
         let mut q = online(device(
             3,
             "Lampe",
@@ -439,18 +447,20 @@ mod tests {
             },
         ));
         q.apply_reading(Metric::OnOff, 1.0, 1.0);
-        assert_eq!(headline(&q).as_deref(), Some("Allumée"));
+        assert_eq!(headline(&q), "Allumée");
 
-        // Volet RTS : sans position, seule la flèche du mouvement.
+        // Volet RTS : sans position et immobile, « — » ; en mouvement, la flèche.
         let rts = Capabilities {
             cover: true,
             ..Default::default()
         };
         let mut s = online(device(4, "Volet", rts));
-        assert_eq!(headline(&s), None);
+        assert_eq!(headline(&s), "—");
+        s.cover_motion = Some(CoverMotion::Stopped);
+        assert_eq!(headline(&s), "—");
         s.cover_motion = Some(CoverMotion::Closing);
-        assert_eq!(headline(&s).as_deref(), Some("▼"));
+        assert_eq!(headline(&s), "▼");
         s.cover_motion = Some(CoverMotion::Opening);
-        assert_eq!(headline(&s).as_deref(), Some("▲"));
+        assert_eq!(headline(&s), "▲");
     }
 }

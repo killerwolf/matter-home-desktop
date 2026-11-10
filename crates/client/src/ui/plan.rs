@@ -4,13 +4,14 @@
 mod camera;
 mod opening;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use super::customize::{editor, DeviceEdit, EditResult};
 use super::sync::{Failure, Incoming, SyncState};
+use super::theme::{self, Palette};
 use super::Device;
 use matter_home_client::model::Model;
 use protocol::format::{format_position, format_power, format_temperature};
@@ -24,14 +25,6 @@ const ITEM_RADIUS: f32 = 15.0;
 const HANDLE_SIZE: f32 = 10.0;
 const MIN_SCALE: f32 = 10.0;
 const MAX_SCALE: f32 = 250.0;
-
-const GREEN: Color32 = Color32::from_rgb(40, 160, 70);
-const ORANGE: Color32 = Color32::from_rgb(230, 140, 30);
-const RED: Color32 = Color32::from_rgb(210, 60, 50);
-const GRAY: Color32 = Color32::from_rgb(110, 110, 110);
-const BLUE: Color32 = Color32::from_rgb(60, 140, 220);
-const TEAL: Color32 = Color32::from_rgb(40, 150, 160);
-const YELLOW: Color32 = Color32::from_rgb(220, 180, 40);
 
 /// Ce que l'on fait glisser depuis la palette vers le plan.
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +107,10 @@ struct Look {
     name: String,
     value: Option<String>,
     battery_low: bool,
+    /// Couleur de la valeur écrite sous le nom : discrète, sauf l'anormal (ouvert, injoignable).
+    value_color: Color32,
+    /// Caméras et volets : petit disque, pas de couleur vive.
+    discreet: bool,
     /// Capteur d'ouverture : porte ou fenêtre, ouverte ou fermée (dessinée à part du pictogramme).
     opening: Option<opening::OpeningIcon>,
 }
@@ -136,16 +133,6 @@ fn short(name: &str) -> String {
         format!("{}…", name.chars().take(21).collect::<String>())
     } else {
         name.to_string()
-    }
-}
-
-fn temperature_color(c: f64) -> Color32 {
-    if c < 18.0 {
-        BLUE
-    } else if c <= 24.0 {
-        GREEN
-    } else {
-        ORANGE
     }
 }
 
@@ -175,20 +162,22 @@ fn default_symbol(d: &Device) -> Option<Symbol> {
     }
 }
 
-fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
+fn look(item: &Item, devices: &BTreeMap<u64, Device>, p: &Palette) -> Look {
     match &item.kind {
         // Une caméra se dessine à part (`camera_look`, il lui faut la liste des caméras).
         ItemKind::Camera { .. } => Look {
             symbol: None,
-            fill: Color32::from_gray(70),
+            fill: p.text_secondary,
             name: "Caméra".into(),
             value: None,
             battery_low: false,
+            value_color: p.text_secondary,
+            discreet: true,
             opening: None,
         },
         ItemKind::Decor { symbol, label } => Look {
             symbol: Some(*symbol),
-            fill: Color32::from_gray(70),
+            fill: p.text_secondary,
             name: if label.is_empty() {
                 symbol.label().into()
             } else {
@@ -196,6 +185,8 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
             },
             value: None,
             battery_low: false,
+            value_color: p.text_secondary,
+            discreet: false,
             opening: None,
         },
         ItemKind::Device {
@@ -206,21 +197,27 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
             let Some(d) = devices.get(node_id) else {
                 return Look {
                     symbol: *symbol,
-                    fill: GRAY,
+                    fill: p.text_secondary,
                     name: format!("Nœud {node_id:016X}"),
                     value: Some("inconnu".into()),
                     battery_low: false,
+                    value_color: p.text_secondary,
+                    discreet: false,
                     opening: None,
                 };
             };
             // L'icône choisie pour l'appareil prime sur un ancien réglage propre au plan.
             let symbol = d.info.icon.or(*symbol).or_else(|| default_symbol(d));
-            let (mut fill, mut value) = (TEAL, None);
+            let (mut fill, mut value) = (p.accent, None);
+            let mut value_color = p.text_secondary;
             if let Some(open) = d.open() {
-                fill = if open { ORANGE } else { GREEN };
+                fill = if open { p.warn } else { p.text_secondary };
+                if open {
+                    value_color = p.warn;
+                }
                 value = Some(if open { "Ouvert" } else { "Fermé" }.to_string());
             } else if let Some(t) = d.temperature() {
-                fill = temperature_color(t.value);
+                fill = theme::temperature_color(p, Some(t.value));
                 let mut v = format_temperature(t.value);
                 if let Some(h) = d.humidity() {
                     v.push_str(&format!(" · {:.0} %", h.value));
@@ -228,13 +225,13 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 value = Some(v);
             } else if d.info.caps.cover {
                 let mut text = match d.position() {
-                    Some(p) => {
-                        fill = if p.value <= 0.0 {
-                            Color32::from_gray(80)
+                    Some(pos) => {
+                        fill = if pos.value <= 0.0 {
+                            p.text_secondary
                         } else {
-                            BLUE
+                            p.series_cover
                         };
-                        format_position(p.value)
+                        format_position(pos.value)
                     }
                     None => String::new(),
                 };
@@ -247,9 +244,9 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 value = (!text.is_empty()).then_some(text);
             } else if d.info.caps.power || d.info.caps.on_off {
                 fill = if d.on_off() == Some(true) {
-                    YELLOW
+                    p.accent
                 } else {
-                    Color32::from_gray(80)
+                    p.text_secondary
                 };
                 value = d.power().map(|p| format_power(p.value)).or_else(|| {
                     d.on_off()
@@ -261,10 +258,11 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 || (matches!(&d.status, WireStatus::Connecting) && d.last_seen.is_none());
             match &d.status {
                 WireStatus::Unreachable { .. } => {
-                    fill = GRAY;
-                    value = Some("injoignable".into());
+                    fill = p.text_secondary;
+                    value = Some(super::devices::UNREACHABLE.into());
+                    value_color = p.error;
                 }
-                WireStatus::Connecting if d.last_seen.is_none() => fill = GRAY,
+                WireStatus::Connecting if d.last_seen.is_none() => fill = p.text_secondary,
                 _ => {}
             }
             Look {
@@ -273,6 +271,8 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
                 name: short(&d.info.name),
                 value,
                 battery_low: d.battery_low(),
+                value_color,
+                discreet: d.info.caps.cover,
                 opening: d.info.caps.contact.then(|| {
                     // Porte par défaut ; fenêtre si le plan ou l'appareil le dit.
                     let kind = opening.unwrap_or(if symbol == Some(Symbol::Window) {
@@ -289,7 +289,7 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>) -> Look {
 
 /// Ce que montre une caméra posée : nom du serveur, état en couleur ; une caméra que le serveur
 /// ne connaît plus est grisée et nommée comme telle.
-fn camera_look(item: &Item, cameras: &[CameraView]) -> Look {
+fn camera_look(item: &Item, cameras: &[CameraView], p: &Palette) -> Look {
     let ItemKind::Camera { camera_id, .. } = &item.kind else {
         unreachable!("camera_look ne reçoit que des caméras");
     };
@@ -297,7 +297,7 @@ fn camera_look(item: &Item, cameras: &[CameraView]) -> Look {
     let state = camera::CameraState::of(camera);
     Look {
         symbol: None,
-        fill: state.color(),
+        fill: state.color(p),
         name: camera.map_or_else(|| "Caméra supprimée".to_string(), |c| short(&c.name)),
         value: (!matches!(
             state,
@@ -305,36 +305,49 @@ fn camera_look(item: &Item, cameras: &[CameraView]) -> Look {
         ))
         .then(|| state.label().to_lowercase()),
         battery_low: false,
+        value_color: state.color(p),
+        discreet: true,
         opening: None,
     }
 }
 
-/// Résumé d'une pièce : température moyenne et ouvertures des capteurs placés dedans.
-fn room_summary(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) -> Option<String> {
-    let mut temps = Vec::new();
-    let mut open = 0;
-    for item in items.iter().filter(|i| room.contains(i.x, i.y)) {
-        if let ItemKind::Device { node_id, .. } = item.kind {
-            if let Some(d) = devices.get(&node_id) {
-                if let Some(t) = d.temperature() {
-                    temps.push(t.value);
-                }
-                if d.open() == Some(true) {
-                    open += 1;
-                }
-            }
+/// Sans nouvelles de l'appareil : sa dernière mesure ne compte plus.
+fn is_stale(d: &Device) -> bool {
+    super::devices::is_stale(d)
+}
+
+/// Température moyenne de chaque pièce, d'après les capteurs qui y sont posés (règle de
+/// `HomePlan::room_of`). Un capteur injoignable ne compte pas ; une pièce sans capteur n'a pas
+/// d'entrée. Clé : (étage, pièce).
+fn room_temperatures(plan: &HomePlan, devices: &BTreeMap<u64, Device>) -> HashMap<(u64, u64), f64> {
+    let mut sums: HashMap<(u64, u64), (f64, usize)> = HashMap::new();
+    for (id, d) in devices {
+        let Some(t) = d.temperature().filter(|_| !is_stale(d)) else {
+            continue;
+        };
+        if let Some((floor, room)) = plan.room_of(*id) {
+            let e = sums.entry((floor.id, room.id)).or_default();
+            e.0 += t.value;
+            e.1 += 1;
         }
     }
-    let mut parts = Vec::new();
-    if !temps.is_empty() {
-        parts.push(format_temperature(
-            temps.iter().sum::<f64>() / temps.len() as f64,
-        ));
-    }
-    if open > 0 {
-        parts.push(format!("{open} ouvert{}", if open > 1 { "s" } else { "" }));
-    }
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    sums.into_iter()
+        .map(|(k, (sum, n))| (k, sum / n as f64))
+        .collect()
+}
+
+/// Ouvertures (portes, fenêtres) ouvertes dans une pièce : « 1 ouvert ».
+fn room_openings(room: &Room, items: &[Item], devices: &BTreeMap<u64, Device>) -> Option<String> {
+    let open = items
+        .iter()
+        .filter(|i| room.contains(i.x, i.y))
+        .filter_map(|i| match i.kind {
+            ItemKind::Device { node_id, .. } => devices.get(&node_id),
+            _ => None,
+        })
+        .filter(|d| !is_stale(d) && d.open() == Some(true))
+        .count();
+    (open > 0).then(|| format!("{open} ouvert{}", if open > 1 { "s" } else { "" }))
 }
 
 /// Ce qui empêche d'envoyer un plan : le serveur exige au moins un étage.
@@ -382,6 +395,17 @@ impl PlanView {
             device_edit: None,
             live_camera: None,
         }
+    }
+
+    /// Passe en mode Modifier.
+    pub fn start_editing(&mut self) {
+        self.edit = true;
+        self.selection = None;
+    }
+
+    /// Le mode Modifier est actif.
+    pub fn is_editing(&self) -> bool {
+        self.edit
     }
 
     /// Le plan tel qu'il est affiché (brouillon local compris).
@@ -508,7 +532,7 @@ impl PlanView {
     /// signalé avec de quoi le réparer, au lieu de planter.
     fn has_floor(&mut self, ui: &mut egui::Ui) -> bool {
         if self.plan.floors.is_empty() {
-            ui.colored_label(RED, "Le plan n'a aucun étage.");
+            ui.colored_label(theme::palette(ui).error, "Le plan n'a aucun étage.");
             if ui.button("Créer un étage").clicked() {
                 self.plan = HomePlan::default();
                 self.floor = 0;
@@ -525,23 +549,19 @@ impl PlanView {
     fn draft_banner(&mut self, ui: &mut egui::Ui) {
         let Some(text) = self.notice() else { return };
         let mut revert = false;
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(90, 50, 20))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(text);
-                    revert = ui
-                        .add_enabled(
-                            self.sync.can_revert(),
-                            egui::Button::new("Revenir à la version du serveur"),
-                        )
-                        .on_hover_text("Abandonne vos modifications non enregistrées du plan.")
-                        .on_disabled_hover_text(
-                            "Un envoi est en cours : réessayez dans un instant.",
-                        )
-                        .clicked();
-                });
+        theme::banner_frame(ui, theme::Banner::Warn).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(text);
+                revert = ui
+                    .add_enabled(
+                        self.sync.can_revert(),
+                        egui::Button::new("Revenir à la version du serveur"),
+                    )
+                    .on_hover_text("Abandonne vos modifications non enregistrées du plan.")
+                    .on_disabled_hover_text("Un envoi est en cours : réessayez dans un instant.")
+                    .clicked();
             });
+        });
         if revert {
             self.revert_to_server();
         }
@@ -634,21 +654,19 @@ impl PlanView {
         if self.sync.remote().is_none() {
             return;
         }
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(90, 70, 20))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Le plan a été modifié par un autre client pendant votre édition.");
-                    if ui.button("Afficher sa version").clicked() {
-                        self.sync.accept_remote(&mut self.plan);
-                        self.selection = None;
-                        self.device_edit = None;
-                    }
-                    if ui.button("Garder la mienne").clicked() {
-                        self.sync.keep_mine(Instant::now());
-                    }
-                });
+        theme::banner_frame(ui, theme::Banner::Info).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Le plan a été modifié par un autre client pendant votre édition.");
+                if ui.button("Afficher sa version").clicked() {
+                    self.sync.accept_remote(&mut self.plan);
+                    self.selection = None;
+                    self.device_edit = None;
+                }
+                if ui.button("Garder la mienne").clicked() {
+                    self.sync.keep_mine(Instant::now());
+                }
             });
+        });
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -723,7 +741,10 @@ impl PlanView {
                         self.confirm_delete_floor = true;
                     }
                 } else {
-                    ui.colored_label(RED, "Supprimer l'étage et son contenu ?");
+                    ui.colored_label(
+                        theme::palette(ui).error,
+                        "Supprimer l'étage et son contenu ?",
+                    );
                     if ui.button("Oui, supprimer").clicked() {
                         self.plan.floors.remove(floor);
                         self.floor = floor.saturating_sub(1);
@@ -791,7 +812,7 @@ impl PlanView {
                                 Some(c) => ui.label(format!("📹 {}", c.name)),
                                 None => ui.label("📹 Caméra supprimée"),
                             };
-                            ui.colored_label(state.color(), state.label());
+                            ui.colored_label(state.color(theme::palette(ui)), state.label());
                             if camera.is_none() {
                                 ui.small(
                                     "Le serveur ne connaît plus cette caméra. Retirez-la du plan.",
@@ -956,7 +977,7 @@ impl PlanView {
                     let state = camera::CameraState::of(Some(c));
                     ui.horizontal(|ui| {
                         ui.label(format!("⠿ 📹 {}", short(&c.name)));
-                        ui.colored_label(state.color(), "●");
+                        ui.colored_label(state.color(theme::palette(ui)), "●");
                     });
                 },
             );
@@ -1312,26 +1333,16 @@ impl PlanView {
         cameras: &[CameraView],
     ) {
         let visuals = ui.visuals();
-        let dark = visuals.dark_mode;
-        painter.rect_filled(
-            rect,
-            0.0,
-            if dark {
-                Color32::from_gray(24)
-            } else {
-                Color32::from_gray(245)
-            },
-        );
+
+        let pal = theme::palette(ui);
+        painter.rect_filled(rect, 0.0, pal.bg);
         let painter = painter.with_clip_rect(rect);
-        let text_color = visuals.text_color();
+        let text_color = pal.text;
+        let hover = resp.hover_pos();
 
         // Grille d'un mètre en mode modification.
         if self.edit {
-            let grid = if dark {
-                Color32::from_gray(38)
-            } else {
-                Color32::from_gray(225)
-            };
+            let grid = pal.line;
             let tl = self.to_world(rect, rect.min);
             let br = self.to_world(rect, rect.max);
             let mut x = tl.x.floor();
@@ -1366,33 +1377,25 @@ impl PlanView {
                 Align2::CENTER_CENTER,
                 msg,
                 FontId::proportional(16.0),
-                GRAY,
+                pal.text_secondary,
             );
         }
 
-        // Pièces.
+        // Pièces, teintées selon la température moyenne de leurs capteurs.
+        let averages = room_temperatures(&self.plan, devices);
         for room in &floor.rooms {
             let r = Rect::from_min_max(
                 self.to_screen(rect, room.x, room.y),
                 self.to_screen(rect, room.x + room.w, room.y + room.h),
             );
             let selected = self.selection == Some(Selection::Room(room.id));
-            let fill = if dark {
-                Color32::from_gray(42)
-            } else {
-                Color32::WHITE
-            };
-            let fill = if selected {
-                visuals.selection.bg_fill.linear_multiply(0.35)
-            } else {
-                fill
-            };
-            painter.rect_filled(r, 2.0, fill);
-            let wall = if dark {
-                Color32::from_gray(160)
-            } else {
-                Color32::from_gray(60)
-            };
+            let average = averages.get(&(floor.id, room.id)).copied();
+            painter.rect_filled(r, 2.0, pal.surface);
+            painter.rect_filled(r, 2.0, theme::temperature_fill(pal, average));
+            if selected {
+                painter.rect_filled(r, 2.0, visuals.selection.bg_fill.linear_multiply(0.35));
+            }
+            let wall = pal.text_secondary;
             painter.rect_stroke(r, 2.0, Stroke::new(3.0, wall), StrokeKind::Inside);
             painter.text(
                 r.min + Vec2::new(8.0, 6.0),
@@ -1401,13 +1404,24 @@ impl PlanView {
                 FontId::proportional(15.0),
                 text_color,
             );
-            if let Some(summary) = room_summary(room, &floor.items, devices) {
+            let mut y = 26.0;
+            if let Some(t) = average {
                 painter.text(
-                    r.min + Vec2::new(8.0, 24.0),
+                    r.min + Vec2::new(8.0, y),
                     Align2::LEFT_TOP,
-                    summary,
+                    format!("{t:.1} °C").replace('.', ","),
+                    FontId::proportional(theme::tokens().font.size.heading + 4.0),
+                    text_color,
+                );
+                y += 28.0;
+            }
+            if let Some(open) = room_openings(room, &floor.items, devices) {
+                painter.text(
+                    r.min + Vec2::new(8.0, y),
+                    Align2::LEFT_TOP,
+                    open,
                     FontId::proportional(12.0),
-                    GRAY,
+                    pal.warn,
                 );
             }
             if self.edit {
@@ -1435,6 +1449,13 @@ impl PlanView {
             else {
                 continue;
             };
+            let selected = self.selection == Some(Selection::Item(item.id));
+            // Le champ filmé n'apparaît qu'au survol, à la sélection ou en mode Modifier.
+            let c = self.to_screen(rect, item.x, item.y);
+            let hovered = hover.is_some_and(|h| h.distance(c) <= ITEM_RADIUS + 3.0);
+            if !(self.edit || selected || hovered) {
+                continue;
+            }
             let state = camera::CameraState::of(cameras.iter().find(|c| c.id == *camera_id));
             let field = camera::Field {
                 rotation: item.rotation,
@@ -1442,62 +1463,56 @@ impl PlanView {
                 range_px: range * self.scale,
                 shape: *shape,
             };
-            let selected = self.selection == Some(Selection::Item(item.id));
-            camera::paint_fov(
-                &painter,
-                self.to_screen(rect, item.x, item.y),
-                field,
-                state,
-                selected,
-            );
+            camera::paint_fov(&painter, c, field, state, selected, pal);
         }
 
         // Objets.
-        let hover = resp.hover_pos();
         let mut hovered: Option<(&Item, Look)> = None;
         for item in &floor.items {
             let c = self.to_screen(rect, item.x, item.y);
             let is_camera = matches!(item.kind, ItemKind::Camera { .. });
             let lk = if is_camera {
-                camera_look(item, cameras)
+                camera_look(item, cameras, pal)
             } else {
-                look(item, devices)
+                look(item, devices, pal)
+            };
+            // Caméras et volets : plus petits, sans couleur vive.
+            let radius = if lk.discreet {
+                ITEM_RADIUS * 0.7
+            } else {
+                ITEM_RADIUS
             };
             let decor = matches!(item.kind, ItemKind::Decor { .. });
             let selected = self.selection == Some(Selection::Item(item.id));
             let ring = if selected {
                 Stroke::new(3.0, visuals.selection.stroke.color)
             } else {
-                Stroke::new(1.5, if decor { GRAY } else { Color32::from_gray(230) })
+                Stroke::new(1.5, if decor { pal.text_secondary } else { pal.line })
             };
             if let ItemKind::Camera { camera_id, .. } = &item.kind {
                 let state = camera::CameraState::of(cameras.iter().find(|c| c.id == *camera_id));
-                camera::paint_icon(&painter, c, ITEM_RADIUS, item.rotation, state, ring);
+                camera::paint_icon(&painter, c, radius, item.rotation, state, ring, pal);
             } else {
                 if let Some(icon) = lk.opening {
-                    painter.circle_filled(c, ITEM_RADIUS, icon.disc());
-                    painter.circle_stroke(c, ITEM_RADIUS, ring);
-                    opening::paint(&painter, c, ITEM_RADIUS, icon);
+                    painter.circle_filled(c, radius, icon.disc(pal));
+                    painter.circle_stroke(c, radius, ring);
+                    opening::paint(&painter, c, radius, icon);
                 } else {
-                    painter.circle_filled(c, ITEM_RADIUS, lk.fill);
-                    painter.circle_stroke(c, ITEM_RADIUS, ring);
+                    painter.circle_filled(c, radius, lk.fill);
+                    painter.circle_stroke(c, radius, ring);
                     painter.text(
                         c,
                         Align2::CENTER_CENTER,
                         glyph(lk.symbol),
-                        FontId::proportional(15.0),
-                        Color32::WHITE,
+                        FontId::proportional(if lk.discreet { 11.0 } else { 15.0 }),
+                        pal.on_accent,
                     );
                 }
             }
             if lk.battery_low {
-                painter.circle_filled(
-                    c + Vec2::new(ITEM_RADIUS * 0.75, -ITEM_RADIUS * 0.75),
-                    5.0,
-                    RED,
-                );
+                painter.circle_filled(c + Vec2::new(radius * 0.75, -radius * 0.75), 5.0, pal.error);
             }
-            let mut y = c.y + ITEM_RADIUS + 2.0;
+            let mut y = c.y + radius + 2.0;
             let name_rect = painter.text(
                 Pos2::new(c.x, y),
                 Align2::CENTER_TOP,
@@ -1511,8 +1526,8 @@ impl PlanView {
                     Pos2::new(c.x, y),
                     Align2::CENTER_TOP,
                     v,
-                    FontId::proportional(12.0),
-                    lk.fill,
+                    FontId::proportional(if lk.discreet { 11.0 } else { 12.0 }),
+                    lk.value_color,
                 );
             }
             if hover.is_some_and(|h| h.distance(c) <= ITEM_RADIUS + 3.0) {
@@ -1523,7 +1538,14 @@ impl PlanView {
         // Poignées de la caméra sélectionnée (rotation, portée).
         if self.edit {
             if let Some((_, c, rot, range_px)) = self.selected_camera(rect) {
-                camera::paint_handles(&painter, c, rot, range_px, visuals.selection.stroke.color);
+                camera::paint_handles(
+                    &painter,
+                    c,
+                    rot,
+                    range_px,
+                    visuals.selection.stroke.color,
+                    pal,
+                );
             }
         }
 
@@ -1566,6 +1588,10 @@ impl PlanView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn pal() -> &'static Palette {
+        theme::tokens().palette(true)
+    }
+
     use protocol::events::Capabilities;
     use protocol::wire::{Metric, WireNode};
 
@@ -1639,7 +1665,7 @@ mod tests {
             y: 0.0,
             rotation: 0.0,
         };
-        let lk = look(&item, &devices);
+        let lk = look(&item, &devices, pal());
         assert_eq!(
             (lk.symbol, lk.value.as_deref()),
             (Some(Symbol::Shutter), Some("Fermé"))
@@ -1647,10 +1673,10 @@ mod tests {
         let d = devices.get_mut(&1).unwrap();
         d.apply_reading(Metric::Position, 65.0, 1.0);
         d.cover_motion = Some(protocol::events::CoverMotion::Opening);
-        let lk = look(&item, &devices);
+        let lk = look(&item, &devices, pal());
         assert_eq!(
             (lk.fill, lk.value.as_deref()),
-            (BLUE, Some("Ouvert à 65 % ▲"))
+            (pal().series_cover, Some("Ouvert à 65 % ▲"))
         );
     }
 
@@ -1676,7 +1702,7 @@ mod tests {
             rotation: 0.0,
         };
         let icon = |devices: &BTreeMap<u64, Device>, opening, symbol| {
-            look(&item(opening, symbol), devices).opening
+            look(&item(opening, symbol), devices, pal()).opening
         };
         // Pas encore de mesure : neutre. Porte par défaut.
         assert_eq!(icon(&devices, None, None), Some(DoorUnknown));
@@ -1730,7 +1756,7 @@ mod tests {
             },
             ..item(None, None)
         };
-        assert_eq!(look(&other, &devices).opening, None);
+        assert_eq!(look(&other, &devices, pal()).opening, None);
     }
 
     #[test]
@@ -1756,25 +1782,28 @@ mod tests {
             y: 0.0,
             rotation: 0.0,
         };
-        let lk = look(&item, &devices);
+        let lk = look(&item, &devices, pal());
         assert_eq!(
             (lk.symbol, lk.fill, lk.value.as_deref(), lk.battery_low),
-            (Some(Symbol::Door), ORANGE, Some("Ouvert"), true)
+            (Some(Symbol::Door), pal().warn, Some("Ouvert"), true)
         );
 
         devices
             .get_mut(&1)
             .unwrap()
             .apply_reading(Metric::Open, 0.0, 2.0);
-        assert_eq!(look(&item, &devices).fill, GREEN);
+        assert_eq!(look(&item, &devices, pal()).fill, pal().text_secondary);
 
         devices.get_mut(&1).unwrap().status = WireStatus::Unreachable {
             code: protocol::wire::ErrorCode::DeviceUnreachable,
             detail: Some("x".into()),
             retry_in_s: 5,
         };
-        let lk = look(&item, &devices);
-        assert_eq!((lk.fill, lk.value.as_deref()), (GRAY, Some("injoignable")));
+        let lk = look(&item, &devices, pal());
+        assert_eq!(
+            (lk.fill, lk.value.as_deref()),
+            (pal().text_secondary, Some("injoignable"))
+        );
 
         // L'icône de l'appareil prime sur un ancien pictogramme propre au plan.
         devices.get_mut(&1).unwrap().info.icon = Some(Symbol::Light);
@@ -1789,7 +1818,7 @@ mod tests {
             y: 0.0,
             rotation: 0.0,
         };
-        assert_eq!(look(&legacy, &devices).symbol, Some(Symbol::Light));
+        assert_eq!(look(&legacy, &devices, pal()).symbol, Some(Symbol::Light));
 
         // Pictogramme choisi par l'utilisateur, appareil inconnu.
         let window = Item {
@@ -1803,43 +1832,22 @@ mod tests {
             y: 0.0,
             rotation: 0.0,
         };
-        let lk = look(&window, &devices);
+        let lk = look(&window, &devices, pal());
         assert_eq!(
             (lk.symbol, lk.value.as_deref()),
             (Some(Symbol::Window), Some("inconnu"))
         );
     }
 
-    #[test]
-    fn room_summary_averages_and_counts() {
-        let room = Room {
-            id: 1,
-            name: "Salon".into(),
-            x: 0.0,
-            y: 0.0,
-            w: 5.0,
-            h: 4.0,
-        };
-        let mut devices = BTreeMap::new();
-        let mut t1 = device(Capabilities {
-            temperature: true,
-            ..Default::default()
-        });
-        t1.apply_reading(Metric::Temperature, 20.0, 0.0);
-        let mut t2 = device(Capabilities {
-            temperature: true,
-            ..Default::default()
-        });
-        t2.apply_reading(Metric::Temperature, 22.0, 0.0);
-        let mut door = device(Capabilities {
-            contact: true,
-            ..Default::default()
-        });
-        door.apply_reading(Metric::Open, 1.0, 0.0);
-        devices.insert(1, t1);
-        devices.insert(2, t2);
-        devices.insert(3, door);
-        let at = |id, node_id, x| Item {
+    fn online(mut d: Device, id: u64) -> Device {
+        d.info.node_id = id;
+        d.status = WireStatus::Online;
+        d.last_seen = Some(1.0);
+        d
+    }
+
+    fn at(id: u64, node_id: u64, x: f32) -> Item {
+        Item {
             id,
             kind: ItemKind::Device {
                 node_id,
@@ -1849,18 +1857,111 @@ mod tests {
             x,
             y: 1.0,
             rotation: 0.0,
+        }
+    }
+
+    fn salon_plan(items: Vec<Item>) -> (HomePlan, Room) {
+        let room = Room {
+            id: 1,
+            name: "Salon".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 5.0,
+            h: 4.0,
         };
-        let items = vec![
+        let mut plan = HomePlan::default();
+        plan.floors[0].rooms.push(room.clone());
+        plan.floors[0].items = items;
+        (plan, room)
+    }
+
+    fn thermometer(id: u64, celsius: f64) -> Device {
+        let mut d = online(
+            device(Capabilities {
+                temperature: true,
+                ..Default::default()
+            }),
+            id,
+        );
+        d.apply_reading(Metric::Temperature, celsius, 0.0);
+        d
+    }
+
+    #[test]
+    fn a_room_is_tinted_by_the_average_of_its_sensors() {
+        let mut devices = BTreeMap::new();
+        devices.insert(1, thermometer(1, 20.0));
+        devices.insert(2, thermometer(2, 22.0));
+        let mut door = online(
+            device(Capabilities {
+                contact: true,
+                ..Default::default()
+            }),
+            3,
+        );
+        door.apply_reading(Metric::Open, 1.0, 0.0);
+        devices.insert(3, door);
+        // Un capteur hors de la pièce ne compte pas.
+        devices.insert(4, thermometer(4, 30.0));
+        let (plan, room) = salon_plan(vec![
             at(10, 1, 1.0),
             at(11, 2, 2.0),
             at(12, 3, 3.0),
-            at(13, 1, 9.0),
-        ];
+            at(13, 4, 9.0),
+        ]);
+        let averages = room_temperatures(&plan, &devices);
+        assert_eq!(averages.len(), 1);
+        assert_eq!(averages[&(plan.floors[0].id, room.id)], 21.0);
         assert_eq!(
-            room_summary(&room, &items, &devices).as_deref(),
-            Some("21,00 °C · 1 ouvert")
+            room_openings(&room, &plan.floors[0].items, &devices).as_deref(),
+            Some("1 ouvert")
         );
-        assert_eq!(room_summary(&room, &[], &devices), None);
+        assert_eq!(room_openings(&room, &[], &devices), None);
+        // 21 °C tombe sur le palier de 20 ou de 22 : jamais le gris des pièces sans capteur.
+        let p = pal();
+        assert_ne!(theme::temperature_fill(p, Some(21.0)), p.no_sensor);
+    }
+
+    #[test]
+    fn an_unreachable_sensor_does_not_count_and_a_room_without_sensor_stays_grey() {
+        let mut devices = BTreeMap::new();
+        devices.insert(1, thermometer(1, 20.0));
+        let mut lost = thermometer(2, 30.0);
+        lost.status = WireStatus::Unreachable {
+            code: protocol::wire::ErrorCode::DeviceUnreachable,
+            detail: None,
+            retry_in_s: 5,
+        };
+        devices.insert(2, lost);
+        let (plan, room) = salon_plan(vec![at(10, 1, 1.0), at(11, 2, 2.0)]);
+        let key = (plan.floors[0].id, room.id);
+        assert_eq!(room_temperatures(&plan, &devices)[&key], 20.0);
+
+        // Le seul capteur devient injoignable : plus de moyenne, la pièce est grise.
+        devices.remove(&1);
+        assert!(room_temperatures(&plan, &devices).is_empty());
+        let p = pal();
+        assert_eq!(theme::temperature_fill(p, None), p.no_sensor);
+        // Jamais joint (en connexion, sans dernière communication) : ne compte pas non plus.
+        let mut fresh = thermometer(5, 25.0);
+        fresh.status = WireStatus::Connecting;
+        fresh.last_seen = None;
+        devices.insert(5, fresh);
+        let (plan, _) = salon_plan(vec![at(10, 5, 1.0)]);
+        assert!(room_temperatures(&plan, &devices).is_empty());
+    }
+
+    #[test]
+    fn the_room_tint_uses_the_step_colour_of_the_average() {
+        let p = pal();
+        let stops = &theme::tokens().temperature.stops;
+        assert_eq!(theme::temperature_color(p, Some(16.0)), stops[0].color);
+        assert_eq!(theme::temperature_color(p, Some(23.4)), stops[4].color);
+        // Le même aplat, à peine plus froid, change de palier : paliers de 2 °C.
+        assert_ne!(
+            theme::temperature_color(p, Some(18.9)),
+            theme::temperature_color(p, Some(19.1)),
+        );
     }
 
     #[test]
@@ -1927,27 +2028,30 @@ mod tests {
             "Entrée",
             protocol::wire::CameraStatus::Online,
         )];
-        let lk = camera_look(&item, &cameras);
+        let lk = camera_look(&item, &cameras, pal());
         assert_eq!(
             (lk.name.as_str(), lk.value.as_deref(), lk.fill),
-            ("Entrée", None, GREEN)
+            ("Entrée", None, pal().ok)
         );
         cameras[0].status = protocol::wire::CameraStatus::Unreachable {
             problem: protocol::wire::CameraProblem::Unreachable,
             detail: None,
             since: None,
         };
-        let lk = camera_look(&item, &cameras);
-        assert_eq!((lk.value.as_deref(), lk.fill), (Some("injoignable"), RED));
+        let lk = camera_look(&item, &cameras, pal());
+        assert_eq!(
+            (lk.value.as_deref(), lk.fill),
+            (Some("injoignable"), pal().error)
+        );
         cameras[0].status = protocol::wire::CameraStatus::Unknown;
         assert_eq!(
-            camera_look(&item, &cameras).value.as_deref(),
+            camera_look(&item, &cameras, pal()).value.as_deref(),
             Some("état inconnu")
         );
         // Caméra supprimée du serveur : grisée, nommée comme telle, rien à ouvrir.
-        let lk = camera_look(&item, &[]);
+        let lk = camera_look(&item, &[], pal());
         assert_eq!(lk.name, "Caméra supprimée");
-        assert_eq!(lk.fill, crate::ui::camera_text::NEUTRAL);
+        assert_eq!(lk.fill, pal().text_secondary);
     }
 
     #[test]

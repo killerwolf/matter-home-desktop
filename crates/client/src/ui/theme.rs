@@ -73,7 +73,43 @@ palette!(
     series_humidity,
     series_power,
     series_cover,
+    series_1,
+    series_2,
+    series_3,
+    series_4,
+    series_5,
+    series_6,
+    series_7,
+    series_8,
 );
+
+/// Nombre de couleurs de courbe dans les tokens (`series_1` à `series_8`).
+pub const SERIES_LEN: usize = 8;
+
+impl Palette {
+    /// Couleur de courbe numéro `index` ; au-delà des tokens, des teintes réparties par l'angle
+    /// d'or (luminosité adaptée au thème).
+    pub fn series(&self, index: usize, dark: bool) -> Color32 {
+        let fixed = [
+            self.series_1,
+            self.series_2,
+            self.series_3,
+            self.series_4,
+            self.series_5,
+            self.series_6,
+            self.series_7,
+            self.series_8,
+        ];
+        match fixed.get(index) {
+            Some(c) => *c,
+            None => {
+                let hue = (index as f32 * 0.618_034).fract();
+                let value = if dark { 0.85 } else { 0.65 };
+                egui::ecolor::Hsva::new(hue, 0.6, value, 1.0).into()
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Colors {

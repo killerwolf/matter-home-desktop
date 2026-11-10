@@ -1708,7 +1708,7 @@ fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_windo
     let curve = |node_id: u64, points: Vec<(f64, f64)>| temperatures::Curve {
         node_id,
         label: format!("Capteur {node_id}"),
-        color: temperatures::color_for(node_id as usize),
+        color_index: node_id as usize,
         points,
         gap_s: 1200.0,
         current: Some(20.5),

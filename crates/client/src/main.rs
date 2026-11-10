@@ -27,6 +27,7 @@ Usage :
   matter-home-desktop --rules     ouvre directement les automatisations
   matter-home-desktop --temperatures  ouvre directement la page Températures
   matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
+ matter-home-desktop --edit-plan  ouvre le plan en mode Modifier
   matter-home-desktop --add      ouvre directement la fenêtre « Ajouter un appareil »
   matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
   matter-home-desktop --version   affiche la version
@@ -83,13 +84,14 @@ fn main() -> eframe::Result {
     if let Some(unknown) = args.iter().find(|a| {
         !matches!(
             a.as_str(),
-            "--plan" | "--rules" | "--temperatures" | "--add"
+            "--plan" | "--rules" | "--temperatures" | "--add" | "--edit-plan"
         )
     }) {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
     let open_add = args.iter().any(|a| a == "--add");
+    let open_edit_plan = args.iter().any(|a| a == "--edit-plan");
     let open_plan = args.iter().any(|a| a == "--plan");
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
@@ -113,20 +115,25 @@ fn main() -> eframe::Result {
                 .ok_or("dossier de données de l'utilisateur introuvable")?;
             let (backend, events) = Backend::start(store, notify);
             let mut app = ui::MatterApp::new(backend, events);
+            // `--device` d'abord : les options d'onglet qui suivent gardent la main sur l'onglet,
+            // l'appareil s'ouvre alors dans le panneau de cet onglet (plan ou appareils).
+            if let Some(filter) = device_filter {
+                app.select_device_named(filter);
+            }
             if open_add {
                 app.show_add();
             }
             if open_plan {
                 app.show_plan();
             }
+            if open_edit_plan {
+                app.show_plan_editing();
+            }
             if open_rules {
                 app.show_rules();
             }
             if open_temperatures {
                 app.show_temperatures(period);
-            }
-            if let Some(filter) = device_filter {
-                app.select_device_named(filter);
             }
             Ok(Box::new(app))
         }),

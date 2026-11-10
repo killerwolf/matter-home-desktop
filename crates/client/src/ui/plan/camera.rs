@@ -18,9 +18,8 @@ pub const ROTATION_STEP: f32 = 5.0;
 /// Pas de la portée à la souris (m).
 pub const RANGE_STEP: f32 = 0.25;
 
-use crate::ui::camera_text::{
-    offline_since_now, problem_text as problem_phrase, NEUTRAL, OFFLINE, ONLINE,
-};
+use crate::ui::camera_text::{offline_since_now, problem_text as problem_phrase};
+use crate::ui::theme::Palette;
 
 /// Ce que le plan sait d'une caméra posée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,11 +41,11 @@ impl CameraState {
         }
     }
 
-    pub fn color(self) -> Color32 {
+    pub fn color(self, p: &Palette) -> Color32 {
         match self {
-            CameraState::Online => ONLINE,
-            CameraState::Unreachable => OFFLINE,
-            CameraState::Unknown | CameraState::Missing => NEUTRAL,
+            CameraState::Online => p.ok,
+            CameraState::Unreachable => p.error,
+            CameraState::Unknown | CameraState::Missing => p.text_secondary,
         }
     }
 
@@ -189,6 +188,7 @@ pub fn paint_fov(
     field: Field,
     state: CameraState,
     selected: bool,
+    pal: &Palette,
 ) {
     let Field {
         rotation,
@@ -200,7 +200,7 @@ pub fn paint_fov(
     if alpha == 0 {
         return;
     }
-    let c = state.color();
+    let c = state.color(pal);
     let fill = Color32::from_rgba_unmultiplied(
         c.r(),
         c.g(),
@@ -223,11 +223,17 @@ pub fn paint_icon(
     rotation: f32,
     state: CameraState,
     ring: Stroke,
+    pal: &Palette,
 ) {
     let (dx, dy) = rotation_vector(rotation);
     let dir = Vec2::new(dx, dy);
     let side = Vec2::new(-dy, dx);
-    let color = state.color();
+    // Discret : une caméra en ligne est grise, seul l'anormal prend une couleur.
+    let color = if state == CameraState::Online {
+        pal.text_secondary
+    } else {
+        state.color(pal)
+    };
     // Museau : triangle sur le bord du disque, dans le sens filmé.
     let nose = vec![
         center + dir * (radius + 7.0),
@@ -242,19 +248,15 @@ pub fn paint_icon(
     painter.circle_filled(center, radius, color);
     painter.circle_stroke(center, radius, ring);
     // Objectif.
-    painter.circle_filled(center, radius * 0.55, Color32::from_gray(25));
-    painter.circle_stroke(center, radius * 0.55, Stroke::new(1.5, Color32::WHITE));
-    painter.circle_filled(
-        center + dir * 2.0,
-        radius * 0.2,
-        Color32::from_rgb(120, 170, 230),
-    );
+    painter.circle_filled(center, radius * 0.55, pal.bg);
+    painter.circle_stroke(center, radius * 0.55, Stroke::new(1.5, pal.on_accent));
+    painter.circle_filled(center + dir * 2.0, radius * 0.2, pal.accent_text);
     if state == CameraState::Unreachable {
         // Barre oblique : caméra hors ligne, visible même sans la couleur.
         let off = Vec2::new(1.0, -1.0).normalized() * radius;
         painter.line_segment(
             [center - off, center + off],
-            Stroke::new(2.5, Color32::WHITE),
+            Stroke::new(2.5, pal.on_accent),
         );
     }
 }
@@ -266,18 +268,19 @@ pub fn paint_handles(
     rotation: f32,
     range_px: f32,
     accent: Color32,
+    pal: &Palette,
 ) {
     let h = rotate_handle(center, rotation);
     painter.line_segment([center, h], Stroke::new(1.5, accent));
     painter.circle_filled(h, HANDLE_RADIUS, accent);
-    painter.circle_stroke(h, HANDLE_RADIUS, Stroke::new(1.5, Color32::WHITE));
+    painter.circle_stroke(h, HANDLE_RADIUS, Stroke::new(1.5, pal.on_accent));
     if let Some(r) = range_handle(center, rotation, range_px) {
         let sq = eframe::egui::Rect::from_center_size(r, Vec2::splat(HANDLE_RADIUS * 1.6));
         painter.rect_filled(sq, 2.0, accent);
         painter.rect_stroke(
             sq,
             2.0,
-            Stroke::new(1.5, Color32::WHITE),
+            Stroke::new(1.5, pal.on_accent),
             eframe::egui::StrokeKind::Inside,
         );
     }

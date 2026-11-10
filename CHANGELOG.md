@@ -138,6 +138,18 @@ Les téléchargements de chaque version sont sur la
   « — » et le mot « injoignable » (le même sur le plan). Rien n'est supprimé. Les autres onglets
   changent seulement de thème. `design/tokens.css` (généré, vérifié par un test) prépare l'app
   web ; `HomePlan::room_of` est la règle unique de la pièce d'un appareil.
+- **Refonte de l'interface du client, phase 2** (ticket n° 13) : **Plan** et **Températures**.
+  Sur le plan, chaque pièce est teintée selon la température moyenne de ses capteurs (paliers de
+  2 °C, bleu à 16 °C, rouge à 24 °C), avec la valeur écrite ; un capteur injoignable ne compte pas,
+  une pièce sans capteur reste grise. Caméras et volets sont plus discrets, le champ d'une caméra
+  n'apparaît qu'au survol, à la sélection ou en mode Modifier. Un clic sur un appareil ouvre, à
+  droite du plan, le même panneau de détail que l'onglet Appareils. Le dessin et le mode Modifier ne
+  changent pas ; les couleurs du plan suivent les tokens (clair et sombre). Températures : le
+  graphique prend tout l'écran, l'en-tête donne pour chaque pièce la valeur actuelle en grand avec
+  le minimum et le maximum de la période (calculés par le client), des heures rondes sur l'axe, peu
+  de lignes de grille, des noms de pièce courts et des couleurs de courbe issues des tokens. Un
+  volet sans position n'a plus de valeur vide dans la liste (« — »). Options d'essai :
+  `--edit-plan`, et `--device` combinable avec `--plan`.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.

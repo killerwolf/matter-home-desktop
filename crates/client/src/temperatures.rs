@@ -119,6 +119,143 @@ pub fn display_label(name: &str, room: Option<&str>) -> String {
     }
 }
 
+/// Nom court d'un thermomètre pour l'en-tête et la légende : la pièce quand elle est connue,
+/// sinon le nom de l'appareil sans sa parenthèse ni son complément (« Chambre — capteur endormi
+/// (démo) » devient « Chambre »).
+pub fn short_label(name: &str, room: Option<&str>) -> String {
+    if let Some(room) = room.map(str::trim).filter(|r| !r.is_empty()) {
+        return room.to_string();
+    }
+    let cut = [" (", " — "]
+        .iter()
+        .filter_map(|sep| name.find(sep))
+        .min()
+        .unwrap_or(name.len());
+    let short = name[..cut].trim();
+    if short.is_empty() { name } else { short }.to_string()
+}
+
+/// Plus bas et plus haut d'une courbe sur la période affichée (points finis seulement).
+pub fn period_range(points: &[(f64, f64)]) -> Option<(f64, f64)> {
+    points
+        .iter()
+        .map(|p| p.1)
+        .filter(|v| v.is_finite())
+        .fold(None, |acc, v| match acc {
+            None => Some((v, v)),
+            Some((lo, hi)) => Some((lo.min(v), hi.max(v))),
+        })
+}
+
+/// Écart (s) entre les repères de l'axe du temps : des heures rondes, et peu de repères.
+pub fn axis_step(span_s: f64) -> f64 {
+    if span_s <= 2.0 * 3600.0 {
+        15.0 * 60.0
+    } else if span_s <= 12.0 * 3600.0 {
+        3600.0
+    } else if span_s <= 36.0 * 3600.0 {
+        6.0 * 3600.0
+    } else {
+        86_400.0
+    }
+}
+
+/// Repères de l'axe entre `start` et `end` (secondes Unix) : les multiples du pas à l'heure
+/// locale (`offset_s` = écart du fuseau à UTC), avec leur pas.
+pub fn round_marks(start: f64, end: f64, offset_s: i64) -> Vec<(f64, f64)> {
+    let step = axis_step(end - start);
+    let offset = offset_s as f64;
+    let mut t = ((start + offset) / step).ceil() * step - offset;
+    let mut marks = Vec::new();
+    while t <= end {
+        marks.push((t, step));
+        t += step;
+    }
+    marks
+}
+
+/// Texte d'un repère : « 18 h », « 0 h » ; « 14:15 » pour un pas de quinze minutes ; « lun. 04/11 »
+/// pour un pas d'un jour.
+pub fn axis_label(t: f64, step: f64, offset_s: i64) -> String {
+    use chrono::{Datelike, Timelike};
+    let Some(d) = chrono::DateTime::from_timestamp(t as i64 + offset_s, 0) else {
+        return String::new();
+    };
+    if step >= 86_400.0 {
+        const DAYS: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+        format!(
+            "{} {:02}/{:02}",
+            DAYS[d.weekday().num_days_from_monday() as usize],
+            d.day(),
+            d.month()
+        )
+    } else if step >= 3600.0 {
+        format!("{} h", d.hour())
+    } else {
+        format!("{:02}:{:02}", d.hour(), d.minute())
+    }
+}
+
+/// Écart du fuseau local à UTC à l'instant `t`.
+pub fn local_offset_s(t: f64) -> i64 {
+    use chrono::{Offset, TimeZone};
+    chrono::Local
+        .timestamp_opt(t as i64, 0)
+        .single()
+        .map_or(0, |d| i64::from(d.offset().fix().local_minus_utc()))
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    #[test]
+    fn short_labels_prefer_the_room() {
+        assert_eq!(short_label("Salon (démo)", Some("Salon")), "Salon");
+        assert_eq!(
+            short_label("Chambre — capteur endormi (démo)", None),
+            "Chambre"
+        );
+        assert_eq!(short_label("Sonde", Some("  ")), "Sonde");
+        assert_eq!(short_label("(démo)", None), "(démo)");
+    }
+
+    #[test]
+    fn period_range_is_min_and_max_of_the_points() {
+        assert_eq!(period_range(&[]), None);
+        assert_eq!(
+            period_range(&[(0.0, 19.0), (1.0, 21.4), (2.0, 18.1), (3.0, f64::NAN)]),
+            Some((18.1, 21.4))
+        );
+    }
+
+    #[test]
+    fn marks_fall_on_round_local_hours() {
+        // 24 h : un repère toutes les 6 h, à 0 h, 6 h, 12 h, 18 h heure locale (UTC+1 ici).
+        let offset = 3600;
+        let end = 1_700_000_000.0;
+        let marks = round_marks(end - 86_400.0, end, offset);
+        assert!(marks.len() == 4 || marks.len() == 5);
+        for (t, step) in &marks {
+            assert_eq!(*step, 6.0 * 3600.0);
+            let local = *t + 3600.0;
+            assert_eq!(local % (6.0 * 3600.0), 0.0, "{t} n'est pas une heure ronde");
+        }
+        let labels: Vec<String> = marks.iter().map(|m| axis_label(m.0, m.1, offset)).collect();
+        assert!(labels
+            .iter()
+            .all(|l| ["0 h", "6 h", "12 h", "18 h"].contains(&l.as_str())));
+        // 1 h : tous les quarts d'heure ; 7 jours : à minuit.
+        let hour = round_marks(end - 3600.0, end, 0);
+        assert!(hour.iter().all(|m| m.0 % 900.0 == 0.0 && m.1 == 900.0));
+        assert_eq!(axis_label(hour[0].0, 900.0, 0).len(), 5);
+        let week = round_marks(end - 7.0 * 86_400.0, end, 0);
+        assert_eq!(week.len(), 7);
+        assert!(week.iter().all(|m| m.0 % 86_400.0 == 0.0));
+        assert_eq!(axis_label(week[0].0, 86_400.0, 0), "mer. 08/11");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -186,6 +186,9 @@ pub struct MatterApp {
     add_open: bool,
     /// Option `--add` : ouvrir la fenêtre dès la première arrivée de l'état complet.
     add_on_arrival: bool,
+    /// Option `--edit-plan` : passer en mode Modifier dès l'arrivée de l'état complet (le plan
+    /// est remis à zéro à la connexion).
+    edit_plan_on_arrival: bool,
     window: TimeWindow,
     /// Page Températures : période choisie, lectures par appareil, courbes masquées.
     temp_window: TimeWindow,
@@ -264,6 +267,7 @@ impl MatterApp {
             pairing: Pairing::Idle,
             add_open: false,
             add_on_arrival: false,
+            edit_plan_on_arrival: false,
             window: TimeWindow::Min15,
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
@@ -313,6 +317,12 @@ impl MatterApp {
     /// Ouvre la fenêtre « Ajouter un appareil ».
     pub fn show_add(&mut self) {
         self.add_on_arrival = true;
+    }
+
+    /// Ouvre l'onglet « Plan » directement en mode Modifier (essais, captures).
+    pub fn show_plan_editing(&mut self) {
+        self.view = View::Plan;
+        self.edit_plan_on_arrival = true;
     }
 
     /// Ouvre l'onglet « Plan ».
@@ -645,7 +655,7 @@ impl MatterApp {
 
     /// Lit l'historique de l'appareil affiché quand la fiche s'ouvre ou que la fenêtre change.
     fn maintain_series(&mut self) {
-        if !self.connected() || self.view != View::Devices {
+        if !self.connected() || !matches!(self.view, View::Devices | View::Plan) {
             return;
         }
         let Some(id) = self.selected else { return };
@@ -761,17 +771,29 @@ impl MatterApp {
                     .unwrap_or_default();
                 Some(temperatures::Curve {
                     node_id: *id,
-                    label: temps::display_label(
+                    label: temps::short_label(
                         &device.info.name,
                         self.plan.plan().room_name_of(*id),
                     ),
-                    color: temperatures::color_for(self.temp_colors[id]),
+                    color_index: self.temp_colors[id],
                     points,
                     gap_s: temps::gap_threshold(device.mode.as_ref(), window, buckets),
                     current: device.temperature().map(|r| r.value),
                 })
             })
             .collect();
+        // Deux thermomètres dans la même pièce : le nom de l'appareil les distingue.
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for c in &curves {
+            *seen.entry(c.label.clone()).or_default() += 1;
+        }
+        for c in &mut curves {
+            if seen[&c.label] > 1 {
+                if let Some(d) = self.model.devices.get(&c.node_id) {
+                    c.label = temps::display_label(&d.info.name, Some(&c.label));
+                }
+            }
+        }
         curves.sort_by_key(|c| c.label.to_lowercase());
         curves
     }
@@ -1008,6 +1030,9 @@ impl MatterApp {
         }
         if std::mem::take(&mut self.add_on_arrival) {
             self.add_open = true;
+        }
+        if std::mem::take(&mut self.edit_plan_on_arrival) {
+            self.plan.start_editing();
         }
         self.try_select_on_arrival();
     }
@@ -1939,7 +1964,7 @@ impl MatterApp {
                         View::Rules,
                     ] {
                         if theme::tab(ui, self.view == view, view.title()).clicked() {
-                            if view == View::Devices && self.view != View::Devices {
+                            if view != self.view {
                                 self.close_detail();
                             }
                             self.view = view;
@@ -2245,12 +2270,18 @@ impl eframe::App for MatterApp {
 
         // Onglet Appareils : la liste rangée est calculée une fois par image, pour la liste et
         // pour le panneau de détail, qui s'ouvre à droite au clic sur une ligne.
-        let layout = if self.view == View::Devices {
+        let show_detail = match self.view {
+            View::Devices => true,
+            // Sur le plan, le panneau laisse la place à la palette du mode Modifier.
+            View::Plan => !self.plan.is_editing(),
+            _ => false,
+        };
+        let layout = if show_detail {
             devices::groups(&self.model.devices, self.plan.plan())
         } else {
             devices::Layout::default()
         };
-        if self.view == View::Devices && self.selected_device().is_some() {
+        if show_detail && self.selected_device().is_some() {
             egui::Panel::right("detail")
                 .resizable(true)
                 .default_size(460.0)
@@ -2267,10 +2298,10 @@ impl eframe::App for MatterApp {
                 }
             }
             View::Plan => match self.plan.show(ui, &self.model) {
+                // Le même panneau de détail que dans Appareils, à droite du plan.
                 plan::PlanAction::OpenDevice(id) => {
                     self.selected = Some(id);
                     self.export_message = None;
-                    self.view = View::Devices;
                 }
                 plan::PlanAction::Customize {
                     node_id,
