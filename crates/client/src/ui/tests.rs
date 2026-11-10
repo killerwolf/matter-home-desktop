@@ -376,6 +376,8 @@ fn history_is_read_on_demand_filled_live_and_errors_are_shown() {
         ..Default::default()
     };
     f.connect(snapshot(1, vec![view(node(1, "Salon", caps), vec![])]));
+    // Le plan est l'onglet d'ouverture : l'historique se lit quand l'onglet Appareils est ouvert.
+    f.app.view = View::Devices;
     // Aucune lecture avant qu'une fiche ne la demande.
     assert!(f.app.series.is_empty());
     f.app.maintain_series();

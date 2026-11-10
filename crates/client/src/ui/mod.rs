@@ -9,6 +9,7 @@ mod camera_text;
 mod cameras;
 mod connect;
 mod customize;
+mod devices;
 mod notify;
 mod plan;
 mod player;
@@ -16,6 +17,7 @@ mod rules;
 mod sensors;
 mod sync;
 mod temperatures;
+mod theme;
 mod thermometer;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -27,6 +29,11 @@ use eframe::egui::{self, Color32, RichText};
 use sync::Failure;
 
 pub use matter_home_client::model::Device;
+
+/// Installe le thème (clair et sombre, celui du système) : à appeler une fois au démarrage.
+pub fn apply_theme(ctx: &egui::Context) {
+    theme::apply(ctx);
+}
 use matter_home_client::model::{Change, Model};
 use matter_home_client::net::error::api_message;
 use matter_home_client::net::files::MAX_BACKUP_BYTES;
@@ -52,11 +59,11 @@ pub struct ViewRequests {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
-    Devices,
     Plan,
-    Rules,
+    Devices,
     Temperatures,
     Cameras,
+    Rules,
 }
 
 impl View {
@@ -64,7 +71,7 @@ impl View {
     fn title(self) -> &'static str {
         match self {
             View::Devices => "Appareils",
-            View::Plan => "Plan de la maison",
+            View::Plan => "Plan",
             View::Rules => "Automatisations",
             View::Temperatures => "Températures",
             View::Cameras => "Caméras",
@@ -175,6 +182,8 @@ pub struct MatterApp {
     selected: Option<u64>,
     code: String,
     pairing: Pairing,
+    /// Fenêtre « Ajouter un appareil » (bouton « + Ajouter »).
+    add_open: bool,
     window: TimeWindow,
     /// Page Températures : période choisie, lectures par appareil, courbes masquées.
     temp_window: TimeWindow,
@@ -251,6 +260,7 @@ impl MatterApp {
             selected: None,
             code: String::new(),
             pairing: Pairing::Idle,
+            add_open: false,
             window: TimeWindow::Min15,
             temp_window: TimeWindow::Hour24,
             temp_series: HashMap::new(),
@@ -263,7 +273,7 @@ impl MatterApp {
             error_banner: None,
             log: VecDeque::new(),
             toasts: Vec::new(),
-            view: View::Devices,
+            view: View::Plan,
             plan: plan::PlanView::new(),
             rules: rules::RulesView::new(),
             confirm_clear: None,
@@ -297,7 +307,7 @@ impl MatterApp {
         }
     }
 
-    /// Ouvre l'onglet « Plan de la maison ».
+    /// Ouvre l'onglet « Plan ».
     pub fn show_plan(&mut self) {
         self.view = View::Plan;
     }
@@ -1518,7 +1528,6 @@ impl MatterApp {
     // -----------------------------------------------------------------------
 
     fn pairing_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Appairer un appareil");
         ui.label("Code de l'app Maison : 11 chiffres, ou code QR « MT:… ».");
         let busy = matches!(self.pairing, Pairing::InProgress(_)) || self.model.pairing_busy;
         let response = ui.add_enabled(
@@ -1547,87 +1556,34 @@ impl MatterApp {
                 });
             }
             Pairing::Success(m) => {
-                ui.colored_label(Color32::from_rgb(40, 160, 70), format!("✔ {m}"));
+                ui.colored_label(theme::palette(ui).ok, format!("✔ {m}"));
             }
             Pairing::Failed(m) => {
-                ui.colored_label(Color32::from_rgb(210, 60, 50), format!("✖ {m}"));
+                ui.colored_label(theme::palette(ui).error, format!("✖ {m}"));
             }
         }
     }
 
-    fn device_list(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Appareils");
-        if self.model.devices.is_empty() {
-            ui.label("Aucun appareil appairé pour l'instant.");
+    /// L'appareil sélectionné, s'il existe encore.
+    fn selected_device(&self) -> Option<u64> {
+        self.selected
+            .filter(|id| self.model.devices.contains_key(id))
+    }
+
+    /// Fenêtre ouverte par « + Ajouter » : l'appairage d'un appareil.
+    fn add_window(&mut self, ctx: &egui::Context) {
+        if !self.add_open {
             return;
         }
-        let now = now_unix();
-        let mut clicked = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (id, d) in &self.model.devices {
-                let selected = self.selected == Some(*id);
-                let frame = egui::Frame::group(ui.style()).fill(if selected {
-                    ui.visuals().selection.bg_fill.linear_multiply(0.35)
-                } else {
-                    Color32::TRANSPARENT
-                });
-                let resp = frame
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let (color, text) = status_badge(&d.status);
-                            ui.colored_label(color, "●");
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} {}",
-                                    plan::glyph(plan::icon_of(d)),
-                                    d.info.name
-                                ))
-                                .strong(),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.small(text);
-                                },
-                            );
-                        });
-                        let kind = if d.info.device_types.is_empty() {
-                            "Type inconnu".to_string()
-                        } else {
-                            d.info.device_types.join(", ")
-                        };
-                        ui.small(kind);
-                        let summary = d.summary();
-                        if !summary.is_empty() {
-                            ui.small(RichText::new(summary).strong());
-                        }
-                        let origin = match d.info.bridge {
-                            Some(link) => format!(
-                                "Via le pont {}",
-                                self.model.devices.get(&link.node_id).map_or_else(
-                                    || format!("{:016X}", link.node_id),
-                                    |b| b.info.name.clone()
-                                )
-                            ),
-                            None => format!("Nœud {id:016X}"),
-                        };
-                        ui.small(format!(
-                            "{origin} · dernière communication : {}",
-                            d.last_seen.map_or("jamais".into(), |t| ago(now - t))
-                        ));
-                    })
-                    .response;
-                if resp.interact(egui::Sense::click()).clicked() {
-                    clicked = Some(*id);
-                }
-            }
-        });
-        if let Some(id) = clicked {
-            self.selected = Some(id);
-            self.view = View::Devices;
-            self.export_message = None;
-        }
+        let mut open = true;
+        egui::Window::new("Ajouter un appareil")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(380.0)
+            .show(ctx, |ui| self.pairing_panel(ui));
+        self.add_open = open;
     }
 
     fn details(&mut self, ui: &mut egui::Ui) {
@@ -1660,6 +1616,17 @@ impl MatterApp {
                     .map_or_else(|| format!("{:016X}", link.node_id), |b| b.info.name.clone()),
             )
         });
+        let room_name = {
+            let (groups, bridges) = devices::groups(&self.model.devices, self.plan.plan());
+            if bridges.contains(&id) {
+                "Pont".to_string()
+            } else {
+                groups
+                    .into_iter()
+                    .find(|g| g.ids.contains(&id))
+                    .map_or_else(|| "Sans pièce".to_string(), |g| g.title)
+            }
+        };
         let Some(device) = self.model.devices.get_mut(&id) else {
             return;
         };
@@ -1669,66 +1636,158 @@ impl MatterApp {
         let mut forget = false;
         let mut clear = false;
         let mut customize = false;
+        let mut close = false;
         let mut open_device = None;
         let mut cover_command = None;
         let mut requests = ViewRequests::default();
+        let p = theme::palette(ui);
+
+        // En-tête : la pièce, le nom, la valeur en grand.
         ui.horizontal(|ui| {
-            ui.heading(format!(
+            ui.label(
+                RichText::new(room_name)
+                    .size(theme::tokens().text.caption)
+                    .color(p.text_secondary),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui
+                    .small_button("Fermer")
+                    .on_hover_text("Fermer le détail")
+                    .clicked();
+            });
+        });
+        ui.label(
+            RichText::new(format!(
                 "{} {}",
                 plan::glyph(plan::icon_of(device)),
                 device.info.name
-            ));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if device.info.bridge.is_none() {
-                    forget = ui
-                        .button("Oublier")
-                        .on_hover_text(
-                            "Retire l'appareil de cette application (il reste dans Apple Home).",
-                        )
-                        .clicked();
-                }
-                retry = ui.button("Reconnecter").clicked();
-                if self.confirm_clear == Some(id) {
-                    if ui.button("Annuler").clicked() {
-                        self.confirm_clear = None;
+            ))
+            .size(theme::tokens().text.title),
+        );
+        if let Some(value) = devices::headline(device) {
+            ui.label(RichText::new(value).size(theme::tokens().text.display));
+        }
+        if let Some(h) = device.humidity() {
+            ui.label(
+                RichText::new(format!(
+                    "Humidité {}",
+                    protocol::format::format_humidity(h.value)
+                ))
+                .color(p.text_secondary),
+            );
+        }
+        ui.add_space(theme::tokens().space.sm);
+
+        // Ce qui était dans la liste ou en tête de fiche : état, pile, type, nœud, dernière
+        // communication, fabricant, pont, nom d'origine.
+        let (status_color, status_text) = status_badge(&device.status);
+        let kind = if device.info.device_types.is_empty() {
+            "Type inconnu".to_string()
+        } else {
+            device.info.device_types.join(", ")
+        };
+        let now = now_unix();
+        egui::Grid::new(("detail_info", id))
+            .num_columns(2)
+            .spacing([theme::tokens().space.md, 3.0])
+            .show(ui, |ui| {
+                ui.label(RichText::new("État").color(p.text_secondary));
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(status_color, format!("● {status_text}"));
+                    if let WireStatus::Unreachable { retry_in_s, .. } = &device.status {
+                        if *retry_in_s > 0 {
+                            ui.label(format!("— nouvel essai automatique sous {retry_in_s} s"));
+                        }
                     }
-                    clear = ui
-                        .button(RichText::new("Oui, effacer").color(Color32::from_rgb(210, 60, 50)))
-                        .clicked();
-                    ui.label("Effacer tout l'historique de cet appareil ?");
-                } else if ui
-                    .button("Effacer l'historique")
+                });
+                ui.end_row();
+                if let Some(why) = unreachable_text(&device.status) {
+                    ui.label("");
+                    ui.small(RichText::new(why).color(p.text_secondary));
+                    ui.end_row();
+                }
+                if let Some(b) = device.battery() {
+                    let low = device.battery_low();
+                    let color = if low || b < 20.0 { p.error } else { p.ok };
+                    let warn = if low {
+                        " — pile faible, à remplacer"
+                    } else {
+                        ""
+                    };
+                    ui.label(RichText::new("Pile").color(p.text_secondary));
+                    ui.colored_label(color, format!("{b:.0} %{warn}"));
+                    ui.end_row();
+                }
+                theme::detail_row(ui, "Type", kind);
+                theme::detail_row(ui, "Nœud", format!("{id:016X}"));
+                theme::detail_row(
+                    ui,
+                    "Dernière communication",
+                    device.last_seen.map_or("jamais".into(), |t| ago(now - t)),
+                );
+                let meta: Vec<String> = [device.info.vendor.clone(), device.info.product.clone()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if !meta.is_empty() {
+                    theme::detail_row(ui, "Fabricant", meta.join(" — "));
+                }
+                if device.info.custom_name.is_some() {
+                    theme::detail_row(ui, "Nom de l'appareil", device.info.device_name.clone());
+                }
+                if let (Some(link), Some(bridge_name)) = (device.info.bridge, &bridge_name) {
+                    ui.label(RichText::new("Exposé par").color(p.text_secondary));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{bridge_name} (endpoint {})", link.endpoint));
+                        if ui.small_button("Voir le pont").clicked() {
+                            open_device = Some(link.node_id);
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        ui.add_space(theme::tokens().space.sm);
+
+        // Les commandes de l'appareil, inchangées.
+        ui.horizontal_wrapped(|ui| {
+            retry = ui.button("Reconnecter").clicked();
+            let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
+            if !editing
+                && ui
+                    .button("✏ Nom et icône")
+                    .on_hover_text("Personnaliser le nom et l'icône")
+                    .clicked()
+            {
+                customize = true;
+            }
+            if self.confirm_clear == Some(id) {
+                ui.label("Effacer tout l'historique de cet appareil ?");
+                clear = ui
+                    .button(RichText::new("Oui, effacer").color(p.error))
+                    .clicked();
+                if ui.button("Annuler").clicked() {
+                    self.confirm_clear = None;
+                }
+            } else if ui
+                .button("Effacer l'historique")
+                .on_hover_text(
+                    "Supprime les mesures enregistrées sur le serveur pour cet appareil.",
+                )
+                .clicked()
+            {
+                self.confirm_clear = Some(id);
+            }
+            if device.info.bridge.is_none()
+                && ui
+                    .button("Oublier")
                     .on_hover_text(
-                        "Supprime les mesures enregistrées sur le serveur pour cet appareil.",
+                        "Retire l'appareil de cette application (il reste dans Apple Home).",
                     )
                     .clicked()
-                {
-                    self.confirm_clear = Some(id);
-                }
-            });
+            {
+                forget = true;
+            }
         });
-        let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
-        if !editing
-            && ui
-                .small_button("✏ Personnaliser le nom et l'icône")
-                .clicked()
-        {
-            customize = true;
-        }
-        if device.info.custom_name.is_some() {
-            ui.small(format!("Nom de l'appareil : {}", device.info.device_name));
-        }
-        if let (Some(link), Some(bridge_name)) = (device.info.bridge, &bridge_name) {
-            ui.horizontal(|ui| {
-                ui.small(format!(
-                    "Exposé par le pont « {bridge_name} » (endpoint {})",
-                    link.endpoint
-                ));
-                if ui.small_button("Voir le pont").clicked() {
-                    open_device = Some(link.node_id);
-                }
-            });
-        }
         let mut save = None;
         if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
             match customize::editor(ui, edit, &device.info.device_name) {
@@ -1736,39 +1795,6 @@ impl MatterApp {
                 Some(customize::EditResult::Cancel) => self.device_edit = None,
                 None => {}
             }
-        }
-        let meta: Vec<String> = [device.info.vendor.clone(), device.info.product.clone()]
-            .into_iter()
-            .flatten()
-            .collect();
-        if !meta.is_empty() {
-            ui.label(meta.join(" — "));
-        }
-        if let Some(b) = device.battery() {
-            let low = device.battery_low();
-            let color = if low || b < 20.0 {
-                Color32::from_rgb(210, 60, 50)
-            } else {
-                Color32::from_rgb(40, 160, 70)
-            };
-            let warn = if low {
-                " — pile faible, à remplacer"
-            } else {
-                ""
-            };
-            ui.colored_label(color, format!("Pile : {b:.0} %{warn}"));
-        }
-        let (color, text) = status_badge(&device.status);
-        ui.horizontal(|ui| {
-            ui.colored_label(color, format!("● {text}"));
-            if let WireStatus::Unreachable { retry_in_s, .. } = &device.status {
-                if *retry_in_s > 0 {
-                    ui.label(format!("— nouvel essai automatique sous {retry_in_s} s"));
-                }
-            }
-        });
-        if let Some(why) = unreachable_text(&device.status) {
-            ui.small(RichText::new(why).color(Color32::GRAY));
         }
         ui.separator();
 
@@ -1842,6 +1868,10 @@ impl MatterApp {
         if customize {
             self.device_edit = Some(fresh_edit);
         }
+        if close {
+            self.selected = None;
+            self.confirm_clear = None;
+        }
         if let Some(edit) = save {
             self.device_edit = None;
             self.customize(id, Some(edit.name), edit.icon);
@@ -1887,46 +1917,27 @@ impl MatterApp {
                 });
             });
             ui.horizontal(|ui| {
-                ui.heading("Matter over Thread — contrôleur");
-                match &self.link {
-                    Link::Connected { server_version, .. } => {
-                        ui.label(
-                            RichText::new(format!("● connecté · serveur {server_version}"))
-                                .small()
-                                .color(Color32::from_rgb(40, 160, 70)),
-                        );
-                    }
-                    Link::Resyncing => {
-                        ui.label(RichText::new("● resynchronisation…").small());
-                    }
-                    _ => {
-                        ui.label(
-                            RichText::new(" DÉCONNECTÉ ")
-                                .strong()
-                                .color(Color32::BLACK)
-                                .background_color(Color32::from_rgb(250, 200, 60)),
-                        )
-                        .on_hover_text("Pas de connexion au serveur Matter Home.");
-                    }
-                }
-                ui.separator();
+                ui.heading("Maison");
+                ui.add_space(8.0);
                 if self.connected() {
-                    ui.selectable_value(&mut self.view, View::Devices, View::Devices.title());
-                    ui.selectable_value(&mut self.view, View::Plan, View::Plan.title());
-                    ui.selectable_value(&mut self.view, View::Rules, View::Rules.title());
-                    ui.selectable_value(
-                        &mut self.view,
+                    for view in [
+                        View::Plan,
+                        View::Devices,
                         View::Temperatures,
-                        View::Temperatures.title(),
-                    );
-                    ui.selectable_value(&mut self.view, View::Cameras, View::Cameras.title());
+                        View::Cameras,
+                        View::Rules,
+                    ] {
+                        if theme::tab(ui, self.view == view, view.title()).clicked() {
+                            self.view = view;
+                        }
+                    }
                 }
                 // Un brouillon ou un choix en attente reste visible depuis toutes les vues.
                 for alert in self.sync_alerts() {
                     let text = RichText::new(&alert.label)
                         .small()
                         .strong()
-                        .color(Color32::from_rgb(235, 150, 40));
+                        .color(theme::palette(ui).warn);
                     let clicked = ui
                         .add(egui::Button::new(text).frame(false))
                         .on_hover_text(&alert.detail)
@@ -1935,10 +1946,37 @@ impl MatterApp {
                         self.view = alert.view;
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.connected() && theme::primary_button(ui, "+ Ajouter").clicked() {
+                        self.add_open = true;
+                    }
+                    match &self.link {
+                        Link::Connected { server_version, .. } => {
+                            ui.label(
+                                RichText::new(format!("● connecté · serveur {server_version}"))
+                                    .small()
+                                    .color(theme::palette(ui).ok),
+                            );
+                        }
+                        Link::Resyncing => {
+                            ui.label(RichText::new("● resynchronisation…").small());
+                        }
+                        _ => {
+                            let p = theme::palette(ui);
+                            ui.label(
+                                RichText::new(" DÉCONNECTÉ ")
+                                    .strong()
+                                    .color(p.on_accent)
+                                    .background_color(p.warn),
+                            )
+                            .on_hover_text("Pas de connexion au serveur Matter Home.");
+                        }
+                    }
+                });
             });
             if let Some((at, text)) = &self.error_banner {
                 if at.elapsed() < Duration::from_secs(20) {
-                    ui.colored_label(Color32::from_rgb(210, 60, 50), text);
+                    ui.colored_label(theme::palette(ui).error, text);
                 }
             }
         });
@@ -2180,20 +2218,26 @@ impl eframe::App for MatterApp {
             return;
         }
 
-        egui::Panel::left("left")
-            .resizable(true)
-            .default_size(340.0)
-            // Sans borne, un long message (adresse IPv6…) élargit le panneau et masque la vue thermomètre.
-            .size_range(260.0..=460.0)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                self.pairing_panel(ui);
-                ui.separator();
-                self.device_list(ui);
-            });
+        self.add_window(&ui.ctx().clone());
+
+        // Onglet Appareils : le détail s'ouvre dans un panneau à droite, au clic sur une ligne.
+        if self.view == View::Devices && self.selected_device().is_some() {
+            egui::Panel::right("detail")
+                .resizable(true)
+                .default_size(460.0)
+                .size_range(340.0..=760.0)
+                .frame(theme::detail_frame(ui))
+                .show(ui, |ui| self.details(ui));
+        }
 
         egui::CentralPanel::default().show(ui, |ui| match self.view {
-            View::Devices => self.details(ui),
+            View::Devices => {
+                let plan = self.plan.plan().clone();
+                if let Some(id) = devices::show(ui, &self.model.devices, &plan, self.selected) {
+                    self.selected = Some(id);
+                    self.export_message = None;
+                }
+            }
             View::Plan => match self.plan.show(ui, &self.model) {
                 plan::PlanAction::OpenDevice(id) => {
                     self.selected = Some(id);

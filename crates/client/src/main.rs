@@ -101,6 +101,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             // Le réseau tourne dans ses propres fils : chaque événement réveille l'interface.
+            ui::apply_theme(&cc.egui_ctx);
             let ctx = cc.egui_ctx.clone();
             let notify: matter_home_client::net::Notifier = Arc::new(move || ctx.request_repaint());
             let store = Store::default_location()

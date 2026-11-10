@@ -125,6 +125,17 @@ Les téléchargements de chaque version sont sur la
 
 ### Modifié
 
+- **Refonte de l'interface du client, phase 1** (ticket n° 13). Nouveau design system :
+  `design/tokens.json` (couleurs claires et sombres, échelle de température de 16 à 24 °C par
+  paliers de 2 °C, espacements, rayons, tailles de texte) est lu par le client et le sera par la
+  future app web ; `docs/design-system.md` l'explique. Le client suit le thème clair ou sombre du
+  système. Une seule navigation : les onglets du haut, **Plan en premier** ; la colonne d'appairage
+  permanente disparaît au profit d'un bouton **« + Ajouter »** qui ouvre l'appairage dans une
+  fenêtre. L'onglet **Appareils** est en pleine largeur : une ligne par appareil (un nom, une
+  valeur), rangée par pièce, le pont à part ; seuls « pile faible » et « hors ligne » sont signalés.
+  Le détail (état, pile, type, nœud, dernière communication, fabricant, commandes, courbes)
+  s'ouvre dans un panneau à droite au clic. Rien n'est supprimé. Les autres onglets changent
+  seulement de thème.
 - **Protocole version 2** : l'état complet gagne `cameras` et le WebSocket l'événement
   `cameras_changed` (une variante de plus : les énumérations `serde` refusent les variantes
   inconnues, un client de version 1 n'est donc plus accepté). Client et serveur sortent ensemble.
