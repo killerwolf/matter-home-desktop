@@ -223,7 +223,7 @@ identifiants) et refuse la sauvegarde sans répéter d'adresse ni de mot de pass
   mot de passe : contraire à la règle ci-dessus. Le point d'entrée côté serveur est
   `Hub::camera_target(id, StreamKind::{Main, Sub})` (adresse sans identifiants + identifiants),
   qui ne sort jamais du serveur ; le flux réduit est le défaut (`StoredCamera::preferred_kind`).
-  Une route de flux serait `GET /api/cameras/{id}/stream` (404 aujourd'hui), sous le même jeton.
+  La route de flux est décrite plus bas (« Le flux d'une caméra »).
 - *Placement* : il ne va **pas** dans la caméra mais dans le plan (`home::Item`) : #6 ajoute
   `ItemKind::Camera { camera_id }` et `Item::rotation` (`#[serde(default)]`). Contrôle côté serveur :
   `is_camera_id` et existence de la caméra ; à la suppression, `Hub::delete_camera` est l'endroit
@@ -235,6 +235,39 @@ identifiants) et refuse la sauvegarde sans répéter d'adresse ni de mot de pass
   0 vers le haut ; absent des anciens plans : 0), `HomePlan::camera_room`, `placed_cameras`,
   `remove_camera`. `PUT /api/plan` refuse une rotation hors plage et un `camera_id` hors de la plage
   des caméras. Supprimer une caméra la retire aussi du plan (`plan_changed` suit `cameras_changed`).
+
+### Le flux d'une caméra
+
+`GET /api/cameras/{id}/stream?kind=main|sub` (`sub` par défaut) : un **WebSocket** sous le jeton
+Bearer, qui compte parmi les 32 emplacements WebSocket. La version du protocole reste **2**.
+
+- **Refus** : 401 (jeton) ; 404 avec `detail` si la caméra est inconnue ; 404 **sans** `detail` si
+  la route n'existe pas (serveur ancien) ; 400 si `kind` ou l'identifiant est invalide, ou s'il n'y
+  a pas de flux réduit ; 503 s'il y a trop de WebSocket.
+- **Fermeture** : 1001 (caméra modifiée ou serveur à l'arrêt), 1008 (session terminée), 1000
+  (codec non pris en charge).
+- **Messages texte** : `StreamStatus` : `connecting`, `live`, `retrying{problem}`,
+  `unsupported{codec}`, `unknown`.
+- **Messages binaires** :
+  - `Config`, étiquette `0x01` : codec (u8), largeur (u16), hauteur (u16), rapport d'aspect du
+    pixel n/d (u16 chacun), puis l'`avcC`.
+  - `Frame`, étiquette `0x02` : drapeaux (u8, bit 0 = image clé), horodatage (u32, en ms), puis les
+    données AVCC (longueurs sur 4 octets). **Chaque image clé porte son SPS/PPS.**
+- **Livraison** : une image perdue n'est jamais rejouée ; un client lent reprend à l'image clé
+  suivante. Le délai d'écriture de 10 s ne s'applique pas au flux : il a son propre seuil de 30 s
+  d'écriture bloquée.
+
+### Une caméra sur le plan
+
+`{"type":"Camera","camera_id":"<texte>","fov":90.0,"range":3.0,"shape":"Cone"|"Rectangle"}`.
+`fov`, `range` et `shape` sont facultatifs (90°, 3 m, `Cone`).
+
+- `PUT /api/plan` : `fov` entre 10 et 180 ; `range` entre 0,5 et 50 ; une caméra ne figure qu'**une
+  fois**, tous étages confondus ; une référence à une caméra que le serveur ne connaît pas est
+  acceptée, et le client l'affiche grisée.
+- **Compatibilité** : un client ou un serveur plus ancien ne sait pas lire un plan qui contient un
+  objet `Camera`.
+
 - Répartition des fichiers entre les tickets : [cameras-contrat.md](cameras-contrat.md).
 - *Client* : `Model::cameras` (remplacé par `cameras_changed`) et `Model::camera(id)`.
 

@@ -2,8 +2,12 @@
 
 [← Retour au README](../README.md) · [Protocole](protocole.md)
 
+> **État : la phase parallèle est terminée.** Les tickets n° 5, 6 et 7 sont fusionnés (branche
+> `cameras-v1`), la route du flux est faite, et `CHANGELOG.md` et `docs/protocole.md` sont à jour.
+> Cette page garde la trace de la répartition.
+
 Le ticket n° 4 a posé le socle (stockage, protocole, fenêtre du serveur). Les tickets n° 5
-(lecture), n° 6 (plan) et n° 7 (liste) se construisent **en parallèle** dessus. Cette page dit qui
+(lecture), n° 6 (plan) et n° 7 (liste) se sont construits **en parallèle** dessus. Cette page dit qui
 possède quoi, pour que leurs fusions ne se marchent pas dessus, et ce qui est déjà en place.
 
 ## Règles communes
@@ -49,8 +53,8 @@ dans le compte rendu plutôt que de le faire en parallèle d'un autre.
 - `wire::StreamKind { Main, Sub }` (`label()`, `key()`, `from_key()`). Le flux réduit est celui qu'on
   lit par défaut quand il existe.
 - `wire::CAMERA_STREAM_PATH` = `/api/cameras/{id}/stream` et `camera_stream_path(id, kind)` =
-  `/api/cameras/<id>/stream?kind=main|sub` : la route **réservée** du flux (404 tant que #5 ne
-  l'a pas faite), sous le même jeton que le reste.
+  `/api/cameras/<id>/stream?kind=main|sub` : la route **réservée** du flux (**faite par #5** ; 404 sans `detail` sur un
+  serveur ancien), sous le même jeton que le reste.
 - `wire::is_camera_id(id)` : **un contrôle de plage, rien de plus.** Des appareils pontés tirés
   avant les caméras ont leurs identifiants dans la même plage (environ la moitié d'entre eux). La
   preuve qu'un identifiant est une caméra, c'est sa présence dans `Model::cameras` côté client ou
@@ -66,7 +70,7 @@ dans le compte rendu plutôt que de le faire en parallèle d'un autre.
 ### Serveur (`crates/server`)
 
 - `cameras/{store,probe,monitor,viewers,live}.rs` : données et carnet ; `DESCRIBE` et test annulable
-  (`CameraTest`) ; surveillance ; compte des spectateurs ; `live.rs` vide pour #5.
+  (`CameraTest`) ; surveillance ; compte des spectateurs ; `live.rs` : le relais du direct (#5, fait).
 - `hub/cameras.rs` : `add_camera`, `update_camera`, `delete_camera` (**une seule transaction** :
   caméras, puis plan, sous un seul passage par `write_lock`, jamais de verrou réentrant),
   `camera_target(id, kind)`, `camera_viewers(id)`, `acquire_camera_viewer(id) -> ViewerLease`,

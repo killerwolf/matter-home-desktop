@@ -36,7 +36,7 @@
 //! - `store` : données, saisie, validation, fichier, carnet (caméras + état) ;
 //! - `probe` : le `DESCRIBE` et le bouton « Tester » (annulable) ;
 //! - `monitor` : la surveillance ;
-//! - `viewers` : le compte des spectateurs ; `live` : la lecture (ticket n° 5, vide) ;
+//! - `viewers` : le compte des spectateurs ; `live` : la lecture (ticket n° 5, faite : un relais H.264 partagé par caméra et flux) ;
 //! - le côté hub (ajout, modification, suppression…) est dans `hub/cameras.rs`.
 //!
 //! # Pour #5 (lecture), #6 (plan) et #7 (liste)

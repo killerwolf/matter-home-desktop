@@ -20,7 +20,9 @@ use matter_home_client::model::Model;
 
 /// Nombre maximal de tuiles qui lisent un flux en même temps (le décodage se fait sur le client,
 /// et chaque flux ouvre une connexion côté serveur). Les suivantes montrent une image d'attente.
-pub const MAX_LIVE_TILES: usize = 6;
+/// Le serveur ne garde qu'une session par (caméra, flux) ; la limite borne donc le nombre de caméras
+/// distinctes lues à la fois (une Aqara G100 tolère environ deux canaux RTSP).
+pub const MAX_LIVE_TILES: usize = 4;
 
 /// Largeur minimale d'une tuile.
 const TILE_MIN_WIDTH: f32 = 260.0;
@@ -463,7 +465,7 @@ mod tests {
     fn placed(camera_id: u64, x: f32) -> Item {
         Item {
             id: camera_id,
-            kind: ItemKind::Camera { camera_id },
+            kind: ItemKind::camera(camera_id),
             x,
             y: 50.0,
             rotation: 0.0,

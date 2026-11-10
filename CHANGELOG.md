@@ -31,6 +31,23 @@ Les téléchargements de chaque version sont sur la
   L'export puis l'import conservent les caméras. Détails dans `docs/protocole.md`.
 - Mode démo : trois caméras fictives (une injoignable, une sans flux réduit) pour essayer la
   fenêtre et les clients sans caméra ni trafic réseau.
+- **Caméras, 2/5 : le direct dans le client** (ticket n° 5). Le serveur relaie le H.264 de la
+  caméra **sans le transcoder**. Une seule connexion à la caméra sert tous les spectateurs ; elle
+  se ferme 5 s après le départ du dernier. Le client décode avec VideoToolbox. Le lecteur propose
+  le flux réduit ou le flux principal, des messages d'erreur en français et une reprise
+  automatique. Les journaux de `retina` sont coupés par défaut, parce qu'ils écrivaient les
+  adresses des caméras.
+- **Caméras, 3/5 : sur le plan** (ticket n° 6). Les caméras se placent et s'orientent sur le plan.
+  Chacune montre son champ filmé en **cône ou en rectangle**, avec un angle et une portée
+  réglables ; la rotation est enregistrée avec le plan. Le plan indique l'état de chaque caméra
+  (en ligne, injoignable, inconnu), et un clic ouvre le direct dans une fenêtre. Les plans
+  enregistrés avant cette version s'ouvrent tels quels : rotation 0, angle 90° et portée 3 m.
+- **Caméras, 4/5 : la page Caméras** (ticket n° 7). Un nouvel onglet liste toutes les caméras par
+  pièce, avec leur état et un aperçu sur le flux réduit. Un clic ouvre la caméra en grand, avec la
+  possibilité de passer au flux principal. Au plus **4 caméras** lisent en même temps (une Aqara
+  G100 ne tolère qu'environ deux canaux RTSP) ; les autres montrent une image d'attente. Fermer la
+  fenêtre du plan ou quitter la page coupe le flux au bout de quelques secondes, et deux endroits
+  qui montrent la même caméra partagent une seule session côté serveur.
 
 - **Onglet Températures** (ticket n° 3) : toutes les températures sur **un seul graphique**, une
   courbe de couleur par thermomètre, nommée d'après l'appareil et sa pièce sur le plan, pour
