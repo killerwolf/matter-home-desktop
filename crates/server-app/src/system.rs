@@ -126,6 +126,14 @@ pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Ouvre dans le navigateur par défaut (`open`, aucun shell) une adresse https dont l'hôte est
+/// `login.tailscale.com` ou un nom `.ts.net` : rien d'autre.
+pub fn open_url(url: &str) {
+    if crate::tailscale::is_openable(url) {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+}
+
 pub fn open_file(path: &Path) {
     let _ = Command::new("/usr/bin/open").arg("-t").arg(path).spawn();
 }

@@ -1,0 +1,7 @@
+{
+  "Version": "1.0.0-fixture",
+  "BackendState": "NeedsLogin",
+  "AuthURL": "https://login.example.invalid/a/0000000000",
+  "Self": null,
+  "Health": []
+}

@@ -2072,3 +2072,24 @@ fn escape_cancels_the_name_edit_without_closing_the_window_then_closes_it() {
     escape_frame(&mut f, &ctx);
     assert_eq!(f.app.selected, None);
 }
+
+#[test]
+fn the_server_address_hides_the_scheme_and_the_fingerprint() {
+    assert_eq!(
+        server_address("https://mac-exemple.tailnet-exemple.ts.net:8443#AA:BB"),
+        "mac-exemple.tailnet-exemple.ts.net:8443"
+    );
+    assert_eq!(
+        server_address("https://127.0.0.1:8443/#AA"),
+        "127.0.0.1:8443"
+    );
+}
+
+#[test]
+fn a_long_address_is_cut_with_an_ellipsis_and_a_short_one_is_kept() {
+    assert_eq!(shorten("mac.local:8443", 48), "mac.local:8443");
+    let long = "a".repeat(60);
+    let cut = shorten(&long, 48);
+    assert_eq!(cut.chars().count(), 48);
+    assert!(cut.ends_with('…'));
+}

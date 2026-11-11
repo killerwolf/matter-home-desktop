@@ -1,0 +1,16 @@
+{
+  "TCP": {
+    "8444": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "mac-exemple.tailnet-exemple.ts.net:8444": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3000"
+        }
+      }
+    }
+  }
+}

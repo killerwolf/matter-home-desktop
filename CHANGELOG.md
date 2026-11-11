@@ -21,7 +21,18 @@ Les téléchargements de chaque version sont sur la
   actuelle, minimum et maximum, et curseur au survol ou au toucher. **Caméras** : plus de feuille
   modale ; un clic passe la vignette en plein écran (flux principal, retour au flux réduit en
   sortant), avec repli en plein écran CSS sur iPhone.
-
+- **Accès web par Tailscale depuis le menu de Matter Home Server** : une case « Accès web
+  (Tailscale) » active ou coupe `tailscale serve` pour le port du serveur, sans Terminal (jamais
+  `funnel`). Elle se grise avec la raison quand Tailscale n'est pas installé ou déconnecté, ou
+  quand un autre `serve` occupe déjà le port 443 (il n'est jamais écrasé) ; si Serve n'est pas
+  autorisé sur le tailnet, un élément ouvre le lien d'autorisation. Actif, le menu propose
+  d'ouvrir ou de copier `https://<nom>.ts.net/app/`. Voir [docs/web-app.md](docs/web-app.md).
+- **Version dans le menu de Matter Home Server** : une ligne « Matter Home Server 1.0.0-rc.7 » en
+  haut du menu. Le nom complet vient de `MATTER_HOME_VERSION`, posée par la CI sur un tag ; un
+  build local affiche « 1.0.0 (dev) ».
+- **Client de bureau : l'adresse du serveur dans la barre du haut** (« ● mac.ts.net:8443 · 1.0.0 »),
+  tronquée par « … » si elle est longue (infobulle avec l'adresse complète). Un clic ouvre un petit
+  menu : « Copier l'adresse » et « Se déconnecter / changer de serveur ».
 - **App web mobile (PWA)** (ticket n° 15). Le serveur sert `/app/` : appareils en tuiles par pièce
   (tap sur une lumière ou un volet, appui long pour le détail), courbes de température sur 24 h,
   caméras en direct (WebCodecs), barre d'onglets iOS, thème clair ou sombre, installable. Fichiers

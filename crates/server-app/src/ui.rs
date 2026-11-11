@@ -23,7 +23,8 @@ use matter_home_server_app::controller::{Cmd, Handle, Notice, State};
 use matter_home_server_app::menu::{self, Action, Entry, MenuInput};
 use matter_home_server_app::startup::SetupNeed;
 use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
-use matter_home_server_app::{agent, icon, system};
+use matter_home_server_app::tailscale::{self, WebAccess};
+use matter_home_server_app::{agent, icon, system, version};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -271,6 +272,15 @@ struct App {
     cameras: CamerasUi,
     /// La confirmation « Quitter » est à l'écran : un second clic n'en ouvre pas une autre.
     quit_dialog_open: Arc<AtomicBool>,
+    /// L'accès web par Tailscale, tel que Tailscale le dit (rien n'est gardé sur disque).
+    web: WebAccess,
+    /// Lecture (`false`) ou activation/coupure (`true`) en cours, dans un fil à part.
+    web_job: Option<(bool, Receiver<WebAccess>)>,
+    /// Le menu a été ouvert ou refermé depuis la dernière lecture : relire l'état.
+    web_stale: bool,
+    menu_was_open: bool,
+    /// Le lien d'autorisation de Serve, gardé jusqu'à la prochaine tentative d'activation.
+    web_auth_url: Option<String>,
 }
 
 impl App {
@@ -300,6 +310,11 @@ impl App {
             cameras_open: false,
             cameras: CamerasUi::default(),
             quit_dialog_open: Arc::new(AtomicBool::new(false)),
+            web: WebAccess::Checking,
+            web_job: None,
+            web_stale: true,
+            menu_was_open: false,
+            web_auth_url: None,
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
         if !app.demo {
@@ -419,8 +434,76 @@ impl App {
         });
     }
 
+    /// Relit l'état de Tailscale à l'ouverture et à la fermeture du menu (jamais sur le fil
+    /// principal : un fil à part, 3 s au plus), puis range le résultat.
+    fn poll_web(&mut self, st: &State) {
+        if let Some((toggled, rx)) = &self.web_job {
+            match rx.try_recv() {
+                Ok(state) => {
+                    let toggled = *toggled;
+                    self.web_job = None;
+                    if let WebAccess::NeedsAuth { url } = &state {
+                        self.web_auth_url = Some(url.clone());
+                    }
+                    self.web = match (state, &self.web_auth_url) {
+                        // Une simple lecture ne fait pas oublier qu'il reste à autoriser Serve.
+                        (WebAccess::Off { .. }, Some(url)) if !toggled => {
+                            WebAccess::NeedsAuth { url: url.clone() }
+                        }
+                        (state, _) => state,
+                    };
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.web_job = None,
+            }
+        }
+        // `run_loop_is_default_mode` est faux pendant qu'un menu de la barre de menus est suivi.
+        let open = !system::run_loop_is_default_mode();
+        if open != self.menu_was_open {
+            self.menu_was_open = open;
+            self.web_stale = true;
+        }
+        let port = st.url.as_deref().and_then(tailscale::port_of_url);
+        if self.web_stale && self.web_job.is_none() {
+            if let Some(port) = port {
+                self.web_stale = false;
+                self.web_job = Some((false, tailscale::spawn_read(self.demo, port)));
+            }
+        }
+    }
+
+    fn toggle_web(&mut self, st: &State) {
+        let Some(port) = st.url.as_deref().and_then(tailscale::port_of_url) else {
+            return;
+        };
+        let enable = match self.web {
+            WebAccess::Off { .. } | WebAccess::NeedsAuth { .. } => true,
+            WebAccess::On { .. } => false,
+            _ => return,
+        };
+        self.web_auth_url = None;
+        self.web = WebAccess::Checking;
+        self.web_job = Some((true, tailscale::spawn_toggle(self.demo, port, enable)));
+    }
+
     fn do_action(&mut self, ctx: &egui::Context, action: Action, st: &State) {
         match action {
+            Action::WebAccess => self.toggle_web(st),
+            Action::WebOpen => {
+                if let Some(url) = self.web.web_url() {
+                    system::open_url(&url);
+                }
+            }
+            Action::WebCopy => {
+                if let Some(url) = self.web.web_url() {
+                    let _ = system::copy_to_clipboard(&url);
+                }
+            }
+            Action::WebAuth => {
+                if let WebAccess::NeedsAuth { url } = &self.web {
+                    system::open_url(url);
+                }
+            }
             Action::CopyUrl => {
                 if let Some(u) = &st.url {
                     let _ = system::copy_to_clipboard(u);
@@ -546,7 +629,10 @@ impl App {
             let _ = self.tray.set_tooltip(Some(&tip));
             self.shown_tooltip = tip;
         }
+        let version = version::display_version();
         let model = menu::build(&MenuInput {
+            version: &version,
+            web: &self.web,
             phase: &st.phase,
             health: &st.health,
             url: st.url.as_deref(),
@@ -611,6 +697,7 @@ impl eframe::App for App {
         let st = self.handle.snapshot();
         self.refresh_login();
         self.poll_picking();
+        self.poll_web(&st);
         while let Ok(action) = self.actions.try_recv() {
             self.do_action(ctx, action, &st);
         }
@@ -1101,6 +1188,8 @@ mod tests {
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
         };
         menu::build(&MenuInput {
+            version: "1.0.0",
+            web: &matter_home_server_app::tailscale::WebAccess::Checking,
             phase: &Phase::Running,
             health: &health,
             url: Some("https://mac.local:8443"),

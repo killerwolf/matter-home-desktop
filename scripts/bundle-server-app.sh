@@ -21,6 +21,12 @@ BIN="matter-home-server-app"
 APP="$DIST/$NAME.app"
 
 VERSION="$(awk -F'"' '/^version = /{print $2; exit}' "$ROOT/Cargo.toml")"
+# Le nom complet de la version (« 1.0.0-rc.7 »), lu à la compilation par le menu de l'application
+# (`option_env!("MATTER_HOME_VERSION")`) : Cargo.toml n'a que « 1.0.0 ». Sur un tag de la CI, il
+# vient du nom du tag ; sinon le menu affiche « <version> (dev) ».
+if [ -z "${MATTER_HOME_VERSION:-}" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+  export MATTER_HOME_VERSION="${GITHUB_REF_NAME#v}"
+fi
 BUNDLE_ID="dev.matter-home-desktop.server-app"
 MIN_X86_64="${MH_MIN_MACOS_X86_64:-10.15}"
 MIN_ARM64="${MH_MIN_MACOS_ARM64:-11.0}"

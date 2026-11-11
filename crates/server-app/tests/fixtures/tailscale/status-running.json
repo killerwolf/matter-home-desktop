@@ -1,0 +1,20 @@
+{
+  "Version": "1.0.0-fixture",
+  "BackendState": "Running",
+  "AuthURL": "",
+  "TailscaleIPs": ["100.64.0.1"],
+  "Self": {
+    "ID": "n0000000000000001",
+    "HostName": "mac-exemple",
+    "DNSName": "mac-exemple.tailnet-exemple.ts.net.",
+    "OS": "macOS",
+    "Online": true
+  },
+  "Health": [],
+  "MagicDNSSuffix": "tailnet-exemple.ts.net",
+  "CurrentTailnet": {
+    "Name": "exemple@example.invalid",
+    "MagicDNSSuffix": "tailnet-exemple.ts.net",
+    "MagicDNSEnabled": true
+  }
+}
