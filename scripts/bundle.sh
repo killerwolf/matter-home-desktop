@@ -115,7 +115,9 @@ if [ "${1:-}" = "--dmg" ]; then
   VENV="$ROOT/target/dmgbuild-$DMGBUILD_VERSION"
   if [ ! -x "$VENV/bin/dmgbuild" ]; then
     log "Installation de dmgbuild $DMGBUILD_VERSION"
-    python3 -m venv "$VENV"
+    # --clear : un venv restauré par le cache de la CI peut pointer vers un Python
+    # disparu (sans pip ni dmgbuild exécutables) ; on le recrée entièrement.
+    python3 -m venv --clear "$VENV"
     "$VENV/bin/pip" install --quiet --disable-pip-version-check "dmgbuild==$DMGBUILD_VERSION"
   fi
 
