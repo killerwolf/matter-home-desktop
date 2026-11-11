@@ -78,7 +78,7 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), deadline))
         // En dernier (donc à l'extérieur de tout) : les en-têtes communs couvrent aussi les
         // réponses refabriquées par `json_errors` et le 503 de `deadline`.
-        .layer(middleware::map_response(harden))
+        .layer(middleware::from_fn(harden))
         .with_state(state)
 }
 
@@ -124,8 +124,17 @@ async fn json_errors(response: Response) -> Response {
 }
 
 /// En-têtes communs : jamais de mise en cache, pas de devinette de type.
-async fn harden(mut response: Response) -> Response {
+async fn harden(request: Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
     let headers = response.headers_mut();
+    if is_api {
+        // Une réponse d'API n'est jamais une page : rien ne doit s'y charger ni s'y encadrer.
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+        );
+    }
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -334,16 +343,17 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
 pub const WS_SUBPROTOCOL: &str = "matter-home.v1";
 
 /// Jeton d'un navigateur : un `WebSocket` de navigateur ne peut pas poser d'en-tête
-/// `Authorization`. L'app web propose donc `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`
-/// (jamais le jeton dans l'URL). Accepté seulement pour une demande d'upgrade WebSocket, et
-/// seulement si aucun en-tête `Authorization` valide n'est présent ; le client natif n'est pas
-/// touché.
-pub fn ws_subprotocol_token(headers: &HeaderMap) -> Option<&str> {
-    let is_upgrade = headers
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
-    if !is_upgrade {
+/// `Authorization`. L'app web propose donc `Sec-WebSocket-Protocol: matter-home.v1,
+/// bearer.<jeton>` (jamais le jeton dans l'URL). Accepté **seulement** pour `GET /api/ws` et
+/// `GET /api/cameras/{id}/stream` avec un vrai upgrade WebSocket (`Connection: upgrade`,
+/// `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`) : jamais pour une autre route. Le client
+/// natif, qui envoie `Authorization`, n'est pas touché.
+pub fn ws_subprotocol_token<'a>(
+    method: &axum::http::Method,
+    path: &str,
+    headers: &'a HeaderMap,
+) -> Option<&'a str> {
+    if !is_ws_route(method, path) || !is_ws_upgrade(headers) {
         return None;
     }
     headers
@@ -355,13 +365,70 @@ pub fn ws_subprotocol_token(headers: &HeaderMap) -> Option<&str> {
         .find(|token| !token.is_empty() && token.len() <= 256)
 }
 
+/// Les deux seules routes WebSocket.
+fn is_ws_route(method: &axum::http::Method, path: &str) -> bool {
+    if method != axum::http::Method::GET {
+        return false;
+    }
+    if path == "/api/ws" {
+        return true;
+    }
+    path.strip_prefix("/api/cameras/")
+        .and_then(|rest| rest.strip_suffix("/stream"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+fn is_ws_upgrade(headers: &HeaderMap) -> bool {
+    let has = |name: header::HeaderName, token: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .any(|t| t.trim().eq_ignore_ascii_case(token))
+    };
+    has(header::UPGRADE, "websocket")
+        && has(header::CONNECTION, "upgrade")
+        && headers.contains_key(header::SEC_WEBSOCKET_KEY)
+        && headers
+            .get(header::SEC_WEBSOCKET_VERSION)
+            .is_some_and(|v| v.as_bytes() == b"13")
+}
+
+/// Un navigateur qui ouvre un WebSocket envoie `Origin` : s'il ne correspond pas à `Host`, la page
+/// vient d'ailleurs (détournement de WebSocket entre sites) et on refuse. Le client natif n'en
+/// envoie pas.
+fn origin_mismatch(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return false;
+    };
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let authority = origin
+        .to_str()
+        .ok()
+        .and_then(|o| o.split_once("://").map(|(_, rest)| rest));
+    match (authority, host) {
+        (Some(a), Some(h)) => !a.eq_ignore_ascii_case(h),
+        _ => true,
+    }
+}
+
 async fn require_session(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Response {
+    if is_ws_route(request.method(), request.uri().path())
+        && is_ws_upgrade(request.headers())
+        && origin_mismatch(request.headers())
+    {
+        let body = ErrorBody {
+            error: ApiError::with_detail(ErrorCode::Unauthorized, "origine refusée"),
+        };
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
     let session = bearer(request.headers())
-        .or_else(|| ws_subprotocol_token(request.headers()))
+        .or_else(|| ws_subprotocol_token(request.method(), request.uri().path(), request.headers()))
         .and_then(|token| {
             let account_id = state.auth.accounts.account_id()?;
             state.auth.sessions.validate(token, &account_id)

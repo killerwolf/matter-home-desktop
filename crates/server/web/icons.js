@@ -24,10 +24,12 @@ export const ICONS = {
 /** Volet : le rideau descend d'autant que le volet est fermé (`open` en pour cent, ou inconnu). */
 export function shutterIcon(open) {
   const closed = open == null ? 0.5 : (100 - Math.max(0, Math.min(100, open))) / 100;
-  const h = Math.round(16 * closed);
+  const h = Math.round(15 * closed);
   const slats = [];
-  for (let y = 8.5; y < 8.5 + h; y += 3.2) slats.push(`<path d="M7 ${y.toFixed(1)}h14"/>`);
-  return svg(`<rect x="5" y="4.5" width="18" height="20" rx="1.5"/>${slats.join("")}${open == null ? '<path d="M14 18v3" />' : ""}`);
+  for (let y = 11; y < 9.5 + h; y += 3) slats.push(`<path d="M7 ${y.toFixed(1)}h14"/>`);
+  // Le caisson en haut est toujours plein ; un volet ouvert montre une flèche vers le haut.
+  const arrow = open != null && open >= 99 ? '<path d="M10.5 18.5l3.5-3.5 3.5 3.5"/>' : "";
+  return svg(`<rect x="5" y="4.5" width="18" height="20" rx="1.5"/><rect x="5" y="4.5" width="18" height="5" rx="1.5" fill="currentColor" fill-opacity=".35"/>${slats.join("")}${arrow}${open == null ? '<path d="M14 17v3" />' : ""}`);
 }
 
 export function mountIcons(root = document) {

@@ -66,8 +66,13 @@ export function lineChart(series, start, end, { width = 340, height = 150 } = {}
       d += prev === null || p.at - prev > 5400 ? `M${x(p.at).toFixed(1)} ${y(p.value).toFixed(1)}` : `L${x(p.at).toFixed(1)} ${y(p.value).toFixed(1)}`;
       prev = p.at;
     }
-    if (pts.length === 1) d += `h0.1`;
     svg.appendChild(el("path", { class: `line s${s.colorIndex}`, d }));
+    if (pts.length === 1) {
+      // Une seule mesure : un point bien visible (la couleur vient de la variable du thème).
+      const dot = el("circle", { cx: x(pts[0].at).toFixed(1), cy: y(pts[0].value).toFixed(1), r: 4 });
+      dot.style.fill = `var(--color-series-${s.colorIndex})`;
+      svg.appendChild(dot);
+    }
   }
   return svg;
 }

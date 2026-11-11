@@ -89,9 +89,9 @@ static ASSETS: &[Asset] = &[
 ];
 
 /// Politique de sécurité : tout vient de la même origine, aucun script ni style en ligne, aucune
-/// ressource externe. `blob:` pour les vignettes de caméra dessinées dans un canvas.
+/// ressource externe (les images des caméras sont dessinées dans un canvas : ni `blob:` ni `media-src`).
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; manifest-src 'self'; \
+img-src 'self'; connect-src 'self'; manifest-src 'self'; \
 worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 pub fn router() -> Router<super::AppState> {

@@ -34,8 +34,8 @@ button { cursor: pointer; }
 
 #view {
   flex: 1;
-  padding: var(--space-sm) calc(env(safe-area-inset-right) + var(--space-lg)) calc(80px + env(safe-area-inset-bottom)) calc(env(safe-area-inset-left) + var(--space-lg));
-  max-width: 1200px; width: 100%; margin: 0 auto;
+  padding: var(--space-sm) calc(env(safe-area-inset-right) + var(--space-lg)) calc(110px + env(safe-area-inset-bottom)) calc(env(safe-area-inset-left) + var(--space-lg));
+  max-width: 1400px; width: 100%; margin: 0 auto;
 }
 
 #tabs {
@@ -49,12 +49,16 @@ button { cursor: pointer; }
   flex: 1; max-width: 200px; min-height: 52px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   background: none; border: 0; color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 #tabs button[aria-selected="true"] { color: var(--color-accent-text); }
 .ico svg { width: 26px; height: 26px; display: block; }
 
 /* ---- Pièces et tuiles ---- */
+.rooms { display: block; }
+@media (min-width: 600px) {
+  .rooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--space-sm) var(--space-xl); align-items: start; }
+}
 .room { margin: var(--space-lg) 0 var(--space-xl); }
 .room-head { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-sm); }
 .room-head h2 { margin: 0; font-size: var(--font-size-heading); font-weight: var(--font-weight-strong); }
@@ -73,7 +77,8 @@ button { cursor: pointer; }
 .pill.t24 { background: color-mix(in srgb, var(--temp-24) calc(var(--temp-fill-alpha) * 100%), var(--color-surface)); }
 
 .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-sm); }
-@media (min-width: 600px) { .tiles { grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-width), 1fr)); } }
+@media (min-width: 600px) { .tiles { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+.bridges { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 
 .tile {
   position: relative; text-align: left;
@@ -153,6 +158,7 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .card .range { font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 .chart { width: 100%; height: auto; display: block; margin-top: var(--space-sm); }
 .chart text { fill: var(--color-text-secondary); font-size: 10px; font-family: var(--font-family); }
+.chart .dot { stroke: none; }
 .chart .grid { stroke: var(--color-line); stroke-width: 1; }
 .chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .chart .s1 { stroke: var(--color-series-1); } .chart .s2 { stroke: var(--color-series-2); }

@@ -44,7 +44,7 @@ Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules
   reste passe par l'API, qui exige le jeton comme avant.
 - En-têtes de la coquille : `Content-Security-Policy` stricte (`default-src 'self'`, aucun script
   ni style en ligne, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy:
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Les réponses de `/api/` portent `default-src 'none'; frame-ancestors 'none'`. `Cross-Origin-Resource-Policy:
   same-origin`, `Cache-Control: no-store`. **Pas de CORS** : l'app est de la même origine que l'API.
 - **Connexion** : mêmes identifiants et même route que le client de bureau (`POST /api/login`,
   mêmes limites d'essais, argon2). Le **mot de passe n'est jamais gardé**. Le **jeton** (révocable,
@@ -54,7 +54,7 @@ Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules
 - **WebSocket d'un navigateur** : un `WebSocket` ne peut pas poser d'en-tête `Authorization`, et le
   jeton ne va jamais dans l'URL. L'app propose donc
   `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`. Le serveur ne lit cette entrée que sur
-  une demande d'upgrade WebSocket (jamais sur une requête ordinaire), vérifie le jeton comme
+  `GET /api/ws` et `GET /api/cameras/{id}/stream` avec un vrai upgrade (`Connection: upgrade`, `Sec-WebSocket-Key`, version 13), jamais ailleurs ; un `Origin` qui ne correspond pas à `Host` est refusé (403), vérifie le jeton comme
   d'habitude, et **répond toujours `matter-home.v1`** (jamais l'entrée qui porte le jeton). Le
   client natif, qui envoie `Authorization`, n'est pas touché ; `PROTOCOL_VERSION` reste **2**. Même
   mécanisme pour `GET /api/cameras/{id}/stream`.

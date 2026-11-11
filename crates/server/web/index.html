@@ -21,18 +21,18 @@
 <div id="app">
   <header id="topbar" hidden>
     <h1 id="title">Appareils</h1>
-    <span id="conn" class="conn" role="status" hidden></span>
+    <span id="conn" class="conn" role="status" aria-live="polite" hidden></span>
   </header>
-  <main id="view" aria-live="polite"></main>
-  <nav id="tabs" role="tablist" hidden>
-    <button role="tab" data-tab="devices" aria-selected="true"><span class="ico" data-ico="home"></span><span>Appareils</span></button>
-    <button role="tab" data-tab="temps" aria-selected="false"><span class="ico" data-ico="thermo"></span><span>Températures</span></button>
-    <button role="tab" data-tab="cameras" aria-selected="false"><span class="ico" data-ico="camera"></span><span>Caméras</span></button>
+  <main id="view" role="tabpanel" aria-labelledby="tab-devices"></main>
+  <nav id="tabs" role="tablist" aria-label="Sections" hidden>
+    <button role="tab" id="tab-devices" aria-controls="view" data-tab="devices" aria-selected="true"><span class="ico" data-ico="home"></span><span>Appareils</span></button>
+    <button role="tab" id="tab-temps" aria-controls="view" data-tab="temps" aria-selected="false"><span class="ico" data-ico="thermo"></span><span>Températures</span></button>
+    <button role="tab" id="tab-cameras" aria-controls="view" data-tab="cameras" aria-selected="false"><span class="ico" data-ico="camera"></span><span>Caméras</span></button>
   </nav>
 </div>
 
 <section id="login" hidden>
-  <form id="login-form" autocomplete="on">
+  <form id="login-form" method="post" autocomplete="on">
     <h1>Matter Home</h1>
     <p class="muted">Connectez-vous avec le compte du serveur.</p>
     <label>Identifiant

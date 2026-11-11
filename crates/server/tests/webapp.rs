@@ -141,6 +141,7 @@ async fn ws_with_protocols(
     path: &str,
     protocols: &str,
     authorization: Option<&str>,
+    origin: Option<&str>,
 ) -> Result<(String, serde_json::Value), u16> {
     let tls = client.connect().await;
     let mut request = format!("wss://localhost:{}{path}", client.addr.port())
@@ -149,6 +150,9 @@ async fn ws_with_protocols(
     request
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", protocols.parse().unwrap());
+    if let Some(o) = origin {
+        request.headers_mut().insert("Origin", o.parse().unwrap());
+    }
     if let Some(a) = authorization {
         request
             .headers_mut()
@@ -186,6 +190,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
             "/api/ws?protocol=2",
             &format!("matter-home.v1, bearer.{token}"),
             None,
+            None,
         )
         .await
         .expect("connexion acceptée");
@@ -198,6 +203,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
             &client,
             "/api/ws?protocol=2",
             &format!("matter-home.v1, bearer.{}", "1".repeat(64)),
+            None,
             None,
         )
         .await;
@@ -219,5 +225,133 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         let mut raw = Vec::new();
         let _ = stream.read_to_end(&mut raw).await;
         assert!(String::from_utf8_lossy(&raw).starts_with("HTTP/1.1 401"));
+    });
+}
+
+/// Une requête brute (HTTP/1.1, connexion fermée) avec des en-têtes à la carte.
+async fn raw_get(client: &Client, path: &str, extra: &[(&str, &str)]) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = client.connect().await;
+    let mut head = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    for (k, v) in extra {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+    let mut raw = Vec::new();
+    let _ = stream.read_to_end(&mut raw).await;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let status = text.split(' ').nth(1).unwrap_or("0").parse().unwrap_or(0);
+    (status, text)
+}
+
+#[test]
+fn subprotocol_token_is_only_for_the_two_websocket_routes_with_a_real_upgrade() {
+    let dir = temp_dir("webapp-subproto");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let bearer = format!("bearer.{token}");
+        // Un en-tête d'upgrade complet, mais sur une route qui n'est pas un WebSocket : 401.
+        for path in ["/api/state", "/api/export", "/api/plan", "/api/cameras"] {
+            let (status, _) = raw_get(
+                &client,
+                path,
+                &[
+                    ("Upgrade", "websocket"),
+                    ("Connection", "Upgrade"),
+                    ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                    ("Sec-WebSocket-Version", "13"),
+                    ("Sec-WebSocket-Protocol", &bearer),
+                ],
+            )
+            .await;
+            assert_eq!(status, 401, "{path}");
+        }
+        // Sur la bonne route mais sans upgrade complet (ni clé, ni version, ni Connection) : 401.
+        for extra in [
+            vec![("Upgrade", "websocket")],
+            vec![("Upgrade", "websocket"), ("Connection", "Upgrade")],
+            vec![
+                ("Upgrade", "websocket"),
+                ("Connection", "Upgrade"),
+                ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ("Sec-WebSocket-Version", "8"),
+            ],
+        ] {
+            let mut headers = extra.clone();
+            headers.push(("Sec-WebSocket-Protocol", &bearer));
+            let (status, _) = raw_get(&client, "/api/ws?protocol=2", &headers).await;
+            assert_eq!(status, 401, "{extra:?}");
+        }
+    });
+}
+
+#[test]
+fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
+    let dir = temp_dir("webapp-origin");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let token = client.login().await;
+        let protocols = format!("matter-home.v1, bearer.{token}");
+        let same = format!("https://localhost:{}", client.addr.port());
+        // Même origine que l'hôte : accepté.
+        assert!(
+            ws_with_protocols(&client, "/api/ws?protocol=2", &protocols, None, Some(&same))
+                .await
+                .is_ok()
+        );
+        // Autre site : 403, même avec un jeton valide.
+        for origin in ["https://evil.example", "http://localhost", "null"] {
+            let refused = ws_with_protocols(
+                &client,
+                "/api/ws?protocol=2",
+                &protocols,
+                None,
+                Some(origin),
+            )
+            .await;
+            assert_eq!(refused.unwrap_err(), 403, "{origin}");
+        }
+        // Idem avec l'en-tête Authorization (un navigateur ne l'envoie pas, mais l'origine
+        // compte quand même).
+        let bearer = format!("Bearer {token}");
+        let refused = ws_with_protocols(
+            &client,
+            "/api/ws?protocol=2",
+            "matter-home.v1",
+            Some(&bearer),
+            Some("https://evil.example"),
+        )
+        .await;
+        assert_eq!(refused.unwrap_err(), 403);
+        // Le client natif n'envoie pas Origin : inchangé.
+        assert!(client.ws(&token, PROTOCOL).await.is_ok());
+    });
+}
+
+#[test]
+fn api_responses_carry_a_locked_down_csp() {
+    let dir = temp_dir("webapp-api-csp");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let r = client.request("GET", "/api/version", None, None).await;
+        assert_eq!(
+            r.headers["content-security-policy"],
+            "default-src 'none'; frame-ancestors 'none'"
+        );
+        let r = client.request("GET", "/api/state", None, None).await;
+        assert_eq!(r.status, 401);
+        assert!(r.headers["content-security-policy"].contains("default-src 'none'"));
+        // La coquille garde sa propre politique, sans media-src ni blob:.
+        let r = client.request("GET", "/app/", None, None).await;
+        let csp = &r.headers["content-security-policy"];
+        assert!(
+            csp.contains("img-src 'self';") && !csp.contains("media-src") && !csp.contains("blob:")
+        );
     });
 }

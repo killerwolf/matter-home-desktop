@@ -65,7 +65,7 @@ function applyEvent(e) {
     }
     case "cover_motion": if (d(e.node_id)) d(e.node_id).cover_motion = e.motion; break;
     case "plan_changed": state.plan = e.plan; scheduleRender(true); return;
-    case "cameras_changed": state.cameras = e.cameras; if (tab === "cameras") scheduleRender(true); return;
+    case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
     default: return;
   }
   settleExpect(e.node_id);
@@ -193,6 +193,9 @@ function renderDevices() {
       empty.textContent = state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…";
       view.appendChild(empty);
     }
+    const rooms = document.createElement("div");
+    rooms.className = "rooms";
+    view.appendChild(rooms);
     for (const g of layout.groups) {
       const section = document.createElement("section");
       section.className = "room";
@@ -212,7 +215,7 @@ function renderDevices() {
       grid.className = "tiles";
       for (const id of g.ids) grid.appendChild(tileElement(id));
       section.appendChild(grid);
-      view.appendChild(section);
+      rooms.appendChild(section);
     }
     if (layout.bridges.length) {
       const h = document.createElement("h2");
@@ -291,6 +294,7 @@ async function renderTemps() {
     return;
   }
   const token = ++tempRenderToken;
+  tempBigs = [];
   const slots = cards.map((c) => {
     const card = document.createElement("section");
     card.className = "card";
@@ -308,13 +312,14 @@ async function renderTemps() {
     if (token !== tempRenderToken) return;
     const card = slots[i];
     const big = card.querySelector(".big");
-    const current = c.average ?? (c.sensors[0] && !isStale(c.sensors[0]) ? temperature(c.sensors[0]) : null);
-    big.textContent = current == null ? "—" : formatTemperature(current);
+    tempBigs.push({ key: c.key, big });
+    updateTempBigs();
     const plot = card.querySelector(".plot");
     if (!series) { plot.textContent = "Historique indisponible."; return; }
     const range = rangeOf(series);
+    const count = series.reduce((n, s) => n + s.points.length, 0);
     card.querySelector(".range").textContent = range
-      ? `min ${formatTemperature(range.lo)} · max ${formatTemperature(range.hi)} · 24 h`
+      ? (count === 1 ? `1 mesure · ${formatTemperature(range.lo)}` : `min ${formatTemperature(range.lo)} · max ${formatTemperature(range.hi)} · 24 h`)
       : "Aucune mesure sur 24 h";
     plot.replaceChildren(lineChart(series, end - 86400, end));
     if (c.sensors.length > 1) {
@@ -326,12 +331,33 @@ async function renderTemps() {
   }));
 }
 let tempRenderToken = 0;
+let tempBigs = [];
+
+/** La grande valeur de chaque carte suit les mesures en direct (sans refaire les courbes). */
+function updateTempBigs() {
+  const layout = groups(state.devices, state.plan);
+  for (const { key, big } of tempBigs) {
+    const g = layout.groups.find((x) => x.key === key);
+    const sensors = (g?.ids ?? []).map((id) => state.devices.get(id)).filter((d) => d.info.caps.temperature);
+    const current = layout.averages.get(key) ?? (sensors[0] && !isStale(sensors[0]) ? temperature(sensors[0]) : null);
+    big.textContent = current == null ? "" : formatTemperature(current);
+    big.hidden = current == null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Rendu : caméras
 // ---------------------------------------------------------------------------
 let players = [];
-function stopPlayers() { players.forEach((p) => p.stop()); players = []; }
+let thumbObserver = null;
+const MAX_THUMBNAILS = 4; // au plus 4 vignettes lues en même temps (décodeurs, WebSockets, batterie)
+
+function stopPlayers() {
+  thumbObserver?.disconnect();
+  thumbObserver = null;
+  players.forEach((p) => p.stop());
+  players = [];
+}
 
 function renderCameras() {
   view._tab = "cameras";
@@ -352,6 +378,7 @@ function renderCameras() {
   }
   const grid = document.createElement("div");
   grid.className = "cams";
+  const cards = []; // { el, cam, canvas, msg, player, visible }
   for (const cam of state.cameras) {
     const b = document.createElement("button");
     b.type = "button";
@@ -369,16 +396,45 @@ function renderCameras() {
     if (!online) { msg.textContent = cam.status?.state === "unreachable" ? "Caméra injoignable" : "Vérification…"; continue; }
     if (!webCodecsSupported()) { msg.textContent = "Vidéo non prise en charge"; continue; }
     if (!cam.has_sub_stream) { msg.textContent = "Touchez pour ouvrir"; continue; }
-    players.push(createPlayer(cam.id, "sub", canvas, (s) => { msg.textContent = s.text; msg.hidden = s.kind === "live"; }));
+    msg.textContent = "En attente…";
+    cards.push({ el: b, cam, canvas, msg, player: null, visible: false });
   }
   view.appendChild(grid);
+  if (!cards.length || !api.hasToken()) return;
+
+  // Seules les vignettes à l'écran sont lues, quatre au plus (les premières dans l'ordre).
+  const reconcile = () => {
+    const wanted = new Set(cards.filter((c) => c.visible).slice(0, MAX_THUMBNAILS));
+    for (const c of cards) {
+      if (wanted.has(c) && !c.player) {
+        c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => { c.msg.textContent = st.text; c.msg.hidden = st.kind === "live"; });
+        players.push(c.player);
+      } else if (!wanted.has(c) && c.player) {
+        c.player.stop();
+        players = players.filter((p) => p !== c.player);
+        c.player = null;
+        c.msg.hidden = false;
+        c.msg.textContent = "En attente…";
+      }
+    }
+  };
+  thumbObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const c = cards.find((x) => x.el === entry.target);
+      if (c) c.visible = entry.isIntersecting;
+    }
+    reconcile();
+  }, { rootMargin: "100px" });
+  cards.forEach((c) => thumbObserver.observe(c.el));
 }
 
 let bigPlayer = null;
+let bigCamera = null;
 function openCamera(id) {
   const cam = state.cameras.find((c) => c.id === id);
   if (!cam) return;
   stopPlayers();
+  bigCamera = id;
   const box = document.createElement("div");
   box.className = "bigcam";
   const canvas = document.createElement("canvas");
@@ -387,8 +443,13 @@ function openCamera(id) {
   box.append(canvas, msg);
   if (!webCodecsSupported()) msg.textContent = "Ce navigateur ne sait pas décoder la vidéo (WebCodecs).";
   else if (cam.status?.state !== "online") msg.textContent = "Caméra injoignable";
-  else bigPlayer = createPlayer(cam.id, "main", canvas, (s) => { msg.textContent = s.text; msg.hidden = s.kind === "live"; });
-  openSheet(cam.name, box, () => { bigPlayer?.stop(); bigPlayer = null; if (tab === "cameras") renderCameras(); });
+  else if (api.hasToken()) bigPlayer = createPlayer(cam.id, "main", canvas, (s) => { msg.textContent = s.text; msg.hidden = s.kind === "live"; });
+  openSheet(cam.name, box, () => {
+    bigPlayer?.stop();
+    bigPlayer = null;
+    bigCamera = null;
+    if (tab === "cameras" && !document.hidden && api.hasToken()) renderCameras();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -396,22 +457,41 @@ function openCamera(id) {
 // ---------------------------------------------------------------------------
 let sheetId = null;
 let sheetOnClose = null;
+let sheetOpener = null;
 
 function openSheet(title, content, onClose) {
   sheetId = null;
   sheetOnClose = onClose ?? null;
   $("#sheet-title").textContent = title;
+  $("#sheet-body").dataset.id = "";
   $("#sheet-body").replaceChildren(content);
   showSheet();
 }
-function showSheet() { $("#sheet").hidden = false; $("#sheet-backdrop").hidden = false; }
+
+/** Affiche la feuille : le fond devient inerte (ni focus ni lecteur d'écran), le focus entre
+ *  dans la feuille et reviendra à l'élément qui l'a ouverte à la fermeture. */
+function showSheet() {
+  if ($("#sheet").hidden) sheetOpener = document.activeElement;
+  $("#sheet").hidden = false;
+  $("#sheet-backdrop").hidden = false;
+  $("#app").inert = true;
+  $("#sheet").setAttribute("tabindex", "-1");
+  $("#sheet-close").focus();
+}
 function closeSheet() {
+  const wasOpen = !$("#sheet").hidden;
   $("#sheet").hidden = true;
   $("#sheet-backdrop").hidden = true;
+  $("#app").inert = false;
   sheetId = null;
   const cb = sheetOnClose;
   sheetOnClose = null;
   cb?.();
+  if (wasOpen) {
+    const target = sheetOpener;
+    sheetOpener = null;
+    if (target && document.contains(target) && !target.closest("[hidden]")) target.focus();
+  }
 }
 
 function openDetail(id) {
@@ -439,7 +519,8 @@ function renderSheet(rebuild) {
   const body = $("#sheet-body");
   if (!rebuild && body.dataset.id === dev.id) {
     // Mise à jour en place : la valeur et l'état des boutons, sans refaire la feuille.
-    body.querySelector(".sheet-value").textContent = t.value ?? "—";
+    body.querySelector(".sheet-value").textContent = t.value ?? "";
+    body.querySelector(".sheet-value").hidden = t.value == null;
     body.querySelector(".sheet-value").classList.toggle("warn", t.valueWarn);
     body.querySelector(".sheet-sub").textContent = t.small?.text ?? "";
     return;
@@ -448,7 +529,8 @@ function renderSheet(rebuild) {
   const frag = document.createDocumentFragment();
   const value = document.createElement("div");
   value.className = `sheet-value${t.valueWarn ? " warn" : ""}`;
-  value.textContent = t.value ?? "—";
+  value.textContent = t.value ?? "";
+  value.hidden = t.value == null;
   const sub = document.createElement("div");
   sub.className = "muted sheet-sub";
   sub.textContent = t.small?.text ?? "";
@@ -533,8 +615,14 @@ function render() {
   conn.hidden = state.connection === "online";
   conn.textContent = state.connection === "connecting" ? "connexion…" : "hors ligne";
   if (tab === "devices") renderDevices();
-  else if (tab === "temps" && (view._tab !== "temps" || structureDirty)) { structureDirty = false; renderTemps(); }
-  else if (tab === "cameras" && (view._tab !== "cameras")) renderCameras();
+  else if (tab === "temps") {
+    if (view._tab !== "temps" || structureDirty) { structureDirty = false; renderTemps(); }
+    else updateTempBigs();
+  } else if (tab === "cameras") {
+    const signature = JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream]));
+    if (view._tab !== "cameras" || (structureDirty && view._camSignature !== signature)) { structureDirty = false; renderCameras(); view._camSignature = signature; }
+    else structureDirty = false;
+  }
 }
 
 function selectTab(name) {
@@ -542,7 +630,11 @@ function selectTab(name) {
   tab = name;
   if (name !== "cameras") stopPlayers();
   $("#title").textContent = TITLES[name];
-  document.querySelectorAll("#tabs [role=tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  document.querySelectorAll("#tabs [role=tab]").forEach((b) => {
+    b.setAttribute("aria-selected", String(b.dataset.tab === name));
+    b.tabIndex = b.dataset.tab === name ? 0 : -1;
+  });
+  view.setAttribute("aria-labelledby", `tab-${name}`);
   view._tab = null;
   structureDirty = true;
   window.scrollTo(0, 0);
@@ -552,8 +644,8 @@ function selectTab(name) {
 function showLogin(message) {
   events?.close();
   events = null;
-  stopPlayers();
   closeSheet();
+  stopPlayers();
   $("#login").hidden = false;
   $("#app").hidden = true;
   $("#topbar").hidden = true;
@@ -619,7 +711,17 @@ $("#tabs").addEventListener("click", (event) => {
 });
 $("#sheet-close").addEventListener("click", closeSheet);
 $("#sheet-backdrop").addEventListener("click", closeSheet);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#sheet").hidden) closeSheet(); });
+document.addEventListener("keydown", (e) => {
+  if ($("#sheet").hidden) return;
+  if (e.key === "Escape") { closeSheet(); return; }
+  if (e.key !== "Tab") return;
+  const focusable = [...$("#sheet").querySelectorAll("button, summary, [href], input, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled && n.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && (document.activeElement === first || document.activeElement === $("#sheet"))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 // Tap : commande directe (lumière, volet) ou détail ; appui long : toujours le détail.
 let pressTimer = null;
@@ -634,7 +736,13 @@ view.addEventListener("pointerdown", (e) => {
 for (const type of ["pointerup", "pointercancel", "pointerleave", "pointermove"]) {
   view.addEventListener(type, (e) => { if (type !== "pointermove" || Math.abs(e.movementX) + Math.abs(e.movementY) > 6) clearTimeout(pressTimer); });
 }
-view.addEventListener("contextmenu", (e) => { if (e.target.closest(".tile")) e.preventDefault(); });
+view.addEventListener("contextmenu", (e) => {
+  const tile = e.target.closest(".tile");
+  if (!tile) return;
+  e.preventDefault();
+  clearTimeout(pressTimer);
+  openDetail(tile.dataset.id);
+});
 view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   const cam = e.target.closest(".cam");
@@ -646,7 +754,33 @@ view.addEventListener("click", (e) => {
   if (dev) actOn(dev, tile.dataset.action);
 });
 
-document.addEventListener("visibilitychange", () => { if (!document.hidden) events?.reconnectNow(); });
+// Réveil de l'appareil : après plus de 15 s cachée, la connexion est probablement morte sans
+// que le navigateur le sache ; on repart d'une connexion neuve. Les caméras s'arrêtent tant que
+// la page est cachée et reprennent au retour.
+let hiddenAt = null;
+function wake() {
+  if (!api.hasToken()) return;
+  events?.restart();
+  if (tab === "cameras") { renderCameras(); if (bigCamera) openCamera(bigCamera); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hiddenAt = Date.now();
+    stopPlayers();
+    bigPlayer?.stop();
+    bigPlayer = null;
+  } else if (hiddenAt !== null) {
+    const away = Date.now() - hiddenAt;
+    hiddenAt = null;
+    if (away > 15_000) wake();
+    else {
+      events?.reconnectNow();
+      if (tab === "cameras") { renderCameras(); if (bigCamera) openCamera(bigCamera); }
+    }
+  }
+});
+window.addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
+window.addEventListener("online", () => { if (!document.hidden) wake(); });
 setInterval(() => { if (tab === "devices" && !document.hidden) scheduleRender(false); }, 30_000);
 
 if ("serviceWorker" in navigator) {

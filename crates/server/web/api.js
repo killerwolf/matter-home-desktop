@@ -70,10 +70,21 @@ export async function logout() {
   save(null);
 }
 
+/**
+ * Un WebSocket qui se ferme avant d'avoir rien reçu peut avoir été refusé (jeton expiré ou
+ * révoqué : le navigateur ne donne pas le statut HTTP). Une petite route qui exige le jeton le
+ * dit : un 401 efface le jeton et renvoie à l'écran de connexion (`onUnauthorized`).
+ */
+export async function checkSession() {
+  try { await request("GET", "/api/cameras"); } catch { /* réseau : on réessaiera */ }
+  return hasToken();
+}
+
 const wsUrl = (path) => `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${path}`;
 
 /** WebSocket authentifié par sous-protocole (jamais d'URL avec le jeton). */
 export function openSocket(path) {
+  if (!token) throw new ApiError(401, "unauthorized", "Pas de session.");
   const socket = new WebSocket(wsUrl(path), [SUBPROTOCOL, `bearer.${token}`]);
   socket.binaryType = "arraybuffer";
   return socket;
@@ -93,41 +104,50 @@ export function connectEvents({ onSnapshot, onEvent, onStatus }) {
   const open = () => {
     if (closed || !token) return;
     onStatus("connecting");
-    socket = openSocket(`/api/ws?protocol=${PROTOCOL_VERSION}`);
-    socket.onmessage = (message) => {
+    let gotSnapshot = false;
+    const current = openSocket(`/api/ws?protocol=${PROTOCOL_VERSION}`);
+    socket = current;
+    current.onmessage = (message) => {
       if (typeof message.data !== "string") return;
       let data;
       try { data = JSON.parse(message.data); } catch { return; }
       if (data.type === "snapshot") {
+        gotSnapshot = true;
         seq = data.seq;
         delay = 1000;
         onStatus("online");
         onSnapshot(data);
       } else if (data.type === "event") {
         if (data.seq !== seq + 1) {
-          if (data.seq > seq + 1) { socket.close(); return; } // trou : on repart d'un état complet
+          if (data.seq > seq + 1) { current.close(); return; } // trou : on repart d'un état complet
           return; // déjà vu
         }
         seq = data.seq;
         onEvent(data.event);
       }
     };
-    socket.onclose = (event) => {
-      socket = null;
-      if (closed) return;
+    current.onclose = async () => {
+      if (socket === current) socket = null;
+      if (closed || current._replaced) return;
       onStatus("offline");
-      if (event.code === 1008) {
-        // Session terminée : le serveur ne veut plus de ce jeton. Un 401 sur l'API le confirme.
-        request("GET", "/api/version").catch(() => {});
-        request("GET", "/api/state").catch(() => {});
-      }
+      // Fermé avant le premier état : jeton refusé ? Un 401 renvoie à la connexion ; sans
+      // jeton on ne reprend pas en boucle.
+      if (!gotSnapshot && !(await checkSession())) return;
+      if (closed || socket) return;
       timer = setTimeout(open, delay);
       delay = Math.min(delay * 2, 15000);
     };
-    socket.onerror = () => {};
+    current.onerror = () => {};
   };
   open();
   return {
+    /** Réveil de l'appareil, retour du réseau : on repart d'une connexion neuve. */
+    restart() {
+      clearTimeout(timer);
+      delay = 1000;
+      if (socket) { socket._replaced = true; socket.close(); socket = null; }
+      open();
+    },
     reconnectNow() {
       if (socket && socket.readyState <= 1) return;
       clearTimeout(timer);
