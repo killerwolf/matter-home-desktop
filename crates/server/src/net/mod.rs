@@ -6,6 +6,7 @@
 mod body;
 mod camera_stream;
 mod routes;
+mod webapp;
 mod ws;
 
 use std::collections::HashMap;

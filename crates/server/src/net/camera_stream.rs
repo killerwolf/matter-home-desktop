@@ -97,7 +97,8 @@ async fn upgrade(
         }
     };
     let stall = live.config().write_stall;
-    ws.max_message_size(64 * 1024)
+    ws.protocols([super::routes::WS_SUBPROTOCOL])
+        .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
             viewer_loop(socket, state, session, account_id, subscription, stall).await;

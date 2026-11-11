@@ -12,6 +12,13 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **App web mobile (PWA)** (ticket n° 15). Le serveur sert `/app/` : appareils en tuiles par pièce
+  (tap sur une lumière ou un volet, appui long pour le détail), courbes de température sur 24 h,
+  caméras en direct (WebCodecs), barre d'onglets iOS, thème clair ou sombre, installable. Fichiers
+  intégrés au binaire, sans framework ni build ; couleurs et tailles de `design/tokens.css`. La
+  coquille se sert sans jeton, avec une CSP stricte et sans CORS ; le WebSocket d'un navigateur
+  s'authentifie par sous-protocole (`bearer.<jeton>`), jamais par l'URL. Le protocole reste en
+  version 2 et le client de bureau ne change pas. Voir [docs/web-app.md](docs/web-app.md).
 - **Caméras RTSP, 1/5 : les ajouter depuis le serveur** (ticket n° 4). Le menu de **Matter Home
   Server** gagne **« Caméras… »** : une fenêtre pour ajouter, modifier et supprimer des caméras
   (nom, adresse du flux principal, adresse du flux réduit facultative, identifiant, mot de passe)

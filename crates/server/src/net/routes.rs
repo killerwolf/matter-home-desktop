@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
             require_session,
         ));
     Router::new()
+        .merge(super::webapp::router())
         .route("/api/version", get(version))
         .route(
             "/api/login",
@@ -328,15 +329,43 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .then_some(token.trim())
 }
 
+/// Sous-protocole WebSocket que le serveur choisit toujours quand un client le propose : c'est
+/// celui-là qui est renvoyé au navigateur, jamais l'entrée qui porte le jeton.
+pub const WS_SUBPROTOCOL: &str = "matter-home.v1";
+
+/// Jeton d'un navigateur : un `WebSocket` de navigateur ne peut pas poser d'en-tête
+/// `Authorization`. L'app web propose donc `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`
+/// (jamais le jeton dans l'URL). Accepté seulement pour une demande d'upgrade WebSocket, et
+/// seulement si aucun en-tête `Authorization` valide n'est présent ; le client natif n'est pas
+/// touché.
+pub fn ws_subprotocol_token(headers: &HeaderMap) -> Option<&str> {
+    let is_upgrade = headers
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if !is_upgrade {
+        return None;
+    }
+    headers
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|entry| entry.trim().strip_prefix("bearer."))
+        .find(|token| !token.is_empty() && token.len() <= 256)
+}
+
 async fn require_session(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let session = bearer(request.headers()).and_then(|token| {
-        let account_id = state.auth.accounts.account_id()?;
-        state.auth.sessions.validate(token, &account_id)
-    });
+    let session = bearer(request.headers())
+        .or_else(|| ws_subprotocol_token(request.headers()))
+        .and_then(|token| {
+            let account_id = state.auth.accounts.account_id()?;
+            state.auth.sessions.validate(token, &account_id)
+        });
     match session {
         Some(info) => {
             request.extensions_mut().insert(info);

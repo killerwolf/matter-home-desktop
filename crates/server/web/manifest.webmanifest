@@ -1,0 +1,15 @@
+{
+  "name": "Matter Home",
+  "short_name": "Maison",
+  "description": "Les appareils, les températures et les caméras de la maison.",
+  "lang": "fr",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#f6f5f2",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

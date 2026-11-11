@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1b1b" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Maison">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Matter Home</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar" hidden>
+    <h1 id="title">Appareils</h1>
+    <span id="conn" class="conn" role="status" hidden></span>
+  </header>
+  <main id="view" aria-live="polite"></main>
+  <nav id="tabs" role="tablist" hidden>
+    <button role="tab" data-tab="devices" aria-selected="true"><span class="ico" data-ico="home"></span><span>Appareils</span></button>
+    <button role="tab" data-tab="temps" aria-selected="false"><span class="ico" data-ico="thermo"></span><span>Températures</span></button>
+    <button role="tab" data-tab="cameras" aria-selected="false"><span class="ico" data-ico="camera"></span><span>Caméras</span></button>
+  </nav>
+</div>
+
+<section id="login" hidden>
+  <form id="login-form" autocomplete="on">
+    <h1>Matter Home</h1>
+    <p class="muted">Connectez-vous avec le compte du serveur.</p>
+    <label>Identifiant
+      <input name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+    </label>
+    <label>Mot de passe
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <p id="login-error" class="error" role="alert" hidden></p>
+    <button type="submit" class="primary">Se connecter</button>
+  </form>
+</section>
+
+<div id="sheet-backdrop" hidden></div>
+<aside id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <div class="grab"></div>
+  <header>
+    <h2 id="sheet-title"></h2>
+    <button id="sheet-close" class="ghost" aria-label="Fermer">Fermer</button>
+  </header>
+  <div id="sheet-body"></div>
+</aside>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -24,7 +24,10 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
   se fie au `code` (stable, voir `ErrorCode`) ; `detail` est un texte humain facultatif, sans
   chemin local.
 - **Jeton** : `Authorization: Bearer <jeton>` sur toute route et sur le WebSocket, jamais
-  dans l'URL. Seules `GET /api/version` et `POST /api/login` s'en passent.
+  dans l'URL. Seules `GET /api/version` et `POST /api/login` s'en passent. **Navigateur** (app web,
+  `/app/`, voir [web-app.md](web-app.md)) : un `WebSocket` ne pose pas d'en-tête, donc le jeton
+  peut aussi venir de `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`, accepté seulement
+  sur un upgrade WebSocket ; le serveur répond `matter-home.v1`. Le client natif n'est pas touché.
 - **Concurrence** : plusieurs clients à la fois ; pour le plan et les règles, la dernière
   modification gagne et chaque changement est diffusé à tous (`plan_changed`, `rules_changed`).
 
