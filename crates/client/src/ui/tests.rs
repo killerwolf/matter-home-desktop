@@ -982,7 +982,7 @@ fn testing_a_rule_waits_for_the_latest_version_to_be_saved() {
     f.app.pump_network();
     let test = pending_of(
         &f,
-        |p| matches!(p, Pending::Command { what } if *what == "Test de la règle"),
+        |p| matches!(p, Pending::Command { what, .. } if *what == "Test de la règle"),
     );
     assert!(test.is_some(), "le test part une fois la règle enregistrée");
 }
@@ -1846,4 +1846,123 @@ fn entering_the_plan_edit_mode_closes_the_detail() {
     f.app.selected = Some(1);
     f.app.sync_edit_mode(true);
     assert_eq!(f.app.selected, Some(1));
+}
+
+/// Une lumière allumée, et un volet, comme le serveur les décrit.
+fn lamp_and_shutter_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    let lamp = Capabilities {
+        on_off: true,
+        ..Default::default()
+    };
+    let mut lamp_node = node(1, "Lampe du salon", lamp);
+    lamp_node.device_types = vec!["Lampe".into()];
+    let shutter = Capabilities {
+        cover: true,
+        cover_position: true,
+        ..Default::default()
+    };
+    f.connect(snapshot(
+        1,
+        vec![
+            view(lamp_node, vec![reading(Metric::OnOff, 1.0, 90.0)]),
+            view(
+                node(2, "Volet", shutter),
+                vec![reading(Metric::Position, 100.0, 90.0)],
+            ),
+        ],
+    ));
+    f
+}
+
+#[test]
+fn clicking_a_light_tile_toggles_it_at_once_and_a_refusal_puts_the_display_back() {
+    let mut f = lamp_and_shutter_fixture();
+    // Le clic bascule : allumée, donc la commande éteint, et l'état attendu est montré aussitôt.
+    f.app.apply_tiles(devices::Outcome {
+        toggle: Some(1),
+        ..Default::default()
+    });
+    let id = pending_of(&f, |p| matches!(p, Pending::Command { node: Some(1), .. }))
+        .expect("la commande est partie");
+    let shown = devices::tile_of(&f.app.model.devices[&1], f.app.expect.get(&1));
+    assert_eq!(shown.value.as_deref(), Some("Éteinte"), "retour immédiat");
+    // Le serveur refuse : l'attente cesse, le message passe par le mécanisme habituel.
+    f.send(Event::Reply {
+        id,
+        result: Err(NetError::Api {
+            status: 502,
+            code: Some(ErrorCode::DeviceUnreachable),
+            detail: None,
+            retry_after_s: None,
+        }),
+    });
+    f.app.pump_network();
+    assert!(!f.app.expect.contains_key(&1));
+    let shown = devices::tile_of(&f.app.model.devices[&1], f.app.expect.get(&1));
+    assert_eq!(
+        shown.value.as_deref(),
+        Some("Allumée"),
+        "l'affichage revient"
+    );
+    let banner = f.app.error_banner.as_ref().expect("erreur affichée");
+    assert!(banner.1.contains("Commande de l'appareil"), "{}", banner.1);
+}
+
+#[test]
+fn clicking_a_shutter_tile_opens_or_closes_it_and_shows_the_movement() {
+    let mut f = lamp_and_shutter_fixture();
+    let tile = devices::tile_of(&f.app.model.devices[&2], None);
+    // Ouvert : le clic ferme.
+    assert_eq!(tile.action, devices::TileAction::Cover(CoverCommand::Close));
+    f.app.apply_tiles(devices::Outcome {
+        cover: Some((2, CoverCommand::Close)),
+        ..Default::default()
+    });
+    assert!(pending_of(&f, |p| matches!(p, Pending::Command { node: Some(2), .. })).is_some());
+    let shown = devices::tile_of(&f.app.model.devices[&2], f.app.expect.get(&2));
+    assert_eq!(shown.value.as_deref(), Some("Ouvert ▼"));
+}
+
+#[test]
+fn a_tile_detail_request_opens_the_window_and_the_usual_rules_close_it() {
+    let mut f = lamp_and_shutter_fixture();
+    f.app.view = View::Devices;
+    f.app.apply_tiles(devices::Outcome {
+        detail: Some(1),
+        ..Default::default()
+    });
+    assert_eq!(f.app.selected_device(), Some(1));
+    // L'appareil disparaît : la fenêtre se ferme.
+    f.live(WireEvent::DeviceRemoved { node_id: 1 });
+    assert_eq!(f.app.selected_device(), None);
+    // La déconnexion aussi.
+    f.app.selected = Some(2);
+    disconnect(&mut f);
+    assert_eq!(f.app.selected, None);
+}
+
+/// La fenêtre de détail se dessine sans fenêtre système, pour chaque sorte d'appareil : une
+/// lumière sans courbe, un volet, un capteur.
+#[test]
+fn the_detail_window_draws_for_every_kind_of_device() {
+    let mut f = lamp_and_shutter_fixture();
+    let sensor = Capabilities {
+        temperature: true,
+        battery: true,
+        ..Default::default()
+    };
+    f.live(WireEvent::DeviceUpdated {
+        device: node(3, "Salon", sensor),
+    });
+    let ctx = egui::Context::default();
+    for id in [1, 2, 3] {
+        f.app.selected = Some(id);
+        let layout = devices::groups(&f.app.model.devices, f.app.plan.plan());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            f.app.detail_window(&ui.ctx().clone(), &layout);
+        });
+        out.textures_delta.clear();
+        assert_eq!(f.app.selected, Some(id), "la fenêtre reste ouverte");
+    }
 }

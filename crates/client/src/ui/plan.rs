@@ -2,7 +2,7 @@
 //! avec l'état des appareils en direct. Deux modes : consultation et modification.
 
 mod camera;
-mod opening;
+pub(super) mod opening;
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
@@ -405,7 +405,10 @@ fn is_stale(d: &Device) -> bool {
 /// Température moyenne de chaque pièce, d'après les capteurs qui y sont posés (règle de
 /// `HomePlan::room_of`). Un capteur injoignable ne compte pas ; une pièce sans capteur n'a pas
 /// d'entrée. Clé : (étage, pièce).
-fn room_temperatures(plan: &HomePlan, devices: &BTreeMap<u64, Device>) -> HashMap<(u64, u64), f64> {
+pub(super) fn room_temperatures(
+    plan: &HomePlan,
+    devices: &BTreeMap<u64, Device>,
+) -> HashMap<(u64, u64), f64> {
     let mut sums: HashMap<(u64, u64), (f64, usize)> = HashMap::new();
     for (id, d) in devices {
         let Some(t) = d.temperature().filter(|_| !is_stale(d)) else {

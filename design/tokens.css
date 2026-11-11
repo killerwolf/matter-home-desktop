@@ -55,6 +55,13 @@
   --size-row: 30px;
   --size-switch-h: 14px;
   --size-switch-w: 26px;
+  --tile-height: 112px;
+  --tile-icon: 28px;
+  --tile-min-width: 170px;
+  --tile-on-tint: #f2b84b;
+  --tile-on-tint-alpha: 0.16;
+  --tile-radius: 10px;
+  --tile-width: 180px;
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-line-height: 1.4;
   --font-weight-normal: 400;

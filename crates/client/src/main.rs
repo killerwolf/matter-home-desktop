@@ -38,7 +38,7 @@ Usage :
 Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
 serveur : matter-home-server --demo.
 
-Variables : RUST_LOG=debug pour des journaux détaillés ; MATTER_HOME_THEME=light ou dark
+Variables : RUST_LOG=debug pour des journaux détaillés ; MATTER_HOME_THEME=light ou dark, MATTER_HOME_WINDOW=LxH
 impose le thème (essais), sinon celui du système.";
 
 fn main() -> eframe::Result {
@@ -108,10 +108,18 @@ fn main() -> eframe::Result {
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
 
+    // MATTER_HOME_WINDOW=1300x800 : taille de la fenêtre (essais et captures d'écran).
+    let size = std::env::var("MATTER_HOME_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?])
+        })
+        .unwrap_or([1180.0, 760.0]);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Matter Home Desktop")
-            .with_inner_size([1180.0, 760.0])
+            .with_inner_size(size)
             .with_min_inner_size([800.0, 520.0]),
         ..Default::default()
     };

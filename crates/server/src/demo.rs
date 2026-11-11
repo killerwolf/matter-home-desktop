@@ -28,6 +28,13 @@ const PLUG: u64 = 0xD3_0004;
 /// Pont de démo (une TaHoma) et ses volets, avec des identifiants de la plage réservée
 /// aux appareils pontés, comme en mode réel.
 const BRIDGE: u64 = 0xD3_0005;
+// Maison d'essai, seulement avec `MATTER_HOME_DEMO_HOUSE=1` (captures d'écran du client) : des
+// lampes, une télécommande et un capteur injoignable de plus. Sans cette variable, rien ne change.
+const LAMP_LIVING: u64 = 0xD3_0010;
+const LAMP_BED: u64 = 0xD3_0011;
+const LAMP_KITCHEN: u64 = 0xD3_0012;
+const REMOTE: u64 = 0xD3_0013;
+const LOST: u64 = 0xD3_0014;
 const SHUTTER_LIVING: u64 = BRIDGED_ID_MIN + 0xD3_0001;
 const SHUTTER_KITCHEN: u64 = BRIDGED_ID_MIN + 0xD3_0002;
 const SHUTTER_BEDROOM: u64 = BRIDGED_ID_MIN + 0xD3_0003;
@@ -58,6 +65,46 @@ fn fridge_power(t: f64, rng: &mut impl Rng) -> f64 {
 /// Porte : ouverte 20 s toutes les 2 min environ.
 fn door_open(t: f64) -> bool {
     t.rem_euclid(120.0) < 20.0
+}
+
+fn house_mode() -> bool {
+    std::env::var_os("MATTER_HOME_DEMO_HOUSE").is_some()
+}
+
+/// Les appareils de la maison d'essai (voir `house_mode`).
+fn house_extras() -> Vec<NodeInfo> {
+    let lamp = |node_id, name: &str| NodeInfo {
+        node_id,
+        name: name.into(),
+        device_name: "TRADFRI bulb (démo)".into(),
+        vendor: Some("IKEA of Sweden (démo)".into()),
+        product: Some("TRADFRI bulb E27".into()),
+        device_types: vec!["Lampe".into()],
+        caps: Capabilities {
+            on_off: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    vec![
+        lamp(LAMP_LIVING, "Lampe du salon"),
+        lamp(LAMP_BED, "Lampe de chevet"),
+        lamp(LAMP_KITCHEN, "Plafonnier de la cuisine"),
+        NodeInfo {
+            node_id: REMOTE,
+            name: "Télécommande".into(),
+            device_name: "RODRET dimmer (démo)".into(),
+            vendor: Some("IKEA of Sweden (démo)".into()),
+            product: Some("RODRET dimmer".into()),
+            device_types: vec!["Interrupteur".into()],
+            caps: Capabilities {
+                battery: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        sensor(LOST, "Sonde du bureau", false),
+    ]
 }
 
 fn sensor(node_id: u64, name: &str, has_humidity: bool) -> NodeInfo {
@@ -263,6 +310,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         events.send(Event::Node(info.clone()));
         infos.insert(info.node_id, info);
     }
+    if house_mode() {
+        for info in house_extras() {
+            events.send(Event::Node(info.clone()));
+            infos.insert(info.node_id, info);
+        }
+    }
 
     // Une semaine de température déjà « reçue » (une mesure toutes les 5 minutes, un cycle
     // jour / nuit, une panne de 3 heures de la chambre), pour la page Températures. Elle
@@ -372,6 +425,32 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         events.send(Event::Seen {
             node_id: id,
             at: now,
+        });
+    }
+    if house_mode() {
+        for id in [LAMP_LIVING, LAMP_BED, LAMP_KITCHEN, REMOTE] {
+            events.send(Event::Status {
+                node_id: id,
+                status: NodeStatus::Online,
+            });
+            events.send(Event::Seen {
+                node_id: id,
+                at: now,
+            });
+        }
+        state(LAMP_LIVING, StateKind::OnOff, true, now);
+        state(LAMP_KITCHEN, StateKind::OnOff, true, now);
+        state(LAMP_BED, StateKind::OnOff, false, now);
+        measure(REMOTE, MeasureKind::Battery, 82.0, now);
+        measure(LOST, MeasureKind::Temperature, 19.4, now - 3.0 * 3600.0);
+        measure(LOST, MeasureKind::Battery, 9.0, now - 3.0 * 3600.0);
+        state(LOST, StateKind::BatteryLow, true, now - 3.0 * 3600.0);
+        events.send(Event::Status {
+            node_id: LOST,
+            status: NodeStatus::Unreachable {
+                error: "pas de réponse — simulé".into(),
+                retry_in_s: 300,
+            },
         });
     }
     for id in [
@@ -594,7 +673,8 @@ pub fn demo_plan() -> crate::home::HomePlan {
         y,
         rotation: 0.0,
     };
-    HomePlan {
+    let house = house_mode();
+    let mut plan = HomePlan {
         version: 1,
         floors: vec![
             Floor {
@@ -630,7 +710,19 @@ pub fn demo_plan() -> crate::home::HomePlan {
                 ],
             },
         ],
+    };
+    if house {
+        plan.floors[0].items.extend([
+            device(30, LAMP_LIVING, None, 4.0, 3.0),
+            device(31, LAMP_KITCHEN, None, 8.0, 1.0),
+            device(32, REMOTE, None, 7.0, 3.7),
+        ]);
+        plan.floors[1].items.extend([
+            device(33, LAMP_BED, None, 1.0, 1.0),
+            device(34, LOST, None, 5.5, 2.0),
+        ]);
     }
+    plan
 }
 
 /// Prise et volets simulés : seule la « prise du frigo » se commande en mode démo.

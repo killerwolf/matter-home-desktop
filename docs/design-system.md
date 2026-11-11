@@ -7,9 +7,11 @@ couleur ou une taille ailleurs.
 
 ## Principes
 
-1. **Une valeur par appareil.** Une ligne = un nom et une seule information (19,8 °C, Fermée, 86 W).
-2. **Le détail à la demande.** Type, nœud, pile, dernière communication et commandes sont dans un
-   panneau qui s'ouvre au clic, jamais dans la liste. Le panneau ne s'ouvre jamais tout seul.
+1. **Une valeur par appareil.** Une tuile = une icône, un nom et une seule information (19,8 °C,
+   Fermée, 86 W).
+2. **Le détail à la demande.** Type, nœud, pile, dernière communication et commandes sont dans une
+   fenêtre qui s'ouvre au clic (ou aux trois points d'une tuile), jamais sur la tuile. Elle ne
+   s'ouvre jamais toute seule.
 3. **Rangé par pièce**, avec le même découpage sur tous les écrans (règle unique :
    `HomePlan::room_of`, la première pose d'un appareil qui tombe dans une pièce).
 4. **Signaler seulement l'anormal.** On n'écrit pas « En ligne » : seulement « pile faible » ou
@@ -43,7 +45,8 @@ arrondie.
 | `temperature` | `stops` : cinq paliers de 2 °C, du bleu à 16 °C au rouge à 24 °C ; `step` ; `fill_alpha` (transparence de l'aplat d'une pièce) |
 | `space` | `xs` 4, `sm` 8, `md` 12, `lg` 16, `xl` 24 |
 | `radius` | `sm` 4, `md` 6, `lg` 8 |
-| `size` | `row` (ligne d'appareil, 30), `dot` (point d'état, 7), `control` (24), `item_gap_y`, `button_pad_x`, `button_pad_y` |
+| `tile` | `width`, `min_width`, `height`, `radius`, `icon` (taille de l'icône), `on_tint` et `on_tint_alpha` (lampe allumée) |
+| `size` | `row` (ligne d'appareil, 30, pour la web app), `dot` (point d'état, 7), `control` (24), `item_gap_y`, `button_pad_x`, `button_pad_y` |
 | `font` | `family`, `weight` (`normal`, `strong`), `line_height`, `size` (`caption` 11, `body` 13, `title` 15, `heading` 18, `display` 26) |
 | `state` | `hover` et `selected` : le nom d'une couleur de `colors` |
 
@@ -62,16 +65,30 @@ Dans le client : `crates/client/src/ui/theme.rs`. Ils sont décrits ici par leur
 app les redessinera elle-même avec les mêmes variables, il n'y a pas de feuille de style de
 composants.
 
-- **Ligne d'appareil** (`device_row`) : hauteur `size.row`, rayon `radius.md`. Nom à gauche (coupé
-  par « … »), pastille d'anomalie éventuelle, puis la valeur à droite en `font.size.title`. Fond
-  `state.selected` quand la ligne est ouverte, `state.hover` au survol. Un pont est en gris et dit
-  « N appareils ».
-- **En-tête de pièce** (`room_header`) : le nom en capitales `font.size.caption`,
-  `text_secondary`, sans cadre, avec de l'espace au-dessus (`space.md`).
-- **Panneau de détail** (`detail_frame`) : surface `surface`, trait fin `line`, marge `space.lg`. À
-  droite de la liste, redimensionnable. En-tête : la pièce (`caption`) et le nom (`title`). Puis
-  une grille clé / valeur (État, Pile, Type, Nœud, Dernière communication…), les commandes, et
-  enfin la valeur en grand avec sa courbe.
+- **Tuile d'appareil** (`devices::card`, tokens `tile.*`) : une carte de `tile.min_width` à environ
+  `tile.width` de large (les colonnes remplissent la ligne, `devices::columns_for`) et de
+  `tile.height` de haut, rayon `tile.radius`, fond `surface`, trait fin `line`. En haut à gauche,
+  une grande icône d'état de `tile.icon`, dessinée avec des formes (`tile_icons`, jamais un glyphe de
+  police) ; en dessous le nom (deux lignes au plus, coupé par « … ») ; en bas la valeur en
+  `font.size.heading` + 2, et à droite un petit texte (humidité, « Bouton », « injoignable », « pile
+  faible »). Une lampe allumée prend `tile.on_tint` à `tile.on_tint_alpha` sur le fond et une icône
+  jaune ; une porte ou une fenêtre ouverte est en `warn` ; un appareil injoignable est estompé ; une
+  pile faible a un petit point `warn` sur l'icône. Un clic agit : bascule (lumière, prise), ouvre ou
+  ferme (volet), ou ouvre le détail (capteur, porte, télécommande, injoignable). Les trois points en
+  haut à droite (dessinés) et le clic droit ouvrent le détail de toutes les tuiles. La commande est
+  montrée aussitôt (contour `accent_text` jusqu'à la réponse) ; un refus remet l'affichage.
+  Les ponts sont à la fin, en tuiles plus basses et plus grises.
+- **En-tête de pièce** (`room_heading`) : le nom en `font.size.title`, l'étage en `caption`
+  discret et, si la pièce a un capteur joignable, une pastille de température moyenne teintée par
+  l'échelle de température (la même que le plan).
+- **Fenêtre de détail** (`MatterApp::detail_window`, `egui::Modal`) : centrée, de `580` px de large et
+  de la taille de son contenu, sur un fond assombri ; « Fermer », Échap et un clic à l'extérieur la
+  ferment. Quatre blocs : 1. l'en-tête (grande icône, nom, pièce, valeur en grand quand aucune courbe
+  ne la montre, interrupteur d'une lumière ou d'une prise) ; 2. la courbe et les périodes,
+  seulement si l'appareil en a une (température, ouverture, consommation, volet) : jamais de section
+  vide pour une lumière ou une télécommande ; 3. les actions (Reconnecter, Nom et icône, Effacer
+  l'historique, Oublier) ; 4. « Infos techniques », repliées (état, pile, type, nœud, fabricant,
+  dernière communication, pont). Le plan ouvre la même fenêtre au clic sur un appareil.
 - **Pastille d'état anormal** : un point de `size.dot` et un mot en `caption`, couleur `warn`
   (pile faible) ou `error` (injoignable). Jamais de pastille verte « en ligne ».
 - **Vignette** (`thumbnail`) : une image 16/9 de rayon `radius.md`, le nom dessous, la pièce en

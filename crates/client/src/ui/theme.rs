@@ -8,8 +8,8 @@
 use std::sync::OnceLock;
 
 use eframe::egui::{
-    self, text::LayoutJob, Color32, CornerRadius, FontId, Margin, Response, RichText, Sense,
-    Stroke, TextFormat, TextStyle, Theme, Ui, Vec2,
+    self, Color32, CornerRadius, FontId, Margin, Response, RichText, Sense, Stroke, TextStyle,
+    Theme, Ui, Vec2,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -154,7 +154,8 @@ pub struct Radius {
 /// Dimensions des composants.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Size {
-    /// Hauteur d'une ligne d'appareil.
+    /// Hauteur d'une ligne d'appareil (la web app ; le client dessine des tuiles).
+    #[allow(dead_code)]
     pub row: f32,
     /// Diamètre d'un point d'état.
     pub dot: f32,
@@ -168,6 +169,22 @@ pub struct Size {
     pub switch_h: f32,
     /// Hauteur de la légende sous une vignette.
     pub caption_row: f32,
+}
+
+/// Une tuile d'appareil (écran Appareils).
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct TileTokens {
+    /// Largeur cible (la web app) ; le client part de `min_width` et remplit la ligne.
+    #[allow(dead_code)]
+    pub width: f32,
+    pub min_width: f32,
+    pub height: f32,
+    pub radius: u8,
+    pub icon: f32,
+    /// Jaune chaud d'une lampe allumée (l'icône ; le fond de la carte en prend un peu).
+    #[serde(deserialize_with = "hex")]
+    pub on_tint: Color32,
+    pub on_tint_alpha: f32,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -207,6 +224,7 @@ pub struct Tokens {
     pub space: Space,
     pub radius: Radius,
     pub size: Size,
+    pub tile: TileTokens,
     pub font: Font,
     pub state: State,
 }
@@ -433,28 +451,52 @@ pub fn primary_button_wide(ui: &mut Ui, label: &str, enabled: bool, width: f32) 
     )
 }
 
-/// En-tête de pièce : petites capitales discrètes, sans cadre. `note` : à droite, en gris.
-pub fn room_header(ui: &mut Ui, name: &str, note: Option<&str>) {
+/// En-tête de pièce : son nom, l'étage en discret et, quand elle a un capteur joignable, une
+/// pastille de température moyenne teintée comme sur le plan (`temperature_fill`).
+pub fn room_heading(ui: &mut Ui, name: &str, floor: Option<&str>, average: Option<f64>) {
     let t = tokens();
     let p = palette(ui);
     ui.add_space(t.space.md);
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(name.to_uppercase())
-                .size(t.font.size.caption)
-                .color(p.text_secondary),
+            RichText::new(name)
+                .size(t.font.size.title)
+                .strong()
+                .color(p.text),
         );
-        if let Some(note) = note {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(note)
-                        .size(t.font.size.caption)
-                        .color(p.text_secondary),
-                );
-            });
+        if let Some(floor) = floor {
+            ui.label(
+                RichText::new(floor)
+                    .size(t.font.size.caption)
+                    .color(p.text_secondary),
+            );
+        }
+        if let Some(celsius) = average {
+            temperature_pill(ui, celsius);
         }
     });
     ui.add_space(t.space.xs);
+}
+
+/// Pastille « 21,5 °C » : le fond est la teinte du palier de l'échelle de température.
+pub fn temperature_pill(ui: &mut Ui, celsius: f64) -> Response {
+    let t = tokens();
+    let p = palette(ui);
+    let text = format!("{celsius:.1} °C").replace('.', ",");
+    let galley = ui.painter().layout_no_wrap(
+        text,
+        FontId::proportional(t.font.size.caption + 1.0),
+        p.text,
+    );
+    let size = galley.size() + Vec2::new(t.space.md, t.space.xs);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let r = radius(t.radius.lg);
+    ui.painter().rect_filled(rect, r, p.surface);
+    ui.painter()
+        .rect_filled(rect, r, temperature_fill(p, Some(celsius)));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, p.text);
+    response
 }
 
 /// Pastille d'état anormal : un point de couleur et un mot (« pile faible », « injoignable »).
@@ -470,108 +512,6 @@ pub fn status_pill(ui: &mut Ui, severity: Severity, text: &str) -> Response {
         ui.label(RichText::new(text).size(t.font.size.caption).color(color));
     })
     .response
-}
-
-/// Ce que montre une ligne d'appareil.
-pub struct DeviceRow<'a> {
-    pub name: &'a str,
-    /// La seule valeur de la ligne (« 19,8 °C »).
-    pub value: Option<&'a str>,
-    /// Anomalie à signaler, jamais l'état normal.
-    pub badge: Option<(Severity, &'a str)>,
-    pub selected: bool,
-    /// Gris : élément secondaire (un pont).
-    pub dim: bool,
-}
-
-/// Ligne d'appareil : le nom à gauche, la pastille éventuelle, puis la valeur à droite.
-/// Un clic ouvre le panneau de détail.
-pub fn device_row(ui: &mut Ui, row: &DeviceRow<'_>) -> Response {
-    let t = tokens();
-    let p = palette(ui);
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), t.size.row), Sense::click());
-    if !ui.is_rect_visible(rect) {
-        return response;
-    }
-    let fill = if row.selected {
-        t.selected(p)
-    } else if response.hovered() {
-        t.hover(p)
-    } else {
-        Color32::TRANSPARENT
-    };
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius(t.radius.md), fill);
-
-    let inner = rect.shrink2(Vec2::new(t.space.sm, 0.0));
-    let (name_color, value_color) = if row.dim {
-        (p.text_secondary, p.text_secondary)
-    } else {
-        (p.text, p.text)
-    };
-    let mut right = inner.right();
-    if let Some(value) = row.value {
-        let size = if row.dim {
-            t.font.size.body
-        } else {
-            t.font.size.title
-        };
-        let galley =
-            painter.layout_no_wrap(value.to_owned(), FontId::proportional(size), value_color);
-        right -= galley.size().x;
-        painter.galley(
-            egui::pos2(right, inner.center().y - galley.size().y / 2.0),
-            galley,
-            value_color,
-        );
-        right -= t.space.md;
-    }
-    if let Some((severity, text)) = row.badge {
-        let color = severity.color(p);
-        let galley = painter.layout_no_wrap(
-            text.to_owned(),
-            FontId::proportional(t.font.size.caption),
-            color,
-        );
-        right -= galley.size().x;
-        painter.galley(
-            egui::pos2(right, inner.center().y - galley.size().y / 2.0),
-            galley,
-            color,
-        );
-        right -= t.space.xs + t.size.dot;
-        painter.circle_filled(
-            egui::pos2(right + t.size.dot / 2.0, inner.center().y),
-            t.size.dot / 2.0,
-            color,
-        );
-        right -= t.space.md;
-    }
-    // Le nom prend ce qui reste, et se coupe par « … » s'il est trop long.
-    let mut job = LayoutJob::single_section(
-        row.name.to_owned(),
-        TextFormat::simple(FontId::proportional(t.font.size.body), name_color),
-    );
-    job.wrap.max_width = (right - inner.left()).max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = painter.layout_job(job);
-    painter.galley(
-        egui::pos2(inner.left(), inner.center().y - galley.size().y / 2.0),
-        galley,
-        name_color,
-    );
-    response
-}
-
-/// Cadre du panneau de détail : une surface, un trait fin.
-pub fn detail_frame(ui: &Ui) -> egui::Frame {
-    let p = palette(ui);
-    egui::Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.line))
-        .inner_margin(Margin::same(tokens().space.lg as i8))
 }
 
 /// Gravité d'un bandeau.

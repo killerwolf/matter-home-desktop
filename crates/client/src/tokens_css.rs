@@ -37,6 +37,12 @@ fn text(v: &Value) -> Result<String, String> {
 fn numbers(out: &mut Vec<String>, group: &Map<String, Value>, prefix: &str, unit: &str) {
     for (k, v) in group {
         if let Ok(t) = text(v) {
+            // Une couleur ou une opacité n'a pas d'unité.
+            let unit = if v.is_number() && !k.ends_with("alpha") {
+                unit
+            } else {
+                ""
+            };
             out.push(format!("--{prefix}-{}: {t}{unit};", kebab(k)));
         }
     }
@@ -95,6 +101,7 @@ pub fn generate(json: &str) -> Result<String, String> {
     numbers(&mut common, obj(&root, "space")?, "space", "px");
     numbers(&mut common, obj(&root, "radius")?, "radius", "px");
     numbers(&mut common, obj(&root, "size")?, "size", "px");
+    numbers(&mut common, obj(&root, "tile")?, "tile", "px");
 
     let font = obj(&root, "font")?;
     common.push(format!(
@@ -164,6 +171,9 @@ mod tests {
             "--font-size-body:",
             "--font-family:",
             "--size-row:",
+            "--tile-width: 180px;",
+            "--tile-on-tint: #f2b84b;",
+            "--tile-on-tint-alpha: 0.16;",
             "--color-state-hover: var(--color-surface-alt);",
         ] {
             assert!(css.contains(prefix), "{prefix} manque");
