@@ -1,10 +1,10 @@
 // Service worker minimal : garde la coquille (HTML, CSS, JS, icônes) pour que l'app s'ouvre
 // instantanément et hors ligne. Il ne touche jamais à l'API : /api/ passe toujours par le réseau
 // (jeton, état, flux), rien de la maison n'est mis en cache.
-const CACHE = "matter-home-shell-v1";
+const CACHE = "matter-home-shell-v2";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "app.js", "api.js", "tiles.js", "icons.js",
-  "charts.js", "cameras.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
+  "charts.js", "temps.js", "cameras.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {

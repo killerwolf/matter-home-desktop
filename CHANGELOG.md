@@ -12,6 +12,16 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **App web : refonte du style et des pages** (ticket n° 15). Style « tableau de bord » : coins
+  carrés, marges minimales, tuiles jointives séparées par un trait de 1 px (variables `--web-*`
+  dans `app.css`, `design/tokens.css` inchangé). **Appareils** : la pastille de température est
+  à côté du nom de la pièce, et les pièces circulent en blocs (CSS grid) de 320 à 2560 px.
+  **Températures** : tous les capteurs sur un seul graphique SVG (une couleur stable par
+  capteur), durée 1 h / 24 h / 1 semaine, légende avec case à cocher (mémorisée), valeur
+  actuelle, minimum et maximum, et curseur au survol ou au toucher. **Caméras** : plus de feuille
+  modale ; un clic passe la vignette en plein écran (flux principal, retour au flux réduit en
+  sortant), avec repli en plein écran CSS sur iPhone.
+
 - **App web mobile (PWA)** (ticket n° 15). Le serveur sert `/app/` : appareils en tuiles par pièce
   (tap sur une lumière ou un volet, appui long pour le détail), courbes de température sur 24 h,
   caméras en direct (WebCodecs), barre d'onglets iOS, thème clair ou sombre, installable. Fichiers

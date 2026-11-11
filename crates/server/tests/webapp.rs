@@ -18,6 +18,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/tiles.js", "text/javascript"),
     ("/app/icons.js", "text/javascript"),
     ("/app/charts.js", "text/javascript"),
+    ("/app/temps.js", "text/javascript"),
     ("/app/cameras.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),

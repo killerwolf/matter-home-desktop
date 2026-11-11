@@ -66,6 +66,11 @@ static ASSETS: &[Asset] = &[
         "../../web/charts.js"
     ),
     text!(
+        "temps.js",
+        "text/javascript; charset=utf-8",
+        "../../web/temps.js"
+    ),
+    text!(
         "cameras.js",
         "text/javascript; charset=utf-8",
         "../../web/cameras.js"
