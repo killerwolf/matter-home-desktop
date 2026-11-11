@@ -220,7 +220,7 @@ function renderDevices() {
       rooms.appendChild(section);
     }
     if (layout.bridges.length) {
-      // Les ponts forment un dernier bloc, comme une pièce : il comble la dernière ligne.
+      // Les ponts forment un dernier bloc, comme une pièce.
       const section = document.createElement("section");
       section.className = "room bridges";
       const head = document.createElement("div");
@@ -327,6 +327,8 @@ function renderTemps() {
 let players = [];
 let camCards = []; // { el, cam, canvas, msg, fs, playable, thumb, player, visible }
 let thumbObserver = null;
+const camSignature = () => JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream]));
+let camsDirty = false; // la grille est à refaire à la sortie du plein écran
 let fullCam = null; // { id, card, player, mode: "api" | "css", pushed }
 const MAX_THUMBNAILS = 4; // au plus 4 vignettes lues en même temps (décodeurs, WebSockets, batterie)
 
@@ -435,8 +437,17 @@ function leaveFs() {
   try { Promise.resolve(fn?.call(document)).catch(() => {}); } catch { /* déjà sorti */ }
 }
 
+/** Plein écran CSS : tout ce qui est derrière devient inerte (ni focus, ni lecteur d'écran). */
+function setBackgroundInert(card, on) {
+  for (let node = card; node && node.id !== "app"; node = node.parentElement) {
+    for (const sibling of node.parentElement?.children ?? []) if (sibling !== node) sibling.inert = on;
+  }
+  for (const sibling of document.body.children) if (sibling.id !== "app" && !sibling.contains(card)) sibling.inert = on;
+}
+
 function useCssFullscreen(full) {
   full.mode = "css";
+  setBackgroundInert(full.card.el, true);
   full.card.el.classList.add("cssfull");
   document.documentElement.classList.add("noscroll");
 }
@@ -470,6 +481,7 @@ function exitFull() {
   if (fsElement()) leaveFs();
   const { card } = full;
   card.el.classList.remove("full", "cssfull");
+  setBackgroundInert(card.el, false);
   document.documentElement.classList.remove("noscroll");
   card.fs.innerHTML = ICONS.fullscreenEnter;
   card.fs.setAttribute("aria-label", `${card.cam.name} : plein écran`);
@@ -477,7 +489,11 @@ function exitFull() {
   card.msg.hidden = false;
   card.msg.textContent = card.thumb ? "En attente…" : "Touchez pour ouvrir";
   if (full.pushed && history.state?.fullCamera !== undefined) history.back();
-  if (document.contains(card.el)) { reconcileCams(); card.fs.focus({ preventScroll: true }); }
+  if (camsDirty && tab === "cameras") {
+    camsDirty = false;
+    renderCameras();
+    view._camSignature = camSignature();
+  } else if (document.contains(card.el)) { reconcileCams(); card.fs.focus({ preventScroll: true }); }
 }
 
 function onFullscreenChange() {
@@ -645,8 +661,15 @@ function render() {
     structureDirty = false;
     renderTemps();
   } else if (tab === "cameras") {
-    const signature = JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream]));
-    if (view._tab !== "cameras" || (structureDirty && view._camSignature !== signature)) { structureDirty = false; exitFull(); renderCameras(); view._camSignature = signature; }
+    const signature = camSignature();
+    if (fullCam && structureDirty && view._camSignature !== signature) {
+      // En plein écran, le changement d'une autre caméra attend la sortie ; seule la disparition
+      // ou la panne de la caméra affichée fait sortir tout de suite.
+      structureDirty = false;
+      const shown = state.cameras.find((c) => c.id === fullCam.id);
+      if (!shown || shown.status?.state !== "online") { exitFull(); renderCameras(); view._camSignature = signature; camsDirty = false; }
+      else camsDirty = true;
+    } else if (view._tab !== "cameras" || (structureDirty && view._camSignature !== signature)) { structureDirty = false; exitFull(); renderCameras(); view._camSignature = signature; camsDirty = false; }
     else structureDirty = false;
   }
 }

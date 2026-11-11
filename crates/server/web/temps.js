@@ -2,7 +2,7 @@
 // stable), une légende avec case à cocher (valeur actuelle, minimum, maximum), une durée
 // (1 h, 24 h, 1 semaine) et un curseur au survol ou au toucher. Le choix des courbes et de la
 // durée est gardé dans le localStorage de l'app. Mêmes règles que le client de bureau.
-import { cursorLabel, gapThreshold, lineSegments, periodRange, tempChart, valueAt } from "./charts.js";
+import { cursorLabel, gapThreshold, lineSegments, periodRange, tempChart, valueOnCurve } from "./charts.js";
 import { formatTemperature } from "./tiles.js";
 
 const WINDOWS = [
@@ -12,6 +12,7 @@ const WINDOWS = [
 ];
 const KEY = "matter-home.temps";
 const REFRESH_MS = 60_000;
+const REFRESH_WEEK_MS = 10 * 60_000; // une semaine change peu : relecture toutes les 10 min
 const NONE = "—";
 
 function loadPrefs() {
@@ -69,7 +70,7 @@ export function mountTemps(root, { request, getSensors }) {
     const b = make("button", "", w.label);
     b.type = "button";
     b.dataset.window = w.key;
-    b.addEventListener("click", () => { if (prefs.window !== w.key) { prefs.window = w.key; savePrefs(prefs); syncSeg(); load(); } });
+    b.addEventListener("click", () => { if (prefs.window !== w.key) { prefs.window = w.key; savePrefs(prefs); syncSeg(); hideCursor(); load(true); } });
     seg.appendChild(b);
     return b;
   });
@@ -79,9 +80,9 @@ export function mountTemps(root, { request, getSensors }) {
   const plot = make("div", "chart-wrap");
   const host = make("div", "chart-host");
   const readout = make("div", "readout");
-  readout.hidden = true;
+  readout.classList.add("off");
   readout.setAttribute("aria-hidden", "true");
-  plot.append(host, readout);
+  plot.append(readout, host);
   const table = make("table", "legend");
   const caption = make("caption", "sr-only", "Capteurs de température");
   const head = make("thead");
@@ -105,7 +106,7 @@ export function mountTemps(root, { request, getSensors }) {
       savePrefs(prefs);
       hideCursor();
       syncLegend();
-      draw();
+      draw(true);
     });
     const sw = make("span", `sw s${s.colorIndex}${s.dashed ? " dash" : ""}`);
     sw.setAttribute("aria-hidden", "true");
@@ -155,25 +156,34 @@ export function mountTemps(root, { request, getSensors }) {
     }
   }
 
-  async function load() {
+  let loadedAt = 0;
+  let loadedWindow = null;
+  let firstDone = false;
+
+  async function load(showLoading) {
     const mine = ++token;
     end = Math.floor(Date.now() / 1000);
     const w = windowOf();
     const width = Math.max(plot.clientWidth, 320);
     buckets = Math.min(1600, Math.max(400, Math.ceil(width / 200) * 200));
     syncSeg();
-    note.textContent = "Chargement…";
+    // « Chargement… » seulement au premier chargement ou quand la période change.
+    if (showLoading || !firstDone || loadedWindow !== prefs.window) note.textContent = "Chargement…";
+    const results = new Map();
     await Promise.all(sensors.map(async (s) => {
       try {
         const r = await request("GET", `/api/devices/${s.id}/history?since=${end - w.seconds}&until=${end}&metrics=temperature&limit=20000&buckets=${buckets}`);
-        s.raw = (r?.points ?? []).filter((p) => p.metric === "temperature" && Number.isFinite(p.value)).map((p) => ({ at: p.at, value: p.value })).sort((a, b) => a.at - b.at);
-        s.error = false;
+        results.set(s.id, { raw: (r?.points ?? []).filter((p) => p.metric === "temperature" && Number.isFinite(p.value)).map((p) => ({ at: p.at, value: p.value })).sort((a, b) => a.at - b.at), error: false });
       } catch {
-        s.raw = [];
-        s.error = true;
+        results.set(s.id, { raw: [], error: true });
       }
     }));
+    // Une lecture plus récente a pris la place : celle-ci ne touche à rien.
     if (destroyed || mine !== token) return;
+    for (const s of sensors) Object.assign(s, results.get(s.id));
+    firstDone = true;
+    loadedAt = Date.now();
+    loadedWindow = prefs.window;
     const failed = sensors.filter((s) => s.error).length;
     note.textContent = failed ? (failed === sensors.length ? "Historique indisponible." : `Historique indisponible pour ${failed} capteur${failed > 1 ? "s" : ""}.`) : "";
     process();
@@ -190,8 +200,10 @@ export function mountTemps(root, { request, getSensors }) {
     const w = windowOf();
     const visible = sensors.filter((s) => !prefs.hidden.has(s.id));
     chart = tempChart(visible.map((s) => ({ colorIndex: s.colorIndex, dashed: s.dashed, segments: s.segments })), end - w.seconds, end, { width, height });
+    const hadFocus = host.contains(document.activeElement);
     host.replaceChildren(chart.svg);
     chart.svg.setAttribute("tabindex", "0");
+    if (hadFocus) chart.svg.focus({ preventScroll: true });
     chart.svg.addEventListener("pointerdown", onPointer);
     chart.svg.addEventListener("pointermove", onPointer);
     chart.svg.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") hideCursor(); });
@@ -205,7 +217,7 @@ export function mountTemps(root, { request, getSensors }) {
     cursorT = Math.min(Math.max(t, end - w.seconds), end);
     const items = sensors
       .filter((s) => !prefs.hidden.has(s.id))
-      .map((s) => ({ s, colorIndex: s.colorIndex, value: valueAt(s.mean, cursorT, s.gap) }));
+      .map((s) => ({ s, colorIndex: s.colorIndex, value: valueOnCurve(s.segments, cursorT, w.seconds / 200) }));
     chart.cursor.show(cursorT, items);
     readout.replaceChildren(make("div", "rtime", cursorLabel(cursorT, w.seconds)));
     for (const { s, value } of items) {
@@ -214,7 +226,7 @@ export function mountTemps(root, { request, getSensors }) {
       row.append(sw, make("span", "rname", s.label), make("span", "rval", value === null ? NONE : formatTemperature(value)));
       readout.appendChild(row);
     }
-    readout.hidden = false;
+    readout.classList.remove("off");
     // À droite du curseur, ou à gauche s'il n'y a pas la place.
     const box = chart.svg.getBoundingClientRect();
     const x = (chart.xOf(cursorT) / drawnWidth) * box.width;
@@ -225,14 +237,23 @@ export function mountTemps(root, { request, getSensors }) {
 
   function hideCursor() {
     cursorT = null;
+    pointerX = null;
     chart?.cursor.hide();
-    readout.hidden = true;
+    readout.classList.add("off");
   }
 
+  // Le curseur suit le doigt ou la souris au rythme de l'affichage, pas à chaque événement.
+  let pointerX = null;
+  let pointerFrame = 0;
   function onPointer(e) {
-    if (!chart) return;
-    const box = chart.svg.getBoundingClientRect();
-    showCursor(chart.tAt(((e.clientX - box.left) / box.width) * drawnWidth));
+    pointerX = e.clientX;
+    if (pointerFrame) return;
+    pointerFrame = requestAnimationFrame(() => {
+      pointerFrame = 0;
+      if (!chart || destroyed || pointerX === null) return;
+      const box = chart.svg.getBoundingClientRect();
+      showCursor(chart.tAt(((pointerX - box.left) / box.width) * drawnWidth));
+    });
   }
 
   function onKey(e) {
@@ -250,11 +271,15 @@ export function mountTemps(root, { request, getSensors }) {
 
   const resizer = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (!destroyed && Math.floor(plot.clientWidth) !== drawnWidth && plot.clientWidth > 0) draw(); }) : null;
   resizer?.observe(plot);
-  const timer = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+  const timer = setInterval(() => {
+    if (document.hidden) return;
+    if (prefs.window === "7d" && Date.now() - loadedAt < REFRESH_WEEK_MS - 1000) return;
+    load(false);
+  }, REFRESH_MS);
 
   syncSeg();
   syncLegend();
-  load();
+  load(true);
 
   return {
     /** Valeurs en direct (actuelle, injoignable) : la légende seule, sans refaire les courbes. */

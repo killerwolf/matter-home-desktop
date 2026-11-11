@@ -88,7 +88,7 @@ button { cursor: pointer; }
 /* Les pièces circulent en blocs : autant de colonnes que la largeur en permet (de 320 à 2560 px),
    chaque bloc a sa propre grille de tuiles. Les traits sont des bordures de 1 px. */
 .rooms {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--web-room-min)), 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--web-room-min)), 1fr));
   align-items: stretch;
   border-top: var(--web-line) solid var(--color-line); border-left: var(--web-line) solid var(--color-line);
 }
@@ -227,6 +227,13 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
   padding: var(--web-pad); background: var(--color-surface); border: var(--web-line) solid var(--color-line);
   font-size: var(--web-font-small); pointer-events: none;
 }
+.readout.off { visibility: hidden; }
+/* Sur un téléphone, l'infobulle est une ligne au-dessus du graphique : elle ne cache aucune courbe. */
+@media (max-width: 599px) {
+  .readout { position: static; max-width: none; min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--web-pad-x); border-width: 0 0 var(--web-line) 0; }
+  .readout .rtime { margin: 0; }
+  .readout .rname { flex: none; max-width: 9em; }
+}
 .readout .rtime { font-weight: var(--font-weight-strong); margin-bottom: 2px; }
 .readout .rrow { display: flex; align-items: center; gap: var(--web-pad); }
 .readout .rname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -252,7 +259,7 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 
 /* ---- Caméras ---- */
 .cams {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   border-top: var(--web-line) solid var(--color-line); border-left: var(--web-line) solid var(--color-line);
 }
 .cam {
@@ -275,7 +282,7 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .cam.full { aspect-ratio: auto; width: 100%; height: 100%; border: 0; cursor: default; }
 .cam.cssfull { position: fixed; inset: 0; z-index: 30; width: 100vw; height: 100vh; height: 100dvh; }
 .cam.full .cam-fs { top: env(safe-area-inset-top); right: env(safe-area-inset-right); width: 44px; height: 44px; }
-.cam.full .cap { padding-bottom: calc(env(safe-area-inset-bottom) + 2px); font-size: var(--web-font); }
+.cam.full .cap { padding: 2px calc(env(safe-area-inset-right) + var(--web-pad)) calc(env(safe-area-inset-bottom) + 2px) calc(env(safe-area-inset-left) + var(--web-pad)); font-size: var(--web-font); }
 .banner { background: var(--color-banner-warn); color: var(--color-text); padding: var(--web-pad) var(--web-pad-x); margin: 0; border-bottom: var(--web-line) solid var(--color-line); }
 
 @media (prefers-reduced-motion: no-preference) {

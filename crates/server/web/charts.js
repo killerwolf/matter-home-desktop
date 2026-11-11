@@ -158,7 +158,9 @@ export function axisStep(spanS) {
 export const offsetAt = (t) => -new Date(t * 1000).getTimezoneOffset() * 60;
 
 /** Repères de l'axe entre `start` et `end` : multiples du pas à l'heure locale. `offset(t)`
- *  est relu pour chaque repère, de sorte qu'un changement d'heure tombe juste. */
+ *  est relu pour chaque repère, de sorte qu'un changement d'heure tombe juste : l'heure
+ *  doublée du passage à l'heure d'hiver donne deux repères (deux instants distincts), l'heure
+ *  qui n'existe pas (heure d'été) n'en donne aucun. */
 export function roundMarks(start, end, offset = offsetAt) {
   const step = axisStep(end - start);
   const firstOffset = offset(start);
@@ -166,13 +168,44 @@ export function roundMarks(start, end, offset = offsetAt) {
   const marks = [];
   for (let guard = 0; guard < 400; guard++, k++) {
     const local = k * step;
-    const first = local - offset(local - firstOffset);
-    const second = local - offset(first);
-    const found = [second, first].find((t) => t + offset(t) === local);
-    if ((found ?? first) > end) break;
-    if (found !== undefined && found >= start) marks.push(found);
+    const around = local - firstOffset;
+    const found = [...new Set([offset(around - 86400), offset(around), offset(around + 86400)].map((o) => local - o))]
+      .filter((t) => t + offset(t) === local)
+      .sort((a, b) => a - b);
+    if (!found.length) {
+      if (around - 86400 > end) break;
+      continue;
+    }
+    if (found[0] > end) break;
+    for (const t of found) if (t >= start && t <= end) marks.push(t);
   }
   return { marks, step };
+}
+
+/** Valeur de la courbe dessinée à l'instant `t` : interpolée entre deux points d'un même
+ *  segment ; `null` hors de toute courbe (trou, avant ou après les mesures). `tol` : écart
+ *  accepté autour d'un point isolé. */
+export function valueOnCurve(segments, t, tol = 0) {
+  for (const seg of segments) {
+    const first = seg[0];
+    const last = seg[seg.length - 1];
+    if (seg.length === 1) {
+      if (Math.abs(t - first.at) <= tol) return first.value;
+      continue;
+    }
+    if (t < first.at || t > last.at) continue;
+    let lo = 0;
+    let hi = seg.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (seg[mid].at <= t) lo = mid;
+      else hi = mid;
+    }
+    const p = seg[lo];
+    const q = seg[hi];
+    return q.at === p.at ? p.value : p.value + ((q.value - p.value) * (t - p.at)) / (q.at - p.at);
+  }
+  return null;
 }
 
 const DAYS = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];

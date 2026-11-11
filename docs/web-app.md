@@ -38,7 +38,7 @@ pas de framework, pas de nouvelle dépendance Rust.
   lecture `GET /api/devices/{id}/history?…&metrics=temperature&limit=20000&buckets=N` (N entre
   400 et 1600 selon la largeur), une ligne à un point par tranche d'environ 3 px, repères en
   heures rondes locales, courbe coupée sur les vrais trous (au moins 20 min, 2,5 fois l'intervalle
-  de rapport de l'appareil, 3 tranches), virgule décimale. Relecture chaque minute.
+  de rapport de l'appareil, 3 tranches), virgule décimale. Relecture chaque minute (toutes les 10 min sur 1 semaine); en plein écran, seule la panne de la caméra affichée fait sortir.
 - **Caméras** : une grille de vignettes (flux `sub`) décodées avec WebCodecs (`VideoDecoder`,
   H.264 AVCC) et dessinées dans un canvas. **Un clic sur une vignette la passe en plein écran**
   (plus de feuille modale) : l'API Fullscreen sur la vignette, flux **principal** (`kind=main`) ;
