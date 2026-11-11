@@ -2,6 +2,7 @@
 //! transformer en menu natif. Rien d'autre que ces entrées : pas d'option cachée.
 
 use crate::status::{status_line, Health, Phase};
+use crate::tailscale::WebAccess;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -12,6 +13,10 @@ pub enum Action {
     Cameras,
     Settings,
     Quit,
+    WebAccess,
+    WebOpen,
+    WebCopy,
+    WebAuth,
 }
 
 impl Action {
@@ -24,6 +29,10 @@ impl Action {
             Action::Cameras => "cameras",
             Action::Settings => "settings",
             Action::Quit => "quit",
+            Action::WebAccess => "web-access",
+            Action::WebOpen => "web-open",
+            Action::WebCopy => "web-copy",
+            Action::WebAuth => "web-auth",
         }
     }
 
@@ -36,6 +45,10 @@ impl Action {
             Action::Cameras,
             Action::Settings,
             Action::Quit,
+            Action::WebAccess,
+            Action::WebOpen,
+            Action::WebCopy,
+            Action::WebAuth,
         ]
         .into_iter()
         .find(|a| a.id() == id)
@@ -59,6 +72,10 @@ pub enum Entry {
 /// Ce que le menu montre.
 #[derive(Debug, Clone)]
 pub struct MenuInput<'a> {
+    /// Le nom complet de la version (`version::display_version`).
+    pub version: &'a str,
+    /// L'accès web par Tailscale (lu hors du fil principal).
+    pub web: &'a WebAccess,
     pub phase: &'a Phase,
     pub health: &'a Health,
     pub url: Option<&'a str>,
@@ -79,8 +96,52 @@ fn item(action: Action, label: &str, enabled: bool) -> Entry {
     }
 }
 
+/// Les lignes de l'accès web. Un état qui n'est pas actif ne propose rien d'autre que la case
+/// (grisée quand elle ne peut rien faire) ; actif, il propose d'ouvrir et de copier l'adresse.
+fn web_entries(web: &WebAccess) -> Vec<Entry> {
+    let check = |label: &str, enabled: bool, on: bool| Entry::Item {
+        action: Action::WebAccess,
+        label: label.into(),
+        enabled,
+        checked: Some(on),
+    };
+    match web {
+        WebAccess::Checking => vec![check("Accès web (Tailscale)", false, false)],
+        WebAccess::Off { .. } => vec![check("Accès web (Tailscale)", true, false)],
+        WebAccess::On { dns } => vec![
+            check("Accès web (Tailscale)", true, true),
+            item(Action::WebOpen, &format!("Ouvrir https://{dns}/app/"), true),
+            item(Action::WebCopy, "Copier l'adresse", true),
+        ],
+        WebAccess::NotInstalled => vec![check("Accès web : Tailscale non installé", false, false)],
+        WebAccess::Disconnected => vec![check("Accès web : Tailscale déconnecté", false, false)],
+        WebAccess::PortBusy => vec![check(
+            "Accès web : port 443 déjà utilisé par Tailscale",
+            false,
+            false,
+        )],
+        WebAccess::NeedsAuth { .. } => vec![
+            check("Accès web : à autoriser dans Tailscale", true, false),
+            item(
+                Action::WebAuth,
+                "Ouvrir la page d'autorisation de Tailscale…",
+                true,
+            ),
+        ],
+        WebAccess::Unavailable => vec![check(
+            "Accès web : état de Tailscale illisible",
+            false,
+            false,
+        )],
+    }
+}
+
 pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
-    let mut m = vec![Entry::Info(status_line(i.phase, i.health))];
+    let mut m = vec![
+        Entry::Info(format!("Matter Home Server {}", i.version)),
+        Entry::Separator,
+        Entry::Info(status_line(i.phase, i.health)),
+    ];
     match i.phase {
         Phase::Running if !i.health.unreachable.is_empty() => {
             m.push(Entry::Info("Appareils injoignables :".into()));
@@ -111,6 +172,8 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
             "Copier l'empreinte du certificat",
             i.fingerprint.is_some(),
         ));
+        m.push(Entry::Separator);
+        m.extend(web_entries(i.web));
         m.push(Entry::Separator);
     }
     m.push(item(Action::OpenLog, "Ouvrir le journal", true));
@@ -154,6 +217,8 @@ mod tests {
             unreachable: vec!["Salon".into()],
         };
         let menu = build(&MenuInput {
+            version: "1.0.0-rc.7",
+            web: &WebAccess::Checking,
             phase: &Phase::Running,
             health: &health,
             url: Some("https://mac.local:8443"),
@@ -163,7 +228,7 @@ mod tests {
             login_available: true,
         });
         assert_eq!(
-            menu[0],
+            menu[2],
             Entry::Info("En marche · 12 appareils sur 13 en ligne".into())
         );
         assert!(menu.contains(&Entry::Info("    Salon".into())));
@@ -173,6 +238,7 @@ mod tests {
             [
                 Action::CopyUrl,
                 Action::CopyFingerprint,
+                Action::WebAccess,
                 Action::OpenLog,
                 Action::ToggleLogin,
                 Action::Cameras,
@@ -194,6 +260,8 @@ mod tests {
     fn blocked_menu_has_no_address_and_points_to_the_window() {
         let health = Health::default();
         let menu = build(&MenuInput {
+            version: "1.0.0-rc.7",
+            web: &WebAccess::Checking,
             phase: &Phase::Blocked(Blocker::Service),
             health: &health,
             url: None,
@@ -212,6 +280,8 @@ mod tests {
         let health = Health::default();
         let entry = |phase: &Phase| {
             build(&MenuInput {
+                version: "1.0.0",
+                web: &WebAccess::Checking,
                 phase,
                 health: &health,
                 url: None,
@@ -242,6 +312,8 @@ mod tests {
         let health = Health::default();
         let build_with = |doubt| {
             build(&MenuInput {
+                version: "1.0.0",
+                web: &WebAccess::Checking,
                 phase: &Phase::Running,
                 health: &health,
                 url: None,
@@ -259,6 +331,113 @@ mod tests {
             .any(|e| matches!(e, Entry::Info(t) if t.contains("matter-home-desktop"))));
     }
 
+    fn menu_with(web: &WebAccess) -> Vec<Entry> {
+        build(&MenuInput {
+            version: "1.0.0-rc.7",
+            web,
+            phase: &Phase::Running,
+            health: &Health::default(),
+            url: Some("https://mac.local:8443"),
+            fingerprint: None,
+            login_enabled: false,
+            desktop_doubt: false,
+            login_available: true,
+        })
+    }
+
+    fn web_items(menu: &[Entry]) -> Vec<(Action, String, bool, Option<bool>)> {
+        menu.iter()
+            .filter_map(|e| match e {
+                Entry::Item {
+                    action:
+                        action @ (Action::WebAccess
+                        | Action::WebOpen
+                        | Action::WebCopy
+                        | Action::WebAuth),
+                    label,
+                    enabled,
+                    checked,
+                } => Some((*action, label.clone(), *enabled, *checked)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_version_is_the_first_line_and_not_clickable() {
+        let menu = menu_with(&WebAccess::Checking);
+        assert_eq!(menu[0], Entry::Info("Matter Home Server 1.0.0-rc.7".into()));
+    }
+
+    #[test]
+    fn web_access_shows_the_reason_when_it_cannot_be_used() {
+        for (web, label) in [
+            (
+                WebAccess::NotInstalled,
+                "Accès web : Tailscale non installé",
+            ),
+            (WebAccess::Disconnected, "Accès web : Tailscale déconnecté"),
+            (
+                WebAccess::PortBusy,
+                "Accès web : port 443 déjà utilisé par Tailscale",
+            ),
+        ] {
+            assert_eq!(
+                web_items(&menu_with(&web)),
+                [(Action::WebAccess, label.to_string(), false, Some(false))]
+            );
+        }
+    }
+
+    #[test]
+    fn web_access_when_off_is_an_enabled_unchecked_box() {
+        let web = WebAccess::Off { dns: None };
+        assert_eq!(
+            web_items(&menu_with(&web)),
+            [(
+                Action::WebAccess,
+                "Accès web (Tailscale)".to_string(),
+                true,
+                Some(false)
+            )]
+        );
+    }
+
+    #[test]
+    fn active_web_access_offers_to_open_and_copy_the_address() {
+        let web = WebAccess::On {
+            dns: "mac.tailnet.ts.net".into(),
+        };
+        assert_eq!(
+            web_items(&menu_with(&web)),
+            [
+                (
+                    Action::WebAccess,
+                    "Accès web (Tailscale)".to_string(),
+                    true,
+                    Some(true)
+                ),
+                (
+                    Action::WebOpen,
+                    "Ouvrir https://mac.tailnet.ts.net/app/".to_string(),
+                    true,
+                    None
+                ),
+                (Action::WebCopy, "Copier l'adresse".to_string(), true, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn serve_to_authorise_offers_the_link() {
+        let web = WebAccess::NeedsAuth {
+            url: "https://login.tailscale.com/f/serve?node=x".into(),
+        };
+        let items = web_items(&menu_with(&web));
+        assert_eq!(items[0].1, "Accès web : à autoriser dans Tailscale");
+        assert_eq!(items[1].0, Action::WebAuth);
+    }
+
     #[test]
     fn ids_round_trip() {
         for a in [
@@ -269,6 +448,10 @@ mod tests {
             Action::Cameras,
             Action::Settings,
             Action::Quit,
+            Action::WebAccess,
+            Action::WebOpen,
+            Action::WebCopy,
+            Action::WebAuth,
         ] {
             assert_eq!(Action::from_id(a.id()), Some(a));
         }

@@ -3065,6 +3065,7 @@ dependencies = [
  "matter-home-server",
  "protocol",
  "rfd",
+ "serde_json",
  "tray-icon",
  "winit",
 ]

@@ -1,0 +1,11 @@
+{
+  "TCP": { "443": { "HTTPS": true } },
+  "Web": {
+    "mac-exemple.tailnet-exemple.ts.net:443": {
+      "Handlers": {
+        "/": { "Proxy": "https+insecure://localhost:8443" },
+        "/autre": { "Proxy": "http://127.0.0.1:3000" }
+      }
+    }
+  }
+}

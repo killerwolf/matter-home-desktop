@@ -126,6 +126,13 @@ pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Ouvre une adresse https dans le navigateur par défaut (`open`, argument fixe, aucun shell).
+pub fn open_url(url: &str) {
+    if url.starts_with("https://") && url.bytes().all(|b| b.is_ascii_graphic()) {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+}
+
 pub fn open_file(path: &Path) {
     let _ = Command::new("/usr/bin/open").arg("-t").arg(path).spawn();
 }

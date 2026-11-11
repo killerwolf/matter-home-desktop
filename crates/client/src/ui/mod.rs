@@ -2255,12 +2255,30 @@ impl MatterApp {
                         ui.spinner();
                     }
                     match &self.link {
-                        Link::Connected { server_version, .. } => {
-                            ui.label(
-                                RichText::new(format!("● connecté · serveur {server_version}"))
-                                    .small()
-                                    .color(theme::palette(ui).ok),
-                            );
+                        Link::Connected {
+                            server_version,
+                            server,
+                        } => {
+                            // Un clic sur l'adresse ouvre un petit menu ; l'adresse complète
+                            // est dans l'infobulle quand elle est tronquée.
+                            let full = server_address(server);
+                            let shown = shorten(&full, MAX_ADDRESS_CHARS);
+                            let text = RichText::new(format!("● {shown} · {server_version}"))
+                                .small()
+                                .color(theme::palette(ui).ok);
+                            let reply = ui.menu_button(text, |ui| {
+                                if ui.button("Copier l'adresse").clicked() {
+                                    ui.ctx().copy_text(full.clone());
+                                    ui.close();
+                                }
+                                if ui.button("Se déconnecter / changer de serveur").clicked() {
+                                    logout = true;
+                                    ui.close();
+                                }
+                            });
+                            reply.response.on_hover_text(format!(
+                                "{full}\nServeur {server_version}\nClic : copier l'adresse ou changer de serveur"
+                            ));
                         }
                         Link::Resyncing => {
                             ui.label(RichText::new("● resynchronisation…").small());
@@ -2602,6 +2620,28 @@ impl MatterApp {
     fn plan_or_rules_pending(&self) -> bool {
         self.plan.needs_tick() || self.rules.needs_tick()
     }
+}
+
+/// Au-delà, l'adresse affichée dans la barre du haut est tronquée par « … ».
+const MAX_ADDRESS_CHARS: usize = 48;
+
+/// L'adresse à montrer pour un serveur (`Link::Connected::server` : « https://hôte:port#empreinte ») :
+/// sans le schéma ni l'empreinte.
+fn server_address(server: &str) -> String {
+    let url = server.split('#').next().unwrap_or(server);
+    url.strip_prefix("https://")
+        .unwrap_or(url)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Tronque à `max` caractères au plus, « … » compris.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 #[cfg(test)]

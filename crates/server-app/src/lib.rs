@@ -14,3 +14,5 @@ pub mod sleep;
 pub mod startup;
 pub mod status;
 pub mod system;
+pub mod tailscale;
+pub mod version;

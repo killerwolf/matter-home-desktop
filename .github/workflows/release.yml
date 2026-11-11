@@ -98,6 +98,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Le nom complet (1.0.0-rc.7) pour le menu de l'app serveur, lu au build par
+          # option_env!("MATTER_HOME_VERSION") ; Cargo.toml, lui, n'a que 1.0.0.
+          echo "MATTER_HOME_VERSION=$VERSION" >> "$GITHUB_ENV"
           # Un tag de pré-version (v1.0.0-rc.1) construit la version 1.0.0 : le suffixe -rc.N
           # n'apparaît que dans le tag et le titre de la release, pas dans les noms de fichiers.
           VERSION="${VERSION%%-*}"

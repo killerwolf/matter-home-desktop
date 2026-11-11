@@ -65,6 +65,33 @@ Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules
   ticket n° 14. Les essais en local utilisent Chrome avec `--ignore-certificate-errors` vers
   `127.0.0.1` seulement.
 
+## Accès web depuis le menu de l'app serveur (Tailscale)
+
+La case **« Accès web (Tailscale) »** du menu de Matter Home Server publie le serveur sur le
+tailnet, sans Terminal. **Activer** lance `tailscale serve --bg https+insecure://localhost:<port>`
+(le port est celui du serveur), **désactiver** lance `tailscale serve --https=443 off`. Seule la
+publication privée au tailnet existe : la publication sur tout Internet (`funnel`) n'est jamais
+lancée, et un test le garantit. L'état est porté par Tailscale (`serve --bg` est persistant) :
+l'app ne range rien.
+
+- **Binaire** : `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, puis
+  `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale`, puis le `PATH` (chemins absolus
+  seulement). Lancé directement, arguments fixes, jamais à travers un shell.
+- **État** : relu à l'ouverture et à la fermeture du menu, dans un fil à part (3 s au plus) :
+  `tailscale status --json` (`BackendState`, `Self.DNSName`) puis `tailscale serve status --json`.
+  Le menu n'est jamais bloqué ; un changement de structure (les deux lignes de l'accès actif)
+  attend la fermeture du menu, comme pour les appareils injoignables.
+- **Libellés** : « Accès web : Tailscale non installé » et « Accès web : Tailscale déconnecté »
+  (case grisée) ; « Accès web : à autoriser dans Tailscale » avec un élément qui ouvre le lien
+  fourni par la réponse « Serve is not enabled » ; « Accès web : port 443 déjà utilisé par
+  Tailscale » (case grisée) quand un autre `serve` occupe le 443 : il n'est jamais écrasé ni retiré.
+- **Actif** : la case est cochée et deux éléments apparaissent, « Ouvrir https://<nom>.ts.net/app/ »
+  et « Copier l'adresse ».
+- **Essais** : `MATTER_HOME_TAILSCALE_BIN=/chemin/absolu/faux-tailscale` remplace tout le reste
+  (aucune recherche ailleurs). En `--demo`, sans cette variable, Tailscale est vu comme absent :
+  le menu d'un essai ne lance jamais le vrai `tailscale`. Les tests unitaires s'appuient sur des
+  fixtures JSON (`crates/server-app/tests/fixtures/tailscale/`) et ne lancent jamais le vrai binaire.
+
 ## Essayer
 
 `matter-home-server --demo --listen 127.0.0.1:18443 --data-dir <dossier jetable>`, puis ouvrir

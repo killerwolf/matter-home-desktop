@@ -1,0 +1,12 @@
+{
+  "Version": "1.0.0-fixture",
+  "BackendState": "Stopped",
+  "AuthURL": "",
+  "TailscaleIPs": null,
+  "Self": {
+    "HostName": "mac-exemple",
+    "DNSName": "mac-exemple.tailnet-exemple.ts.net.",
+    "Online": false
+  },
+  "Health": ["Tailscale is stopped."]
+}
