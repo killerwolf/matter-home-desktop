@@ -157,16 +157,20 @@ Les téléchargements de chaque version sont sur la
   droite sur une fenêtre large), une grille de cartes par pièce, d'environ 180 px, avec une grande
   icône d'état (ampoule allumée ou éteinte, prise, porte ou fenêtre ouverte ou fermée, volet et son
   pourcentage, thermomètre, télécommande), le nom et la valeur en grand. L'en-tête de pièce porte
-  l'étage et la température moyenne, teintée comme sur le plan. Un clic **allume ou éteint** une
-  lumière ou une prise et **ouvre ou ferme** un volet, avec un retour immédiat (un refus remet
-  l'affichage et passe par le message d'erreur habituel) ; pour le reste il ouvre le détail, comme
-  les trois points de la carte et le clic droit. Une carte injoignable est estompée, une pile faible
+  l'étage et la température moyenne, teintée comme sur le plan. Les pièces se rangent côte à côte
+  (blocs de 3 ou 4 colonnes au plus). Un clic **allume ou éteint** une lumière et **ouvre, ferme ou
+  arrête** un volet, avec un retour immédiat (un refus remet l'affichage et passe par le message
+  d'erreur habituel ; un second clic trop proche ou pendant une commande est ignoré) ; pour le
+  reste, prise comprise, il ouvre le détail, comme les trois points (au survol ou au focus) et le
+  clic droit. Une pile faible remplace l'humidité sur la carte ; la fenêtre signale un appareil
+  injoignable par un bandeau et défile quand l'écran est bas ; Échap annule d'abord la saisie du
+  nom. Une carte injoignable est estompée, une pile faible
   a un petit point orange. Le détail devient une **fenêtre centrée** (Échap, « Fermer » ou un clic à
   côté la ferment), à la place du panneau latéral : en-tête avec la commande principale, la courbe
   seulement si l'appareil en a une, les actions, puis « Infos techniques » repliées. Le plan ouvre la
   même fenêtre et garde toute sa largeur. Nouveaux tokens `tile`. Le mode démo du serveur gagne,
   avec `MATTER_HOME_DEMO_HOUSE=1` seulement, des lampes, une télécommande et un capteur injoignable
-  (pour les captures) ; `MATTER_HOME_WINDOW=LxH` règle la taille de la fenêtre du client.
+  (pour les captures, lampes commandables) ; `MATTER_HOME_WINDOW=LxH` (800 à 8000) règle la taille de la fenêtre du client.
 - **Refonte de l'interface du client, phase 3** (ticket n° 13) : **Caméras, Connexion,
   Automatisations**. Caméras : une grille de vignettes qui remplit la largeur (image, nom, pièce en
   légende ; seul « injoignable » est signalé, avec « Hors ligne depuis … ») ; en grand, une seule

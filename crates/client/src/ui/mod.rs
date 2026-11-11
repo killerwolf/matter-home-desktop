@@ -458,8 +458,14 @@ impl MatterApp {
             CoverCommand::Close => Some(CoverMotion::Closing),
             _ => None,
         };
-        if let Some(motion) = motion {
-            self.expect.insert(id, devices::Expect::motion(motion));
+        match motion {
+            Some(motion) => {
+                self.expect.insert(id, devices::Expect::motion(motion));
+            }
+            // Stop ou Position : on n'attend plus de mouvement précis.
+            None => {
+                self.expect.remove(&id);
+            }
         }
         let sent = self.request(
             Pending::Command {
@@ -472,8 +478,26 @@ impl MatterApp {
                 &CoverRequest { command },
             ),
         );
-        if sent.is_none() {
-            self.expect.remove(&id);
+        self.note_request(id, sent);
+    }
+
+    /// Les attentes de commandes se purgent à chaque image : réalisées ou périmées, elles ne sont
+    /// plus montrées (ni dans la grille, ni dans la fenêtre de détail).
+    fn purge_expect(&mut self, now: Instant) {
+        let known = &self.model.devices;
+        self.expect
+            .retain(|id, e| known.get(id).is_some_and(|d| e.pending(d, now)));
+    }
+
+    /// Retient le numéro de la requête dans l'attente de l'appareil (ou l'abandonne si la
+    /// requête n'est pas partie).
+    fn note_request(&mut self, id: u64, sent: Option<u64>) {
+        match (sent, self.expect.get_mut(&id)) {
+            (Some(request), Some(e)) => e.request = Some(request),
+            (None, _) => {
+                self.expect.remove(&id);
+            }
+            _ => {}
         }
     }
 
@@ -497,12 +521,10 @@ impl MatterApp {
                 &OnOffRequest { command },
             ),
         );
-        if sent.is_none() {
-            self.expect.remove(&id);
-        }
+        self.note_request(id, sent);
     }
 
-    /// Le clic sur une tuile de lumière ou de prise : bascule l'état affiché.
+    /// Le clic sur une tuile de lumière : bascule l'état affiché.
     fn toggle_device(&mut self, id: u64) {
         let now = Instant::now();
         let shown = self.model.devices.get(&id).and_then(|d| {
@@ -1269,11 +1291,25 @@ impl MatterApp {
                 }
             }
             Pending::Command { what, node } => {
-                if let Err(e) = result {
-                    if let Some(node) = node {
-                        self.expect.remove(&node);
+                // Seule l'attente de CETTE requête est touchée : un vieux refus n'efface pas ce
+                // qu'on attend d'une commande plus récente.
+                let ours = |expect: &HashMap<u64, devices::Expect>| {
+                    node.is_some_and(|n| expect.get(&n).is_some_and(|e| e.request == Some(id)))
+                };
+                match result {
+                    Ok(_) => {
+                        if let (true, Some(n)) = (ours(&self.expect), node) {
+                            if let Some(e) = self.expect.get_mut(&n) {
+                                e.acked = true;
+                            }
+                        }
                     }
-                    self.show_error(format!("{what} : {}", e.message()));
+                    Err(e) => {
+                        if let (true, Some(n)) = (ours(&self.expect), node) {
+                            self.expect.remove(&n);
+                        }
+                        self.show_error(format!("{what} : {}", e.message()));
+                    }
                 }
             }
             Pending::Pair => {
@@ -1762,6 +1798,16 @@ impl MatterApp {
         if self.selected_device().is_none() {
             return;
         }
+        // Échap pendant l'édition du nom (ou la confirmation d'effacement) annule cela, sans
+        // fermer la fenêtre : la touche est consommée avant que la fenêtre ne la voie.
+        let editing = self.selected.is_some_and(|id| {
+            self.device_edit.as_ref().is_some_and(|e| e.node_id == id)
+                || self.confirm_clear == Some(id)
+        });
+        if editing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.device_edit = None;
+            self.confirm_clear = None;
+        }
         let modal = egui::Modal::new(egui::Id::unique("device-detail")).show(ctx, |ui| {
             ui.set_width(DETAIL_WIDTH);
             self.details(ui, layout);
@@ -1883,7 +1929,9 @@ impl MatterApp {
         }
         ui.add_space(t.space.sm);
 
-        let max_height = (ui.ctx().content_rect().height() - 330.0).max(200.0);
+        // Tout ce qui est sous l'en-tête défile, dans la hauteur de la fenêtre moins ses marges et
+        // l'en-tête : à 520 px de haut, rien n'est coupé, tout reste atteignable.
+        let max_height = (ui.ctx().content_rect().height() - 80.0 - 120.0).max(120.0);
         let window = &mut self.window;
         let empty_series = DeviceSeries::default();
         let series = self.series.get(&id).unwrap_or(&empty_series);
@@ -1892,6 +1940,22 @@ impl MatterApp {
             .max_height(max_height)
             .auto_shrink([false, true])
             .show(ui, |ui| {
+                // Un appareil injoignable : la raison et le délai du nouvel essai, en tête, pas
+                // repliés dans les infos techniques.
+                if let WireStatus::Unreachable { retry_in_s, .. } = &device.status {
+                    theme::banner_frame(ui, theme::Banner::Warn).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Appareil injoignable").strong());
+                        if let Some(why) = unreachable_text(&device.status) {
+                            ui.label(why);
+                        }
+                        if *retry_in_s > 0 {
+                            ui.label(format!("Nouvel essai automatique sous {retry_in_s} s."));
+                        }
+                    });
+                    ui.add_space(t.space.sm);
+                }
+
                 // 2. La courbe et les périodes, seulement si l'appareil en a une.
                 if caps.temperature {
                     thermometer::show(ui, device, series, window, export_message, &mut requests);
@@ -1933,38 +1997,36 @@ impl MatterApp {
                         "Description de l'appareil pas encore lue (il est peut-être endormi).",
                     );
                 }
-            });
-
-        // 3. Les actions de l'appareil.
-        ui.horizontal_wrapped(|ui| {
-            retry = ui.button("Reconnecter").clicked();
-            let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
-            if !editing
-                && ui
-                    .button("Nom et icône")
-                    .on_hover_text("Personnaliser le nom et l'icône")
-                    .clicked()
-            {
-                customize = true;
-            }
-            if self.confirm_clear == Some(id) {
-                ui.label("Effacer tout l'historique de cet appareil ?");
-                clear = ui
-                    .button(RichText::new("Oui, effacer").color(p.error))
-                    .clicked();
-                if ui.button("Annuler").clicked() {
-                    self.confirm_clear = None;
-                }
-            } else if ui
-                .button("Effacer l'historique")
-                .on_hover_text(
-                    "Supprime les mesures enregistrées sur le serveur pour cet appareil.",
-                )
-                .clicked()
-            {
-                self.confirm_clear = Some(id);
-            }
-            if device.info.bridge.is_none()
+                // 3. Les actions de l'appareil.
+                ui.horizontal_wrapped(|ui| {
+                    retry = ui.button("Reconnecter").clicked();
+                    let editing = self.device_edit.as_ref().is_some_and(|e| e.node_id == id);
+                    if !editing
+                        && ui
+                            .button("Nom et icône")
+                            .on_hover_text("Personnaliser le nom et l'icône")
+                            .clicked()
+                    {
+                        customize = true;
+                    }
+                    if self.confirm_clear == Some(id) {
+                        ui.label("Effacer tout l'historique de cet appareil ?");
+                        clear = ui
+                            .button(RichText::new("Oui, effacer").color(p.error))
+                            .clicked();
+                        if ui.button("Annuler").clicked() {
+                            self.confirm_clear = None;
+                        }
+                    } else if ui
+                        .button("Effacer l'historique")
+                        .on_hover_text(
+                            "Supprime les mesures enregistrées sur le serveur pour cet appareil.",
+                        )
+                        .clicked()
+                    {
+                        self.confirm_clear = Some(id);
+                    }
+                    if device.info.bridge.is_none()
                 && ui
                     .button("Oublier")
                     .on_hover_text(
@@ -1974,97 +2036,104 @@ impl MatterApp {
             {
                 forget = true;
             }
-        });
-        let mut save = None;
-        if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
-            match customize::editor(ui, edit, &device.info.device_name) {
-                Some(customize::EditResult::Save) => save = Some(edit.clone()),
-                Some(customize::EditResult::Cancel) => self.device_edit = None,
-                None => {}
-            }
-        }
-        if let Some(edit) = save {
-            self.device_edit = None;
-            self.pending_customize = Some((id, edit.name, edit.icon));
-        }
+                });
+                let mut save = None;
+                if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
+                    match customize::editor(ui, edit, &device.info.device_name) {
+                        Some(customize::EditResult::Save) => save = Some(edit.clone()),
+                        Some(customize::EditResult::Cancel) => self.device_edit = None,
+                        None => {}
+                    }
+                }
+                if let Some(edit) = save {
+                    self.device_edit = None;
+                    self.pending_customize = Some((id, edit.name, edit.icon));
+                }
 
-        // 4. Infos techniques, repliées par défaut.
-        egui::CollapsingHeader::new("Infos techniques")
-            .default_open(false)
-            .show(ui, |ui| {
-                let (status_color, status_text) = status_badge(p, &device.status);
-                let kind = if device.info.device_types.is_empty() {
-                    "Type inconnu".to_string()
-                } else {
-                    device.info.device_types.join(", ")
-                };
-                let now = now_unix();
-                egui::Grid::new(("detail_info", id))
-                    .num_columns(2)
-                    .spacing([t.space.md, 3.0])
+                // 4. Infos techniques, repliées par défaut.
+                egui::CollapsingHeader::new("Infos techniques")
+                    .default_open(false)
                     .show(ui, |ui| {
-                        ui.label(RichText::new("État").color(p.text_secondary));
-                        ui.horizontal_wrapped(|ui| {
-                            ui.colored_label(status_color, format!("● {status_text}"));
-                            if let WireStatus::Unreachable { retry_in_s, .. } = &device.status {
-                                if *retry_in_s > 0 {
-                                    ui.label(format!(
-                                        "— nouvel essai automatique sous {retry_in_s} s"
-                                    ));
+                        let (status_color, status_text) = status_badge(p, &device.status);
+                        let kind = if device.info.device_types.is_empty() {
+                            "Type inconnu".to_string()
+                        } else {
+                            device.info.device_types.join(", ")
+                        };
+                        let now = now_unix();
+                        egui::Grid::new(("detail_info", id))
+                            .num_columns(2)
+                            .spacing([t.space.md, 3.0])
+                            .show(ui, |ui| {
+                                ui.label(RichText::new("État").color(p.text_secondary));
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.colored_label(status_color, format!("● {status_text}"));
+                                    if let WireStatus::Unreachable { retry_in_s, .. } =
+                                        &device.status
+                                    {
+                                        if *retry_in_s > 0 {
+                                            ui.label(format!(
+                                                "— nouvel essai automatique sous {retry_in_s} s"
+                                            ));
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+                                if let Some(why) = unreachable_text(&device.status) {
+                                    ui.label("");
+                                    ui.small(RichText::new(why).color(p.text_secondary));
+                                    ui.end_row();
                                 }
-                            }
-                        });
-                        ui.end_row();
-                        if let Some(why) = unreachable_text(&device.status) {
-                            ui.label("");
-                            ui.small(RichText::new(why).color(p.text_secondary));
-                            ui.end_row();
-                        }
-                        if let Some(b) = device.battery() {
-                            let low = device.battery_low();
-                            let color = if low || b < 20.0 { p.error } else { p.ok };
-                            let warn = if low {
-                                " — pile faible, à remplacer"
-                            } else {
-                                ""
-                            };
-                            ui.label(RichText::new("Pile").color(p.text_secondary));
-                            ui.colored_label(color, format!("{b:.0} %{warn}"));
-                            ui.end_row();
-                        }
-                        theme::detail_row(ui, "Type", kind);
-                        theme::detail_row(ui, "Nœud", format!("{id:016X}"));
-                        theme::detail_row(
-                            ui,
-                            "Dernière communication",
-                            device.last_seen.map_or("jamais".into(), |t| ago(now - t)),
-                        );
-                        let meta: Vec<String> =
-                            [device.info.vendor.clone(), device.info.product.clone()]
-                                .into_iter()
-                                .flatten()
-                                .collect();
-                        if !meta.is_empty() {
-                            theme::detail_row(ui, "Fabricant", meta.join(" — "));
-                        }
-                        if device.info.custom_name.is_some() {
-                            theme::detail_row(
-                                ui,
-                                "Nom de l'appareil",
-                                device.info.device_name.clone(),
-                            );
-                        }
-                        if let (Some(link), Some(bridge_name)) = (device.info.bridge, &bridge_name)
-                        {
-                            ui.label(RichText::new("Exposé par").color(p.text_secondary));
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(format!("{bridge_name} (endpoint {})", link.endpoint));
-                                if ui.small_button("Voir le pont").clicked() {
-                                    open_device = Some(link.node_id);
+                                if let Some(b) = device.battery() {
+                                    let low = device.battery_low();
+                                    let color = if low || b < 20.0 { p.error } else { p.ok };
+                                    let warn = if low {
+                                        " — pile faible, à remplacer"
+                                    } else {
+                                        ""
+                                    };
+                                    ui.label(RichText::new("Pile").color(p.text_secondary));
+                                    ui.colored_label(color, format!("{b:.0} %{warn}"));
+                                    ui.end_row();
+                                }
+                                theme::detail_row(ui, "Type", kind);
+                                theme::detail_row(ui, "Nœud", format!("{id:016X}"));
+                                theme::detail_row(
+                                    ui,
+                                    "Dernière communication",
+                                    device.last_seen.map_or("jamais".into(), |t| ago(now - t)),
+                                );
+                                let meta: Vec<String> =
+                                    [device.info.vendor.clone(), device.info.product.clone()]
+                                        .into_iter()
+                                        .flatten()
+                                        .collect();
+                                if !meta.is_empty() {
+                                    theme::detail_row(ui, "Fabricant", meta.join(" — "));
+                                }
+                                if device.info.custom_name.is_some() {
+                                    theme::detail_row(
+                                        ui,
+                                        "Nom de l'appareil",
+                                        device.info.device_name.clone(),
+                                    );
+                                }
+                                if let (Some(link), Some(bridge_name)) =
+                                    (device.info.bridge, &bridge_name)
+                                {
+                                    ui.label(RichText::new("Exposé par").color(p.text_secondary));
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(format!(
+                                            "{bridge_name} (endpoint {})",
+                                            link.endpoint
+                                        ));
+                                        if ui.small_button("Voir le pont").clicked() {
+                                            open_device = Some(link.node_id);
+                                        }
+                                    });
+                                    ui.end_row();
                                 }
                             });
-                            ui.end_row();
-                        }
                     });
             });
 
@@ -2468,6 +2537,7 @@ impl eframe::App for MatterApp {
 
         // Onglet Appareils : les tuiles rangées sont calculées une fois par image, pour la
         // grille et pour la fenêtre de détail (au clic sur une tuile, ou sur un appareil du plan).
+        self.purge_expect(Instant::now());
         let show_detail = match self.view {
             View::Devices => true,
             // Sur le plan en mode Modifier, un clic sélectionne l'objet : pas de fenêtre.
@@ -2487,7 +2557,7 @@ impl eframe::App for MatterApp {
                 self.apply_tiles(out);
             }
             View::Plan => match self.plan.show(ui, &self.model) {
-                // Le même panneau de détail que dans Appareils, à droite du plan.
+                // La même fenêtre de détail que dans Appareils, au-dessus du plan.
                 plan::PlanAction::OpenDevice(id) => {
                     self.selected = Some(id);
                     self.export_message = None;

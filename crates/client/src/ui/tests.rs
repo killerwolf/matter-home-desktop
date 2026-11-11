@@ -1966,3 +1966,109 @@ fn the_detail_window_draws_for_every_kind_of_device() {
         assert_eq!(f.app.selected, Some(id), "la fenêtre reste ouverte");
     }
 }
+
+#[test]
+fn an_old_refusal_does_not_clear_the_wait_of_a_newer_command() {
+    let mut f = lamp_and_shutter_fixture();
+    // Première commande : éteindre. Seconde, aussitôt : rallumer. L'attente est celle de la seconde.
+    f.app.set_on(1, false);
+    let first = pending_of(&f, |p| matches!(p, Pending::Command { node: Some(1), .. })).unwrap();
+    f.app.set_on(1, true);
+    let second = f
+        .app
+        .pending
+        .iter()
+        .find(|(id, p)| **id != first && matches!(p, Pending::Command { node: Some(1), .. }))
+        .map(|(id, _)| *id)
+        .unwrap();
+    assert_eq!(f.app.expect[&1].request, Some(second));
+    let refused = |id| Event::Reply {
+        id,
+        result: Err(NetError::Api {
+            status: 502,
+            code: Some(ErrorCode::DeviceUnreachable),
+            detail: None,
+            retry_after_s: None,
+        }),
+    };
+    // Le vieux refus arrive : l'attente de la seconde commande reste.
+    f.send(refused(first));
+    f.app.pump_network();
+    assert_eq!(f.app.expect[&1].on, Some(true));
+    // Le refus de la seconde l'efface.
+    f.send(refused(second));
+    f.app.pump_network();
+    assert!(!f.app.expect.contains_key(&1));
+    // Un accord marque l'attente comme acceptée (un clic de plus n'est plus ignoré après le délai).
+    f.app.set_on(1, false);
+    let third = f
+        .app
+        .pending
+        .iter()
+        .find(|(_, p)| matches!(p, Pending::Command { node: Some(1), .. }))
+        .map(|(id, _)| *id)
+        .unwrap();
+    assert!(!f.app.expect[&1].acked);
+    f.send(Event::Reply {
+        id: third,
+        result: Ok(Response {
+            status: 202,
+            headers: vec![],
+            body: vec![],
+        }),
+    });
+    f.app.pump_network();
+    assert!(f.app.expect[&1].acked);
+}
+
+#[test]
+fn the_waits_are_purged_when_done_or_stale() {
+    let mut f = lamp_and_shutter_fixture();
+    f.app.set_on(1, false);
+    let now = Instant::now();
+    // En cours : gardée.
+    f.app.purge_expect(now);
+    assert!(f.app.expect.contains_key(&1));
+    // Périmée : retirée.
+    f.app
+        .purge_expect(now + devices::EXPECT_TTL + Duration::from_millis(1));
+    assert!(f.app.expect.is_empty());
+    // Réalisée (l'appareil a l'état demandé) : retirée.
+    f.app.set_on(1, true);
+    f.app.purge_expect(Instant::now());
+    assert!(f.app.expect.is_empty(), "la lampe est déjà allumée");
+}
+
+fn escape_frame(f: &mut Fixture, ctx: &egui::Context) {
+    let layout = devices::groups(&f.app.model.devices, f.app.plan.plan());
+    let input = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        f.app.detail_window(&ui.ctx().clone(), &layout);
+    });
+    out.textures_delta.clear();
+}
+
+#[test]
+fn escape_cancels_the_name_edit_without_closing_the_window_then_closes_it() {
+    let mut f = lamp_and_shutter_fixture();
+    let ctx = egui::Context::default();
+    f.app.selected = Some(1);
+    f.app.device_edit = Some(customize::DeviceEdit::from_info(
+        &f.app.model.devices[&1].info,
+    ));
+    escape_frame(&mut f, &ctx);
+    assert!(f.app.device_edit.is_none(), "l'édition est annulée");
+    assert_eq!(f.app.selected, Some(1), "la fenêtre reste ouverte");
+    // Sans édition en cours, Échap ferme la fenêtre.
+    escape_frame(&mut f, &ctx);
+    assert_eq!(f.app.selected, None);
+}

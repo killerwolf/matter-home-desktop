@@ -67,8 +67,20 @@ fn door_open(t: f64) -> bool {
     t.rem_euclid(120.0) < 20.0
 }
 
+/// La maison d'essai n'est activée qu'avec `MATTER_HOME_DEMO_HOUSE=1`.
 fn house_mode() -> bool {
-    std::env::var_os("MATTER_HOME_DEMO_HOUSE").is_some()
+    std::env::var("MATTER_HOME_DEMO_HOUSE").as_deref() == Ok("1")
+}
+
+/// État des lampes de la maison d'essai (commandables : le clic d'une tuile les bascule).
+type Lamps = Arc<Mutex<HashMap<u64, bool>>>;
+
+fn initial_lamps() -> Lamps {
+    Arc::new(Mutex::new(if house_mode() {
+        HashMap::from([(LAMP_LIVING, true), (LAMP_KITCHEN, true), (LAMP_BED, false)])
+    } else {
+        HashMap::new()
+    }))
 }
 
 /// Les appareils de la maison d'essai (voir `house_mode`).
@@ -185,6 +197,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
     let (tap_tx, tap_rx) = mpsc::unbounded_channel();
     let events = ui.with_tap(tap_tx);
     let plug_on = Arc::new(AtomicBool::new(true));
+    let lamps = initial_lamps();
     let shutters: Shutters = Arc::new(Mutex::new(HashMap::from([
         (
             SHUTTER_LIVING,
@@ -223,6 +236,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
     let actuator: Arc<dyn Actuator> = Arc::new(DemoActuator {
         events: events.clone(),
         plug_on: plug_on.clone(),
+        lamps: lamps.clone(),
         shutters: shutters.clone(),
     });
     automation::spawn(rules.rules, tap_rx, engine_rx, ui, actuator.clone());
@@ -729,12 +743,35 @@ pub fn demo_plan() -> crate::home::HomePlan {
 struct DemoActuator {
     events: EventSink,
     plug_on: Arc<AtomicBool>,
+    /// Lampes de la maison d'essai (vide hors `MATTER_HOME_DEMO_HOUSE=1`).
+    lamps: Lamps,
     shutters: Shutters,
 }
 
 impl Actuator for DemoActuator {
     fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async move {
+            // Une lampe de la maison d'essai : l'état change et l'événement part.
+            let lamp = {
+                let mut lamps = self.lamps.lock().unwrap_or_else(|e| e.into_inner());
+                lamps.get_mut(&node_id).map(|state| {
+                    *state = match command {
+                        OnOffCommand::On => true,
+                        OnOffCommand::Off => false,
+                        OnOffCommand::Toggle => !*state,
+                    };
+                    *state
+                })
+            };
+            if let Some(on) = lamp {
+                self.events.send(Event::State {
+                    node_id,
+                    kind: StateKind::OnOff,
+                    value: on,
+                    at: now_unix(),
+                });
+                return Ok(());
+            }
             if node_id != PLUG {
                 anyhow::bail!("cet appareil ne se commande pas (démo)");
             }
@@ -955,6 +992,7 @@ mod tests {
             let actuator = DemoActuator {
                 events: events.clone(),
                 plug_on: plug_on.clone(),
+                lamps: Lamps::default(),
                 shutters: shutters.clone(),
             };
             automation::spawn(vec![rule], tap_rx, engine_rx, ui, Arc::new(actuator));

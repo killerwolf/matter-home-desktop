@@ -174,9 +174,10 @@ pub struct Size {
 /// Une tuile d'appareil (écran Appareils).
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct TileTokens {
-    /// Largeur cible (la web app) ; le client part de `min_width` et remplit la ligne.
-    #[allow(dead_code)]
+    /// Largeur d'une tuile.
     pub width: f32,
+    /// Largeur minimale (la web app, qui étire ses tuiles ; le client garde `width`).
+    #[allow(dead_code)]
     pub min_width: f32,
     pub height: f32,
     pub radius: u8,
@@ -456,7 +457,6 @@ pub fn primary_button_wide(ui: &mut Ui, label: &str, enabled: bool, width: f32) 
 pub fn room_heading(ui: &mut Ui, name: &str, floor: Option<&str>, average: Option<f64>) {
     let t = tokens();
     let p = palette(ui);
-    ui.add_space(t.space.md);
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(name)
@@ -475,7 +475,6 @@ pub fn room_heading(ui: &mut Ui, name: &str, floor: Option<&str>, average: Optio
             temperature_pill(ui, celsius);
         }
     });
-    ui.add_space(t.space.xs);
 }
 
 /// Pastille « 21,5 °C » : le fond est la teinte du palier de l'échelle de température.

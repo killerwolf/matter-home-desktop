@@ -113,7 +113,11 @@ fn main() -> eframe::Result {
         .ok()
         .and_then(|v| {
             let (w, h) = v.split_once('x')?;
-            Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?])
+            let bound = |t: &str| {
+                let v = t.parse::<f32>().ok().filter(|v| v.is_finite())?;
+                Some(v.clamp(800.0, 8000.0))
+            };
+            Some([bound(w)?, bound(h)?])
         })
         .unwrap_or([1180.0, 760.0]);
     let options = eframe::NativeOptions {

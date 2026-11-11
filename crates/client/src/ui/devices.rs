@@ -158,7 +158,8 @@ fn watts(w: f64) -> String {
 }
 
 /// Valeur d'un volet : son pourcentage (« 35 % »), « Ouvert » ou « Fermé », avec une flèche
-/// quand il bouge. Sans position et immobile : « — ».
+/// quand il bouge. Un volet sans retour de position (RTS) montre son dernier mouvement connu,
+/// ou « ▲ ▼ » (les deux commandes possibles) : jamais un « — » en grand.
 fn cover_value(d: &Device, expected: Option<CoverMotion>) -> String {
     let motion = expected.or(d.cover_motion);
     let arrow = match motion {
@@ -171,15 +172,10 @@ fn cover_value(d: &Device, expected: Option<CoverMotion>) -> String {
         Some(p) if p.value >= 100.0 => "Ouvert".to_string(),
         Some(p) => format!("{:.0} %", p.value),
         None if d.info.caps.cover_position => NO_VALUE.to_string(),
+        None if arrow.is_empty() => "▲ ▼".to_string(),
         None => String::new(),
     };
-    let text = format!("{base}{arrow}");
-    let text = text.trim();
-    if text.is_empty() {
-        NO_VALUE.into()
-    } else {
-        text.to_string()
-    }
+    format!("{base}{arrow}").trim().to_string()
 }
 
 /// Ce que l'on attend d'une commande qu'on vient d'envoyer : la tuile le montre aussitôt, sans
@@ -190,9 +186,16 @@ pub struct Expect {
     pub on: Option<bool>,
     pub motion: Option<CoverMotion>,
     pub at: Instant,
+    /// Numéro de la requête partie : un vieux refus n'efface pas une attente plus récente.
+    pub request: Option<u64>,
+    /// Le serveur a accepté la commande (il reste à voir l'effet).
+    pub acked: bool,
 }
 
 pub const EXPECT_TTL: Duration = Duration::from_secs(5);
+/// Un second clic sur une tuile qui a une commande en attente est ignoré pendant ce délai, et
+/// jusqu'à la réponse du serveur : un double-clic n'annule pas ce qu'il vient de demander.
+pub const CLICK_GUARD: Duration = Duration::from_millis(400);
 
 impl Expect {
     pub fn on(on: bool) -> Self {
@@ -200,6 +203,8 @@ impl Expect {
             on: Some(on),
             motion: None,
             at: Instant::now(),
+            request: None,
+            acked: false,
         }
     }
 
@@ -208,6 +213,8 @@ impl Expect {
             on: None,
             motion: Some(motion),
             at: Instant::now(),
+            request: None,
+            acked: false,
         }
     }
 
@@ -216,6 +223,11 @@ impl Expect {
         now.duration_since(self.at) < EXPECT_TTL
             && self.on.is_none_or(|on| d.on_off() != Some(on))
             && self.motion.is_none_or(|m| d.cover_motion != Some(m))
+    }
+
+    /// Un clic sur la tuile est ignoré : la commande vient de partir ou n'a pas de réponse.
+    pub fn blocks_click(&self, now: Instant) -> bool {
+        !self.acked || now.duration_since(self.at) < CLICK_GUARD
     }
 }
 
@@ -298,6 +310,15 @@ fn cover_is_open(d: &Device) -> bool {
     }
 }
 
+/// Le volet est en mouvement, ou l'on attend qu'il le soit : le clic l'arrête.
+fn cover_is_moving(d: &Device, expect: Option<&Expect>) -> bool {
+    expect.is_some_and(|e| e.motion.is_some())
+        || matches!(
+            d.cover_motion,
+            Some(CoverMotion::Opening | CoverMotion::Closing)
+        )
+}
+
 /// La tuile d'un appareil. `expect` : une commande qui vient de partir (retour immédiat).
 pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
     let caps = d.info.caps;
@@ -308,7 +329,12 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
     let mut small: Option<(Option<Severity>, String)> = None;
     let mut value_warn = false;
     if stale {
-        small = Some((Some(Severity::Error), UNREACHABLE.into()));
+        // Jamais joint : « connexion… » en gris neutre ; sinon, vraiment injoignable.
+        small = Some(if matches!(d.status, WireStatus::Connecting) {
+            (None, "connexion…".into())
+        } else {
+            (Some(Severity::Error), UNREACHABLE.into())
+        });
     } else if caps.temperature {
         value = d.temperature().map(|t| one_decimal(t.value));
         small = d.humidity().map(|h| (None, format!("{:.0} %", h.value)));
@@ -330,21 +356,30 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
     } else if caps.power {
         value = d.power().map(|p| watts(p.value));
     } else if plan::icon_of(d) == Some(Symbol::Button) {
-        small = Some((None, "Bouton".into()));
+        // Une télécommande : « Bouton » à la taille normale (on ne connaît pas sa dernière
+        // pression), pas un tiret.
+        value = Some("Bouton".into());
     }
     let low_battery = d.battery_low() && !stale;
-    if low_battery && small.is_none() {
+    if low_battery {
+        // Le mot remplace l'humidité : c'est l'information qui demande une action.
         small = Some((Some(Severity::Warn), "pile faible".into()));
     }
     let action = if stale {
         TileAction::Detail
     } else if caps.cover {
-        TileAction::Cover(if cover_is_open(d) {
-            CoverCommand::Close
+        if cover_is_moving(d, expect) {
+            TileAction::Cover(CoverCommand::Stop)
         } else {
-            CoverCommand::Open
-        })
-    } else if caps.on_off {
+            TileAction::Cover(if cover_is_open(d) {
+                CoverCommand::Close
+            } else {
+                CoverCommand::Open
+            })
+        }
+    } else if matches!(icon, IconKind::LightOn | IconKind::LightOff) {
+        // Seules les lumières se basculent d'un clic : une prise peut alimenter un frigo, son
+        // clic ouvre le détail.
         TileAction::Toggle
     } else {
         TileAction::Detail
@@ -371,17 +406,53 @@ pub fn has_curve(d: &Device) -> bool {
 
 /// Écart entre deux tuiles.
 const GAP: f32 = 8.0;
+/// Colonnes de tuiles d'une pièce, au plus.
+pub const MAX_BLOCK_COLUMNS: usize = 4;
+/// Hauteur de l'en-tête d'une pièce.
+const HEAD_H: f32 = 34.0;
+/// Écarts entre deux pièces qui se suivent, de gauche à droite puis à la ligne.
+const BLOCK_GAP_X: f32 = 28.0;
+const BLOCK_GAP_Y: f32 = 14.0;
+/// Hauteur d'une tuile de pont (plus basse).
+const BRIDGE_H: f32 = 70.0;
 
-/// Nombre de colonnes pour une largeur donnée : des tuiles d'au moins `tile.min_width`, au moins
-/// une colonne.
+/// Nombre de colonnes de tuiles qui tiennent dans `width` (au moins une).
 pub fn columns_for(width: f32) -> usize {
-    let min = theme::tokens().tile.min_width;
-    (((width + GAP) / (min + GAP)).floor() as usize).max(1)
+    let tile = theme::tokens().tile.width;
+    (((width + GAP) / (tile + GAP)).floor() as usize).max(1)
 }
 
-/// Largeur d'une tuile pour `columns` colonnes qui remplissent `width`.
-pub fn tile_width(width: f32, columns: usize) -> f32 {
-    ((width - GAP * (columns as f32 - 1.0)) / columns as f32).floor()
+/// Colonnes d'une pièce de `count` appareils : au plus `MAX_BLOCK_COLUMNS`, et ce qui tient.
+pub fn block_columns(count: usize, width: f32) -> usize {
+    count.clamp(1, MAX_BLOCK_COLUMNS).min(columns_for(width))
+}
+
+/// Taille d'une pièce : son en-tête, puis ses tuiles sur `columns` colonnes.
+pub fn block_size(count: usize, columns: usize, tile_h: f32) -> Vec2 {
+    let tile_w = theme::tokens().tile.width;
+    let rows = count.div_ceil(columns.max(1)).max(1);
+    Vec2::new(
+        columns as f32 * (tile_w + GAP) - GAP,
+        HEAD_H + rows as f32 * (tile_h + GAP) - GAP,
+    )
+}
+
+/// Pose des pièces de gauche à droite, à la ligne quand la suivante ne tient plus, avec un
+/// espacement régulier. Rend la position de chacune et la hauteur totale.
+pub fn place_blocks(sizes: &[Vec2], width: f32) -> (Vec<egui::Pos2>, f32) {
+    let (mut x, mut y, mut line_h) = (0.0_f32, 0.0_f32, 0.0_f32);
+    let mut positions = Vec::with_capacity(sizes.len());
+    for size in sizes {
+        if x > 0.0 && x + size.x > width {
+            y += line_h + BLOCK_GAP_Y;
+            x = 0.0;
+            line_h = 0.0;
+        }
+        positions.push(egui::pos2(x, y));
+        x += size.x + BLOCK_GAP_X;
+        line_h = line_h.max(size.y);
+    }
+    (positions, y + line_h)
 }
 
 /// Ce que le clic sur une tuile demande à l'application.
@@ -403,7 +474,16 @@ fn bridge_note(devices: &BTreeMap<u64, Device>, id: u64) -> String {
     format!("{n} appareil{}", if n > 1 { "s" } else { "" })
 }
 
-/// Dessine les tuiles de toutes les pièces, puis des ponts. Rend ce que le clic demande.
+/// Une pièce à dessiner : son en-tête et ses tuiles.
+struct Block<'a> {
+    title: &'a str,
+    floor: Option<&'a str>,
+    average: Option<f64>,
+    ids: &'a [u64],
+    bridges: bool,
+}
+
+/// Dessine les pièces côte à côte, puis les ponts. Rend ce que le clic demande.
 pub fn show(
     ui: &mut Ui,
     devices: &BTreeMap<u64, Device>,
@@ -420,79 +500,109 @@ pub fn show(
         return out;
     }
     let now = Instant::now();
+    let tokens = theme::tokens().tile;
+    let mut blocks: Vec<Block<'_>> = layout
+        .groups
+        .iter()
+        .map(|g| Block {
+            title: &g.title,
+            floor: g.note.as_deref(),
+            average: g.key.and_then(|k| layout.averages.get(&k)).copied(),
+            ids: &g.ids,
+            bridges: false,
+        })
+        .collect();
+    if !layout.bridges.is_empty() {
+        blocks.push(Block {
+            title: "Ponts",
+            floor: None,
+            average: None,
+            ids: &layout.bridges,
+            bridges: true,
+        });
+    }
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            for g in &layout.groups {
-                let average = g.key.and_then(|k| layout.averages.get(&k)).copied();
-                theme::room_heading(ui, &g.title, g.note.as_deref(), average);
-                grid(ui, &g.ids, false, |ui, id, rect| {
-                    let d = &devices[&id];
-                    let pending = expect.get(&id).filter(|e| e.pending(d, now));
-                    let tile = tile_of(d, pending);
+            ui.add_space(theme::tokens().space.sm);
+            let width = ui.available_width();
+            let sizes: Vec<(usize, Vec2)> = blocks
+                .iter()
+                .map(|b| {
+                    let columns = block_columns(b.ids.len(), width);
+                    let h = if b.bridges { BRIDGE_H } else { tokens.height };
+                    (columns, block_size(b.ids.len(), columns, h))
+                })
+                .collect();
+            let sizes_only: Vec<Vec2> = sizes.iter().map(|s| s.1).collect();
+            let (positions, total) = place_blocks(&sizes_only, width);
+            // De la marge en bas : la dernière pièce n'est pas collée au Journal.
+            let (area, _) = ui.allocate_exact_size(
+                Vec2::new(width, total + theme::tokens().space.xl * 2.0),
+                Sense::hover(),
+            );
+            for ((block, (columns, size)), pos) in blocks.iter().zip(&sizes).zip(positions) {
+                let rect = Rect::from_min_size(area.min + pos.to_vec2(), *size);
+                if !ui.is_rect_visible(rect) {
+                    continue;
+                }
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    theme::room_heading(ui, block.title, block.floor, block.average);
+                });
+                let tile_h = if block.bridges {
+                    BRIDGE_H
+                } else {
+                    tokens.height
+                };
+                for (i, id) in block.ids.iter().enumerate() {
+                    let (col, row) = (i % columns, i / columns);
+                    let tile_rect = Rect::from_min_size(
+                        rect.min
+                            + Vec2::new(
+                                col as f32 * (tokens.width + GAP),
+                                HEAD_H + row as f32 * (tile_h + GAP),
+                            ),
+                        Vec2::new(tokens.width, tile_h),
+                    );
+                    if !ui.is_rect_visible(tile_rect) {
+                        continue;
+                    }
+                    let d = &devices[id];
+                    let pending = expect.get(id).filter(|e| e.pending(d, now));
+                    let busy = pending.is_some_and(|e| e.blocks_click(now));
+                    let mut tile = tile_of(d, pending);
+                    if block.bridges {
+                        tile.icon = IconKind::Generic;
+                        tile.value = None;
+                        tile.lit = false;
+                        tile.action = TileAction::Detail;
+                        if tile.small.is_none() {
+                            tile.small = Some((None, bridge_note(devices, *id)));
+                        }
+                    }
                     card(
                         ui,
-                        id,
+                        *id,
                         &d.info.name,
                         &tile,
-                        rect,
+                        tile_rect,
                         pending.is_some(),
+                        busy,
                         &mut out,
                     );
-                });
+                }
             }
-            if !layout.bridges.is_empty() {
-                theme::room_heading(ui, "Ponts", None, None);
-                grid(ui, &layout.bridges, true, |ui, id, rect| {
-                    let d = &devices[&id];
-                    let mut tile = tile_of(d, None);
-                    tile.icon = IconKind::Generic;
-                    tile.value = None;
-                    tile.lit = false;
-                    tile.action = TileAction::Detail;
-                    if tile.small.is_none() {
-                        tile.small = Some((None, bridge_note(devices, id)));
-                    }
-                    card(ui, id, &d.info.name, &tile, rect, false, &mut out);
-                });
-            }
-            ui.add_space(theme::tokens().space.lg);
         });
     out
-}
-
-/// Pose les tuiles de `ids` en lignes qui remplissent la largeur ; `paint` dessine chacune dans
-/// son rectangle.
-fn grid(ui: &mut Ui, ids: &[u64], discreet: bool, mut paint: impl FnMut(&mut Ui, u64, Rect)) {
-    let tokens = theme::tokens().tile;
-    let width = ui.available_width();
-    let columns = columns_for(width);
-    let tile_w = tile_width(width, columns);
-    let tile_h = if discreet {
-        (tokens.height * 0.62).round()
-    } else {
-        tokens.height
-    };
-    for row in ids.chunks(columns) {
-        let (row_rect, _) = ui.allocate_exact_size(Vec2::new(width, tile_h), Sense::hover());
-        for (i, id) in row.iter().enumerate() {
-            let rect = Rect::from_min_size(
-                row_rect.min + Vec2::new(i as f32 * (tile_w + GAP), 0.0),
-                Vec2::new(tile_w, tile_h),
-            );
-            if ui.is_rect_visible(rect) {
-                paint(ui, *id, rect);
-            }
-        }
-        ui.add_space(GAP - ui.spacing().item_spacing.y);
-    }
 }
 
 fn severity_color(p: &theme::Palette, severity: Option<Severity>) -> Color32 {
     severity.map_or(p.text_secondary, |s| s.color(p))
 }
 
-/// Une carte. `discreet` se déduit de la hauteur : un pont est plus bas et plus gris.
+/// Une carte. `discreet` se déduit de la hauteur : un pont est plus bas et plus gris. `busy` : une
+/// commande vient de partir, un clic de plus est ignoré.
+#[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut Ui,
     id: u64,
@@ -500,6 +610,7 @@ fn card(
     tile: &Tile,
     rect: Rect,
     expecting: bool,
+    busy: bool,
     out: &mut Outcome,
 ) {
     let t = theme::tokens();
@@ -509,6 +620,11 @@ fn card(
     let response = ui
         .interact(rect, base, Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Annoncée comme un bouton : le nom et la valeur.
+    response.widget_info(|| {
+        let value = tile.value.as_deref().unwrap_or("");
+        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name}, {value}"))
+    });
     let more_rect = Rect::from_min_size(
         rect.right_top() + Vec2::new(-30.0, 6.0),
         Vec2::new(24.0, 20.0),
@@ -519,6 +635,7 @@ fn card(
 
     let painter = ui.painter();
     let hovered = response.hovered() || more.hovered();
+    let focused = response.has_focus() || more.has_focus();
     painter.rect_filled(
         rect,
         radius,
@@ -541,6 +658,14 @@ fn card(
         Stroke::new(1.0, p.line)
     };
     painter.rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+    if focused {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            radius,
+            Stroke::new(2.0, p.accent_text),
+            egui::StrokeKind::Outside,
+        );
+    }
 
     let pad = 10.0;
     let icon_size = if discreet {
@@ -557,21 +682,15 @@ fn card(
             p.warn,
         );
     }
-    // Le bouton « détail » : trois points, plus visibles au survol.
-    if more.hovered() {
-        painter.rect_filled(more_rect, 4.0, t.hover(p));
+    // Le bouton « détail » : trois points, visibles seulement au survol ou au focus.
+    if hovered || focused {
+        if more.hovered() {
+            painter.rect_filled(more_rect, 4.0, t.hover(p));
+        }
+        tile_icons::paint_more(painter, more_rect, p.text);
     }
-    tile_icons::paint_more(
-        painter,
-        more_rect,
-        if hovered {
-            p.text
-        } else {
-            p.text_secondary.gamma_multiply(0.6)
-        },
-    );
 
-    // Nom : deux lignes au plus, coupé par « … ».
+    // Nom : deux lignes au plus, coupé aux espaces, avec « … » en fin de deuxième ligne.
     let name_color = if discreet { p.text_secondary } else { p.text }.gamma_multiply(fade);
     let name_top = rect.top() + pad + icon_size + 6.0;
     let mut job = egui::text::LayoutJob::single_section(
@@ -581,6 +700,7 @@ fn card(
     job.wrap.max_width = rect.width() - 2.0 * pad;
     job.wrap.max_rows = if discreet { 1 } else { 2 };
     job.wrap.break_anywhere = false;
+    job.wrap.overflow_character = Some('…');
     let galley = painter.layout_job(job);
     painter.galley(egui::pos2(rect.left() + pad, name_top), galley, name_color);
 
@@ -624,9 +744,9 @@ fn card(
         );
     }
 
-    if more.clicked() || response.secondary_clicked() {
+    if more.clicked() || more.secondary_clicked() || response.secondary_clicked() {
         out.detail = Some(id);
-    } else if response.clicked() {
+    } else if response.clicked() && !response.double_clicked() && !busy {
         match tile.action {
             TileAction::Toggle => out.toggle = Some(id),
             TileAction::Cover(command) => out.cover = Some((id, command)),
@@ -875,7 +995,8 @@ mod tests {
         let tile = tile_of(&plug, None);
         assert_eq!(tile.icon, IconKind::Plug { on: true });
         assert_eq!(tile.value.as_deref(), Some("86 W"));
-        assert_eq!(tile.action, TileAction::Toggle);
+        // Une prise peut alimenter un frigo : son clic ouvre le détail, il ne la bascule pas.
+        assert_eq!(tile.action, TileAction::Detail);
         plug.apply_reading(Metric::OnOff, 0.0, 2.0);
         let off = tile_of(&plug, None);
         assert_eq!(off.icon, IconKind::Plug { on: false });
@@ -942,22 +1063,35 @@ mod tests {
         assert_eq!(moving.value.as_deref(), Some("Fermé ▲"));
         s.apply_reading(Metric::Position, 100.0, 3.0);
         assert_eq!(tile_of(&s, None).value.as_deref(), Some("Ouvert"));
-        // Volet RTS : le dernier mouvement décide, et « — » quand on ne sait rien.
+        // Un volet qui bouge (ou dont on attend le mouvement) : le clic l'arrête.
+        s.cover_motion = Some(CoverMotion::Closing);
+        assert_eq!(
+            tile_of(&s, None).action,
+            TileAction::Cover(CoverCommand::Stop)
+        );
+        s.cover_motion = Some(CoverMotion::Stopped);
+        assert_eq!(
+            tile_of(&s, Some(&Expect::motion(CoverMotion::Closing))).action,
+            TileAction::Cover(CoverCommand::Stop)
+        );
+        // Volet RTS : le dernier mouvement décide, et « ▲ ▼ » quand on ne sait rien (jamais
+        // un tiret en grand).
         let rts = Capabilities {
             cover: true,
             ..Default::default()
         };
         let mut r = online(device(5, "Volet RTS", rts));
-        assert_eq!(tile_of(&r, None).value.as_deref(), Some("—"));
+        assert_eq!(tile_of(&r, None).value.as_deref(), Some("▲ ▼"));
         assert_eq!(
             tile_of(&r, None).action,
             TileAction::Cover(CoverCommand::Open)
         );
         r.cover_motion = Some(CoverMotion::Opening);
         assert_eq!(tile_of(&r, None).value.as_deref(), Some("▲"));
+        // Il monte encore : le clic l'arrête.
         assert_eq!(
             tile_of(&r, None).action,
-            TileAction::Cover(CoverCommand::Close)
+            TileAction::Cover(CoverCommand::Stop)
         );
     }
 
@@ -987,8 +1121,8 @@ mod tests {
         assert!(low.low_battery);
         assert_eq!(
             low.small,
-            Some((None, "48 %".to_string())),
-            "l'humidité reste"
+            Some((Some(Severity::Warn), "pile faible".to_string())),
+            "le mot remplace l'humidité"
         );
     }
 
@@ -1007,8 +1141,12 @@ mod tests {
         ));
         let tile = tile_of(&remote, None);
         assert_eq!(tile.icon, IconKind::Button);
-        assert_eq!(tile.value, None, "pas de « — » en grand");
-        assert_eq!(tile.small, Some((None, "Bouton".to_string())));
+        assert_eq!(
+            tile.value.as_deref(),
+            Some("Bouton"),
+            "pas de « — » en grand"
+        );
+        assert_eq!(tile.small, None);
         assert_eq!(tile.action, TileAction::Detail);
     }
 
@@ -1073,18 +1211,76 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_fills_the_width_with_tiles_of_about_180_px_at_any_window_size() {
-        for width in [600.0, 900.0, 1300.0, 1800.0, 2400.0, 3200.0] {
-            let columns = columns_for(width);
-            let tile = tile_width(width, columns);
-            assert!(
-                (170.0..=197.0).contains(&tile),
-                "{width} px : {columns} colonnes de {tile} px"
-            );
-            // La grille remplit la largeur, à un pixel par colonne près.
-            let used = tile * columns as f32 + GAP * (columns as f32 - 1.0);
-            assert!(width - used < columns as f32, "{width} : {used}");
-        }
-        assert_eq!(columns_for(100.0), 1, "au moins une colonne");
+    fn a_device_never_reached_says_connecting_not_unreachable() {
+        let mut d = device(1, "Sonde", temp_caps());
+        d.apply_reading(Metric::Temperature, 20.0, 1.0);
+        assert_eq!(d.status, WireStatus::Connecting);
+        let tile = tile_of(&d, None);
+        assert_eq!(tile.small, Some((None, "connexion…".to_string())));
+        assert!(tile.dim);
+        assert_eq!(tile.value, None);
+        assert_eq!(tile.action, TileAction::Detail);
+    }
+
+    #[test]
+    fn a_second_click_on_a_tile_with_a_pending_command_is_ignored_and_a_stale_refusal_is_too() {
+        let now = Instant::now();
+        let mut expect = Expect::on(true);
+        // La commande vient de partir, sans réponse : le clic est ignoré.
+        assert!(expect.blocks_click(now));
+        // Acceptée, mais le délai de garde n'est pas passé : toujours ignoré.
+        expect.acked = true;
+        assert!(expect.blocks_click(expect.at + Duration::from_millis(100)));
+        // Acceptée depuis assez longtemps : le clic est de nouveau pris en compte.
+        assert!(!expect.blocks_click(expect.at + CLICK_GUARD + Duration::from_millis(1)));
+        // L'attente garde le numéro de sa requête : un vieux refus ne l'efface pas.
+        expect.request = Some(7);
+        assert_eq!(expect.request, Some(7));
+    }
+
+    #[test]
+    fn rooms_flow_side_by_side_with_regular_gaps_and_wrap() {
+        let tile = theme::tokens().tile;
+        let three = block_size(3, 3, tile.height);
+        let two = block_size(2, 2, tile.height);
+        // Largeur d'une pièce de trois colonnes : trois tuiles et deux écarts.
+        assert_eq!(three.x, 3.0 * tile.width + 2.0 * GAP);
+        assert_eq!(three.y, HEAD_H + tile.height);
+        // 1 900 px : trois pièces de trois colonnes se suivent, la quatrième passe à la ligne.
+        let sizes = [three, three, three, two, three];
+        let (pos, total) = place_blocks(&sizes, 1900.0);
+        assert_eq!(pos[0], egui::pos2(0.0, 0.0));
+        assert_eq!(pos[1].y, 0.0);
+        assert_eq!(pos[1].x, three.x + BLOCK_GAP_X, "écart régulier");
+        assert_eq!(pos[2].y, 0.0);
+        // La quatrième ne tient plus (1 752 + 368 > 1 900) : elle passe à la ligne, et la
+        // cinquième la suit avec le même écart.
+        assert_eq!(pos[3], egui::pos2(0.0, three.y + BLOCK_GAP_Y));
+        assert_eq!(pos[4].y, pos[3].y);
+        assert_eq!(pos[4].x, two.x + BLOCK_GAP_X, "écart régulier");
+        assert_eq!(total, pos[3].y + three.y);
+        // 1 300 px : deux pièces par ligne.
+        let (pos, _) = place_blocks(&sizes, 1300.0);
+        assert_eq!(pos.iter().filter(|p| p.y == 0.0).count(), 2);
+        // Plus étroit qu'une pièce : une par ligne, sans boucle ni position négative.
+        let (pos, total) = place_blocks(&sizes, 100.0);
+        assert!(pos.windows(2).all(|w| w[1].y > w[0].y));
+        assert!(total > 0.0);
+    }
+
+    #[test]
+    fn a_room_has_at_most_four_columns_and_never_more_than_fit() {
+        assert_eq!(block_columns(1, 1900.0), 1);
+        assert_eq!(block_columns(3, 1900.0), 3);
+        assert_eq!(block_columns(9, 1900.0), MAX_BLOCK_COLUMNS);
+        // Une fenêtre étroite : ce qui tient, au moins une colonne.
+        assert_eq!(block_columns(9, 400.0), 2);
+        assert_eq!(block_columns(9, 100.0), 1);
+        // Une pièce de 7 appareils : 4 colonnes, 2 rangées.
+        let tile = theme::tokens().tile;
+        assert_eq!(
+            block_size(7, 4, tile.height).y,
+            HEAD_H + 2.0 * tile.height + GAP
+        );
     }
 }

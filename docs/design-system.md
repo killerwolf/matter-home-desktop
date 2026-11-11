@@ -73,8 +73,10 @@ composants.
   `font.size.heading` + 2, et à droite un petit texte (humidité, « Bouton », « injoignable », « pile
   faible »). Une lampe allumée prend `tile.on_tint` à `tile.on_tint_alpha` sur le fond et une icône
   jaune ; une porte ou une fenêtre ouverte est en `warn` ; un appareil injoignable est estompé ; une
-  pile faible a un petit point `warn` sur l'icône. Un clic agit : bascule (lumière, prise), ouvre ou
-  ferme (volet), ou ouvre le détail (capteur, porte, télécommande, injoignable). Les trois points en
+  pile faible a un petit point `warn` sur l'icône. Un clic agit : bascule (lumière seulement), ouvre, ferme ou arrête
+  (volet), ou ouvre le détail (prise, capteur, porte, télécommande, injoignable) ; un second clic
+  pendant 400 ms ou pendant une commande est ignoré. Les pièces se rangent en blocs côte à côte
+  (`devices::place_blocks`, 4 colonnes au plus par bloc). Les trois points en
   haut à droite (dessinés) et le clic droit ouvrent le détail de toutes les tuiles. La commande est
   montrée aussitôt (contour `accent_text` jusqu'à la réponse) ; un refus remet l'affichage.
   Les ponts sont à la fin, en tuiles plus basses et plus grises.
@@ -83,7 +85,7 @@ composants.
   l'échelle de température (la même que le plan).
 - **Fenêtre de détail** (`MatterApp::detail_window`, `egui::Modal`) : centrée, de `580` px de large et
   de la taille de son contenu, sur un fond assombri ; « Fermer », Échap et un clic à l'extérieur la
-  ferment. Quatre blocs : 1. l'en-tête (grande icône, nom, pièce, valeur en grand quand aucune courbe
+  ferment. Un bandeau signale un appareil injoignable ; sous l'en-tête tout défile. Quatre blocs : 1. l'en-tête (grande icône, nom, pièce, valeur en grand quand aucune courbe
   ne la montre, interrupteur d'une lumière ou d'une prise) ; 2. la courbe et les périodes,
   seulement si l'appareil en a une (température, ouverture, consommation, volet) : jamais de section
   vide pour une lumière ou une télécommande ; 3. les actions (Reconnecter, Nom et icône, Effacer
