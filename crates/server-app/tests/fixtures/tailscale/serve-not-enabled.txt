@@ -2,5 +2,5 @@
 Serve is not enabled on your tailnet.
 To enable, visit:
 
-	 https://login.tailscale.com/f/serve?node=n0000000000000001
+         https://login.tailscale.com/f/serve?node=n0000000000000001
 

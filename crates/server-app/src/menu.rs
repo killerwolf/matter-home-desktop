@@ -120,6 +120,11 @@ fn web_entries(web: &WebAccess) -> Vec<Entry> {
             false,
             false,
         )],
+        WebAccess::Funnel => vec![check(
+            "Accès web : Funnel actif (public), à couper dans Tailscale",
+            false,
+            false,
+        )],
         WebAccess::NeedsAuth { .. } => vec![
             check("Accès web : à autoriser dans Tailscale", true, false),
             item(
@@ -380,6 +385,10 @@ mod tests {
             (
                 WebAccess::PortBusy,
                 "Accès web : port 443 déjà utilisé par Tailscale",
+            ),
+            (
+                WebAccess::Funnel,
+                "Accès web : Funnel actif (public), à couper dans Tailscale",
             ),
         ] {
             assert_eq!(

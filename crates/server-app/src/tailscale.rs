@@ -11,6 +11,7 @@
 //! pas ici, et un test le garantit.
 
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
@@ -50,6 +51,9 @@ pub enum WebAccess {
     },
     /// Un autre `serve` occupe déjà le port 443 : on n'y touche pas.
     PortBusy,
+    /// Le port 443 est ouvert à tout Internet (Funnel) : on ne l'active ni ne le coupe, il se
+    /// coupe dans Tailscale.
+    Funnel,
     /// Serve n'est pas autorisé sur le tailnet ; `url` mène à l'autorisation.
     NeedsAuth {
         url: String,
@@ -96,7 +100,13 @@ pub fn find_binary(
 
 /// Le binaire de ce Mac. En démonstration, jamais le vrai : seulement `BINARY_ENV`.
 pub fn locate(demo: bool) -> Option<PathBuf> {
-    let forced = std::env::var(BINARY_ENV).ok();
+    // La variable d'essai n'existe qu'en démonstration ou dans un build de développement : une
+    // app livrée ne lance jamais qu'un vrai Tailscale.
+    let forced = if demo || cfg!(debug_assertions) {
+        std::env::var(BINARY_ENV).ok()
+    } else {
+        None
+    };
     if demo && forced.as_deref().is_none_or(str::is_empty) {
         return None;
     }
@@ -130,7 +140,8 @@ pub fn serve_status_args() -> Vec<String> {
 }
 
 pub fn status_args() -> Vec<String> {
-    strings(&["status", "--json"])
+    // Sans la liste des pairs : plus léger, et `Self` y reste.
+    strings(&["status", "--json", "--peers=false"])
 }
 
 // ---- la lecture des réponses -----------------------------------------------------------------
@@ -180,6 +191,8 @@ pub enum ServeState {
     Ours,
     /// Autre chose sur le port 443.
     Foreign,
+    /// Le port 443 est ouvert à tout Internet.
+    Funnel,
 }
 
 /// Lit `tailscale serve status --json` pour le port 443 : c'est à nous seulement si le seul
@@ -190,28 +203,34 @@ pub fn parse_serve(json: &str, port: u16) -> Result<ServeState, String> {
         return Ok(ServeState::Off);
     }
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    // `null` : aucune configuration.
+    if v.is_null() {
+        return Ok(ServeState::Off);
+    }
     if !v.is_object() {
         return Err("réponse inattendue".into());
     }
+    // Les sessions « Foreground » et les « Services » portent leur propre TCP/Web.
+    let others: Vec<&serde_json::Value> = ["Foreground", "Services"]
+        .iter()
+        .filter_map(|k| v.get(*k).and_then(|f| f.as_object()))
+        .flat_map(|m| m.values())
+        .collect();
+    if funnel_on_443(&v) || others.iter().any(|o| funnel_on_443(o)) {
+        return Ok(ServeState::Funnel);
+    }
+    let others_touch = others.iter().any(|o| touches_443(o));
     let tcp_443 = v.pointer("/TCP/443").is_some();
-    let web_443: Vec<&serde_json::Value> = v
-        .get("Web")
-        .and_then(|w| w.as_object())
-        .map(|w| {
-            w.iter()
-                .filter(|(host, _)| host.ends_with(":443"))
-                .map(|(_, site)| site)
-                .collect()
-        })
-        .unwrap_or_default();
-    if !tcp_443 && web_443.is_empty() {
+    let web_443 = web_443_sites(&v);
+    if !tcp_443 && web_443.is_empty() && !others_touch {
         return Ok(ServeState::Off);
     }
     let targets = [
         format!("https+insecure://localhost:{port}"),
         format!("https+insecure://127.0.0.1:{port}"),
     ];
-    let ours = tcp_443
+    let ours = !others_touch
+        && tcp_443
         && !web_443.is_empty()
         && web_443.iter().all(|site| {
             site.get("Handlers")
@@ -231,16 +250,52 @@ pub fn parse_serve(json: &str, port: u16) -> Result<ServeState, String> {
     })
 }
 
-/// La réponse de `serve` quand Serve n'est pas autorisé sur le tailnet : « Serve is not enabled »
-/// puis un lien. Renvoie ce lien (https seulement, sans espace).
-pub fn parse_not_enabled(text: &str) -> Option<String> {
-    if !text.contains("Serve is not enabled") {
-        return None;
-    }
+fn web_443_sites(v: &serde_json::Value) -> Vec<&serde_json::Value> {
+    v.get("Web")
+        .and_then(|w| w.as_object())
+        .map(|w| {
+            w.iter()
+                .filter(|(host, _)| host.ends_with(":443"))
+                .map(|(_, site)| site)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn touches_443(v: &serde_json::Value) -> bool {
+    v.pointer("/TCP/443").is_some() || !web_443_sites(v).is_empty()
+}
+
+/// `AllowFunnel` vaut `true` pour une clé en « :443 ».
+fn funnel_on_443(v: &serde_json::Value) -> bool {
+    v.get("AllowFunnel")
+        .and_then(|f| f.as_object())
+        .is_some_and(|f| {
+            f.iter()
+                .any(|(host, on)| host.ends_with(":443") && on.as_bool() == Some(true))
+        })
+}
+
+/// L'hôte d'une adresse https (sans identifiant ni port), ou `None`.
+pub fn https_host(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    (!host.is_empty() && !host.contains(['@', ':'])).then_some(host)
+}
+
+/// Une adresse que l'app accepte d'ouvrir : l'autorisation de Tailscale ou un nom du tailnet.
+pub fn is_openable(url: &str) -> bool {
+    url.bytes().all(|b| b.is_ascii_graphic())
+        && https_host(url).is_some_and(|h| h == "login.tailscale.com" || h.ends_with(".ts.net"))
+}
+
+/// Après un échec de `serve`, quelle que soit la phrase affichée : la première adresse https
+/// dont l'hôte est exactement `login.tailscale.com`.
+pub fn parse_auth_link(text: &str) -> Option<String> {
     text.split_whitespace()
-        .find(|w| w.starts_with("https://") && w.len() > "https://".len())
-        .map(|w| w.trim_end_matches(['.', ',', ')']).to_string())
-        .filter(|w| w.bytes().all(|b| b.is_ascii_graphic()))
+        .map(|w| w.trim_end_matches(['.', ',', ')']))
+        .find(|w| https_host(w) == Some("login.tailscale.com") && is_openable(w))
+        .map(str::to_string)
 }
 
 /// Le port d'une adresse « https://hôte:port ».
@@ -274,23 +329,56 @@ pub struct RealRunner {
     pub bin: PathBuf,
 }
 
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<String> {
+/// Les lecteurs de tuyaux envoient leur texte ici : on ne les attend jamais plus de ce délai
+/// (un petit-enfant qui garde le tuyau ouvert ne bloque rien).
+const PIPE_GRACE: Duration = Duration::from_millis(500);
+
+fn drain<R: Read + Send + 'static>(mut r: R) -> Receiver<String> {
+    let (tx, rx) = channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = r.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
-    })
+        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+    });
+    rx
+}
+
+extern "C" {
+    fn killpg(pgrp: i32, sig: i32) -> i32;
+}
+
+/// Tue le groupe de processus lancé par nous (jamais un autre).
+fn kill_group(pid: u32) {
+    // SAFETY : `killpg` n'a pas d'effet mémoire ; le groupe est celui de notre enfant
+    // (`process_group(0)` : son pid est celui du groupe).
+    unsafe {
+        killpg(pid as i32, 9);
+    }
+}
+
+impl RealRunner {
+    /// La commande : chemin absolu, arguments fixes, mode ligne de commande forcé (le binaire de
+    /// l'app Tailscale devine sinon entre interface et CLI, et lancé par launchd il pourrait
+    /// choisir l'interface), son propre groupe de processus.
+    pub fn command(&self, args: &[String]) -> Command {
+        let mut c = Command::new(&self.bin);
+        c.args(args)
+            .env("TAILSCALE_BE_CLI", "true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        c
+    }
 }
 
 impl Runner for RealRunner {
     fn run(&self, args: &[String], timeout: Duration) -> Result<Output, String> {
-        let mut child = Command::new(&self.bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let mut child = self
+            .command(args)
             .spawn()
             .map_err(|e| format!("{}: {e}", self.bin.display()))?;
+        let pid = child.id();
         let out = drain(child.stdout.take().expect("stdout demandé"));
         let err = drain(child.stderr.take().expect("stderr demandé"));
         let deadline = Instant::now() + timeout;
@@ -298,7 +386,8 @@ impl Runner for RealRunner {
             match child.try_wait() {
                 Ok(Some(status)) => break (status.success(), false),
                 Ok(None) if Instant::now() >= deadline => {
-                    // Seulement notre propre processus.
+                    // Tout le groupe : un script qui lance un enfant ne le laisse pas vivant.
+                    kill_group(pid);
                     let _ = child.kill();
                     let _ = child.wait();
                     break (false, true);
@@ -307,11 +396,17 @@ impl Runner for RealRunner {
                 Err(e) => return Err(e.to_string()),
             }
         };
+        let stdout = out.recv_timeout(PIPE_GRACE).unwrap_or_default();
+        let stderr = err.recv_timeout(PIPE_GRACE).unwrap_or_default();
+        if !timed_out {
+            // Un petit-enfant resté en vie après la fin de la commande : on le retire.
+            kill_group(pid);
+        }
         Ok(Output {
             success,
             timed_out,
-            stdout: out.join().unwrap_or_default(),
-            stderr: err.join().unwrap_or_default(),
+            stdout,
+            stderr,
         })
     }
 }
@@ -346,6 +441,7 @@ pub fn read_state(runner: &dyn Runner, port: u16) -> WebAccess {
         (Ok(ServeState::Ours), Some(dns)) => WebAccess::On { dns },
         (Ok(ServeState::Ours), None) => WebAccess::Unavailable,
         (Ok(ServeState::Foreign), _) => WebAccess::PortBusy,
+        (Ok(ServeState::Funnel), _) => WebAccess::Funnel,
         (Err(_), _) => WebAccess::Unavailable,
     }
 }
@@ -360,10 +456,10 @@ pub fn toggle(runner: &dyn Runner, port: u16, enable: bool) -> WebAccess {
                 Ok(o) => {
                     // Serve non autorisé : la commande attend l'autorisation ; on l'arrête (délai)
                     // et on garde le lien qu'elle a affiché.
-                    if let Some(url) = parse_not_enabled(&o.combined()) {
-                        return WebAccess::NeedsAuth { url };
-                    }
                     if !o.success {
+                        if let Some(url) = parse_auth_link(&o.combined()) {
+                            return WebAccess::NeedsAuth { url };
+                        }
                         log::warn!(
                             "tailscale serve : échec ({})",
                             o.combined().trim().lines().next().unwrap_or("")
@@ -427,6 +523,12 @@ mod tests {
         include_str!("../tests/fixtures/tailscale/serve-other-port.json");
     const SERVE_PLUS_PATH: &str =
         include_str!("../tests/fixtures/tailscale/serve-ours-plus-path.json");
+    const SERVE_FUNNEL: &str = include_str!("../tests/fixtures/tailscale/serve-funnel.json");
+    const SERVE_FOREGROUND: &str =
+        include_str!("../tests/fixtures/tailscale/serve-foreground.json");
+    const SERVE_SERVICES: &str = include_str!("../tests/fixtures/tailscale/serve-services.json");
+    /// Sortie PLAUSIBLE, reconstituée d'après le texte de la CLI (non capturée : on ne lance pas
+    /// d'activation pour l'obtenir) ; nœud fictif.
     const NOT_ENABLED: &str = include_str!("../tests/fixtures/tailscale/serve-not-enabled.txt");
 
     /// Un faux Tailscale : répond selon les arguments et se souvient de ce qu'on lui a demandé.
@@ -465,7 +567,7 @@ mod tests {
             self.calls.lock().unwrap().push(args.to_vec());
             Ok(
                 match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-                    ["status", "--json"] => self.status.clone(),
+                    ["status", "--json", "--peers=false"] => self.status.clone(),
                     ["serve", "status", "--json"] => self.serve.clone(),
                     ["serve", "--bg", _] => self.enable.clone(),
                     ["serve", "--https=443", "off"] => ok(""),
@@ -493,7 +595,7 @@ mod tests {
         );
         assert_eq!(serve_disable_args(), ["serve", "--https=443", "off"]);
         assert_eq!(serve_status_args(), ["serve", "status", "--json"]);
-        assert_eq!(status_args(), ["status", "--json"]);
+        assert_eq!(status_args(), ["status", "--json", "--peers=false"]);
     }
 
     #[test]
@@ -514,14 +616,9 @@ mod tests {
             .next()
             .unwrap()
             .to_lowercase();
-        assert!(!production.contains("funnel"));
-        // Ni dans la ligne du menu ou la fixture de refus.
-        assert!(!include_str!("menu.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap()
-            .to_lowercase()
-            .contains("funnel"));
+        // Le mot n'apparaît que pour LIRE l'état (AllowFunnel), jamais comme commande.
+        assert!(!production.contains("\"funnel\""));
+        assert!(!production.contains("[\"funnel"));
     }
 
     #[test]
@@ -606,16 +703,54 @@ mod tests {
         assert_eq!(parse_serve(SERVE_OTHER_PORT, 8443), Ok(ServeState::Off));
         assert_eq!(parse_serve("", 8443), Ok(ServeState::Off));
         assert_eq!(parse_serve("  \n", 8443), Ok(ServeState::Off));
+        assert_eq!(parse_serve("null", 8443), Ok(ServeState::Off));
         assert!(parse_serve("[]", 8443).is_err());
+    }
+
+    #[test]
+    fn funnel_foreground_and_services_on_443_are_never_ours() {
+        assert_eq!(parse_serve(SERVE_FUNNEL, 8443), Ok(ServeState::Funnel));
+        assert_eq!(parse_serve(SERVE_FOREGROUND, 8443), Ok(ServeState::Foreign));
+        assert_eq!(parse_serve(SERVE_SERVICES, 8443), Ok(ServeState::Foreign));
+        for (serve, wanted) in [
+            (SERVE_FUNNEL, WebAccess::Funnel),
+            (SERVE_FOREGROUND, WebAccess::PortBusy),
+            (SERVE_SERVICES, WebAccess::PortBusy),
+        ] {
+            assert_eq!(read_state(&fake(STATUS_RUNNING, serve), 8443), wanted);
+            for enable in [true, false] {
+                let f = fake(STATUS_RUNNING, serve);
+                assert_eq!(toggle(&f, 8443, enable), wanted);
+                assert!(mutations(&f).is_empty());
+            }
+        }
     }
 
     #[test]
     fn the_authorisation_link_is_read_from_the_refusal() {
         assert_eq!(
-            parse_not_enabled(NOT_ENABLED).as_deref(),
+            parse_auth_link(NOT_ENABLED).as_deref(),
             Some("https://login.tailscale.com/f/serve?node=n0000000000000001")
         );
-        assert_eq!(parse_not_enabled("autre erreur https://x.test/"), None);
+        // Quelle que soit la phrase : le premier lien dont l'hôte est exactement login.tailscale.com.
+        assert_eq!(
+            parse_auth_link("autre phrase https://x.test/ puis https://login.tailscale.com/a/1.")
+                .as_deref(),
+            Some("https://login.tailscale.com/a/1")
+        );
+        for bad in [
+            "https://x.test/",
+            "https://login.tailscale.com.evil.test/a",
+            "https://evil.test/login.tailscale.com",
+            "https://login.tailscale.com@evil.test/a",
+            "http://login.tailscale.com/a",
+        ] {
+            assert_eq!(parse_auth_link(bad), None, "{bad}");
+        }
+        assert!(is_openable("https://login.tailscale.com/f/serve"));
+        assert!(is_openable("https://mac.tailnet.ts.net/app/"));
+        assert!(!is_openable("https://evil.test/"));
+        assert!(!is_openable("file:///etc/passwd"));
     }
 
     #[test]
@@ -757,6 +892,27 @@ mod tests {
             .unwrap();
         assert!(slow.timed_out && !slow.success);
         assert!(started.elapsed() < Duration::from_secs(5));
+
+        // Le mode ligne de commande est forcé.
+        let runner2 = RealRunner {
+            bin: dir.join("faux-tailscale"),
+        };
+        let cmd = runner2.command(&strings(&["status"]));
+        assert!(cmd
+            .get_envs()
+            .any(|(k, v)| k == "TAILSCALE_BE_CLI" && v == Some(std::ffi::OsStr::new("true"))));
+
+        // Un script qui lance un enfant bloquant (qui garde les tuyaux) ne bloque pas au-delà du
+        // délai : tout le groupe est tué.
+        let child_script = dir.join("faux-enfant");
+        std::fs::write(&child_script, "#!/bin/sh\nsleep 30 &\nwait\n").unwrap();
+        std::fs::set_permissions(&child_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let out = RealRunner { bin: child_script }
+            .run(&strings(&["x"]), Duration::from_millis(300))
+            .unwrap();
+        assert!(out.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(4));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

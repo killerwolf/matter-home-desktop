@@ -85,10 +85,20 @@ l'app ne range rien.
   (case grisée) ; « Accès web : à autoriser dans Tailscale » avec un élément qui ouvre le lien
   fourni par la réponse « Serve is not enabled » ; « Accès web : port 443 déjà utilisé par
   Tailscale » (case grisée) quand un autre `serve` occupe le 443 : il n'est jamais écrasé ni retiré.
+- **Funnel** : si `AllowFunnel` est vrai sur le 443, la case est grisée (« Accès web : Funnel actif
+  (public), à couper dans Tailscale ») et l'app n'active ni ne coupe rien. Une session `Foreground`
+  ou un `Services` sur le 443 compte comme « port déjà utilisé ». `null` ou une sortie vide valent
+  « rien de configuré ».
+- **Lancement** : `TAILSCALE_BE_CLI=true` (le binaire de l'app devine sinon entre interface et
+  ligne de commande), son propre groupe de processus (un délai dépassé tue tout le groupe) ;
+  `status --json --peers=false`. Le lien d'autorisation est la première adresse `https` dont
+  l'hôte est exactement `login.tailscale.com` dans la sortie d'un `serve --bg` en échec ; l'app
+  n'ouvre jamais d'autre hôte que celui-là ou un nom `.ts.net`. La fixture de cette sortie est
+  plausible, reconstituée, non capturée.
 - **Actif** : la case est cochée et deux éléments apparaissent, « Ouvrir https://<nom>.ts.net/app/ »
   et « Copier l'adresse ».
 - **Essais** : `MATTER_HOME_TAILSCALE_BIN=/chemin/absolu/faux-tailscale` remplace tout le reste
-  (aucune recherche ailleurs). En `--demo`, sans cette variable, Tailscale est vu comme absent :
+  (aucune recherche ailleurs) ; elle n'est lue qu'en `--demo` ou dans un build de développement. En `--demo`, sans cette variable, Tailscale est vu comme absent :
   le menu d'un essai ne lance jamais le vrai `tailscale`. Les tests unitaires s'appuient sur des
   fixtures JSON (`crates/server-app/tests/fixtures/tailscale/`) et ne lancent jamais le vrai binaire.
 
