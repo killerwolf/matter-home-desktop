@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -21,29 +21,42 @@ fn cam_draft(name: &str) -> CameraDraft {
     }
 }
 
-/// Journal capturé : tout ce que le serveur écrit pendant les tests de caméras.
-fn captured_logs() -> &'static Mutex<Vec<String>> {
-    use std::sync::OnceLock;
-    static LOGS: OnceLock<&'static Mutex<Vec<String>>> = OnceLock::new();
-    LOGS.get_or_init(|| {
-        struct Capture(&'static Mutex<Vec<String>>);
-        impl log::Log for Capture {
-            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-                true
-            }
-            fn log(&self, record: &log::Record<'_>) {
-                self.0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(format!("{}", record.args()));
-            }
-            fn flush(&self) {}
+thread_local! {
+    /// Lignes de journal écrites par le fil de ce test (voir `captured_logs`).
+    static CAPTURED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Journal capturé : ce que le serveur écrit, depuis le fil de ce test uniquement. Le journal
+/// `log` est global au processus et les tests tournent en parallèle : sans ce découpage par fil,
+/// les lignes des autres tests se mélangeraient à celles-ci (et le test ne verrait plus
+/// forcément les siennes). Les lignes déjà reçues par ce fil sont effacées à l'appel.
+fn captured_logs() -> CapturedLogs {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    struct Capture;
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
         }
-        let lines: &'static Mutex<Vec<String>> = Box::leak(Box::new(Mutex::new(Vec::new())));
-        let _ = log::set_logger(Box::leak(Box::new(Capture(lines))));
+        fn log(&self, record: &log::Record<'_>) {
+            let _ = CAPTURED.try_with(|c| c.borrow_mut().push(format!("{}", record.args())));
+        }
+        fn flush(&self) {}
+    }
+    INSTALL.call_once(|| {
+        let _ = log::set_logger(&Capture);
         log::set_max_level(log::LevelFilter::Trace);
-        lines
-    })
+    });
+    CAPTURED.with(|c| c.borrow_mut().clear());
+    CapturedLogs
+}
+
+struct CapturedLogs;
+
+impl CapturedLogs {
+    fn lines(&self) -> Vec<String> {
+        CAPTURED.with(|c| c.borrow().clone())
+    }
 }
 
 fn drain(sub: &mut Subscription) -> Vec<String> {
@@ -252,7 +265,7 @@ fn neither_the_address_nor_the_password_leave_the_server() {
     seen.push(serde_json::to_string(&hub.current_snapshot()).unwrap());
     seen.push(hub.subscribe().snapshot.to_string());
     assert!(hub.current_snapshot().cameras.iter().any(|c| c.id == id2));
-    let captured: Vec<String> = logs.lock().unwrap().iter().cloned().collect();
+    let captured: Vec<String> = logs.lines();
     // Le test ne doit pas réussir à vide : le journal a bien reçu les lignes des caméras (la
     // vérification qu'elles ne contiennent rien de secret porte alors sur du texte réel).
     assert!(
