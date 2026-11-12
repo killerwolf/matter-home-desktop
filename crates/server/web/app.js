@@ -7,7 +7,7 @@ import {
 } from "./tiles.js";
 import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
-import { createPlayer, webCodecsSupported } from "./cameras.js";
+import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -325,7 +325,7 @@ function renderTemps() {
 // en flux principal)
 // ---------------------------------------------------------------------------
 let players = [];
-let camCards = []; // { el, cam, canvas, msg, fs, playable, thumb, player, visible }
+let camCards = []; // { el, cam, canvas, msg, fs, playable, thumb, player, snap, visible }
 let thumbObserver = null;
 const camSignature = () => JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream]));
 let camsDirty = false; // la grille est à refaire à la sortie du plein écran
@@ -343,17 +343,35 @@ function stopPlayers() {
 /** Ajuste les vignettes lues : celles qui sont à l'écran, quatre au plus, et aucune pendant un
  *  plein écran (le flux principal prend la place). */
 function reconcileCams() {
-  const wanted = new Set(fullCam ? [] : camCards.filter((c) => c.thumb && c.visible).slice(0, MAX_THUMBNAILS));
+  const visible = fullCam ? [] : camCards.filter((c) => c.visible);
+  const live = new Set(visible.filter((c) => c.thumb).slice(0, MAX_THUMBNAILS));
+  // Les vignettes à l'écran qui ne lisent pas de flux (pas de flux réduit, ou au-delà du plafond)
+  // montrent l'image fixe du serveur, rafraîchie toutes les 20 s.
+  const still = new Set(visible.filter((c) => !live.has(c)));
+  const showMsg = (c, st) => { c.msg.textContent = st.text; c.msg.hidden = st.kind === "live"; };
   for (const c of camCards) {
-    if (wanted.has(c) && !c.player) {
-      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => { c.msg.textContent = st.text; c.msg.hidden = st.kind === "live"; });
+    if (live.has(c) && !c.player) {
+      c.snap?.stop();
+      players = players.filter((p) => p !== c.snap);
+      c.snap = null;
+      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => showMsg(c, st));
       players.push(c.player);
-    } else if (!wanted.has(c) && c.player) {
+    } else if (!live.has(c) && c.player) {
       c.player.stop();
       players = players.filter((p) => p !== c.player);
       c.player = null;
+    }
+    if (still.has(c) && !c.snap && !c.player) {
+      c.snap = createSnapshot(c.cam.id, c.canvas, (st) => showMsg(c, st));
+      players.push(c.snap);
+    } else if (!still.has(c) && c.snap) {
+      c.snap.stop();
+      players = players.filter((p) => p !== c.snap);
+      c.snap = null;
+    }
+    if (!c.player && !c.snap) {
       c.msg.hidden = false;
-      c.msg.textContent = "En attente…";
+      c.msg.textContent = c.thumb ? "En attente…" : "Touchez pour ouvrir";
     }
   }
 }
@@ -402,7 +420,7 @@ function renderCameras() {
     el.classList.add("ok");
     const thumb = Boolean(cam.has_sub_stream);
     msg.textContent = thumb ? "En attente…" : "Touchez pour ouvrir";
-    camCards.push({ el, cam, canvas, msg, fs, playable: true, thumb, player: null, visible: false });
+    camCards.push({ el, cam, canvas, msg, fs, playable: true, thumb, player: null, snap: null, visible: false });
   }
   view.appendChild(grid);
   if (!camCards.length || !api.hasToken()) return;

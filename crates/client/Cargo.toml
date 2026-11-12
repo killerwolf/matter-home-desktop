@@ -37,11 +37,14 @@ sha2 = "0.10"
 # Sélecteur de fichier du système (export, import, CSV), déjà utilisé par la v0.2.1.
 rfd = "0.17.2"
 
-# Décodage vidéo des caméras (#5) : VideoToolbox, le décodeur H.264 matériel de macOS. Rien à
-# embarquer dans le DMG ni à installer. Liaisons générées (objc2), mêmes versions que le reste
-# de l'arbre ; hors macOS, `video` compile un décodeur qui refuse tout (voir `video/mod.rs`).
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "objc2", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString", "CFArray"] }
-objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMBase", "objc2-core-video"] }
-objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "bitflags", "CVPixelBufferPool", "CVReturn", "CVPixelFormatDescription"] }
-objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2", "VTDecompressionSession", "VTErrors", "VTSession", "objc2-core-media", "objc2-core-video", "block2", "bitflags"] }
+# Décodage vidéo des caméras (#5) : VideoToolbox, dans la caisse partagée avec le serveur.
+matter-home-video = { path = "../video" }
+
+# Image fixe d'une caméra (#12) : le serveur renvoie du JPEG. Décodeur en Rust pur, déjà dans
+# l'arbre des dépendances (via `image`, tiré par eframe) : aucune caisse de plus dans le Cargo.lock.
+zune-jpeg = "0.5"
+zune-core = "0.5"
+
+[dev-dependencies]
+# Fabrique le JPEG d'essai du décodeur (le serveur utilise la même caisse pour ses images).
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }

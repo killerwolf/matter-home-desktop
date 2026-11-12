@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use protocol::wire::{
-    camera_stream_path, StreamKind, StreamPacket, StreamStatus, CODEC_H264, PROTOCOL_VERSION,
+    camera_snapshot_path, camera_stream_path, StreamKind, StreamPacket, StreamStatus, CODEC_H264,
+    PROTOCOL_VERSION,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -349,5 +350,215 @@ fn logging_out_closes_the_stream() {
         assert_eq!(resp.status, 204, "{}", resp.text());
         read_for(&mut ws, &mut seen, Duration::from_secs(6)).await;
         assert_eq!(seen.closed, Some(1008), "session terminée");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// L'image fixe (`GET /api/cameras/{id}/snapshot`, ticket n° 12)
+// ---------------------------------------------------------------------------
+
+fn is_jpeg(body: &[u8]) -> bool {
+    body.len() > 1000 && body.starts_with(&[0xFF, 0xD8]) && body.ends_with(&[0xFF, 0xD9])
+}
+
+#[test]
+fn the_snapshot_route_refuses_what_it_should_and_says_why() {
+    let rig = rig(
+        "snapshot-refusals",
+        Default::default(),
+        Duration::from_secs(10),
+    );
+    rig.runtime.block_on(async {
+        let client = Client::new(rig.server.addr, &rig.fingerprint);
+        let token = login(&client).await;
+        let path = camera_snapshot_path(rig.main_only);
+
+        // Sans jeton : refusé, comme tout le reste de l'API.
+        let refused = client.request("GET", &path, None, None).await;
+        assert_eq!(refused.status, 401);
+        assert_eq!(refused.code(), "unauthorized");
+        let refused = client.get(&path, "jeton-inconnu").await;
+        assert_eq!(refused.status, 401);
+
+        // Une caméra inconnue : 404 avec un détail ; un identifiant invalide : 400.
+        let unknown = camera_snapshot_path(protocol::wire::CAMERA_ID_MIN + 12345);
+        let refused = client.get(&unknown, &token).await;
+        assert_eq!(
+            (refused.status, refused.code().as_str()),
+            (404, "not_found")
+        );
+        assert!(refused.json()["error"]["detail"].is_string());
+        for bad in ["/api/cameras/abc/snapshot", "/api/cameras/42/snapshot"] {
+            let refused = client.get(bad, &token).await;
+            assert_eq!(refused.status, 400, "{bad}");
+            assert_eq!(refused.code(), "bad_request");
+        }
+        // Une lecture seule : pas de POST.
+        let refused = client
+            .request("POST", &path, Some(&token), Some(b"{}"))
+            .await;
+        assert_eq!(refused.status, 405);
+
+        // Aucune de ces tentatives n'a touché à la caméra.
+        assert_eq!(
+            rig.camera
+                .stats
+                .accepted
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(rig.hub.camera_viewers(rig.main_only), 0);
+    });
+}
+
+#[test]
+fn a_snapshot_is_a_shared_jpeg_and_the_camera_closes_after_it() {
+    let rig = rig("snapshot-jpeg", Default::default(), Duration::from_secs(10));
+    rig.runtime.block_on(async {
+        let client = Client::new(rig.server.addr, &rig.fingerprint);
+        let token = login(&client).await;
+        // La caméra sans flux réduit : l'image vient du flux principal.
+        let path = camera_snapshot_path(rig.main_only);
+
+        // Trois demandes en même temps : une seule capture, la même image.
+        let (a, b, c) = tokio::join!(
+            client.get(&path, &token),
+            client.get(&path, &token),
+            client.get(&path, &token)
+        );
+        for resp in [&a, &b, &c] {
+            assert_eq!(resp.status, 200, "{}", resp.text());
+            assert_eq!(
+                resp.headers.get("content-type").map(String::as_str),
+                Some("image/jpeg")
+            );
+            assert_eq!(
+                resp.headers.get("cache-control").map(String::as_str),
+                Some("no-store")
+            );
+            assert!(resp.headers.contains_key("age"));
+            assert!(is_jpeg(&resp.body), "{} octets", resp.body.len());
+        }
+        assert_eq!(a.body, b.body);
+        assert_eq!(a.body, c.body);
+        assert_eq!(
+            rig.camera.plays(),
+            1,
+            "une seule connexion pour trois demandes"
+        );
+
+        // Plus tard, le cache sert la même image sans rouvrir la caméra.
+        let again = client.get(&path, &token).await;
+        assert_eq!(again.body, a.body);
+        assert_eq!(rig.camera.plays(), 1);
+
+        // La session courte se ferme d'elle-même : plus de spectateur, plus de connexion.
+        until("la caméra est coupée", Duration::from_secs(12), || {
+            rig.camera.open() == 0
+        })
+        .await;
+        assert_eq!(rig.hub.camera_viewers(rig.main_only), 0);
+    });
+}
+
+#[test]
+fn a_snapshot_of_a_watched_camera_joins_the_stream_already_open() {
+    let rig = rig(
+        "snapshot-joined",
+        Default::default(),
+        Duration::from_secs(10),
+    );
+    rig.runtime.block_on(async {
+        let client = Client::new(rig.server.addr, &rig.fingerprint);
+        let token = login(&client).await;
+        let sub = camera_stream_path(rig.with_sub, StreamKind::Sub);
+        let mut watcher = stream(&client, &token, &sub, None).await.expect("flux");
+        let mut seen = Received::default();
+        read_for(&mut watcher, &mut seen, Duration::from_millis(800)).await;
+        assert_eq!(rig.camera.plays(), 1);
+
+        let snapshot = client
+            .get(&camera_snapshot_path(rig.with_sub), &token)
+            .await;
+        assert_eq!(snapshot.status, 200, "{}", snapshot.text());
+        assert!(is_jpeg(&snapshot.body));
+        assert_eq!(rig.camera.plays(), 1, "l'image vient du flux déjà ouvert");
+        assert_eq!(rig.hub.camera_viewers(rig.with_sub), 1);
+        drop(watcher);
+    });
+}
+
+// Le verrou std est tenu pendant la requête : c'est ce qu'on veut montrer (la capture ne l'attend pas).
+#[allow(clippy::await_holding_lock)]
+#[test]
+fn a_snapshot_waits_for_nothing_when_a_test_holds_the_camera() {
+    let rig = rig("snapshot-busy", Default::default(), Duration::from_secs(10));
+    rig.runtime.block_on(async {
+        let client = Client::new(rig.server.addr, &rig.fingerprint);
+        let token = login(&client).await;
+        let path = camera_snapshot_path(rig.main_only);
+
+        // Un test ou une vérification de la caméra tient son verrou.
+        let lock = rig.hub.camera_probe_lock(rig.main_only);
+        let held = lock.try_lock().unwrap();
+        let started = Instant::now();
+        let busy = client.get(&path, &token).await;
+        assert_eq!((busy.status, busy.code().as_str()), (503, "unavailable"));
+        assert!(busy.json()["error"]["retry_after_s"].is_u64());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            rig.camera
+                .stats
+                .accepted
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(rig.hub.camera_viewers(rig.main_only), 0);
+
+        drop(held);
+        assert_eq!(client.get(&path, &token).await.status, 200);
+    });
+}
+
+#[test]
+fn a_camera_that_does_not_answer_gives_a_clear_error_within_the_deadline() {
+    let rig = rig(
+        "snapshot-silent",
+        Default::default(),
+        Duration::from_secs(10),
+    );
+    rig.camera
+        .stats
+        .refuse
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.runtime.block_on(async {
+        let client = Client::new(rig.server.addr, &rig.fingerprint);
+        let token = login(&client).await;
+        let started = Instant::now();
+        let resp = client
+            .get(&camera_snapshot_path(rig.main_only), &token)
+            .await;
+        assert_eq!(
+            (resp.status, resp.code().as_str()),
+            (502, "device_unreachable"),
+            "{}",
+            resp.text()
+        );
+        // Le délai maximal du serveur (12 s) n'est jamais dépassé.
+        assert!(
+            started.elapsed() < Duration::from_secs(14),
+            "{:?}",
+            started.elapsed()
+        );
+        // Ni adresse ni mot de passe dans le message.
+        let text = resp.text();
+        assert!(
+            !text.contains("127.0.0.1") && !text.contains("rtsp"),
+            "{text}"
+        );
+        until("plus de spectateur", Duration::from_secs(12), || {
+            rig.hub.camera_viewers(rig.main_only) == 0
+        })
+        .await;
     });
 }

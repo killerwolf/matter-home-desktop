@@ -161,7 +161,7 @@ fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind,
     // La dernière image décodée devient la texture.
     if let Some(image) = handle.take_image() {
         let size = [image.width as usize, image.height as usize];
-        let color = egui::ColorImage::new(size, image.pixels);
+        let color = egui::ColorImage::from_rgb(size, &image.rgb);
         match &mut state.texture {
             Some(texture) => texture.set(color, egui::TextureOptions::LINEAR),
             None => {

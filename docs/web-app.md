@@ -51,6 +51,15 @@ pas de framework, pas de nouvelle dépendance Rust.
   (iOS avant 17), l'app l'écrit clairement. **Non vérifié avec une vraie caméra** : seuls le
   chemin de connexion, le repli CSS et le retour au flux réduit ont été vus (les caméras de démo
   n'ont pas de flux) ; l'API Fullscreen native n'a pas pu être essayée en navigateur sans écran.
+  **Image fixe** (ticket n° 12) : une vignette à l'écran qui ne lit pas de flux (caméra sans flux
+  réduit, ou au-delà des 4 flux) montre `GET /api/cameras/{id}/snapshot`, rafraîchie toutes les 20 s
+  (rien tant que l'onglet est caché). `fetch` avec `Authorization`, `Blob`, `createImageBitmap`,
+  dessin dans le canvas : **aucune URL `blob:` n'est chargée, la CSP ne change pas**.
+  **Coût côté caméra** : chaque rafraîchissement (toutes les 20 s environ par vignette concernée, au
+  plus une capture à la fois par caméra, cache de 15 s partagé) ouvre une **courte session RTSP**
+  du serveur vers la caméra : connexion, attente d'une image clé, fermeture après 5 s. Une caméra
+  qui a un flux réduit mais dont la vignette dépasse les 4 flux en subit autant. Elle est évitée si la
+  caméra est déjà regardée (la capture se joint au flux ouvert) ou testée.
 - Barre d'onglets en bas (style iOS), `safe-area-inset` respecté, thème clair ou sombre selon le
   système. Installable (manifeste + service worker qui garde la coquille ; **jamais** `/api/`).
 - Hors périmètre : le plan et les automatisations.

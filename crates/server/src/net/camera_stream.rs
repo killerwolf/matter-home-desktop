@@ -31,6 +31,7 @@ use protocol::wire::{self, ApiError, ErrorCode, StreamKind, StreamStatus};
 use super::routes::ApiErr;
 use super::AppState;
 use crate::cameras::live::{Event, LiveConfig, LiveRegistry, SubscribeError, Subscription};
+use crate::cameras::snapshot::{SnapshotConfig, SnapshotService};
 use crate::security::sessions::SessionInfo;
 
 const PING_EVERY: Duration = Duration::from_secs(20);
@@ -48,9 +49,20 @@ pub fn router() -> Router<AppState> {
 }
 
 pub fn router_with(config: LiveConfig) -> Router<AppState> {
+    router_with_snapshots(config, SnapshotConfig::default())
+}
+
+/// Le flux et l'image fixe (ticket n° 12) partagent le même registre de sessions : une vignette
+/// se joint au direct déjà ouvert au lieu d'ouvrir une connexion de plus.
+pub fn router_with_snapshots(config: LiveConfig, snapshots: SnapshotConfig) -> Router<AppState> {
     Router::new()
         .route(wire::CAMERA_STREAM_PATH, get(upgrade))
+        .route(
+            wire::CAMERA_SNAPSHOT_PATH,
+            get(super::camera_snapshot::snapshot),
+        )
         .layer(Extension(LiveRegistry::new(config)))
+        .layer(Extension(SnapshotService::new(snapshots)))
 }
 
 async fn upgrade(

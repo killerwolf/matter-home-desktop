@@ -4,7 +4,7 @@
 // d u16, puis l'avcC) ; 0x02 Frame (drapeaux u8, bit 0 = image clé, horodatage u32 en ms,
 // données AVCC). Messages texte : l'état du flux (`unsupported` : codec que le serveur ne relaie
 // pas, définitif).
-import { checkSession, hasToken, openSocket } from "./api.js";
+import { ApiError, checkSession, hasToken, openSocket, requestBlob } from "./api.js";
 
 export const webCodecsSupported = () => typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function";
 
@@ -135,4 +135,48 @@ export function createPlayer(cameraId, kind, canvas, onState) {
       closeDecoder();
     },
   };
+}
+
+const SNAPSHOT_EVERY = 20000; // une image fixe toutes les 20 s (le serveur la partage et la garde 15 s)
+const SNAPSHOT_RETRY = 30000; // après un échec passager
+
+/**
+ * Image fixe d'une caméra (vignette sans flux lu : pas de flux réduit, ou au-delà du plafond) :
+ * `GET /api/cameras/{id}/snapshot` par `fetch` avec l'en-tête `Authorization`, puis blob, puis
+ * `createImageBitmap` et dessin dans le canvas. Aucune URL `blob:` n'est jamais chargée par la page :
+ * la politique de sécurité (`img-src 'self'`) n'a pas à changer. `stop()` arrête tout.
+ */
+export function createSnapshot(cameraId, canvas, onState) {
+  let stopped = false;
+  let timer = null;
+  const ctx = canvas.getContext("2d");
+  const next = (ms) => { if (!stopped) timer = setTimeout(load, ms); };
+  const load = async () => {
+    if (stopped || !hasToken()) return;
+    if (document.hidden) { next(2000); return; } // onglet caché : on ne dérange pas la caméra
+    try {
+      const blob = await requestBlob(`/api/cameras/${cameraId}/snapshot`);
+      const bitmap = await createImageBitmap(blob);
+      if (stopped) { bitmap.close?.(); return; }
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close?.();
+      onState({ kind: "live", text: "" });
+      next(SNAPSHOT_EVERY);
+    } catch (error) {
+      if (stopped) return;
+      if (error instanceof ApiError && error.status === 404 && !error.detail) {
+        onState({ kind: "error", text: "Serveur trop ancien pour les images fixes" }); // définitif
+        return;
+      }
+      if (error instanceof ApiError && error.status === 401) return; // session finie : l'app revient à la connexion
+      if (error instanceof ApiError && error.status === 404) { onState({ kind: "error", text: "Caméra introuvable" }); return; } // supprimée entre-temps
+      onState({ kind: "retry", text: error instanceof ApiError && error.detail ? error.detail : "Pas d'image pour l'instant" });
+      next(SNAPSHOT_RETRY);
+    }
+  };
+  onState({ kind: "connecting", text: "Image en cours de chargement…" });
+  load();
+  return { stop() { stopped = true; clearTimeout(timer); } };
 }

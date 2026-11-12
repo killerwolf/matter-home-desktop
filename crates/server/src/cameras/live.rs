@@ -513,6 +513,31 @@ impl LiveRegistry {
         Ok(subscription)
     }
 
+    /// Un spectateur pour une **vignette** (ticket n° 12) : rejoint la session déjà ouverte de la
+    /// caméra, quel que soit son flux (réduit d'abord), sans ouvrir de connexion de plus ; sans
+    /// session, en ouvre une sur le flux préféré (le réduit s'il existe). Jamais plus de deux
+    /// connexions (une par flux), comme pour les spectateurs ordinaires.
+    pub fn subscribe_any(
+        self: &Arc<Self>,
+        hub: &Arc<Hub>,
+        id: u64,
+    ) -> Result<Subscription, SubscribeError> {
+        {
+            let map = self.map();
+            let open = [StreamKind::Sub, StreamKind::Main]
+                .into_iter()
+                .filter_map(|kind| map.get(&(id, kind)))
+                .find(|session| !session.ended());
+            if let Some(session) = open {
+                return Ok(session.join());
+            }
+        }
+        let (kind, _) = hub
+            .camera_probe_target(id)
+            .ok_or(SubscribeError::UnknownCamera)?;
+        self.subscribe(hub, id, kind)
+    }
+
     /// Retire la session du registre si plus personne ne la regarde. `true` : elle est fermée (un
     /// nouveau spectateur en ouvrira une autre). Pris sous le même verrou que `subscribe` : un
     /// spectateur ne rejoint jamais une session qui se ferme.

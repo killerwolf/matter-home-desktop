@@ -585,5 +585,10 @@ mod tests {
             format!("/api/cameras/{}/stream?kind=main", CAMERA_ID_MIN + 3)
         );
         assert_eq!(serde_json::to_value(StreamKind::Sub).unwrap(), "sub");
+        assert_eq!(
+            camera_snapshot_path(CAMERA_ID_MIN + 3),
+            format!("/api/cameras/{}/snapshot", CAMERA_ID_MIN + 3)
+        );
+        assert_eq!(CAMERA_SNAPSHOT_PATH, "/api/cameras/{id}/snapshot");
     }
 }

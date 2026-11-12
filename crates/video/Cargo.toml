@@ -1,0 +1,22 @@
+[package]
+name = "matter-home-video"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Décodage H.264 des caméras (VideoToolbox), partagé par le client (affichage) et le serveur (vignettes JPEG)"
+license.workspace = true
+
+[lib]
+name = "matter_home_video"
+path = "src/lib.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
+
+# Décodage vidéo : VideoToolbox, le décodeur H.264 matériel de macOS. Rien à embarquer ni à
+# installer. Liaisons générées (objc2). Hors macOS, le décodeur refuse de démarrer.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "objc2", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString", "CFArray"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMBase", "objc2-core-video"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "bitflags", "CVPixelBufferPool", "CVReturn", "CVPixelFormatDescription"] }
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2", "VTDecompressionSession", "VTErrors", "VTSession", "objc2-core-media", "objc2-core-video", "block2", "bitflags"] }
