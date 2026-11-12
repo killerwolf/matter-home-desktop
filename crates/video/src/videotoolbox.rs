@@ -356,7 +356,10 @@ mod convert_tests {
         ];
         let pixels = convert_bgra(&source, 2, 2, 12).unwrap();
         // B, G, R en entrée : R, G, B en sortie, alpha toujours opaque.
-        assert_eq!(pixels, vec![30, 20, 10, 60, 50, 40, 90, 80, 70, 120, 110, 100]);
+        assert_eq!(
+            pixels,
+            vec![30, 20, 10, 60, 50, 40, 90, 80, 70, 120, 110, 100]
+        );
         // Un tampon trop court ou un pas trop petit ne plante pas.
         assert!(convert_bgra(&source[..20], 2, 2, 12).is_none());
         assert!(convert_bgra(&source, 2, 2, 7).is_none());

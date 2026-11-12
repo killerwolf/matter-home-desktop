@@ -280,11 +280,7 @@ fn the_sink_keeps_only_the_latest_image_and_wakes_the_interface() {
     };
     sink.put(image(1));
     sink.put(image(2));
-    assert_eq!(
-        sink.take().unwrap().rgb[0],
-        2,
-        "la dernière seulement"
-    );
+    assert_eq!(sink.take().unwrap().rgb[0], 2, "la dernière seulement");
     assert!(sink.take().is_none());
     assert_eq!((sink.frames(), woken.load(Ordering::SeqCst)), (2, 2));
 }
@@ -321,7 +317,9 @@ mod videotoolbox {
     fn mean_luma(image: &Image) -> f64 {
         let sum: u64 = image
             .rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| (u64::from(p[0]) * 3 + u64::from(p[1]) * 6 + u64::from(p[2])) / 10)
             .sum();
         sum as f64 / (image.width * image.height) as f64
@@ -348,9 +346,11 @@ mod videotoolbox {
         assert!(mean_luma(&image) > 30.0, "image noire ?");
         let distinct: std::collections::HashSet<[u8; 3]> = image
             .rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .step_by(97)
-            .map(|p| [p[0], p[1], p[2]])
+            .copied()
             .collect();
         assert!(distinct.len() > 8, "image unie ?");
         assert_eq!(d.stats().errors, 0);

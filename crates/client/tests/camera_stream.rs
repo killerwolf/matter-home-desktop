@@ -224,7 +224,10 @@ fn the_player_decodes_the_live_video_and_the_server_closes_the_camera_after_it()
     }
     let image = handle.take_image().expect("une image décodée");
     assert_eq!((image.width, image.height), (640, 360));
-    assert!(image.pixels.iter().any(|p| p.r() > 200), "image noire ?");
+    assert!(
+        image.rgb.as_chunks::<3>().0.iter().any(|p| p[0] > 200),
+        "image noire ?"
+    );
     let info = handle.info().expect("taille annoncée");
     assert_eq!(
         (info.width, info.height, info.pixel_aspect),
@@ -307,10 +310,13 @@ fn the_stream_resumes_by_itself_after_the_server_comes_back() {
     // La session du client (jeton) n'existe plus côté serveur redémarré ? Elle est conservée sur
     // disque : la liaison reprend, ou le serveur répond « session terminée » (état final) si le
     // jeton n'a pas survécu — dans les deux cas, jamais de boucle ni de panique.
+    // Une liaison dont la session a changé pendant son attente (le client se reconnecte au serveur
+    // redémarré) s'arrête d'elle-même : c'est au lecteur de la rouvrir (voir `ui/player.rs`). Ici
+    // aussi : fini sans état final, on la rouvre plus bas.
     let state = wait_state(
         &handle,
         "la reprise après le redémarrage du serveur",
-        |s| *s == StreamState::Live || s.is_final(),
+        |s| *s == StreamState::Live || s.is_final() || handle.is_finished(),
     );
     if state == StreamState::Live {
         let deadline = Instant::now() + T;
@@ -319,14 +325,18 @@ fn the_stream_resumes_by_itself_after_the_server_comes_back() {
             assert!(Instant::now() < deadline, "les images ne reprennent pas");
             std::thread::sleep(Duration::from_millis(50));
         }
-    } else if state != StreamState::SessionEnded {
-        // Un autre état final (la liaison a été refusée pendant le redémarrage) : le lecteur
-        // est fini, on le rouvre, et la lecture doit reprendre ou dire que la session est finie.
+    } else if !matches!(state, StreamState::SessionEnded | StreamState::NoConnection) {
+        // Un autre état (liaison refusée ou arrêtée pendant le redémarrage) : le lecteur est
+        // fini, on le rouvre, et la lecture doit reprendre ou dire que la session est finie (le
+        // serveur redémarré peut avoir oublié le jeton : « session terminée » ou, une fois le
+        // client déconnecté, « pas de connexion »).
         let again = open(id, StreamKind::Sub);
+        let ended =
+            |s: &StreamState| matches!(s, StreamState::SessionEnded | StreamState::NoConnection);
         let state = wait_state(&again, "la réouverture du lecteur", |s| {
-            *s == StreamState::Live || *s == StreamState::SessionEnded
+            *s == StreamState::Live || ended(s)
         });
-        assert!(state == StreamState::Live || state == StreamState::SessionEnded);
+        assert!(state == StreamState::Live || ended(&state));
     }
     drop(client);
 }
