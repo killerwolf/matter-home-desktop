@@ -11,6 +11,9 @@ pub enum NetError {
     BadAddress(String),
     /// Le certificat présenté n'est pas celui qui a été épinglé. Refus, sans contournement.
     CertificateChanged { expected: String, found: String },
+    /// Adresse `*.ts.net` (port 443) : le certificat public présenté par Tailscale n'est pas
+    /// valable (autorité inconnue, nom, dates). Refus, sans contournement.
+    PublicCertificateRejected(String),
     /// Serveur introuvable, connexion refusée ou coupée, handshake TLS raté…
     Unreachable(String),
     /// Aucune réponse à temps.
@@ -48,6 +51,11 @@ impl NetError {
             NetError::CertificateChanged { .. } => {
                 "Le certificat du serveur n'est pas celui que vous aviez approuvé.".into()
             }
+            NetError::PublicCertificateRejected(_) => "Le certificat HTTPS de cette adresse \
+                Tailscale n'est pas reconnu : vérifiez que « tailscale serve » est actif sur le \
+                serveur et que l'HTTPS est activé pour votre tailnet, ou utilisez l'adresse \
+                directe du serveur (port 8443)."
+                .into(),
             NetError::Unreachable(why) => format!("Serveur injoignable : {why}"),
             NetError::Timeout => "Le serveur n'a pas répondu à temps.".into(),
             NetError::Api {

@@ -25,6 +25,15 @@ enum Stage {
 
 pub struct ConnectScreen {
     url: String,
+    /// Autres adresses du même serveur (à distance : nom Tailscale, IP 100.x), facultatif.
+    remote: String,
+    /// Le champ `remote` a été rempli depuis le fichier de connexion (une fois par écran).
+    remote_loaded: bool,
+    /// Adresse principale et texte du champ « à distance » tels que chargés depuis le fichier :
+    /// si l'adresse change sans que le champ soit touché, les anciennes alternatives sont celles
+    /// d'un autre serveur (voir [`alts_for_submit`]).
+    loaded_primary: Option<String>,
+    loaded_remote: String,
     username: String,
     password: String,
     /// Adresse déjà approuvée (fichier de connexion) : pas de nouvelle empreinte à confirmer.
@@ -48,8 +57,33 @@ pub enum Field {
     Server,
     /// Sous le mot de passe (identifiants refusés).
     Password,
+    /// Sous l'adresse à distance.
+    Remote,
     /// Pas de champ en cause : en tête du formulaire.
     General,
+}
+
+/// Forme canonique d'une adresse saisie (`None` si elle est illisible).
+fn canonical(text: &str) -> Option<String> {
+    ServerAddr::parse(text).ok().map(|a| a.url())
+}
+
+/// Texte du champ « à distance » à envoyer. Quand l'adresse principale a changé pour une adresse
+/// pas encore épinglée (première connexion, changement de serveur) et que le champ est resté
+/// celui qui avait été chargé, il décrivait un autre serveur : il est vidé. Un champ que
+/// l'utilisateur a modifié est gardé tel quel.
+fn alts_for_submit(
+    primary: Option<&str>,
+    loaded_primary: Option<&str>,
+    loaded_remote: &str,
+    remote: &str,
+    pinned: bool,
+) -> String {
+    if !pinned && primary != loaded_primary && remote == loaded_remote {
+        String::new()
+    } else {
+        remote.to_string()
+    }
 }
 
 /// Le champ concerné par une erreur, d'après sa nature (jamais d'après son texte).
@@ -59,6 +93,7 @@ pub fn field_of(error: &NetError) -> Field {
         | NetError::Unreachable(_)
         | NetError::Timeout
         | NetError::CertificateChanged { .. }
+        | NetError::PublicCertificateRejected(_)
         | NetError::Protocol(_) => Field::Server,
         NetError::Api {
             code: Some(ErrorCode::InvalidCredentials | ErrorCode::TooManyAttempts),
@@ -72,6 +107,10 @@ impl ConnectScreen {
     pub fn new() -> Self {
         Self {
             url: String::new(),
+            remote: String::new(),
+            remote_loaded: false,
+            loaded_primary: None,
+            loaded_remote: String::new(),
             username: String::new(),
             password: String::new(),
             pinned_url: None,
@@ -88,6 +127,7 @@ impl ConnectScreen {
     pub fn logged_out(&mut self, url: Option<String>, pinned: bool, reason: Option<String>) {
         self.password.clear();
         self.stage = Stage::Form;
+        self.remote_loaded = false;
         self.pinned_url = url.clone().filter(|_| pinned);
         if let Some(url) = url {
             self.url = url;
@@ -197,6 +237,12 @@ impl ConnectScreen {
     }
 
     fn form(&mut self, ui: &mut egui::Ui, backend: &Backend) {
+        if !self.remote_loaded {
+            self.remote_loaded = true;
+            self.remote = backend.alt_urls().join(" ");
+            self.loaded_primary = canonical(&self.url);
+            self.loaded_remote = self.remote.clone();
+        }
         // Un message qui ne vise aucun champ reste en tête ; les autres sont sous leur champ.
         let message = self.message.clone();
         let at = message.as_ref().map(|_| self.message_field);
@@ -244,6 +290,37 @@ impl ConnectScreen {
             .small()
             .color(p.text_secondary),
         );
+        ui.add_space(theme::tokens().space.sm);
+
+        label(ui, "Adresse à distance (facultatif)");
+        ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut self.remote)
+                .hint_text("mac-mini.tail1234.ts.net ou 100.x.y.z")
+                .desired_width(full),
+        );
+        error(ui, Field::Remote);
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "Le même serveur, joint par Tailscale quand vous n'êtes pas chez vous. \
+                 L'app essaie l'adresse ci-dessus, puis celle-ci. Plusieurs : séparez par un espace.",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+        if ServerAddr::parse_list(&self.remote)
+            .is_ok_and(|l| l.iter().any(ServerAddr::is_tailscale_serve))
+        {
+            ui.label(
+                RichText::new(
+                    "Vérifiée par le certificat public de Tailscale : vérifiez bien le nom de \
+                     votre Mac.",
+                )
+                .small()
+                .color(p.text_secondary),
+            );
+        }
         ui.add_space(theme::tokens().space.md);
 
         label(ui, "Identifiant");
@@ -331,6 +408,26 @@ impl ConnectScreen {
             self.message = Some((false, e.message()));
             self.message_field = Field::Server;
             return;
+        }
+        // Un autre serveur (adresse principale changée, champ « à distance » laissé tel quel) :
+        // les anciennes alternatives ne sont pas les siennes.
+        let pinned = self.url_is_pinned();
+        self.remote = alts_for_submit(
+            canonical(&url).as_deref(),
+            self.loaded_primary.as_deref(),
+            &self.loaded_remote,
+            &self.remote,
+            pinned,
+        );
+        self.loaded_primary = canonical(&url);
+        self.loaded_remote = self.remote.clone();
+        match ServerAddr::parse_list(&self.remote) {
+            Ok(list) => backend.set_alt_urls(list.iter().map(ServerAddr::url).collect()),
+            Err(e) => {
+                self.message = Some((false, e.message()));
+                self.message_field = Field::Remote;
+                return;
+            }
         }
         if self.url_is_pinned() {
             backend.login_saved(self.username.trim(), &self.password);
@@ -463,6 +560,31 @@ impl ConnectScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_the_primary_address_does_not_keep_the_old_alternatives() {
+        let old = "https://192.168.1.20:8443";
+        let new = "https://autre.local:8443";
+        let alts = "https://mac.tailnet-xxxx.ts.net:8443";
+        // Autre serveur, pas encore épinglé, champ resté tel quel : vidé.
+        assert_eq!(alts_for_submit(Some(new), Some(old), alts, alts, false), "");
+        // Même serveur : gardé.
+        assert_eq!(
+            alts_for_submit(Some(old), Some(old), alts, alts, false),
+            alts
+        );
+        // Adresse changée mais champ rempli par l'utilisateur : gardé.
+        let typed = "https://autre.tailnet-xxxx.ts.net:8443";
+        assert_eq!(
+            alts_for_submit(Some(new), Some(old), alts, typed, false),
+            typed
+        );
+        // Adresse déjà épinglée : gardé.
+        assert_eq!(
+            alts_for_submit(Some(new), Some(old), alts, alts, true),
+            alts
+        );
+    }
 
     #[test]
     fn an_error_goes_under_the_field_it_is_about_by_its_kind_not_its_text() {

@@ -615,6 +615,7 @@ fn an_unknown_token_at_startup_is_the_same_as_a_revoked_one() {
             url: server.url(),
             fingerprint: server.fingerprint.clone(),
             token: Some("jeton-qui-n-existe-pas".into()),
+            alt_urls: Vec::new(),
         })
         .unwrap();
     let mut client = TestClient::new(path);
@@ -704,4 +705,33 @@ fn the_link_survives_the_servers_pings_beyond_its_idle_limit() {
             Ok(_) | Err(_) => {}
         }
     }
+}
+
+#[test]
+fn a_second_address_takes_over_when_the_first_does_not_answer() {
+    let dir = temp_dir("alts");
+    let server = Server::start(&dir);
+    let path = store_path(&dir);
+    // Adresse « maison » qui ne répond pas (port 1), adresse « à distance » qui est le vrai
+    // serveur : même certificat, donc même empreinte.
+    let dead = "https://127.0.0.1:1".to_string();
+    let mut client = TestClient::new(path.clone());
+    client.backend.set_alt_urls(vec![server.url()]);
+    client
+        .backend
+        .login(&dead, &server.fingerprint, USER, PASSWORD);
+    client.wait_link(T, |l| matches!(l, Link::Connected { .. }));
+    client.wait_for(T, |e| matches!(e, Event::Snapshot(_)).then_some(()));
+    // Le fichier garde l'adresse principale et la liste des autres ; jamais un seul champ de plus.
+    let saved = saved_json(&dir);
+    assert_eq!(saved["url"], dead);
+    assert_eq!(saved["alt_urls"][0], server.url());
+    // Les requêtes passent par l'adresse qui répond.
+    assert!(client.call(Request::get("/api/version")).is_ok());
+
+    // Relance : même repli, sans mot de passe.
+    drop(client);
+    let mut again = TestClient::new(path);
+    again.wait_link(T, |l| matches!(l, Link::Connected { .. }));
+    again.wait_for(T, |e| matches!(e, Event::Snapshot(_)).then_some(()));
 }

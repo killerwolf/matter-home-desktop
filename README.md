@@ -154,6 +154,40 @@ Les deux sont créés dans `dist/` (universels quand les deux cibles Apple sont 
 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`). Plus de détails dans
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Accès à distance
+
+Pour joindre le serveur depuis l'extérieur (4G, autre Wi-Fi) **sans rien ouvrir sur Internet**,
+utilisez [Tailscale](https://tailscale.com) (gratuit en usage personnel) : un réseau privé
+(« tailnet ») entre vos appareils. Le serveur continue de parler Matter à vos appareils sur le
+réseau local ; seul le client change d'adresse.
+
+1. Installez Tailscale sur le Mac serveur et sur chaque appareil qui se connecte (Mac, iPhone,
+   iPad), avec le **même compte**. Dans la console d'administration de Tailscale, activez
+   **MagicDNS** et **HTTPS**.
+2. Chaque appareil a alors un nom de la forme `mon-mac.tailnet-xxxx.ts.net`.
+3. **Client de bureau** : dans l'écran de connexion, gardez l'adresse de la maison et remplissez
+   **« Adresse à distance »** avec `mon-mac.tailnet-xxxx.ts.net:8443` (plusieurs adresses :
+   séparez-les par un espace). À chaque connexion, le client essaie l'adresse de la maison, puis
+   les autres, et prend la première qui répond : avec l'**empreinte du serveur** pour une adresse directe, ou avec un certificat public valable pour une adresse `https://…ts.net/` (port 443, voir « Certificat » plus bas) ; il bascule tout
+   seul en quittant le Wi-Fi de la maison. Hors de chez vous, la barre d'état indique « à
+   distance » et les caméras restent sur le flux réduit (« Fluide ») ; « Haute » reste possible
+   mais est lourde en 4G.
+4. **App web (iPhone, iPad)** : dans le menu de l'app serveur, cochez **« Accès web
+   (Tailscale) »**. Le serveur est alors publié sur votre tailnet seulement (jamais sur Internet)
+   à l'adresse `https://mon-mac.tailnet-xxxx.ts.net/app/`, avec un certificat reconnu par
+   Safari. Ouvrez-la, connectez-vous, puis « Sur l'écran d'accueil ». Détails :
+   [docs/web-app.md](docs/web-app.md).
+
+**Certificat.** Le certificat auto-signé du serveur ne porte pas le nom `….ts.net`. Le client
+ne s'en soucie pas : il compare l'**empreinte** du certificat, la même par n'importe quelle
+adresse, donc `mon-mac.tailnet-xxxx.ts.net:8443` fonctionne. Seule exception : l'adresse
+publiée par la case « Accès web » (`https://mon-mac.tailnet-xxxx.ts.net/`, port 443) présente
+le certificat Let's Encrypt de Tailscale ; le client le valide alors par la chaîne de confiance
+publique, comme un navigateur (nom et dates contrôlés), **sans épinglage** : il ne vérifie plus
+que le serveur est bien le vôtre par son empreinte, seulement que le nom `….ts.net` est le bon.
+Vérifiez donc le nom de votre Mac. Tout autre certificat invalide est refusé. Voir
+[docs/acces-distant.md](docs/acces-distant.md).
+
 ## Ajouter un appareil
 
 1. Dans l'app **Maison** : appui long sur l'appareil → **Réglages** → **Activer le mode
@@ -189,8 +223,8 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 
 - Projet personnel, en cours d'évolution, testé uniquement sur macOS.
 - L'application ne vérifie pas que les appareils sont certifiés Matter.
-- Pas encore de déclencheur « appui sur un bouton ». Pas de serveur Linux, d'accès à distance ni
-  de comptes multiples (hors version 1).
+- Pas encore de déclencheur « appui sur un bouton ». Pas de serveur Linux ni
+  de comptes multiples (hors version 1). L'accès à distance passe par Tailscale (voir plus haut).
 - Le serveur n'est pas signé avec un certificat Apple payant (signature « ad hoc ») : le pare-feu
   macOS demande une autorisation manuelle, voir le guide d'installation.
 - Certains capteurs sur pile s'appairent difficilement : voir
@@ -206,6 +240,7 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 | [Plan de la maison](docs/plan.md) | dessin, couleurs, sauvegarde |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
 | [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
+| [Accès à distance](docs/acces-distant.md) | Tailscale, adresses multiples, certificats, flux caméra |
 | [Dépannage](docs/depannage.md) | problèmes connus, diagnostic réseau |
 | [Architecture](docs/architecture.md) | choix techniques, fonctionnement interne |
 | [Contribuer](CONTRIBUTING.md) | compiler, tester, proposer une modification |

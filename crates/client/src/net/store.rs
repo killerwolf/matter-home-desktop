@@ -26,6 +26,12 @@ pub struct Saved {
     /// suffit alors de se reconnecter.
     #[serde(default)]
     pub token: Option<String>,
+    /// Autres adresses du **même** serveur (à distance : nom Tailscale, IP 100.x…), essayées dans
+    /// l'ordre après `url`. Même certificat, donc même empreinte. Absent des anciens fichiers
+    /// (lus sans changement) ; non écrit quand il est vide, pour qu'un ancien client relise le
+    /// fichier tel quel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alt_urls: Vec<String>,
 }
 
 // Pas de `Debug` dérivé : le jeton ne doit jamais finir dans un journal.
@@ -35,6 +41,7 @@ impl std::fmt::Debug for Saved {
             .field("url", &self.url)
             .field("fingerprint", &self.fingerprint)
             .field("token", &self.token.as_ref().map(|_| "…"))
+            .field("alt_urls", &self.alt_urls)
             .finish()
     }
 }
@@ -190,6 +197,7 @@ mod tests {
             url: "https://127.0.0.1:8443".into(),
             fingerprint: "AA:BB".into(),
             token: Some("jeton-secret".into()),
+            alt_urls: Vec::new(),
         }
     }
 
@@ -228,6 +236,39 @@ mod tests {
         store.delete().unwrap();
         store.delete().unwrap();
         assert_eq!(store.load().unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_file_without_alternate_addresses_still_loads_and_is_not_rewritten_with_them() {
+        let dir = temp("old");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("connexion.json");
+        std::fs::write(
+            &path,
+            r#"{"url":"https://192.168.1.20:8443","fingerprint":"AA:BB","token":"t"}"#,
+        )
+        .unwrap();
+        let store = Store::at(path);
+        let loaded = store.load().unwrap().unwrap();
+        assert!(loaded.alt_urls.is_empty());
+        store.save(&loaded).unwrap();
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        assert!(!text.contains("alt_urls"), "{text}");
+        let with = Saved {
+            alt_urls: vec!["https://mac.ts.net:8443".into()],
+            ..loaded
+        };
+        store.save(&with).unwrap();
+        assert_eq!(store.load().unwrap(), Some(with));
+        // Un ancien client (sans ce champ) relit un fichier récent : le champ inconnu est ignoré.
+        #[derive(serde::Deserialize)]
+        struct Old {
+            url: String,
+        }
+        let old: Old =
+            serde_json::from_str(&std::fs::read_to_string(store.path()).unwrap()).unwrap();
+        assert_eq!(old.url, "https://192.168.1.20:8443");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
