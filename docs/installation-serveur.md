@@ -61,10 +61,11 @@ sur ce Mac), l'application démarre directement le serveur, sans rien demander n
 ### Le menu de la barre de menus
 
 L'icône change de forme : maison pleine (en marche), maison creuse (démarrage), maison avec un
-point d'exclamation (problème ou configuration à terminer). Le menu montre l'état (« En marche ·
-12 appareils sur 13 en ligne »), les appareils injoignables, l'adresse du serveur, « Copier
-l'adresse », « Copier l'empreinte du certificat », « Ouvrir le journal », « Ouvrir à la
-connexion », « Compte et réglages… » et « Quitter ». Quitter demande confirmation : les
+point d'exclamation (problème ou configuration à terminer). Le menu montre l'état en une
+ligne (« 8 appareils en ligne », ou « 12 appareils en ligne, 1 injoignable »), les appareils
+injoignables, puis un sous-menu « Connecter un client » (l'adresse du serveur, « Copier l'adresse »
+et « Copier l'empreinte du certificat »), « Caméras… », « Réglages… », « Journal », « Ouvrir à la
+connexion » (avec une coche) et « Quitter ». Quitter demande confirmation : les
 automatismes s'arrêtent tant que l'application n'est pas rouverte.
 
 ### Ouvrir à la connexion, ouverture de session automatique
@@ -106,7 +107,7 @@ mais c'est un réglage à faire vous-même.
 
 ### Quand l'application ne démarre pas le serveur
 
-Elle le dit dans le menu (et dans « Compte et réglages… ») et ne démarre rien, plutôt que de
+Elle le dit dans le menu (et dans « Réglages… ») et ne démarre rien, plutôt que de
 risquer deux serveurs sur les mêmes données :
 
 - **Le service installé au Terminal tient les données** (fichier
@@ -158,7 +159,7 @@ Tant que le service est installé, l'application le dit et ne démarre rien.
 
 ### Où sont les choses
 
-- Journal : menu « Ouvrir le journal » (`~/Library/Logs/Matter Home Server/serveur.log`).
+- Journal : menu « Journal » (`~/Library/Logs/Matter Home Server/serveur.log`).
 - Données : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`.
 - Ouverture à la connexion : `~/Library/LaunchAgents/dev.matter-home-desktop.server-app.plist`.
 

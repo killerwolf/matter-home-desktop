@@ -3003,6 +3003,7 @@ dependencies = [
  "env_logger",
  "httparse",
  "log",
+ "matter-home-theme",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
@@ -3063,11 +3064,21 @@ dependencies = [
  "env_logger",
  "log",
  "matter-home-server",
+ "matter-home-theme",
  "protocol",
  "rfd",
  "serde_json",
  "tray-icon",
  "winit",
+]
+
+[[package]]
+name = "matter-home-theme"
+version = "1.0.0"
+dependencies = [
+ "eframe",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

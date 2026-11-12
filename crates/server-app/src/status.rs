@@ -41,22 +41,29 @@ pub fn icon_kind(phase: &Phase) -> IconKind {
 }
 
 fn devices_text(health: &Health) -> String {
-    match health.total {
-        0 => "aucun appareil appairé".to_string(),
-        1 => format!("{} appareil sur 1 en ligne", health.online),
-        n => format!(
-            "{} appareil{} sur {n} en ligne",
+    let plural = |n: usize| if n > 1 { "s" } else { "" };
+    let missing = health.total.saturating_sub(health.online);
+    match (health.total, missing) {
+        (0, _) => "Aucun appareil appairé".to_string(),
+        (_, 0) => format!(
+            "{} appareil{} en ligne",
             health.online,
-            if health.online > 1 { "s" } else { "" }
+            plural(health.online)
+        ),
+        (_, m) => format!(
+            "{} appareil{} en ligne, {m} injoignable{}",
+            health.online,
+            plural(health.online),
+            plural(m)
         ),
     }
 }
 
-/// La première ligne du menu, par exemple « En marche · 12 appareils sur 13 en ligne ».
+/// La première ligne du menu, en une ligne : « 8 appareils en ligne ».
 pub fn status_line(phase: &Phase, health: &Health) -> String {
     match phase {
         Phase::Starting => "Démarrage…".into(),
-        Phase::Running => format!("En marche · {}", devices_text(health)),
+        Phase::Running => devices_text(health),
         Phase::NeedsSetup => "Configuration à terminer".into(),
         Phase::Blocked(b) => format!("À l'arrêt · {}", b.short()),
         Phase::Problem(_) => "Problème : le serveur ne tourne pas".into(),
@@ -84,20 +91,24 @@ mod tests {
     #[test]
     fn running_line_counts_devices() {
         assert_eq!(
-            status_line(&Phase::Running, &health(13, 12)),
-            "En marche · 12 appareils sur 13 en ligne"
-        );
-        assert_eq!(
-            status_line(&Phase::Running, &health(13, 1)),
-            "En marche · 1 appareil sur 13 en ligne"
+            status_line(&Phase::Running, &health(8, 8)),
+            "8 appareils en ligne"
         );
         assert_eq!(
             status_line(&Phase::Running, &health(1, 1)),
-            "En marche · 1 appareil sur 1 en ligne"
+            "1 appareil en ligne"
+        );
+        assert_eq!(
+            status_line(&Phase::Running, &health(13, 12)),
+            "12 appareils en ligne, 1 injoignable"
+        );
+        assert_eq!(
+            status_line(&Phase::Running, &health(13, 1)),
+            "1 appareil en ligne, 12 injoignables"
         );
         assert_eq!(
             status_line(&Phase::Running, &health(0, 0)),
-            "En marche · aucun appareil appairé"
+            "Aucun appareil appairé"
         );
     }
 

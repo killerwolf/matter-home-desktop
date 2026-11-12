@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 matter-home-server = { path = "../server" }
 protocol = { path = "../protocol" }
+matter-home-theme = { path = "../theme" }
 eframe = "0.37"
 rfd = "0.17.2"
 tray-icon = "=0.26.1"

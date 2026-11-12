@@ -14,6 +14,9 @@ use protocol::wire::CameraStatus;
 /// Ce que la fenêtre dit des sauvegardes (demandé par le ticket #4 : « à dire dans l'interface »).
 pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
 
+/// Titre de l'aide repliable du formulaire.
+pub const AQARA_TITLE: &str = "Aide pour une caméra Aqara G100";
+
 /// Aide pour une caméra Aqara G100 (non vérifiée sur l'appareil).
 pub const AQARA_HINT: &str = "Aqara G100 (à vérifier sur votre caméra) : dans l'application Aqara Home, ouvrez la caméra, Réglages de l'appareil, RTSP, puis activez-le. L'application donne l'adresse, le port (554), l'identifiant et le mot de passe. Flux principal : rtsp://adresse:554/live/ch00_0 (peut être instable) ; flux réduit : …/live/ch00_1 (720p, stable, à préférer pour la mosaïque).";
 
@@ -53,6 +56,24 @@ pub fn status_line(camera: &CameraAdmin) -> (Tone, String) {
     }
 }
 
+/// Un problème à écrire dans la liste : seule une caméra injoignable en a un (une caméra jamais
+/// vérifiée ou joignable n'a qu'un point de couleur, le détail est dans son formulaire).
+pub fn problem_text(camera: &CameraAdmin) -> Option<String> {
+    match camera.status {
+        CameraStatus::Unreachable { .. } => Some(status_line(camera).1),
+        _ => None,
+    }
+}
+
+/// La couleur du point d'une caméra dans la liste.
+pub fn dot_tone(camera: &CameraAdmin) -> Tone {
+    status_line(camera).0
+}
+
+/// Ce que dit le formulaire quand la caméra n'a pas de flux réduit.
+pub const NO_SUB_NOTE: &str =
+    "Sans adresse pour la mosaïque, elle affichera une image fixe rafraîchie.";
+
 /// Le résultat du bouton « Tester », une ligne par flux.
 pub fn test_lines(results: &[StreamTest]) -> Vec<(Tone, String)> {
     results
@@ -67,6 +88,15 @@ pub fn test_lines(results: &[StreamTest]) -> Vec<(Tone, String)> {
                 r.describe(),
             )
         })
+        .collect()
+}
+
+/// Le même résultat, avec le flux concerné : chaque ligne se place sous son adresse.
+pub fn test_lines_by_stream(results: &[StreamTest]) -> Vec<(StreamKind, Tone, String)> {
+    results
+        .iter()
+        .zip(test_lines(results))
+        .map(|(r, (tone, line))| (r.kind, tone, line))
         .collect()
 }
 
@@ -85,6 +115,8 @@ pub struct Form {
     pub had_password: bool,
     /// Effacer le mot de passe enregistré.
     pub clear_password: bool,
+    /// « Changer » a été cliqué : le champ du mot de passe est affiché.
+    pub change_password: bool,
 }
 
 impl Form {
@@ -102,7 +134,35 @@ impl Form {
             password: String::new(),
             had_password: camera.has_password,
             clear_password: false,
+            change_password: false,
         }
+    }
+
+    /// La caméra modifiée a un mot de passe enregistré, qu'on ne touche pas : le formulaire n'en
+    /// montre que la ligne « enregistré » (avec « Changer » et « Effacer »).
+    pub fn shows_saved_password(&self) -> bool {
+        self.editing.is_some() && self.had_password && !self.change_password && !self.clear_password
+    }
+
+    /// « Changer » : le champ apparaît, vide.
+    pub fn start_password_change(&mut self) {
+        self.change_password = true;
+        self.clear_password = false;
+        self.password.clear();
+    }
+
+    /// « Effacer » : le mot de passe enregistré sera supprimé à l'enregistrement.
+    pub fn mark_password_cleared(&mut self) {
+        self.clear_password = true;
+        self.change_password = false;
+        self.password.clear();
+    }
+
+    /// Revient à « enregistré » (annule « Changer » ou « Effacer »).
+    pub fn keep_saved_password(&mut self) {
+        self.clear_password = false;
+        self.change_password = false;
+        self.password.clear();
     }
 
     /// La saisie telle que le serveur la comprend.
@@ -158,6 +218,10 @@ impl Form {
             if self.password.is_empty() {
                 if let Some(p) = password {
                     self.password = p;
+                    // Le mot de passe collé remplace celui qui est enregistré : le champ s'affiche
+                    // (plus de ligne « enregistré ») et un « Effacer » déjà choisi est annulé.
+                    self.change_password = true;
+                    self.clear_password = false;
                 }
             }
             changed = true;
@@ -235,6 +299,55 @@ mod tests {
             (None, "Ajouter une caméra", "facultatif")
         );
         assert!(!new.is_fillable());
+    }
+
+    #[test]
+    fn the_saved_password_is_one_line_with_change_and_clear() {
+        let mut form = Form::edit(&admin("Salon", true));
+        assert!(form.shows_saved_password());
+        form.start_password_change();
+        assert!(!form.shows_saved_password());
+        form.password = "nouveau".into();
+        assert_eq!(form.draft().password.as_deref(), Some("nouveau"));
+        form.keep_saved_password();
+        assert!(form.shows_saved_password() && form.draft().password.is_none());
+        form.mark_password_cleared();
+        assert!(!form.shows_saved_password());
+        assert_eq!(form.draft().password, Some(String::new()));
+        // Un ajout montre toujours le champ.
+        assert!(!Form::new().shows_saved_password());
+    }
+
+    #[test]
+    fn a_pasted_password_replaces_the_saved_one_and_shows_the_field() {
+        let mut form = Form::edit(&admin("Salon", true));
+        form.mark_password_cleared();
+        form.url = "rtsp://admin:neuf@192.0.2.4:554/live/ch00_0".into();
+        assert!(form.absorb_credentials());
+        assert!(!form.shows_saved_password());
+        assert!(!form.clear_password && form.change_password);
+        assert_eq!(form.draft().password.as_deref(), Some("neuf"));
+    }
+
+    #[test]
+    fn the_list_only_writes_a_problem() {
+        let mut camera = admin("Salon", true);
+        assert_eq!(
+            (dot_tone(&camera), problem_text(&camera)),
+            (Tone::Neutral, None)
+        );
+        camera.status = CameraStatus::Online;
+        assert_eq!(
+            (dot_tone(&camera), problem_text(&camera)),
+            (Tone::Good, None)
+        );
+        camera.status = CameraStatus::Unreachable {
+            problem: CameraProblem::Unauthorized,
+            detail: None,
+            since: None,
+        };
+        assert_eq!(dot_tone(&camera), Tone::Bad);
+        assert_eq!(problem_text(&camera).as_deref(), Some("Injoignable"));
     }
 
     #[test]

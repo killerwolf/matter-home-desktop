@@ -66,6 +66,11 @@ pub enum Entry {
         /// `Some` : élément à cocher.
         checked: Option<bool>,
     },
+    /// Sous-menu : son titre et ses entrées (sans autre sous-menu).
+    Submenu {
+        label: String,
+        entries: Vec<Entry>,
+    },
     Separator,
 }
 
@@ -155,11 +160,9 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
             }
         }
         Phase::Blocked(_) => m.push(Entry::Info(
-            "Ouvrez « Compte et réglages… » pour la marche à suivre.".into(),
+            "Ouvrez « Réglages… » pour la marche à suivre.".into(),
         )),
-        Phase::Problem(_) => m.push(Entry::Info(
-            "Ouvrez « Ouvrir le journal » pour le détail.".into(),
-        )),
+        Phase::Problem(_) => m.push(Entry::Info("Ouvrez « Journal » pour le détail.".into())),
         _ => {}
     }
     if i.desktop_doubt && matches!(i.phase, Phase::Running) {
@@ -170,31 +173,37 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
     }
     m.push(Entry::Separator);
     if let Some(url) = i.url {
-        m.push(Entry::Info(format!("Adresse : {url}")));
-        m.push(item(Action::CopyUrl, "Copier l'adresse", true));
-        m.push(item(
-            Action::CopyFingerprint,
-            "Copier l'empreinte du certificat",
-            i.fingerprint.is_some(),
-        ));
-        m.push(Entry::Separator);
+        // L'adresse et les deux « Copier » : ce qu'il faut donner au client pour se connecter.
+        m.push(Entry::Submenu {
+            label: "Connecter un client".into(),
+            entries: vec![
+                Entry::Info(format!("Adresse : {url}")),
+                item(Action::CopyUrl, "Copier l'adresse", true),
+                item(
+                    Action::CopyFingerprint,
+                    "Copier l'empreinte du certificat",
+                    i.fingerprint.is_some(),
+                ),
+            ],
+        });
         m.extend(web_entries(i.web));
         m.push(Entry::Separator);
     }
-    m.push(item(Action::OpenLog, "Ouvrir le journal", true));
-    m.push(Entry::Item {
-        action: Action::ToggleLogin,
-        label: "Ouvrir à la connexion".into(),
-        enabled: i.login_available,
-        checked: Some(i.login_enabled),
-    });
     // Les caméras se gèrent depuis le hub du serveur : seulement quand il tourne.
     m.push(item(
         Action::Cameras,
         "Caméras…",
         matches!(i.phase, Phase::Running),
     ));
-    m.push(item(Action::Settings, "Compte et réglages…", true));
+    m.push(item(Action::Settings, "Réglages…", true));
+    m.push(item(Action::OpenLog, "Journal", true));
+    m.push(Entry::Separator);
+    m.push(Entry::Item {
+        action: Action::ToggleLogin,
+        label: "Ouvrir à la connexion".into(),
+        enabled: i.login_available,
+        checked: Some(i.login_enabled),
+    });
     m.push(Entry::Separator);
     m.push(item(Action::Quit, "Quitter Matter Home Server…", true));
     m
@@ -234,20 +243,29 @@ mod tests {
         });
         assert_eq!(
             menu[2],
-            Entry::Info("En marche · 12 appareils sur 13 en ligne".into())
+            Entry::Info("12 appareils en ligne, 1 injoignable".into())
         );
         assert!(menu.contains(&Entry::Info("    Salon".into())));
-        assert!(menu.contains(&Entry::Info("Adresse : https://mac.local:8443".into())));
+        // L'adresse et les deux « Copier » sont dans le sous-menu « Connecter un client ».
+        let Some(Entry::Submenu { label, entries }) =
+            menu.iter().find(|e| matches!(e, Entry::Submenu { .. }))
+        else {
+            panic!("sous-menu attendu");
+        };
+        assert_eq!(label, "Connecter un client");
+        assert_eq!(
+            entries[0],
+            Entry::Info("Adresse : https://mac.local:8443".into())
+        );
+        assert_eq!(actions(entries), [Action::CopyUrl, Action::CopyFingerprint]);
         assert_eq!(
             actions(&menu),
             [
-                Action::CopyUrl,
-                Action::CopyFingerprint,
                 Action::WebAccess,
-                Action::OpenLog,
-                Action::ToggleLogin,
                 Action::Cameras,
                 Action::Settings,
+                Action::OpenLog,
+                Action::ToggleLogin,
                 Action::Quit
             ]
         );
@@ -275,7 +293,7 @@ mod tests {
             desktop_doubt: false,
             login_available: true,
         });
-        assert!(!actions(&menu).contains(&Action::CopyUrl));
+        assert!(!menu.iter().any(|e| matches!(e, Entry::Submenu { .. })));
         assert!(actions(&menu).contains(&Action::Settings));
         assert!(actions(&menu).contains(&Action::Quit));
     }

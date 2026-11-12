@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cameras_ui::CamerasUi;
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use matter_home_server::backup;
 use matter_home_server::setup::{self, IdentityComparison, IdentityState};
 use matter_home_server_app::controller::{Cmd, Handle, Notice, State};
@@ -25,7 +25,7 @@ use matter_home_server_app::startup::SetupNeed;
 use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use matter_home_server_app::tailscale::{self, WebAccess};
 use matter_home_server_app::{agent, icon, system, version};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Attente maximale de l'arrêt propre du serveur à la fermeture.
@@ -63,6 +63,8 @@ pub fn run(handle: Handle, demo: bool) -> eframe::Result {
             // L'icône doit être créée sur le fil principal, une fois la boucle d'événements lancée.
             let (tx, rx) = mpsc::channel::<Action>();
             let ctx = cc.egui_ctx.clone();
+            // Le design system partagé avec le client (crate `matter-home-theme`).
+            matter_home_theme::apply(&ctx);
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
                 if let Some(action) = Action::from_id(&event.id.0) {
                     let _ = tx.send(action);
@@ -149,6 +151,9 @@ enum MenuPlan {
 fn same_shape(a: &Entry, b: &Entry) -> bool {
     match (a, b) {
         (Entry::Info(_), Entry::Info(_)) | (Entry::Separator, Entry::Separator) => true,
+        (Entry::Submenu { entries: x, .. }, Entry::Submenu { entries: y, .. }) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same_shape(a, b))
+        }
         (
             Entry::Item {
                 action: x,
@@ -182,6 +187,121 @@ enum Native {
     Separator,
     Item(MenuItem),
     Check(CheckMenuItem),
+    Sub(Submenu, Vec<Native>),
+}
+
+/// Ajoute une entrée à un menu ou à un sous-menu natif et rend l'élément gardé pour les mises à
+/// jour sur place.
+fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
+    match entry {
+        Entry::Info(text) => {
+            let item = MenuItem::new(text, false, None);
+            parent.append_item(&item);
+            Native::Info(item)
+        }
+        Entry::Separator => {
+            parent.append_item(&PredefinedMenuItem::separator());
+            Native::Separator
+        }
+        Entry::Item {
+            action,
+            label,
+            enabled,
+            checked: None,
+        } => {
+            let item = MenuItem::with_id(action.id(), label, *enabled, None);
+            parent.append_item(&item);
+            Native::Item(item)
+        }
+        Entry::Item {
+            action,
+            label,
+            enabled,
+            checked: Some(c),
+        } => {
+            let item = CheckMenuItem::with_id(action.id(), label, *enabled, *c, None);
+            parent.append_item(&item);
+            Native::Check(item)
+        }
+        Entry::Submenu { label, entries } => {
+            let sub = Submenu::new(label, true);
+            let children = entries.iter().map(|e| append_entry(&sub, e)).collect();
+            parent.append_item(&sub);
+            Native::Sub(sub, children)
+        }
+    }
+}
+
+/// Un menu ou un sous-menu natif auquel on ajoute des éléments.
+trait Appendable {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem);
+}
+
+impl Appendable for Menu {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem) {
+        let _ = self.append(item);
+    }
+}
+
+impl Appendable for Submenu {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem) {
+        let _ = self.append(item);
+    }
+}
+
+/// Met à jour un élément natif existant (même forme) depuis son entrée.
+fn update_native(old: &Entry, new: &Entry, native: &Native) {
+    if old == new {
+        return;
+    }
+    match (new, native) {
+        (Entry::Info(text), Native::Info(item)) => item.set_text(text),
+        (
+            Entry::Item {
+                label,
+                enabled,
+                checked,
+                ..
+            },
+            Native::Item(item),
+        ) => {
+            item.set_text(label);
+            item.set_enabled(*enabled);
+            debug_assert!(checked.is_none());
+        }
+        (
+            Entry::Item {
+                label,
+                enabled,
+                checked,
+                ..
+            },
+            Native::Check(item),
+        ) => {
+            item.set_text(label);
+            item.set_enabled(*enabled);
+            item.set_checked(checked.unwrap_or(false));
+        }
+        (
+            Entry::Submenu {
+                label,
+                entries: new_entries,
+            },
+            Native::Sub(sub, children),
+        ) => {
+            sub.set_text(label);
+            if let Entry::Submenu {
+                entries: old_entries,
+                ..
+            } = old
+            {
+                for ((o, n), c) in old_entries.iter().zip(new_entries).zip(children) {
+                    update_native(o, n, c);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn tray_image(kind: IconKind) -> Icon {
@@ -539,40 +659,7 @@ impl App {
     /// jour sur place. Les identifiants des actions restent ceux de `Action::id`.
     fn rebuild_menu(&mut self, model: &[Entry]) {
         let menu = Menu::new();
-        let mut native = Vec::with_capacity(model.len());
-        for entry in model {
-            match entry {
-                Entry::Info(text) => {
-                    let item = MenuItem::new(text, false, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Info(item));
-                }
-                Entry::Separator => {
-                    let _ = menu.append(&PredefinedMenuItem::separator());
-                    native.push(Native::Separator);
-                }
-                Entry::Item {
-                    action,
-                    label,
-                    enabled,
-                    checked: None,
-                } => {
-                    let item = MenuItem::with_id(action.id(), label, *enabled, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Item(item));
-                }
-                Entry::Item {
-                    action,
-                    label,
-                    enabled,
-                    checked: Some(c),
-                } => {
-                    let item = CheckMenuItem::with_id(action.id(), label, *enabled, *c, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Check(item));
-                }
-            }
-        }
+        let native = model.iter().map(|e| append_entry(&menu, e)).collect();
         self.tray.set_menu(Some(Box::new(menu)));
         self.native_menu = native;
     }
@@ -581,39 +668,7 @@ impl App {
     /// menu natif, éventuellement ouvert, n'est pas remplacé ; les identifiants ne bougent pas).
     fn update_menu_in_place(&self, model: &[Entry]) {
         for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu) {
-            if old == new {
-                continue;
-            }
-            match (new, native) {
-                (Entry::Info(text), Native::Info(item)) => item.set_text(text),
-                (
-                    Entry::Item {
-                        label,
-                        enabled,
-                        checked,
-                        ..
-                    },
-                    Native::Item(item),
-                ) => {
-                    item.set_text(label);
-                    item.set_enabled(*enabled);
-                    debug_assert!(checked.is_none());
-                }
-                (
-                    Entry::Item {
-                        label,
-                        enabled,
-                        checked,
-                        ..
-                    },
-                    Native::Check(item),
-                ) => {
-                    item.set_text(label);
-                    item.set_enabled(*enabled);
-                    item.set_checked(checked.unwrap_or(false));
-                }
-                _ => {}
-            }
+            update_native(old, new, native);
         }
     }
 
@@ -739,6 +794,15 @@ impl eframe::App for App {
             return;
         }
         let st = self.handle.snapshot();
+        // Page Caméras : l'avertissement de sécurité reste en pied de fenêtre.
+        if st.busy.is_none()
+            && !self.show_done
+            && matches!(st.phase, Phase::Running)
+            && self.cameras_open
+            && st.hub.is_some()
+        {
+            egui::Panel::bottom("cameras_footer").show(ui, crate::cameras_ui::footer);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
         });
@@ -746,9 +810,10 @@ impl eframe::App for App {
 }
 
 fn notice_label(ui: &mut egui::Ui, notice: &Notice) {
+    let p = matter_home_theme::palette(ui);
     match notice {
-        Notice::Ok(t) => ui.colored_label(Color32::from_rgb(40, 150, 70), t),
-        Notice::Err(t) => ui.colored_label(Color32::from_rgb(210, 60, 50), t),
+        Notice::Ok(t) => ui.colored_label(p.ok, t),
+        Notice::Err(t) => ui.colored_label(p.error, t),
     };
 }
 
@@ -808,7 +873,7 @@ impl App {
             Page::Start => {
                 if let Some(reason) = unreadable {
                     ui.colored_label(
-                        Color32::from_rgb(210, 60, 50),
+                        matter_home_theme::palette(ui).error,
                         format!("Les données de ce Mac contiennent une identité Matter illisible ({reason}). Rien n'a été modifié. Vous pouvez reprendre une sauvegarde pour la remplacer."),
                     );
                     ui.add_space(6.0);
@@ -883,7 +948,7 @@ impl App {
                 if r.comparison.differs {
                     ui.add_space(6.0);
                     ui.colored_label(
-                        Color32::from_rgb(210, 60, 50),
+                        matter_home_theme::palette(ui).error,
                         setup::replace_refusal_for_app(),
                     );
                     ui.checkbox(&mut r.replace_ack, "Je veux bien remplacer l'identité actuelle (l'ancien dossier est conservé)");
@@ -982,7 +1047,7 @@ impl App {
         let check = self.form.check();
         if let Err(e) = &check {
             if !self.form.password.is_empty() || !self.form.username.is_empty() {
-                ui.colored_label(Color32::from_rgb(210, 60, 50), e);
+                ui.colored_label(matter_home_theme::palette(ui).error, e);
             }
         }
         ui.add_space(8.0);
@@ -1055,10 +1120,10 @@ impl App {
                 }
             }
             Phase::Problem(e) => {
-                ui.colored_label(Color32::from_rgb(210, 60, 50), e);
+                ui.colored_label(matter_home_theme::palette(ui).error, e);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Ouvrir le journal").clicked() {
+                    if ui.button("Journal").clicked() {
                         system::open_file(&st.log_path);
                     }
                     if ui.button("Réessayer").clicked() {
@@ -1138,6 +1203,52 @@ impl App {
 mod tests {
     use super::*;
     use eframe::egui_wgpu::{wgpu, WgpuConfiguration, WgpuSetup};
+
+    fn connect_menu(address: &str, with_submenu: bool) -> Vec<Entry> {
+        let mut m = vec![Entry::Info("8 appareils en ligne".into()), Entry::Separator];
+        if with_submenu {
+            m.push(Entry::Submenu {
+                label: "Connecter un client".into(),
+                entries: vec![
+                    Entry::Info(format!("Adresse : {address}")),
+                    Entry::Item {
+                        action: Action::CopyUrl,
+                        label: "Copier l'adresse".into(),
+                        enabled: true,
+                        checked: None,
+                    },
+                ],
+            });
+        }
+        m.push(Entry::Item {
+            action: Action::Quit,
+            label: "Quitter".into(),
+            enabled: true,
+            checked: None,
+        });
+        m
+    }
+
+    #[test]
+    fn a_changed_submenu_text_is_updated_in_place() {
+        let shown = connect_menu("https://a.local:8443", true);
+        assert_eq!(plan_menu(&shown, &shown), MenuPlan::Keep);
+        let wanted = connect_menu("https://b.local:8443", true);
+        assert_eq!(plan_menu(&shown, &wanted), MenuPlan::InPlace);
+    }
+
+    #[test]
+    fn a_submenu_that_appears_or_changes_size_rebuilds_the_menu() {
+        let without = connect_menu("https://a.local:8443", false);
+        let with = connect_menu("https://a.local:8443", true);
+        assert_eq!(plan_menu(&without, &with), MenuPlan::Rebuild);
+        assert_eq!(plan_menu(&with, &without), MenuPlan::Rebuild);
+        let mut longer = connect_menu("https://a.local:8443", true);
+        if let Entry::Submenu { entries, .. } = &mut longer[2] {
+            entries.push(Entry::Separator);
+        }
+        assert_eq!(plan_menu(&with, &longer), MenuPlan::Rebuild);
+    }
 
     #[test]
     fn gpu_preference_is_low_power() {
