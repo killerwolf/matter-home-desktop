@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
+matter-home-theme = { path = "../theme" }
 chrono = "0.4"
 directories = "6"
 eframe = "0.37"

@@ -1,0 +1,16 @@
+[package]
+name = "matter-home-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Thème Matter Home partagé (egui) : tokens de design/tokens.json et petits composants"
+license.workspace = true
+
+[lib]
+name = "matter_home_theme"
+path = "src/lib.rs"
+
+[dependencies]
+eframe = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

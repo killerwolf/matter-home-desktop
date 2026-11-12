@@ -61,7 +61,7 @@ ou `dark`.
 
 ## Les composants
 
-Dans le client : `crates/client/src/ui/theme.rs`. Ils sont décrits ici par leurs tokens ; la web
+Dans le client : `crates/theme/src/lib.rs`. Ils sont décrits ici par leurs tokens ; la web
 app les redessinera elle-même avec les mêmes variables, il n'y a pas de feuille de style de
 composants.
 
