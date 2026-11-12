@@ -91,6 +91,15 @@ pub fn camera_stream_path(id: u64, kind: StreamKind) -> String {
     format!("/api/cameras/{id}/stream?kind={}", kind.key())
 }
 
+/// Modèle de la route de la vignette d'une caméra (ticket n° 12) : `GET /api/cameras/{id}/snapshot`
+/// rend une image JPEG récente (quelques secondes au plus), sous le même jeton que le reste.
+pub const CAMERA_SNAPSHOT_PATH: &str = "/api/cameras/{id}/snapshot";
+
+/// Chemin concret de la route de la vignette : `/api/cameras/<id>/snapshot`.
+pub fn camera_snapshot_path(id: u64) -> String {
+    format!("/api/cameras/{id}/snapshot")
+}
+
 /// Pourquoi une caméra est injoignable. Codes stables (`snake_case`) : le client choisit sa
 /// propre phrase ; `detail` n'est qu'un complément humain, sans adresse ni mot de passe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

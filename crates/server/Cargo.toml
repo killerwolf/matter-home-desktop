@@ -52,6 +52,12 @@ percent-encoding = "2"
 # Course des essais de connexion (FuturesUnordered) ; déjà dans l'arbre via axum.
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
+# Vignettes (#12) : décodage par VideoToolbox (caisse partagée avec le client) et encodage JPEG par
+# `jpeg-encoder`, en Rust pur, sans dépendance ni code C, licence MIT ou Apache-2.0. Ni FFmpeg ni
+# libjpeg : rien à embarquer dans l'application.
+matter-home-video = { path = "../video" }
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
+
 [dev-dependencies]
 tokio-tungstenite = "0.29"
 # Fausse caméra RTSP des tests : en-tête d'authentification Basic.

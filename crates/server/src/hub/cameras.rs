@@ -137,6 +137,11 @@ impl Hub {
     // Spectateurs et verrous de connexion (pour #5 et la surveillance)
     // -----------------------------------------------------------------------
 
+    /// Mode démo : pas de vraie caméra, les vignettes sont synthétiques.
+    pub fn is_demo(&self) -> bool {
+        self.demo
+    }
+
     /// Nombre de spectateurs de la caméra (0 tant que #5 n'est pas là).
     pub fn camera_viewers(&self, id: u64) -> usize {
         self.viewers.count(id)
