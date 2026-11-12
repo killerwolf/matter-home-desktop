@@ -25,7 +25,9 @@ use matter_home_server_app::startup::SetupNeed;
 use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use matter_home_server_app::tailscale::{self, WebAccess};
 use matter_home_server_app::{agent, icon, system, version};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Attente maximale de l'arrêt propre du serveur à la fermeture.
@@ -149,6 +151,9 @@ enum MenuPlan {
 fn same_shape(a: &Entry, b: &Entry) -> bool {
     match (a, b) {
         (Entry::Info(_), Entry::Info(_)) | (Entry::Separator, Entry::Separator) => true,
+        (Entry::Submenu { entries: x, .. }, Entry::Submenu { entries: y, .. }) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same_shape(a, b))
+        }
         (
             Entry::Item {
                 action: x,
@@ -182,6 +187,121 @@ enum Native {
     Separator,
     Item(MenuItem),
     Check(CheckMenuItem),
+    Sub(Submenu, Vec<Native>),
+}
+
+/// Ajoute une entrée à un menu ou à un sous-menu natif et rend l'élément gardé pour les mises à
+/// jour sur place.
+fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
+    match entry {
+        Entry::Info(text) => {
+            let item = MenuItem::new(text, false, None);
+            parent.append_item(&item);
+            Native::Info(item)
+        }
+        Entry::Separator => {
+            parent.append_item(&PredefinedMenuItem::separator());
+            Native::Separator
+        }
+        Entry::Item {
+            action,
+            label,
+            enabled,
+            checked: None,
+        } => {
+            let item = MenuItem::with_id(action.id(), label, *enabled, None);
+            parent.append_item(&item);
+            Native::Item(item)
+        }
+        Entry::Item {
+            action,
+            label,
+            enabled,
+            checked: Some(c),
+        } => {
+            let item = CheckMenuItem::with_id(action.id(), label, *enabled, *c, None);
+            parent.append_item(&item);
+            Native::Check(item)
+        }
+        Entry::Submenu { label, entries } => {
+            let sub = Submenu::new(label, true);
+            let children = entries.iter().map(|e| append_entry(&sub, e)).collect();
+            parent.append_item(&sub);
+            Native::Sub(sub, children)
+        }
+    }
+}
+
+/// Un menu ou un sous-menu natif auquel on ajoute des éléments.
+trait Appendable {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem);
+}
+
+impl Appendable for Menu {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem) {
+        let _ = self.append(item);
+    }
+}
+
+impl Appendable for Submenu {
+    fn append_item(&self, item: &dyn tray_icon::menu::IsMenuItem) {
+        let _ = self.append(item);
+    }
+}
+
+/// Met à jour un élément natif existant (même forme) depuis son entrée.
+fn update_native(old: &Entry, new: &Entry, native: &Native) {
+    if old == new {
+        return;
+    }
+    match (new, native) {
+        (Entry::Info(text), Native::Info(item)) => item.set_text(text),
+        (
+            Entry::Item {
+                label,
+                enabled,
+                checked,
+                ..
+            },
+            Native::Item(item),
+        ) => {
+            item.set_text(label);
+            item.set_enabled(*enabled);
+            debug_assert!(checked.is_none());
+        }
+        (
+            Entry::Item {
+                label,
+                enabled,
+                checked,
+                ..
+            },
+            Native::Check(item),
+        ) => {
+            item.set_text(label);
+            item.set_enabled(*enabled);
+            item.set_checked(checked.unwrap_or(false));
+        }
+        (
+            Entry::Submenu {
+                label,
+                entries: new_entries,
+            },
+            Native::Sub(sub, children),
+        ) => {
+            sub.set_text(label);
+            if let Entry::Submenu {
+                entries: old_entries,
+                ..
+            } = old
+            {
+                for ((o, n), c) in old_entries.iter().zip(new_entries).zip(children) {
+                    update_native(o, n, c);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn tray_image(kind: IconKind) -> Icon {
@@ -539,40 +659,7 @@ impl App {
     /// jour sur place. Les identifiants des actions restent ceux de `Action::id`.
     fn rebuild_menu(&mut self, model: &[Entry]) {
         let menu = Menu::new();
-        let mut native = Vec::with_capacity(model.len());
-        for entry in model {
-            match entry {
-                Entry::Info(text) => {
-                    let item = MenuItem::new(text, false, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Info(item));
-                }
-                Entry::Separator => {
-                    let _ = menu.append(&PredefinedMenuItem::separator());
-                    native.push(Native::Separator);
-                }
-                Entry::Item {
-                    action,
-                    label,
-                    enabled,
-                    checked: None,
-                } => {
-                    let item = MenuItem::with_id(action.id(), label, *enabled, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Item(item));
-                }
-                Entry::Item {
-                    action,
-                    label,
-                    enabled,
-                    checked: Some(c),
-                } => {
-                    let item = CheckMenuItem::with_id(action.id(), label, *enabled, *c, None);
-                    let _ = menu.append(&item);
-                    native.push(Native::Check(item));
-                }
-            }
-        }
+        let native = model.iter().map(|e| append_entry(&menu, e)).collect();
         self.tray.set_menu(Some(Box::new(menu)));
         self.native_menu = native;
     }
@@ -580,40 +667,8 @@ impl App {
     /// Même structure : on ne touche qu'à ce qui a changé, sur les éléments déjà en place (le
     /// menu natif, éventuellement ouvert, n'est pas remplacé ; les identifiants ne bougent pas).
     fn update_menu_in_place(&self, model: &[Entry]) {
-        for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu) {
-            if old == new {
-                continue;
-            }
-            match (new, native) {
-                (Entry::Info(text), Native::Info(item)) => item.set_text(text),
-                (
-                    Entry::Item {
-                        label,
-                        enabled,
-                        checked,
-                        ..
-                    },
-                    Native::Item(item),
-                ) => {
-                    item.set_text(label);
-                    item.set_enabled(*enabled);
-                    debug_assert!(checked.is_none());
-                }
-                (
-                    Entry::Item {
-                        label,
-                        enabled,
-                        checked,
-                        ..
-                    },
-                    Native::Check(item),
-                ) => {
-                    item.set_text(label);
-                    item.set_enabled(*enabled);
-                    item.set_checked(checked.unwrap_or(false));
-                }
-                _ => {}
-            }
+        for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu).map(|((o, n), c)| ((o, n), c)) {
+            update_native(old, new, native);
         }
     }
 
