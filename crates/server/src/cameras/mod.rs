@@ -54,6 +54,7 @@
 pub mod live;
 mod monitor;
 mod probe;
+pub mod snapshot;
 mod store;
 #[cfg(test)]
 mod tests;

@@ -77,6 +77,7 @@ aux essais et aux tests.
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
 | `GET /api/ws?protocol=2` | temps réel (WebSocket) |
 | `GET /api/cameras` | les caméras, **sans adresse ni mot de passe** (voir « Caméras ») |
+| `GET /api/cameras/{id}/snapshot` | une image JPEG récente de la caméra (voir « L'image fixe d'une caméra ») |
 | `POST /api/pairing` | `{code}` : appairer (202 ; la suite arrive en événements) |
 | `POST /api/devices/{id}/retry` | réessayer la connexion (202) |
 | `DELETE /api/devices/{id}` | oublier l'appareil (202) |
@@ -266,6 +267,51 @@ Bearer, qui compte parmi les 32 emplacements WebSocket. La version du protocole 
 - **Livraison** : une image perdue n'est jamais rejouée ; un client lent reprend à l'image clé
   suivante. Le délai d'écriture de 10 s ne s'applique pas au flux : il a son propre seuil de 30 s
   d'écriture bloquée.
+
+### L'image fixe d'une caméra
+
+`GET /api/cameras/{id}/snapshot` (ticket n° 12) : une image **JPEG** récente (`Content-Type:
+image/jpeg`, `Age` en secondes), sous le jeton Bearer comme le reste. Les clients s'en servent pour
+une vignette quand la mosaïque ne lit pas de flux : caméra sans flux réduit, ou au-delà du plafond
+de flux simultanés (4). La version du protocole reste **2** : une route de plus, aucun type ni code
+d'erreur nouveau (`wire::CAMERA_SNAPSHOT_PATH`, `wire::camera_snapshot_path(id)`).
+
+- **Fabrication** : le serveur décode une image clé H.264 (VideoToolbox, la caisse `matter-home-video`
+  partagée avec le client) et l'encode en JPEG (crate `jpeg-encoder`, Rust pur, sans FFmpeg ni
+  libjpeg), réduite à 640 px de large au plus. La forme non carrée des pixels n'est pas corrigée.
+  Une caméra H.265 n'a pas d'image fixe (503).
+- **Cache partagé** : une image par caméra, valable **15 s** pour tous les clients. Un échec est
+  gardé 3 s (dix vignettes ne font pas dix essais). Une caméra supprimée n'a plus d'image.
+- **Une capture à la fois** par caméra : les demandes simultanées attendent et reçoivent le même
+  résultat. Délai maximal d'une demande, file d'attente comprise : **12 s**.
+- **Spectateurs** : la capture passe par le registre de la lecture. Caméra déjà regardée (n'importe
+  quel flux) : on se joint à la session, sans connexion de plus, et l'image vient de la dernière
+  image clé gardée. Sinon une session s'ouvre sur le flux préféré (le réduit s'il existe) avec un
+  témoin de spectateur (la surveillance et « Tester » l'évitent), on attend la première image clé,
+  puis la session se ferme après sa grâce de 5 s. Jamais plus de deux connexions à la caméra. Avant
+  d'ouvrir ou de rejoindre, la capture prend sans attendre le **verrou de la caméra** (celui de la
+  surveillance et du testeur) : pris, la réponse est 503 et rien n'est ouvert.
+- **Erreurs** (corps `{"error": {"code", "detail", "retry_after_s"}}`) :
+
+  | statut | code | quand |
+  |---|---|---|
+  | 401 | `unauthorized` | jeton absent ou invalide |
+  | 400 | `bad_request` | identifiant invalide |
+  | 404 | `not_found` avec `detail` | caméra inconnue |
+  | 404 | `not_found` **sans** `detail` | route inconnue : serveur plus ancien (le client le dit et n'insiste pas) |
+  | 502 | `device_unreachable` | pas d'image clé à temps, caméra éteinte ou muette (`retry_after_s` 10) |
+  | 503 | `unavailable` | test ou vérification en cours (`retry_after_s` 5), caméra modifiée, codec non pris en charge, décodeur absent |
+
+- **Client de bureau** : une tuile sans flux lu (pas de flux réduit, ou au-delà de
+  `MAX_LIVE_TILES`) dont la caméra est en ligne affiche cette image, rafraîchie toutes les **20 s**
+  tant qu'elle est à l'écran (30 s après un échec ; la dernière image reste affichée).
+- **App web** : même règle pour les vignettes à l'écran qui ne lisent pas de flux (au-delà de 4).
+  `fetch` avec l'en-tête `Authorization`, puis `Blob`, `createImageBitmap` et dessin dans le canvas
+  de la vignette. **La page ne charge jamais d'URL `blob:`** : la politique de sécurité (CSP) ne
+  change pas (`img-src 'self'`, ni `blob:` ni `media-src`). Rien n'est demandé tant que l'onglet est
+  caché.
+- **Compatibilité** : un client récent face à un serveur ancien reçoit le 404 sans `detail` et garde
+  son texte « ouvrez la caméra » ; un client ancien ne connaît pas la route et ne l'appelle pas.
 
 ### Porte ou fenêtre sur le plan
 

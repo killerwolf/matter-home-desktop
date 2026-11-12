@@ -92,7 +92,8 @@ pub fn camera_stream_path(id: u64, kind: StreamKind) -> String {
 }
 
 /// Modèle de la route de la vignette d'une caméra (ticket n° 12) : `GET /api/cameras/{id}/snapshot`
-/// rend une image JPEG récente (quelques secondes au plus), sous le même jeton que le reste.
+/// rend une image JPEG récente (15 s au plus, partagée entre les clients), sous le même jeton que le
+/// reste. Un serveur sans cette route répond 404 **sans** `detail`.
 pub const CAMERA_SNAPSHOT_PATH: &str = "/api/cameras/{id}/snapshot";
 
 /// Chemin concret de la route de la vignette : `/api/cameras/<id>/snapshot`.
