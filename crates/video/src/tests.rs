@@ -276,12 +276,12 @@ fn the_sink_keeps_only_the_latest_image_and_wakes_the_interface() {
     let image = |n: u8| Image {
         width: 1,
         height: 1,
-        pixels: vec![eframe::egui::Color32::from_rgb(n, 0, 0)],
+        rgb: vec![n, 0, 0],
     };
     sink.put(image(1));
     sink.put(image(2));
     assert_eq!(
-        sink.take().unwrap().pixels[0].r(),
+        sink.take().unwrap().rgb[0],
         2,
         "la dernière seulement"
     );
@@ -296,9 +296,9 @@ fn the_sink_keeps_only_the_latest_image_and_wakes_the_interface() {
 #[cfg(target_os = "macos")]
 mod videotoolbox {
     use super::*;
-    use crate::video::nal::{annex_b_to_avcc_frames, prepare_sample};
+    use crate::nal::{annex_b_to_avcc_frames, prepare_sample};
 
-    const CLIP: &[u8] = include_bytes!("../../../server/tests/fixtures/clip-640x360.h264");
+    const CLIP: &[u8] = include_bytes!("../../server/tests/fixtures/clip-640x360.h264");
 
     fn real_decoder() -> (Decoder, Arc<FrameSink>) {
         let sink = FrameSink::new(|| {});
@@ -320,9 +320,9 @@ mod videotoolbox {
 
     fn mean_luma(image: &Image) -> f64 {
         let sum: u64 = image
-            .pixels
-            .iter()
-            .map(|p| (u64::from(p.r()) * 3 + u64::from(p.g()) * 6 + u64::from(p.b())) / 10)
+            .rgb
+            .chunks_exact(3)
+            .map(|p| (u64::from(p[0]) * 3 + u64::from(p[1]) * 6 + u64::from(p[2])) / 10)
             .sum();
         sum as f64 / (image.width * image.height) as f64
     }
@@ -343,12 +343,15 @@ mod videotoolbox {
         assert_eq!(sink.frames(), 45);
         let image = last.unwrap();
         assert_eq!((image.width, image.height), (640, 360));
-        assert_eq!(image.pixels.len(), 640 * 360);
-        assert!(image.pixels.iter().all(|p| p.a() == 255));
+        assert_eq!(image.rgb.len(), 640 * 360 * 3);
         // Les mires de `testsrc` ne sont ni noires ni unies.
         assert!(mean_luma(&image) > 30.0, "image noire ?");
-        let distinct: std::collections::HashSet<eframe::egui::Color32> =
-            image.pixels.iter().step_by(97).copied().collect();
+        let distinct: std::collections::HashSet<[u8; 3]> = image
+            .rgb
+            .chunks_exact(3)
+            .step_by(97)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect();
         assert!(distinct.len() > 8, "image unie ?");
         assert_eq!(d.stats().errors, 0);
         assert_eq!(d.stats().sessions, 1, "une seule session pour tout le clip");

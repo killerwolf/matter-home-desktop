@@ -35,8 +35,6 @@ use objc2_video_toolbox::{
     VTDecompressionSession,
 };
 
-use eframe::egui::Color32;
-
 use super::nal::ParameterSets;
 use super::{BackendError, FrameSink, H264Backend, Image};
 
@@ -319,10 +317,10 @@ fn to_rgba(buffer: &CVImageBuffer) -> Option<Image> {
         let base = CVPixelBufferGetBaseAddress(buffer) as *const u8;
         let converted = (!base.is_null()).then(|| {
             let source = std::slice::from_raw_parts(base, stride * height);
-            convert_bgra(source, width, height, stride).map(|pixels| Image {
+            convert_bgra(source, width, height, stride).map(|rgb| Image {
                 width: width as u32,
                 height: height as u32,
-                pixels,
+                rgb,
             })
         });
         let converted = converted.flatten();
@@ -332,19 +330,15 @@ fn to_rgba(buffer: &CVImageBuffer) -> Option<Image> {
 }
 
 /// Des lignes BGRA (`stride` octets chacune, remplissage compris) en pixels opaques.
-fn convert_bgra(source: &[u8], width: usize, height: usize, stride: usize) -> Option<Vec<Color32>> {
+fn convert_bgra(source: &[u8], width: usize, height: usize, stride: usize) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || stride < width * 4 || source.len() < stride * height {
         return None;
     }
-    let mut pixels = Vec::with_capacity(width * height);
+    let mut pixels = Vec::with_capacity(width * height * 3);
     for row in source.chunks_exact(stride).take(height) {
-        pixels.extend(
-            row[..width * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bgra| Color32::from_rgb(bgra[2], bgra[1], bgra[0])),
-        );
+        for bgra in row[..width * 4].as_chunks::<4>().0 {
+            pixels.extend_from_slice(&[bgra[2], bgra[1], bgra[0]]);
+        }
     }
     Some(pixels)
 }
@@ -362,16 +356,7 @@ mod convert_tests {
         ];
         let pixels = convert_bgra(&source, 2, 2, 12).unwrap();
         // B, G, R en entrée : R, G, B en sortie, alpha toujours opaque.
-        assert_eq!(
-            pixels,
-            vec![
-                Color32::from_rgb(30, 20, 10),
-                Color32::from_rgb(60, 50, 40),
-                Color32::from_rgb(90, 80, 70),
-                Color32::from_rgb(120, 110, 100),
-            ]
-        );
-        assert!(pixels.iter().all(|p| p.a() == 255));
+        assert_eq!(pixels, vec![30, 20, 10, 60, 50, 40, 90, 80, 70, 120, 110, 100]);
         // Un tampon trop court ou un pas trop petit ne plante pas.
         assert!(convert_bgra(&source[..20], 2, 2, 12).is_none());
         assert!(convert_bgra(&source, 2, 2, 7).is_none());

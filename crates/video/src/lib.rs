@@ -1,4 +1,4 @@
-//! Décodage vidéo des caméras (ticket n° 5) : le serveur relaie du H.264 en format AVCC
+//! Décodage vidéo des caméras (tickets n° 5 et n° 12), partagé par le client et le serveur : le serveur relaie du H.264 en format AVCC
 //! (`protocol::wire::stream`), le client le décode et en fait des images prêtes à afficher.
 //!
 //! # Le décodeur : VideoToolbox
@@ -36,14 +36,14 @@ use protocol::wire::{StreamPacket, CODEC_H264};
 
 use nal::ParameterSets;
 
-/// Une image décodée : des pixels opaques, déjà dans le format d'`egui` (convertis une seule fois,
-/// dans le fil du décodeur ; l'interface n'a plus qu'à les prendre).
+/// Une image décodée : des pixels opaques RGB (3 octets par pixel), convertis une seule fois, dans
+/// le fil du décodeur. Le client en fait une texture, le serveur un JPEG.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
-    /// `width × height` pixels, ligne par ligne.
-    pub pixels: Vec<eframe::egui::Color32>,
+    /// `width × height × 3` octets (R, V, B), ligne par ligne.
+    pub rgb: Vec<u8>,
 }
 
 /// Là où le décodeur dépose ses images : seule la dernière est gardée.

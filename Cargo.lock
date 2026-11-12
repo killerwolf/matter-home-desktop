@@ -3003,10 +3003,7 @@ dependencies = [
  "env_logger",
  "httparse",
  "log",
- "objc2-core-foundation",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-video-toolbox",
+ "matter-home-video",
  "protocol",
  "rfd",
  "rustls",
@@ -3068,6 +3065,17 @@ dependencies = [
  "serde_json",
  "tray-icon",
  "winit",
+]
+
+[[package]]
+name = "matter-home-video"
+version = "1.0.0"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-video-toolbox",
+ "protocol",
 ]
 
 [[package]]
