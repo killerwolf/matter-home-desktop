@@ -63,7 +63,7 @@ impl Default for SnapshotConfig {
         Self {
             max_age: Duration::from_secs(15),
             timeout: Duration::from_secs(12),
-            failure_ttl: Duration::from_secs(3),
+            failure_ttl: Duration::from_secs(10),
             max_width: 640,
             quality: 72,
         }
@@ -264,7 +264,14 @@ impl SnapshotService {
                             }
                             // Image clé illisible : la suivante peut l'être.
                             Ok(None) => {}
-                            Err(_) => return Err(SnapshotError::DecoderUnavailable),
+                            // Données illisibles : absorbées par le décodeur (`Ok(None)`), on attend la
+                            // clé suivante puis `NoImage` au délai. Seuls restent le codec et le décodeur.
+                            Err(VideoError::UnsupportedCodec(_)) => {
+                                return Err(SnapshotError::Unsupported)
+                            }
+                            Err(VideoError::Unavailable(_)) => {
+                                return Err(SnapshotError::DecoderUnavailable)
+                            }
                         }
                     }
                     _ => {}

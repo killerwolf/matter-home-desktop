@@ -372,6 +372,18 @@ fn run(live: &Arc<Live>, camera_id: u64, kind: StreamKind) {
                     retry_in_s: wait.as_secs().max(1),
                 });
                 if !sleep_while_wanted(live, generation, wait) {
+                    // Arrêt demandé ou lecteur parti : rien à dire. Session changée : un état
+                    // final, pour que l'interface sache rouvrir la liaison (le fil est fini).
+                    if !live.stop.load(Ordering::SeqCst)
+                        && !live.idle()
+                        && current().map(|(g, _)| g) != Some(generation)
+                    {
+                        live.set_conn(Conn::Final(if current().is_none() {
+                            StreamState::NoConnection
+                        } else {
+                            StreamState::SessionEnded
+                        }));
+                    }
                     return;
                 }
             }

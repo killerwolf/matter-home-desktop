@@ -281,7 +281,7 @@ d'erreur nouveau (`wire::CAMERA_SNAPSHOT_PATH`, `wire::camera_snapshot_path(id)`
   libjpeg), réduite à 640 px de large au plus. La forme non carrée des pixels n'est pas corrigée.
   Une caméra H.265 n'a pas d'image fixe (503).
 - **Cache partagé** : une image par caméra, valable **15 s** pour tous les clients. Un échec est
-  gardé 3 s (dix vignettes ne font pas dix essais). Une caméra supprimée n'a plus d'image.
+  gardé 10 s (dix vignettes ne font pas dix essais). Une caméra supprimée n'a plus d'image.
 - **Une capture à la fois** par caméra : les demandes simultanées attendent et reçoivent le même
   résultat. Délai maximal d'une demande, file d'attente comprise : **12 s**.
 - **Spectateurs** : la capture passe par le registre de la lecture. Caméra déjà regardée (n'importe
