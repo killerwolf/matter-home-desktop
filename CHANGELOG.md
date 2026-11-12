@@ -161,7 +161,7 @@ Les téléchargements de chaque version sont sur la
   « Quitter ». La ligne de version et la case « Accès web (Tailscale) » restent. Le menu ouvert
   n'est toujours jamais remplacé : les sous-menus se mettent à jour sur place, un changement de
   structure attend la fermeture du menu. **Liste des caméras** : une ligne par caméra (point de
-  couleur et nom, seul un problème s'écrit ; un clic ouvre le formulaire), l'avertissement de
+  couleur et nom, seul un problème s'écrit ; le bouton « Modifier… » ouvre le formulaire), l'avertissement de
   sécurité en deux phrases en pied de fenêtre. **Formulaire** : le résultat du test sous chaque
   adresse, « Adresse de la caméra » et « Adresse pour la mosaïque (facultatif) », l'état détaillé
   de la caméra et la note « pas de flux réduit » dans le formulaire, l'aide Aqara repliable, mot

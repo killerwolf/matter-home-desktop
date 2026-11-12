@@ -1123,7 +1123,7 @@ impl App {
                 ui.colored_label(matter_home_theme::palette(ui).error, e);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Ouvrir le journal").clicked() {
+                    if ui.button("Journal").clicked() {
                         system::open_file(&st.log_path);
                     }
                     if ui.button("Réessayer").clicked() {
@@ -1203,6 +1203,52 @@ impl App {
 mod tests {
     use super::*;
     use eframe::egui_wgpu::{wgpu, WgpuConfiguration, WgpuSetup};
+
+    fn connect_menu(address: &str, with_submenu: bool) -> Vec<Entry> {
+        let mut m = vec![Entry::Info("8 appareils en ligne".into()), Entry::Separator];
+        if with_submenu {
+            m.push(Entry::Submenu {
+                label: "Connecter un client".into(),
+                entries: vec![
+                    Entry::Info(format!("Adresse : {address}")),
+                    Entry::Item {
+                        action: Action::CopyUrl,
+                        label: "Copier l'adresse".into(),
+                        enabled: true,
+                        checked: None,
+                    },
+                ],
+            });
+        }
+        m.push(Entry::Item {
+            action: Action::Quit,
+            label: "Quitter".into(),
+            enabled: true,
+            checked: None,
+        });
+        m
+    }
+
+    #[test]
+    fn a_changed_submenu_text_is_updated_in_place() {
+        let shown = connect_menu("https://a.local:8443", true);
+        assert_eq!(plan_menu(&shown, &shown), MenuPlan::Keep);
+        let wanted = connect_menu("https://b.local:8443", true);
+        assert_eq!(plan_menu(&shown, &wanted), MenuPlan::InPlace);
+    }
+
+    #[test]
+    fn a_submenu_that_appears_or_changes_size_rebuilds_the_menu() {
+        let without = connect_menu("https://a.local:8443", false);
+        let with = connect_menu("https://a.local:8443", true);
+        assert_eq!(plan_menu(&without, &with), MenuPlan::Rebuild);
+        assert_eq!(plan_menu(&with, &without), MenuPlan::Rebuild);
+        let mut longer = connect_menu("https://a.local:8443", true);
+        if let Entry::Submenu { entries, .. } = &mut longer[2] {
+            entries.push(Entry::Separator);
+        }
+        assert_eq!(plan_menu(&with, &longer), MenuPlan::Rebuild);
+    }
 
     #[test]
     fn gpu_preference_is_low_power() {

@@ -218,6 +218,10 @@ impl Form {
             if self.password.is_empty() {
                 if let Some(p) = password {
                     self.password = p;
+                    // Le mot de passe collé remplace celui qui est enregistré : le champ s'affiche
+                    // (plus de ligne « enregistré ») et un « Effacer » déjà choisi est annulé.
+                    self.change_password = true;
+                    self.clear_password = false;
                 }
             }
             changed = true;
@@ -312,6 +316,17 @@ mod tests {
         assert_eq!(form.draft().password, Some(String::new()));
         // Un ajout montre toujours le champ.
         assert!(!Form::new().shows_saved_password());
+    }
+
+    #[test]
+    fn a_pasted_password_replaces_the_saved_one_and_shows_the_field() {
+        let mut form = Form::edit(&admin("Salon", true));
+        form.mark_password_cleared();
+        form.url = "rtsp://admin:neuf@192.0.2.4:554/live/ch00_0".into();
+        assert!(form.absorb_credentials());
+        assert!(!form.shows_saved_password());
+        assert!(!form.clear_password && form.change_password);
+        assert_eq!(form.draft().password.as_deref(), Some("neuf"));
     }
 
     #[test]

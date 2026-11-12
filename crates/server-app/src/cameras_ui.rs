@@ -85,7 +85,7 @@ impl CamerasUi {
             self.form_ui(ui, ctx, hub);
         } else {
             self.list_ui(ui);
-            self.list_actions(ui, hub);
+            self.list_actions(ui);
         }
         back
     }
@@ -129,7 +129,7 @@ impl CamerasUi {
     }
 
     /// La liste : une ligne par caméra, un point de couleur et le nom ; seul un problème s'écrit.
-    /// Cliquer sur la ligne ouvre son formulaire.
+    /// Le bouton « Modifier… » ouvre son formulaire.
     fn list_ui(&mut self, ui: &mut egui::Ui) {
         // La liste vient du hub à chaque image ; le formulaire s'ouvre à l'image suivante.
         let cameras = self.cameras.clone();
@@ -167,7 +167,7 @@ impl CamerasUi {
         open
     }
 
-    fn list_actions(&mut self, ui: &mut egui::Ui, _hub: &Arc<Hub>) {
+    fn list_actions(&mut self, ui: &mut egui::Ui) {
         if let Some(e) = &self.error {
             let color = tone_color(ui, Tone::Bad);
             ui.colored_label(color, e);
