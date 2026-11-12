@@ -73,7 +73,7 @@ pub fn current_generation() -> Option<u64> {
     current().map(|(g, _)| g)
 }
 
-fn current() -> Option<(u64, Creds)> {
+pub(super) fn current() -> Option<(u64, Creds)> {
     CURRENT
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

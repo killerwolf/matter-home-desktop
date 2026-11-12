@@ -38,3 +38,12 @@ rfd = "0.17.2"
 
 # Décodage vidéo des caméras (#5) : VideoToolbox, dans la caisse partagée avec le serveur.
 matter-home-video = { path = "../video" }
+
+# Image fixe d'une caméra (#12) : le serveur renvoie du JPEG. Décodeur en Rust pur, déjà dans
+# l'arbre des dépendances (via `image`, tiré par eframe) : aucune caisse de plus dans le Cargo.lock.
+zune-jpeg = "0.5"
+zune-core = "0.5"
+
+[dev-dependencies]
+# Fabrique le JPEG d'essai du décodeur (le serveur utilise la même caisse pour ses images).
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }

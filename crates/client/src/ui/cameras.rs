@@ -362,8 +362,15 @@ fn tile(
     let video = tile_video(camera);
     let stream = tile_stream(camera).filter(|_| live);
     let capped = matches!(video, TileVideo::Live(_));
-    let text = if stream.is_some() {
+    // Pas de flux lu dans cette tuile (pas de flux réduit, ou au-delà de `MAX_LIVE_TILES`) mais la
+    // caméra répond : image fixe du serveur, rafraîchie toutes les 20 s (ticket n° 12).
+    let still = stream.is_none() && matches!(camera.status, CameraStatus::Online);
+    let has_still = still && super::snapshot::poll(ui.ctx(), camera.id);
+    let text = if stream.is_some() || has_still {
         String::new()
+    } else if still {
+        super::snapshot::notice(ui.ctx(), camera.id)
+            .unwrap_or_else(|| placeholder_text(video, camera, capped))
     } else {
         placeholder_text(video, camera, capped)
     };
@@ -388,6 +395,13 @@ fn tile(
         ui.scope_builder(egui::UiBuilder::new().max_rect(image), |ui| {
             player_compact(ui, model, camera.id, kind);
         });
+    } else if has_still {
+        super::snapshot::paint(
+            ui,
+            camera.id,
+            image,
+            egui::CornerRadius::same(theme::tokens().radius.md),
+        );
     }
     if response.hovered() {
         ui.painter().rect_stroke(

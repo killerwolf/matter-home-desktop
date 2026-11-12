@@ -11,6 +11,7 @@ mod backend;
 pub mod error;
 pub mod files;
 pub mod http;
+pub mod snapshot;
 pub mod store;
 pub mod stream;
 pub mod tls;

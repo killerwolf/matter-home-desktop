@@ -15,6 +15,7 @@ mod plan;
 mod player;
 mod rules;
 mod sensors;
+mod snapshot;
 mod sync;
 mod temperatures;
 mod theme;

@@ -3008,6 +3008,7 @@ dependencies = [
  "egui_plot",
  "env_logger",
  "httparse",
+ "jpeg-encoder",
  "log",
  "matter-home-video",
  "protocol",
@@ -3017,6 +3018,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tungstenite",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
