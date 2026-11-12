@@ -12,6 +12,16 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Accès à distance via Tailscale** (ticket n° 14). Le client de bureau accepte **plusieurs
+  adresses par serveur** (champ « Adresse à distance » de l'écran de connexion, `alt_urls` dans
+  `connexion.json`, une seule empreinte) : il prend la première qui répond avec le bon
+  certificat, la maison d'abord, et bascule seul à la reconnexion. « à distance » est indiqué
+  dans la barre d'état ; les caméras restent sur le flux réduit par défaut, avec un rappel si
+  « Haute » est choisie. **Certificats** : l'épinglage par empreinte ignore le nom (accès direct
+  `nom.ts.net:8443`) ; une adresse `https://nom.ts.net/` (port 443, `tailscale serve`) est
+  validée par la chaîne de confiance publique (nouvelle dépendance `webpki-roots`), sans
+  épinglage ; tout autre certificat invalide reste refusé. README : section « Accès à
+  distance », et [docs/acces-distant.md](docs/acces-distant.md).
 - **App web : refonte du style et des pages** (ticket n° 15). Style « tableau de bord » : coins
   carrés, marges minimales, tuiles jointives séparées par un trait de 1 px (variables `--web-*`
   dans `app.css`, `design/tokens.css` inchangé). **Appareils** : la pastille de température est
