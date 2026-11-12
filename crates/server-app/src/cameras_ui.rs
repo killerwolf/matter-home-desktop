@@ -146,21 +146,25 @@ impl CamerasUi {
     fn row(&mut self, ui: &mut egui::Ui, camera: &CameraAdmin) -> bool {
         let color = tone_color(ui, dot_tone(camera));
         let p = theme::palette(ui);
-        let inner = ui.horizontal(|ui| {
+        let mut open = false;
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = theme::tokens().space.sm;
             dot(ui, color);
             ui.label(RichText::new(&camera.name).strong());
-            if let Some(problem) = problem_text(camera) {
-                ui.label(RichText::new(problem).color(p.error));
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.button("Modifier…").clicked()
-            })
-            .inner
+                open = ui.button("Modifier…").clicked();
+            });
         });
+        // Seul un problème s'écrit, sous le nom, sur la largeur de la fenêtre.
+        if let Some(problem) = problem_text(camera) {
+            ui.horizontal(|ui| {
+                ui.add_space(theme::tokens().size.dot + theme::tokens().space.sm);
+                ui.add(egui::Label::new(RichText::new(problem).color(p.error)).wrap());
+            });
+        }
         ui.add_space(2.0);
         ui.separator();
-        inner.inner
+        open
     }
 
     fn list_actions(&mut self, ui: &mut egui::Ui, _hub: &Arc<Hub>) {
