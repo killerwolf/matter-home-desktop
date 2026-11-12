@@ -153,6 +153,23 @@ Les téléchargements de chaque version sont sur la
 
 ### Modifié
 
+- **Matter Home Server : refonte du menu et de la fenêtre Caméras** (ticket n° 16, suite du
+  n° 13). **Menu** : l'état tient en une ligne (« 8 appareils en ligne » ; « 12 appareils en
+  ligne, 1 injoignable » quand il en manque), un sous-menu « Connecter un client » regroupe
+  l'adresse et les deux « Copier », puis « Caméras… », « Réglages… » (ex-« Compte et
+  réglages… »), « Journal » (ex-« Ouvrir le journal »), « Ouvrir à la connexion » avec sa coche et
+  « Quitter ». La ligne de version et la case « Accès web (Tailscale) » restent. Le menu ouvert
+  n'est toujours jamais remplacé : les sous-menus se mettent à jour sur place, un changement de
+  structure attend la fermeture du menu. **Liste des caméras** : une ligne par caméra (point de
+  couleur et nom, seul un problème s'écrit ; un clic ouvre le formulaire), l'avertissement de
+  sécurité en deux phrases en pied de fenêtre. **Formulaire** : le résultat du test sous chaque
+  adresse, « Adresse de la caméra » et « Adresse pour la mosaïque (facultatif) », l'état détaillé
+  de la caméra et la note « pas de flux réduit » dans le formulaire, l'aide Aqara repliable, mot
+  de passe sur une ligne (« enregistré », « Changer », « Effacer »), et « Supprimer » (avec
+  confirmation) dans le formulaire. Rien n'est retiré. L'app serveur utilise le design system
+  partagé (`design/tokens.json`) via le crate `matter-home-theme`. L'aide de l'écran de connexion
+  du client renvoie à « menu du serveur, Connecter un client ».
+
 - **Refonte de l'interface du client, phase 1** (ticket n° 13). Nouveau design system :
   `design/tokens.json` (couleurs claires et sombres, échelle de température de 16 à 24 °C par
   paliers de 2 °C, espacements, rayons, tailles de texte) est lu par le client et le sera par la

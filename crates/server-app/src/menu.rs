@@ -162,9 +162,7 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
         Phase::Blocked(_) => m.push(Entry::Info(
             "Ouvrez « Réglages… » pour la marche à suivre.".into(),
         )),
-        Phase::Problem(_) => m.push(Entry::Info(
-            "Ouvrez « Journal » pour le détail.".into(),
-        )),
+        Phase::Problem(_) => m.push(Entry::Info("Ouvrez « Journal » pour le détail.".into())),
         _ => {}
     }
     if i.desktop_doubt && matches!(i.phase, Phase::Running) {
@@ -249,9 +247,8 @@ mod tests {
         );
         assert!(menu.contains(&Entry::Info("    Salon".into())));
         // L'adresse et les deux « Copier » sont dans le sous-menu « Connecter un client ».
-        let Some(Entry::Submenu { label, entries }) = menu
-            .iter()
-            .find(|e| matches!(e, Entry::Submenu { .. }))
+        let Some(Entry::Submenu { label, entries }) =
+            menu.iter().find(|e| matches!(e, Entry::Submenu { .. }))
         else {
             panic!("sous-menu attendu");
         };
@@ -260,10 +257,7 @@ mod tests {
             entries[0],
             Entry::Info("Adresse : https://mac.local:8443".into())
         );
-        assert_eq!(
-            actions(entries),
-            [Action::CopyUrl, Action::CopyFingerprint]
-        );
+        assert_eq!(actions(entries), [Action::CopyUrl, Action::CopyFingerprint]);
         assert_eq!(
             actions(&menu),
             [

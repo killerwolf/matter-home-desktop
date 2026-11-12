@@ -45,7 +45,11 @@ fn devices_text(health: &Health) -> String {
     let missing = health.total.saturating_sub(health.online);
     match (health.total, missing) {
         (0, _) => "Aucun appareil appairé".to_string(),
-        (_, 0) => format!("{} appareil{} en ligne", health.online, plural(health.online)),
+        (_, 0) => format!(
+            "{} appareil{} en ligne",
+            health.online,
+            plural(health.online)
+        ),
         (_, m) => format!(
             "{} appareil{} en ligne, {m} injoignable{}",
             health.online,
@@ -86,8 +90,14 @@ mod tests {
 
     #[test]
     fn running_line_counts_devices() {
-        assert_eq!(status_line(&Phase::Running, &health(8, 8)), "8 appareils en ligne");
-        assert_eq!(status_line(&Phase::Running, &health(1, 1)), "1 appareil en ligne");
+        assert_eq!(
+            status_line(&Phase::Running, &health(8, 8)),
+            "8 appareils en ligne"
+        );
+        assert_eq!(
+            status_line(&Phase::Running, &health(1, 1)),
+            "1 appareil en ligne"
+        );
         assert_eq!(
             status_line(&Phase::Running, &health(13, 12)),
             "12 appareils en ligne, 1 injoignable"

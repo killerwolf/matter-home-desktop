@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cameras_ui::CamerasUi;
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use matter_home_server::backup;
 use matter_home_server::setup::{self, IdentityComparison, IdentityState};
 use matter_home_server_app::controller::{Cmd, Handle, Notice, State};
@@ -25,9 +25,7 @@ use matter_home_server_app::startup::SetupNeed;
 use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use matter_home_server_app::tailscale::{self, WebAccess};
 use matter_home_server_app::{agent, icon, system, version};
-use tray_icon::menu::{
-    CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
-};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Attente maximale de l'arrêt propre du serveur à la fermeture.
@@ -65,6 +63,8 @@ pub fn run(handle: Handle, demo: bool) -> eframe::Result {
             // L'icône doit être créée sur le fil principal, une fois la boucle d'événements lancée.
             let (tx, rx) = mpsc::channel::<Action>();
             let ctx = cc.egui_ctx.clone();
+            // Le design system partagé avec le client (crate `matter-home-theme`).
+            matter_home_theme::apply(&ctx);
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
                 if let Some(action) = Action::from_id(&event.id.0) {
                     let _ = tx.send(action);
@@ -667,7 +667,7 @@ impl App {
     /// Même structure : on ne touche qu'à ce qui a changé, sur les éléments déjà en place (le
     /// menu natif, éventuellement ouvert, n'est pas remplacé ; les identifiants ne bougent pas).
     fn update_menu_in_place(&self, model: &[Entry]) {
-        for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu).map(|((o, n), c)| ((o, n), c)) {
+        for ((old, new), native) in self.shown_menu.iter().zip(model).zip(&self.native_menu) {
             update_native(old, new, native);
         }
     }
@@ -794,6 +794,15 @@ impl eframe::App for App {
             return;
         }
         let st = self.handle.snapshot();
+        // Page Caméras : l'avertissement de sécurité reste en pied de fenêtre.
+        if st.busy.is_none()
+            && !self.show_done
+            && matches!(st.phase, Phase::Running)
+            && self.cameras_open
+            && st.hub.is_some()
+        {
+            egui::Panel::bottom("cameras_footer").show(ui, crate::cameras_ui::footer);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
         });
@@ -801,9 +810,10 @@ impl eframe::App for App {
 }
 
 fn notice_label(ui: &mut egui::Ui, notice: &Notice) {
+    let p = matter_home_theme::palette(ui);
     match notice {
-        Notice::Ok(t) => ui.colored_label(Color32::from_rgb(40, 150, 70), t),
-        Notice::Err(t) => ui.colored_label(Color32::from_rgb(210, 60, 50), t),
+        Notice::Ok(t) => ui.colored_label(p.ok, t),
+        Notice::Err(t) => ui.colored_label(p.error, t),
     };
 }
 
@@ -863,7 +873,7 @@ impl App {
             Page::Start => {
                 if let Some(reason) = unreadable {
                     ui.colored_label(
-                        Color32::from_rgb(210, 60, 50),
+                        matter_home_theme::palette(ui).error,
                         format!("Les données de ce Mac contiennent une identité Matter illisible ({reason}). Rien n'a été modifié. Vous pouvez reprendre une sauvegarde pour la remplacer."),
                     );
                     ui.add_space(6.0);
@@ -938,7 +948,7 @@ impl App {
                 if r.comparison.differs {
                     ui.add_space(6.0);
                     ui.colored_label(
-                        Color32::from_rgb(210, 60, 50),
+                        matter_home_theme::palette(ui).error,
                         setup::replace_refusal_for_app(),
                     );
                     ui.checkbox(&mut r.replace_ack, "Je veux bien remplacer l'identité actuelle (l'ancien dossier est conservé)");
@@ -1037,7 +1047,7 @@ impl App {
         let check = self.form.check();
         if let Err(e) = &check {
             if !self.form.password.is_empty() || !self.form.username.is_empty() {
-                ui.colored_label(Color32::from_rgb(210, 60, 50), e);
+                ui.colored_label(matter_home_theme::palette(ui).error, e);
             }
         }
         ui.add_space(8.0);
@@ -1110,7 +1120,7 @@ impl App {
                 }
             }
             Phase::Problem(e) => {
-                ui.colored_label(Color32::from_rgb(210, 60, 50), e);
+                ui.colored_label(matter_home_theme::palette(ui).error, e);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Ouvrir le journal").clicked() {

@@ -238,9 +238,11 @@ impl ConnectScreen {
         error(ui, Field::Server);
         ui.add_space(2.0);
         ui.label(
-            RichText::new("Elle s'affiche dans le menu du serveur, sur l'autre Mac.")
-                .small()
-                .color(p.text_secondary),
+            RichText::new(
+                "Elle s'affiche sur l'autre Mac : menu du serveur, « Connecter un client ».",
+            )
+            .small()
+            .color(p.text_secondary),
         );
         ui.add_space(theme::tokens().space.md);
 
