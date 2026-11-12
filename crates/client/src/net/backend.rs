@@ -352,9 +352,7 @@ impl Backend {
             store,
             generation: AtomicU64::new(0),
             creds: Mutex::new(None),
-            alt_urls: Mutex::new(
-                store_alts.unwrap_or_default(),
-            ),
+            alt_urls: Mutex::new(store_alts.unwrap_or_default()),
             protocol,
         });
         let (jobs, jobs_rx) = mpsc::channel();

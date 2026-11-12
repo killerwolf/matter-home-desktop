@@ -13,13 +13,16 @@ pub struct ServerAddr {
 }
 
 impl ServerAddr {
+    /// Sans port : 8443, sauf `https://nom.ts.net/` (443, voir [`Self::is_tailscale_serve`]).
     /// Accepte `192.168.1.20`, `mac-mini.local:8443`, `https://mac-mini.local:8443/`,
     /// `[fe80::1]:8443`. Le schéma `http://` est refusé : la connexion est toujours chiffrée.
     pub fn parse(text: &str) -> Result<ServerAddr, NetError> {
         let bad = |why: &str| NetError::BadAddress(why.to_string());
         let mut rest = text.trim();
+        let mut explicit_https = false;
         if let Some(r) = rest.strip_prefix("https://") {
             rest = r;
+            explicit_https = true;
         } else if rest.contains("://") {
             return Err(bad(
                 "seules les adresses https:// sont acceptées (la connexion est toujours chiffrée)",
@@ -55,6 +58,9 @@ impl ServerAddr {
             return Err(bad("nom ou adresse du serveur manquant"));
         }
         let port = match port {
+            // `https://nom.ts.net/` sans port : l'adresse publiée par `tailscale serve` (443). Sans
+            // le schéma, `nom.ts.net` reste l'accès direct au serveur (8443).
+            None if explicit_https && host.to_ascii_lowercase().ends_with(".ts.net") => 443,
             None => DEFAULT_PORT,
             Some(p) => p
                 .parse::<u16>()
@@ -101,6 +107,12 @@ impl ServerAddr {
             Ok(std::net::IpAddr::V6(v6)) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
             Err(_) => false,
         }
+    }
+
+    /// Adresse publiée par `tailscale serve` : un nom MagicDNS `….ts.net` sur le port 443. Le
+    /// certificat présenté est alors celui, public, de Tailscale (voir `tls.rs`).
+    pub fn is_tailscale_serve(&self) -> bool {
+        self.port == 443 && self.host.to_ascii_lowercase().ends_with(".ts.net")
     }
 
     /// Forme canonique, celle qui est conservée : `https://hôte:port`.
@@ -172,7 +184,8 @@ mod tests {
 
     #[test]
     fn a_list_of_addresses_and_the_tailscale_ones() {
-        let l = ServerAddr::parse_list("a.local, 100.64.0.1:9000;a.local\n[fd7a:115c:a1e0::1]").unwrap();
+        let l = ServerAddr::parse_list("a.local, 100.64.0.1:9000;a.local\n[fd7a:115c:a1e0::1]")
+            .unwrap();
         assert_eq!(l.len(), 3);
         assert!(ServerAddr::parse_list("").unwrap().is_empty());
         assert!(ServerAddr::parse_list("ok.local http://x").is_err());
@@ -187,5 +200,19 @@ mod tests {
         assert!(!ts("192.168.1.20"));
         assert!(!ts("mac-mini.local"));
         assert!(!ts("evil-ts.net"));
+        assert_eq!(
+            ServerAddr::parse("https://mac.tailnet-x.ts.net/")
+                .unwrap()
+                .port,
+            443
+        );
+        assert_eq!(
+            ServerAddr::parse("mac.tailnet-x.ts.net").unwrap().port,
+            8443
+        );
+        assert_eq!(
+            ServerAddr::parse("https://192.168.1.20").unwrap().port,
+            8443
+        );
     }
 }

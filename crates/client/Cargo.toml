@@ -31,6 +31,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 httparse = "1"
 # WebSocket synchrone, par-dessus le flux TLS que nous ouvrons nous-mêmes.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+# Autorités racines publiques (Mozilla), pour valider le certificat Let's Encrypt de Tailscale
+# derrière `tailscale serve` (adresse `*.ts.net` sur le port 443, voir `net/tls.rs`).
+webpki-roots = "1"
 # Empreinte SHA-256 du certificat du serveur.
 sha2 = "0.10"
 # Sélecteur de fichier du système (export, import, CSV), déjà utilisé par la v0.2.1.
@@ -44,3 +47,8 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMBase", "objc2-core-video"] }
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "bitflags", "CVPixelBufferPool", "CVReturn", "CVPixelFormatDescription"] }
 objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2", "VTDecompressionSession", "VTErrors", "VTSession", "objc2-core-media", "objc2-core-video", "block2", "bitflags"] }
+
+[dev-dependencies]
+# Certificats de test (autorité, certificat auto-signé) pour les essais d'épinglage et de chaîne
+# publique de `net/tls.rs`.
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }

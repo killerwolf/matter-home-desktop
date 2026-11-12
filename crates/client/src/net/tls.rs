@@ -1,6 +1,6 @@
 //! Connexion TLS vers le serveur, avec son certificat auto-signé épinglé par empreinte.
 //!
-//! Deux modes, jamais mélangés :
+//! Trois modes, jamais mélangés :
 //! - [`Trust::Probe`] : première connexion. On fait la poignée de main TLS pour lire l'empreinte
 //!   du certificat présenté, puis on ferme **sans rien envoyer**. L'utilisateur compare cette
 //!   empreinte (affichée par le serveur à son lancement) avant de l'approuver ;
@@ -14,9 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{ring, CryptoProvider};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned};
+use rustls::{
+    ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore, SignatureScheme,
+    StreamOwned,
+};
 use sha2::{Digest, Sha256};
 
 use super::addr::ServerAddr;
@@ -165,31 +169,54 @@ pub enum Trust {
     Pinned(String),
 }
 
-/// Vérificateur de certificat : note l'empreinte présentée et, selon le mode, la compare.
-#[derive(Debug)]
+/// Comment le certificat est jugé (voir l'en-tête du module).
+enum Verify {
+    Probe,
+    Pinned(String),
+    /// Chaîne de confiance publique, avec les autorités racines données.
+    Public(Arc<WebPkiServerVerifier>),
+}
+
+/// Vérificateur de certificat : note l'empreinte présentée et, selon le mode, la juge.
 struct Verifier {
-    trust: Trust,
+    verify: Verify,
     seen: Arc<Mutex<Option<String>>>,
+    /// Raison du refus en mode chaîne publique, pour la dire à l'utilisateur.
+    refused: Arc<Mutex<Option<String>>>,
     provider: Arc<CryptoProvider>,
+}
+
+impl std::fmt::Debug for Verifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Verifier")
+    }
 }
 
 impl ServerCertVerifier for Verifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         let found = fingerprint_of(end_entity);
         if let Ok(mut seen) = self.seen.lock() {
             *seen = Some(found.clone());
         }
-        match &self.trust {
-            Trust::Probe => Ok(ServerCertVerified::assertion()),
-            Trust::Pinned(expected) if *expected == found => Ok(ServerCertVerified::assertion()),
-            Trust::Pinned(_) => Err(rustls::Error::General("empreinte différente".into())),
+        match &self.verify {
+            Verify::Probe => Ok(ServerCertVerified::assertion()),
+            // Le nom n'est volontairement pas regardé : seule l'empreinte compte.
+            Verify::Pinned(expected) if *expected == found => Ok(ServerCertVerified::assertion()),
+            Verify::Pinned(_) => Err(rustls::Error::General("empreinte différente".into())),
+            Verify::Public(inner) => inner
+                .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+                .inspect_err(|e| {
+                    if let Ok(mut refused) = self.refused.lock() {
+                        *refused = Some(e.to_string());
+                    }
+                }),
         }
     }
 
@@ -275,6 +302,45 @@ pub fn connect_until(
     trust: &Trust,
     deadline: Instant,
 ) -> Result<Connected, NetError> {
+    let provider = Arc::new(ring::default_provider());
+    let verify = match trust {
+        Trust::Probe => Verify::Probe,
+        // `tailscale serve` : certificat public de Tailscale, jugé par la chaîne de confiance.
+        Trust::Pinned(_) if addr.is_tailscale_serve() => {
+            Verify::Public(public_verifier(public_roots(), &provider)?)
+        }
+        Trust::Pinned(fp) => Verify::Pinned(fp.clone()),
+    };
+    connect_with(addr, trust, verify, provider, None, deadline)
+}
+
+/// Autorités racines publiques (Mozilla, embarquées : ne dépendent pas du système).
+fn public_roots() -> RootCertStore {
+    RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    }
+}
+
+fn public_verifier(
+    roots: RootCertStore,
+    provider: &Arc<CryptoProvider>,
+) -> Result<Arc<WebPkiServerVerifier>, NetError> {
+    WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .map_err(|e| NetError::Protocol(e.to_string()))
+}
+
+/// Cœur de la connexion. `name` remplace le nom présenté en SNI et contrôlé par la chaîne
+/// publique (les essais joignent 127.0.0.1 en se faisant passer pour un nom `.ts.net`).
+fn connect_with(
+    addr: &ServerAddr,
+    trust: &Trust,
+    verify: Verify,
+    provider: Arc<CryptoProvider>,
+    name: Option<&str>,
+    deadline: Instant,
+) -> Result<Connected, NetError> {
+    let public = matches!(verify, Verify::Public(_));
     let mut last = NetError::Unreachable("aucune adresse".into());
     let mut sock = None;
     for target in resolve(addr)? {
@@ -294,11 +360,12 @@ pub fn connect_until(
     let _ = sock.set_nodelay(true);
     let mut sock = DeadlineStream::new(sock, deadline);
 
-    let provider = Arc::new(ring::default_provider());
     let seen = Arc::new(Mutex::new(None));
+    let refused = Arc::new(Mutex::new(None));
     let verifier = Arc::new(Verifier {
-        trust: trust.clone(),
+        verify,
         seen: seen.clone(),
+        refused: refused.clone(),
         provider: provider.clone(),
     });
     let config = ClientConfig::builder_with_provider(provider)
@@ -307,8 +374,10 @@ pub fn connect_until(
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    // Le nom n'est pas vérifié (le certificat est épinglé), mais TLS en exige un.
-    let name = ServerName::try_from(addr.host.clone())
+    // Épinglé : le nom n'est pas vérifié, mais TLS en exige un. Chaîne publique : c'est ce nom
+    // que le certificat doit porter.
+    let host = name.unwrap_or(&addr.host);
+    let name = ServerName::try_from(host.to_string())
         .or_else(|_| ServerName::try_from("matter-home.invalid".to_string()))
         .map_err(|_| NetError::BadAddress("nom de serveur invalide".into()))?;
     let mut conn = ClientConnection::new(Arc::new(config), name)
@@ -319,6 +388,11 @@ pub fn connect_until(
             return Err(NetError::Timeout);
         }
         if let Err(e) = conn.complete_io(&mut sock) {
+            if public {
+                if let Some(why) = refused.lock().ok().and_then(|r| r.clone()) {
+                    return Err(NetError::PublicCertificateRejected(why));
+                }
+            }
             return Err(handshake_error(e, trust, &seen));
         }
     }
@@ -461,5 +535,185 @@ mod tests {
         assert_eq!(normalize_fingerprint(&f.replace(':', " ")), Some(f));
         assert_eq!(normalize_fingerprint("abcd"), None);
         assert_eq!(normalize_fingerprint(&"zz".repeat(32)), None);
+    }
+
+    // --- Certificats : épinglage direct et chaîne publique (accès à distance, ticket 14) ---
+
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+    use rustls::pki_types::PrivateKeyDer;
+    use rustls::{ServerConfig, ServerConnection};
+
+    const TS_NAME: &str = "mon-mac.tailnet-xxxx.ts.net";
+
+    struct Cert {
+        der: CertificateDer<'static>,
+        key: KeyPair,
+    }
+
+    /// Certificat auto-signé pour `names`, comme celui du serveur.
+    fn self_signed(names: &[&str]) -> Cert {
+        let key = KeyPair::generate().unwrap();
+        let params =
+            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        Cert {
+            der: cert.der().clone(),
+            key,
+        }
+    }
+
+    /// Autorité de test, et un certificat final signé par elle pour `names`.
+    fn ca_and_leaf(names: &[&str]) -> (Cert, Cert) {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let leaf_key = KeyPair::generate().unwrap();
+        let leaf_params =
+            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .unwrap();
+        let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
+        (
+            Cert {
+                der: ca.der().clone(),
+                key: ca_key,
+            },
+            Cert {
+                der: leaf.der().clone(),
+                key: leaf_key,
+            },
+        )
+    }
+
+    /// Serveur TLS de test sur 127.0.0.1 : fait la poignée de main avec `cert`, puis ferme.
+    fn tls_server(cert: &Cert) -> SocketAddr {
+        let key = PrivateKeyDer::try_from(cert.key.serialize_der()).unwrap();
+        let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der.clone()], key)
+            .unwrap();
+        let config = Arc::new(config);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { return };
+                let mut conn = ServerConnection::new(config.clone()).unwrap();
+                while conn.is_handshaking() {
+                    if conn.complete_io(&mut sock).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    fn local(addr: SocketAddr) -> ServerAddr {
+        ServerAddr::parse(&format!("https://{addr}")).unwrap()
+    }
+
+    fn pinned_connect(addr: SocketAddr, fp: &str, name: &str) -> Result<Connected, NetError> {
+        connect_with(
+            &local(addr),
+            &Trust::Pinned(fp.to_string()),
+            Verify::Pinned(fp.to_string()),
+            Arc::new(ring::default_provider()),
+            Some(name),
+            Instant::now() + Duration::from_secs(5),
+        )
+    }
+
+    fn public_connect(addr: SocketAddr, roots: &Cert, name: &str) -> Result<Connected, NetError> {
+        let provider = Arc::new(ring::default_provider());
+        let mut store = RootCertStore::empty();
+        store.add(roots.der.clone()).unwrap();
+        connect_with(
+            &local(addr),
+            &Trust::Pinned("AA".into()),
+            Verify::Public(public_verifier(store, &provider).unwrap()),
+            provider,
+            Some(name),
+            Instant::now() + Duration::from_secs(5),
+        )
+    }
+
+    #[test]
+    fn direct_access_pins_the_fingerprint_and_ignores_the_name() {
+        // Le certificat du serveur ne porte ni le nom MagicDNS ni l'IP Tailscale.
+        let cert = self_signed(&["localhost"]);
+        let fp = fingerprint_of(&cert.der);
+        let addr = tls_server(&cert);
+        // Même empreinte, nom quelconque (celui du tailnet) : accepté.
+        let c = pinned_connect(addr, &fp, TS_NAME).expect("empreinte épinglée, nom ignoré");
+        assert_eq!(c.fingerprint, fp);
+        // Une autre empreinte est refusée, sans contournement.
+        let other = fingerprint_of(b"un autre certificat");
+        match pinned_connect(addr, &other, TS_NAME) {
+            Err(NetError::CertificateChanged { expected, found }) => {
+                assert_eq!(expected, other);
+                assert_eq!(found, fp);
+            }
+            other => panic!("attendu CertificateChanged, reçu {:?}", other.err()),
+        }
+    }
+
+    #[test]
+    fn the_public_chain_is_accepted_without_pinning_for_the_right_name() {
+        let (ca, leaf) = ca_and_leaf(&[TS_NAME]);
+        let addr = tls_server(&leaf);
+        let c = public_connect(addr, &ca, TS_NAME).expect("chaîne valide, nom correct");
+        // Empreinte différente de celle épinglée (« AA »), et pourtant acceptée : pas d'épinglage.
+        assert_eq!(c.fingerprint, fingerprint_of(&leaf.der));
+    }
+
+    #[test]
+    fn the_public_chain_rejects_a_wrong_name_an_unknown_authority_and_a_self_signed_one() {
+        let (ca, leaf) = ca_and_leaf(&[TS_NAME]);
+        let addr = tls_server(&leaf);
+        // Nom différent de celui du certificat.
+        let wrong = public_connect(addr, &ca, "autre.tailnet-xxxx.ts.net");
+        assert!(
+            matches!(wrong, Err(NetError::PublicCertificateRejected(_))),
+            "{:?}",
+            wrong.err()
+        );
+        // Autorité inconnue du client.
+        let (other_ca, _) = ca_and_leaf(&[TS_NAME]);
+        let unknown = public_connect(addr, &other_ca, TS_NAME);
+        assert!(
+            matches!(unknown, Err(NetError::PublicCertificateRejected(_))),
+            "{:?}",
+            unknown.err()
+        );
+        // Certificat auto-signé (celui du serveur) présenté sur une adresse en chaîne publique.
+        let own = self_signed(&[TS_NAME]);
+        let own_addr = tls_server(&own);
+        let selfsigned = public_connect(own_addr, &ca, TS_NAME);
+        assert!(
+            matches!(selfsigned, Err(NetError::PublicCertificateRejected(_))),
+            "{:?}",
+            selfsigned.err()
+        );
+    }
+
+    #[test]
+    fn only_a_tailscale_name_on_443_uses_the_public_chain() {
+        let serve = |t: &str| ServerAddr::parse(t).unwrap().is_tailscale_serve();
+        assert!(serve("https://mon-mac.tailnet-xxxx.ts.net/"));
+        assert!(serve("mon-mac.tailnet-xxxx.ts.net:443"));
+        assert!(serve("MON-MAC.TAILNET-XXXX.TS.NET:443"));
+        // Accès direct au serveur : empreinte épinglée.
+        assert!(!serve("mon-mac.tailnet-xxxx.ts.net:8443"));
+        assert!(!serve("mon-mac.tailnet-xxxx.ts.net"));
+        // Ni une IP, ni un faux nom, ni un autre domaine.
+        assert!(!serve("100.64.0.1:443"));
+        assert!(!serve("evil-ts.net:443"));
+        assert!(!serve("ts.net.example.com:443"));
+        assert!(!serve("192.168.1.20:443"));
     }
 }

@@ -65,6 +65,7 @@ pub fn field_of(error: &NetError) -> Field {
         | NetError::Unreachable(_)
         | NetError::Timeout
         | NetError::CertificateChanged { .. }
+        | NetError::PublicCertificateRejected(_)
         | NetError::Protocol(_) => Field::Server,
         NetError::Api {
             code: Some(ErrorCode::InvalidCredentials | ErrorCode::TooManyAttempts),
