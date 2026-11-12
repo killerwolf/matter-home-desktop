@@ -90,8 +90,10 @@ fn parse_alts(primary: &ServerAddr, alt_urls: &[String]) -> Vec<ServerAddr> {
 /// Délai d'essai d'une adresse quand il y en a plusieurs (le TCP en demande jusqu'à 4 s).
 const PICK_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// La première adresse qui répond **avec le certificat épinglé**, dans l'ordre. Une adresse qui
-/// répond avec un autre certificat (autre appareil, autre réseau local) est ignorée. `None` si
+/// La première adresse qui répond, dans l'ordre : avec **le certificat épinglé** pour une adresse
+/// directe ou, pour `https://nom.ts.net/` (port 443), avec un certificat public valable pour ce
+/// nom (là, pas d'empreinte du serveur). Une adresse qui répond avec un autre certificat (autre
+/// appareil, autre réseau local) est ignorée. `None` si
 /// aucune ne répond : l'appelant garde alors sa tentative habituelle et son message d'erreur.
 pub(super) fn pick_address(candidates: &[ServerAddr], fingerprint: &str) -> Option<ServerAddr> {
     if candidates.len() < 2 {
@@ -445,24 +447,15 @@ impl Backend {
     }
 
     /// Fixe les autres adresses du serveur (nom Tailscale, IP 100.x…). Prises en compte tout de
-    /// suite par la session ouverte (à la prochaine reconnexion) et écrites dans le fichier de
-    /// connexion s'il existe ; sinon à la prochaine connexion réussie.
+    /// suite par la session ouverte (à la prochaine reconnexion). Elles ne sont **écrites dans le
+    /// fichier de connexion qu'après une connexion réussie** : un essai raté ou une adresse jamais
+    /// approuvée ne laisse rien dans le fichier.
     pub fn set_alt_urls(&self, urls: Vec<String>) {
         *self
             .shared
             .alt_urls
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = urls.clone();
-        if let Ok(Some(saved)) = self.shared.store.load() {
-            if saved.alt_urls != urls {
-                if let Err(e) = self.shared.store.save(&Saved {
-                    alt_urls: urls.clone(),
-                    ..saved
-                }) {
-                    self.shared.emit(Event::Notice(e.message()));
-                }
-            }
-        }
         if let Some(mut creds) = self.shared.creds() {
             creds.alts = parse_alts(&creds.primary, &urls);
             if creds.addr != creds.primary && !creds.alts.contains(&creds.addr) {
@@ -1026,5 +1019,24 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn alternate_addresses_are_not_written_before_a_successful_login() {
+        let store = temp_store("alts-late");
+        let saved = Saved {
+            url: "https://127.0.0.1:1".into(),
+            fingerprint: "AA".into(),
+            token: None,
+            alt_urls: Vec::new(),
+        };
+        store.save(&saved).unwrap();
+        let path = store.path().to_path_buf();
+        let (backend, _events) = Backend::start(store, Arc::new(|| {}));
+        backend.set_alt_urls(vec!["https://mac.tailnet-xxxx.ts.net:8443".into()]);
+        assert_eq!(backend.alt_urls().len(), 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("alt_urls"), "{text}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

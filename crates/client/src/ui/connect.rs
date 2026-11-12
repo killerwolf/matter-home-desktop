@@ -29,6 +29,11 @@ pub struct ConnectScreen {
     remote: String,
     /// Le champ `remote` a été rempli depuis le fichier de connexion (une fois par écran).
     remote_loaded: bool,
+    /// Adresse principale et texte du champ « à distance » tels que chargés depuis le fichier :
+    /// si l'adresse change sans que le champ soit touché, les anciennes alternatives sont celles
+    /// d'un autre serveur (voir [`alts_for_submit`]).
+    loaded_primary: Option<String>,
+    loaded_remote: String,
     username: String,
     password: String,
     /// Adresse déjà approuvée (fichier de connexion) : pas de nouvelle empreinte à confirmer.
@@ -58,6 +63,29 @@ pub enum Field {
     General,
 }
 
+/// Forme canonique d'une adresse saisie (`None` si elle est illisible).
+fn canonical(text: &str) -> Option<String> {
+    ServerAddr::parse(text).ok().map(|a| a.url())
+}
+
+/// Texte du champ « à distance » à envoyer. Quand l'adresse principale a changé pour une adresse
+/// pas encore épinglée (première connexion, changement de serveur) et que le champ est resté
+/// celui qui avait été chargé, il décrivait un autre serveur : il est vidé. Un champ que
+/// l'utilisateur a modifié est gardé tel quel.
+fn alts_for_submit(
+    primary: Option<&str>,
+    loaded_primary: Option<&str>,
+    loaded_remote: &str,
+    remote: &str,
+    pinned: bool,
+) -> String {
+    if !pinned && primary != loaded_primary && remote == loaded_remote {
+        String::new()
+    } else {
+        remote.to_string()
+    }
+}
+
 /// Le champ concerné par une erreur, d'après sa nature (jamais d'après son texte).
 pub fn field_of(error: &NetError) -> Field {
     match error {
@@ -81,6 +109,8 @@ impl ConnectScreen {
             url: String::new(),
             remote: String::new(),
             remote_loaded: false,
+            loaded_primary: None,
+            loaded_remote: String::new(),
             username: String::new(),
             password: String::new(),
             pinned_url: None,
@@ -210,6 +240,8 @@ impl ConnectScreen {
         if !self.remote_loaded {
             self.remote_loaded = true;
             self.remote = backend.alt_urls().join(" ");
+            self.loaded_primary = canonical(&self.url);
+            self.loaded_remote = self.remote.clone();
         }
         // Un message qui ne vise aucun champ reste en tête ; les autres sont sous leur champ.
         let message = self.message.clone();
@@ -275,6 +307,18 @@ impl ConnectScreen {
             .small()
             .color(p.text_secondary),
         );
+        if ServerAddr::parse_list(&self.remote)
+            .is_ok_and(|l| l.iter().any(ServerAddr::is_tailscale_serve))
+        {
+            ui.label(
+                RichText::new(
+                    "Vérifiée par le certificat public de Tailscale : vérifiez bien le nom de \
+                     votre Mac.",
+                )
+                .small()
+                .color(p.text_secondary),
+            );
+        }
         ui.add_space(theme::tokens().space.md);
 
         label(ui, "Identifiant");
@@ -363,6 +407,18 @@ impl ConnectScreen {
             self.message_field = Field::Server;
             return;
         }
+        // Un autre serveur (adresse principale changée, champ « à distance » laissé tel quel) :
+        // les anciennes alternatives ne sont pas les siennes.
+        let pinned = self.url_is_pinned();
+        self.remote = alts_for_submit(
+            canonical(&url).as_deref(),
+            self.loaded_primary.as_deref(),
+            &self.loaded_remote,
+            &self.remote,
+            pinned,
+        );
+        self.loaded_primary = canonical(&url);
+        self.loaded_remote = self.remote.clone();
         match ServerAddr::parse_list(&self.remote) {
             Ok(list) => backend.set_alt_urls(list.iter().map(ServerAddr::url).collect()),
             Err(e) => {
@@ -502,6 +558,31 @@ impl ConnectScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_the_primary_address_does_not_keep_the_old_alternatives() {
+        let old = "https://192.168.1.20:8443";
+        let new = "https://autre.local:8443";
+        let alts = "https://mac.tailnet-xxxx.ts.net:8443";
+        // Autre serveur, pas encore épinglé, champ resté tel quel : vidé.
+        assert_eq!(alts_for_submit(Some(new), Some(old), alts, alts, false), "");
+        // Même serveur : gardé.
+        assert_eq!(
+            alts_for_submit(Some(old), Some(old), alts, alts, false),
+            alts
+        );
+        // Adresse changée mais champ rempli par l'utilisateur : gardé.
+        let typed = "https://autre.tailnet-xxxx.ts.net:8443";
+        assert_eq!(
+            alts_for_submit(Some(new), Some(old), alts, typed, false),
+            typed
+        );
+        // Adresse déjà épinglée : gardé.
+        assert_eq!(
+            alts_for_submit(Some(new), Some(old), alts, alts, true),
+            alts
+        );
+    }
 
     #[test]
     fn an_error_goes_under_the_field_it_is_about_by_its_kind_not_its_text() {

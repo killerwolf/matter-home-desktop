@@ -105,7 +105,7 @@ pub(super) fn run(shared: Arc<Shared>, generation: u64, mut creds: Creds) {
             Ended::CertificateChanged { expected, found } => {
                 log::warn!("le certificat du serveur a changé : connexion refusée");
                 shared.link(Link::CertificateChanged {
-                    url: creds.addr.url(),
+                    url: creds.primary.url(),
                     expected,
                     found,
                 });

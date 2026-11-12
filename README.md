@@ -168,7 +168,7 @@ réseau local ; seul le client change d'adresse.
 3. **Client de bureau** : dans l'écran de connexion, gardez l'adresse de la maison et remplissez
    **« Adresse à distance »** avec `mon-mac.tailnet-xxxx.ts.net:8443` (plusieurs adresses :
    séparez-les par un espace). À chaque connexion, le client essaie l'adresse de la maison, puis
-   les autres, et prend la première qui répond avec **le même certificat** ; il bascule tout
+   les autres, et prend la première qui répond : avec l'**empreinte du serveur** pour une adresse directe, ou avec un certificat public valable pour une adresse `https://…ts.net/` (port 443, voir « Certificat » plus bas) ; il bascule tout
    seul en quittant le Wi-Fi de la maison. Hors de chez vous, la barre d'état indique « à
    distance » et les caméras restent sur le flux réduit (« Fluide ») ; « Haute » reste possible
    mais est lourde en 4G.
@@ -183,7 +183,9 @@ ne s'en soucie pas : il compare l'**empreinte** du certificat, la même par n'im
 adresse, donc `mon-mac.tailnet-xxxx.ts.net:8443` fonctionne. Seule exception : l'adresse
 publiée par la case « Accès web » (`https://mon-mac.tailnet-xxxx.ts.net/`, port 443) présente
 le certificat Let's Encrypt de Tailscale ; le client le valide alors par la chaîne de confiance
-publique, comme un navigateur, sans épinglage. Tout autre certificat invalide est refusé. Voir
+publique, comme un navigateur (nom et dates contrôlés), **sans épinglage** : il ne vérifie plus
+que le serveur est bien le vôtre par son empreinte, seulement que le nom `….ts.net` est le bon.
+Vérifiez donc le nom de votre Mac. Tout autre certificat invalide est refusé. Voir
 [docs/acces-distant.md](docs/acces-distant.md).
 
 ## Ajouter un appareil

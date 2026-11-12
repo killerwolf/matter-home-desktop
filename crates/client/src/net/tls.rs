@@ -7,6 +7,14 @@
 //! - [`Trust::Pinned`] : toutes les connexions suivantes, y compris celle qui envoie le mot de
 //!   passe. Le certificat doit avoir exactement l'empreinte épinglée, la signature de la
 //!   poignée de main est vérifiée pour de bon (rejouer le certificat public ne suffit pas).
+//!   Le **nom** du certificat n'est pas contrôlé : le certificat auto-signé du serveur ne contient
+//!   ni son nom MagicDNS ni son IP Tailscale, et l'empreinte exacte prouve déjà qui répond ;
+//! - **chaîne publique**, seulement pour une adresse `*.ts.net` sur le port 443
+//!   ([`ServerAddr::is_tailscale_serve`]) : derrière `tailscale serve`, c'est Tailscale qui
+//!   présente un certificat Let's Encrypt, d'empreinte changeante. Il est alors validé comme dans
+//!   un navigateur (chaîne jusqu'à une autorité publique, nom, dates), sans épinglage : ce n'est
+//!   pas « le certificat du serveur ». Aucune autre adresse n'y a droit, et une erreur de ce mode
+//!   n'est jamais présentée comme un « certificat changé ».
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -202,8 +210,11 @@ impl ServerCertVerifier for Verifier {
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         let found = fingerprint_of(end_entity);
-        if let Ok(mut seen) = self.seen.lock() {
-            *seen = Some(found.clone());
+        // Chaîne publique : l'empreinte Let's Encrypt n'est pas celle du serveur, on ne la note pas.
+        if !matches!(self.verify, Verify::Public(_)) {
+            if let Ok(mut seen) = self.seen.lock() {
+                *seen = Some(found.clone());
+            }
         }
         match &self.verify {
             Verify::Probe => Ok(ServerCertVerified::assertion()),
@@ -377,9 +388,17 @@ fn connect_with(
     // Épinglé : le nom n'est pas vérifié, mais TLS en exige un. Chaîne publique : c'est ce nom
     // que le certificat doit porter.
     let host = name.unwrap_or(&addr.host);
-    let name = ServerName::try_from(host.to_string())
-        .or_else(|_| ServerName::try_from("matter-home.invalid".to_string()))
-        .map_err(|_| NetError::BadAddress("nom de serveur invalide".into()))?;
+    let name = match ServerName::try_from(host.to_string()) {
+        Ok(name) => name,
+        // Chaîne publique : le certificat doit porter ce nom, pas de nom de remplacement.
+        Err(_) if public => {
+            return Err(NetError::BadAddress(
+                "le nom du serveur est illisible, le certificat ne peut pas être vérifié".into(),
+            ))
+        }
+        Err(_) => ServerName::try_from("matter-home.invalid".to_string())
+            .map_err(|_| NetError::BadAddress("nom de serveur invalide".into()))?,
+    };
     let mut conn = ClientConnection::new(Arc::new(config), name)
         .map_err(|e| NetError::Protocol(e.to_string()))?;
     // Poignée de main terminée ici, avec l'échéance ci-dessus : ensuite seulement le flux sert.
@@ -393,13 +412,18 @@ fn connect_with(
                     return Err(NetError::PublicCertificateRejected(why));
                 }
             }
-            return Err(handshake_error(e, trust, &seen));
+            return Err(handshake_error(e, trust, &seen, public));
         }
     }
     let fingerprint = seen
         .lock()
         .ok()
         .and_then(|s| s.clone())
+        .or_else(|| {
+            conn.peer_certificates()
+                .and_then(|c| c.first())
+                .map(|c| fingerprint_of(c))
+        })
         .ok_or_else(|| NetError::Protocol("le serveur n'a présenté aucun certificat".into()))?;
     Ok(Connected {
         stream: StreamOwned::new(conn, sock),
@@ -412,8 +436,10 @@ fn handshake_error(
     e: std::io::Error,
     trust: &Trust,
     seen: &Arc<Mutex<Option<String>>>,
+    public: bool,
 ) -> NetError {
-    if let Trust::Pinned(expected) = trust {
+    // Chaîne publique : pas d'empreinte attendue, donc jamais « certificat changé ».
+    if let (Trust::Pinned(expected), false) = (trust, public) {
         let found = seen.lock().ok().and_then(|s| s.clone());
         if let Some(found) = found.filter(|f| f != expected) {
             return NetError::CertificateChanged {
@@ -715,5 +741,27 @@ mod tests {
         assert!(!serve("evil-ts.net:443"));
         assert!(!serve("ts.net.example.com:443"));
         assert!(!serve("192.168.1.20:443"));
+    }
+
+    #[test]
+    fn a_public_chain_error_is_never_a_changed_certificate() {
+        let io = || std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
+        // Une empreinte vue qui diffère de celle épinglée : refus d'empreinte en mode épinglé…
+        let seen = Arc::new(Mutex::new(Some(fingerprint_of(b"vue"))));
+        let trust = Trust::Pinned(fingerprint_of(b"epinglee"));
+        assert!(matches!(
+            handshake_error(io(), &trust, &seen, false),
+            NetError::CertificateChanged { .. }
+        ));
+        // … mais en chaîne publique, une coupure ou un délai reste une panne réseau.
+        assert!(matches!(
+            handshake_error(io(), &trust, &seen, true),
+            NetError::Unreachable(_)
+        ));
+        let timeout = std::io::Error::from(std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            handshake_error(timeout, &trust, &seen, true),
+            NetError::Timeout
+        );
     }
 }
