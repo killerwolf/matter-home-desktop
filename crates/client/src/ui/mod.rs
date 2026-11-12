@@ -2262,8 +2262,14 @@ impl MatterApp {
                             // Un clic sur l'adresse ouvre un petit menu ; l'adresse complète
                             // est dans l'infobulle quand elle est tronquée.
                             let full = server_address(server);
+                            // À distance (autre adresse, ou Tailscale) : l'adresse réellement
+                            // utilisée est dans l'infobulle.
+                            let used = matter_home_client::net::stream::active_address()
+                                .filter(|_| matter_home_client::net::stream::is_remote())
+                                .map(|a| a.authority());
                             let shown = shorten(&full, MAX_ADDRESS_CHARS);
-                            let text = RichText::new(format!("● {shown} · {server_version}"))
+                            let suffix = if used.is_some() { " · à distance" } else { "" };
+                            let text = RichText::new(format!("● {shown} · {server_version}{suffix}"))
                                 .small()
                                 .color(theme::palette(ui).ok);
                             let reply = ui.menu_button(text, |ui| {
@@ -2276,8 +2282,11 @@ impl MatterApp {
                                     ui.close();
                                 }
                             });
+                            let used_line = used
+                                .map(|u| format!("\nAdresse utilisée (à distance) : {u}"))
+                                .unwrap_or_default();
                             reply.response.on_hover_text(format!(
-                                "{full}\nServeur {server_version}\nClic : copier l'adresse ou changer de serveur"
+                                "{full}{used_line}\nServeur {server_version}\nClic : copier l'adresse ou changer de serveur"
                             ));
                         }
                         Link::Resyncing => {

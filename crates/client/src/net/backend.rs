@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use protocol::wire::{ErrorCode, LoginRequest, LoginResponse, VersionInfo, PROTOCOL_VERSION};
 
@@ -27,16 +27,83 @@ const HTTP_WORKERS: usize = 4;
 /// Ce qu'il faut pour parler au serveur : adresse, certificat approuvé, jeton.
 #[derive(Clone)]
 pub(super) struct Creds {
+    /// Adresse **utilisée** en ce moment (une des candidates).
     pub addr: ServerAddr,
+    /// Adresse principale, celle du fichier de connexion (`Saved::url`) : la « maison ».
+    pub primary: ServerAddr,
+    /// Autres adresses du même serveur (à distance), essayées après la principale.
+    pub alts: Vec<ServerAddr>,
     pub fingerprint: String,
     pub token: String,
 }
 
 impl Creds {
-    /// Quel serveur : adresse et empreinte (jamais le jeton).
-    pub(super) fn identity(&self) -> String {
-        format!("{}#{}", self.addr.url(), self.fingerprint)
+    /// Session sur l'adresse principale ; `alt_urls` (celles du fichier) qui ne se lisent pas ou
+    /// qui doublonnent sont écartées.
+    pub(super) fn new(
+        primary: ServerAddr,
+        alt_urls: &[String],
+        fingerprint: String,
+        token: String,
+    ) -> Creds {
+        Creds {
+            addr: primary.clone(),
+            alts: parse_alts(&primary, alt_urls),
+            primary,
+            fingerprint,
+            token,
+        }
     }
+
+    /// Les adresses à essayer, dans l'ordre : la principale, puis les autres.
+    pub(super) fn candidates(&self) -> Vec<ServerAddr> {
+        std::iter::once(self.primary.clone())
+            .chain(self.alts.iter().cloned())
+            .collect()
+    }
+
+    /// Quel serveur : adresse **principale** et empreinte (jamais le jeton). Stable quand la
+    /// session bascule d'une adresse à l'autre : ce n'est pas « un autre serveur » (les
+    /// brouillons en cours restent valables).
+    pub(super) fn identity(&self) -> String {
+        format!("{}#{}", self.primary.url(), self.fingerprint)
+    }
+
+    /// Joint « à distance » : une autre adresse que la principale, ou une adresse Tailscale.
+    pub(super) fn is_remote(&self) -> bool {
+        self.addr != self.primary || self.addr.is_tailscale()
+    }
+}
+
+fn parse_alts(primary: &ServerAddr, alt_urls: &[String]) -> Vec<ServerAddr> {
+    let mut out: Vec<ServerAddr> = Vec::new();
+    for url in alt_urls {
+        if let Ok(a) = ServerAddr::parse(url) {
+            if a != *primary && !out.contains(&a) {
+                out.push(a);
+            }
+        }
+    }
+    out
+}
+
+/// Délai d'essai d'une adresse quand il y en a plusieurs (le TCP en demande jusqu'à 4 s).
+const PICK_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// La première adresse qui répond **avec le certificat épinglé**, dans l'ordre. Une adresse qui
+/// répond avec un autre certificat (autre appareil, autre réseau local) est ignorée. `None` si
+/// aucune ne répond : l'appelant garde alors sa tentative habituelle et son message d'erreur.
+pub(super) fn pick_address(candidates: &[ServerAddr], fingerprint: &str) -> Option<ServerAddr> {
+    if candidates.len() < 2 {
+        return candidates.first().cloned();
+    }
+    let trust = Trust::Pinned(fingerprint.to_string());
+    candidates.iter().find_map(|addr| {
+        // Connexion fermée aussitôt : rien n'est envoyé.
+        tls::connect_until(addr, &trust, Instant::now() + PICK_TIMEOUT)
+            .ok()
+            .map(|_| addr.clone())
+    })
 }
 
 pub(super) struct Shared {
@@ -47,6 +114,8 @@ pub(super) struct Shared {
     /// numéro n'est plus le bon s'arrête.
     generation: AtomicU64,
     creds: Mutex<Option<Creds>>,
+    /// Autres adresses du serveur (fichier de connexion), gardées pour toute réécriture.
+    alt_urls: Mutex<Vec<String>>,
     /// Version du protocole annoncée au serveur (celle de ce client, sauf dans les tests).
     protocol: u32,
 }
@@ -76,6 +145,20 @@ impl Shared {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    fn alts(&self) -> Vec<String> {
+        self.alt_urls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// La session bascule sur une autre adresse du même serveur (sans effet si elle a changé).
+    pub(super) fn adopt_address(&self, generation: u64, creds: &Creds) {
+        if self.generation() == generation {
+            self.set_creds(Some(creds.clone()));
+        }
     }
 
     fn set_creds(&self, creds: Option<Creds>) {
@@ -118,9 +201,10 @@ impl Shared {
         let mut problems: Vec<String> = Vec::new();
         let kept = match creds {
             Some(c) => Some(Saved {
-                url: c.addr.url(),
+                url: c.primary.url(),
                 fingerprint: c.fingerprint.clone(),
                 token: None,
+                alt_urls: self.alts(),
             }),
             None => match self.store.load() {
                 Ok(Some(saved)) => Some(Saved {
@@ -163,13 +247,14 @@ impl Shared {
         }
         let creds = self.creds();
         self.set_creds(None);
-        let url = creds.as_ref().map(|c| c.addr.url());
+        let url = creds.as_ref().map(|c| c.primary.url());
         let mut reason = "Votre session a expiré ou a été révoquée : reconnectez-vous.".to_string();
         if let Some(c) = creds {
             let kept = Saved {
-                url: c.addr.url(),
+                url: c.primary.url(),
                 fingerprint: c.fingerprint,
                 token: None,
+                alt_urls: self.alts(),
             };
             if let Err(e) = self.store.save(&kept) {
                 reason.push(' ');
@@ -260,12 +345,16 @@ impl Backend {
         protocol: u32,
     ) -> (Backend, Receiver<Event>) {
         let (events, receiver) = mpsc::channel();
+        let store_alts = store.load().ok().flatten().map(|s| s.alt_urls);
         let shared = Arc::new(Shared {
             events,
             notify,
             store,
             generation: AtomicU64::new(0),
             creds: Mutex::new(None),
+            alt_urls: Mutex::new(
+                store_alts.unwrap_or_default(),
+            ),
             protocol,
         });
         let (jobs, jobs_rx) = mpsc::channel();
@@ -286,12 +375,11 @@ impl Backend {
                 url,
                 fingerprint,
                 token: Some(token),
+                alt_urls,
             })) => match (ServerAddr::parse(&url), normalize_fingerprint(&fingerprint)) {
-                (Ok(addr), Some(fingerprint)) => shared.start_session(Creds {
-                    addr,
-                    fingerprint,
-                    token,
-                }),
+                (Ok(addr), Some(fingerprint)) => {
+                    shared.start_session(Creds::new(addr, &alt_urls, fingerprint, token))
+                }
                 _ => shared.link(Link::LoggedOut {
                     url: None,
                     pinned: false,
@@ -351,6 +439,39 @@ impl Backend {
             username: username.to_string(),
             password: password.to_string(),
         });
+    }
+
+    /// Autres adresses du serveur gardées dans le fichier de connexion (à distance).
+    pub fn alt_urls(&self) -> Vec<String> {
+        self.shared.alts()
+    }
+
+    /// Fixe les autres adresses du serveur (nom Tailscale, IP 100.x…). Prises en compte tout de
+    /// suite par la session ouverte (à la prochaine reconnexion) et écrites dans le fichier de
+    /// connexion s'il existe ; sinon à la prochaine connexion réussie.
+    pub fn set_alt_urls(&self, urls: Vec<String>) {
+        *self
+            .shared
+            .alt_urls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = urls.clone();
+        if let Ok(Some(saved)) = self.shared.store.load() {
+            if saved.alt_urls != urls {
+                if let Err(e) = self.shared.store.save(&Saved {
+                    alt_urls: urls.clone(),
+                    ..saved
+                }) {
+                    self.shared.emit(Event::Notice(e.message()));
+                }
+            }
+        }
+        if let Some(mut creds) = self.shared.creds() {
+            creds.alts = parse_alts(&creds.primary, &urls);
+            if creds.addr != creds.primary && !creds.alts.contains(&creds.addr) {
+                creds.addr = creds.primary.clone();
+            }
+            self.shared.set_creds(Some(creds));
+        }
     }
 
     /// Envoie une requête authentifiée. Le résultat arrive en `Event::Reply` avec le numéro
@@ -423,6 +544,11 @@ impl Backend {
     /// confirmation de l'empreinte. Geste explicite, jamais automatique.
     pub fn reset_pinned_certificate(&self, url: Option<String>) {
         self.shared.stop_session();
+        self.shared
+            .alt_urls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         let reason = self.shared.store.delete().err().map(|e| e.message());
         self.shared.link(Link::LoggedOut {
             url,
@@ -439,15 +565,13 @@ impl Backend {
                 url,
                 fingerprint,
                 token: Some(token),
+                alt_urls,
             })) => {
                 if let (Ok(addr), Some(fingerprint)) =
                     (ServerAddr::parse(&url), normalize_fingerprint(&fingerprint))
                 {
-                    self.shared.start_session(Creds {
-                        addr,
-                        fingerprint,
-                        token,
-                    });
+                    self.shared
+                        .start_session(Creds::new(addr, &alt_urls, fingerprint, token));
                 }
             }
             Ok(Some(saved)) => self.shared.link(Link::LoggedOut {
@@ -642,9 +766,10 @@ fn login(shared: &Arc<Shared>, url: &str, fingerprint: &str, username: &str, pas
     match try_login(shared, url, fingerprint, username, password) {
         Ok(creds) => {
             let saved = Saved {
-                url: creds.addr.url(),
+                url: creds.primary.url(),
                 fingerprint: creds.fingerprint.clone(),
                 token: Some(creds.token.clone()),
+                alt_urls: shared.alts(),
             };
             if let Err(e) = shared.store.save(&saved) {
                 shared.emit(Event::Notice(format!(
@@ -666,9 +791,16 @@ fn try_login(
     username: &str,
     password: &str,
 ) -> Result<Creds, NetError> {
-    let addr = ServerAddr::parse(url)?;
+    let primary = ServerAddr::parse(url)?;
     let fingerprint = normalize_fingerprint(fingerprint)
         .ok_or_else(|| NetError::Protocol("empreinte du certificat invalide".into()))?;
+    let mut creds = Creds::new(primary, &shared.alts(), fingerprint.clone(), String::new());
+    // Plusieurs adresses : la première qui répond avec le bon certificat (maison, sinon à
+    // distance). À défaut, la principale, dont l'erreur sera celle que l'utilisateur lit.
+    if let Some(found) = pick_address(&creds.candidates(), &fingerprint) {
+        creds.addr = found;
+    }
+    let addr = creds.addr.clone();
     let trust = Trust::Pinned(fingerprint.clone());
     // Version annoncée d'abord : un serveur incompatible est signalé clairement, avant de lui
     // confier un mot de passe.
@@ -696,11 +828,8 @@ fn try_login(
     )?
     .into_result()?
     .json()?;
-    Ok(Creds {
-        addr,
-        fingerprint,
-        token: response.token,
-    })
+    creds.token = response.token;
+    Ok(creds)
 }
 
 #[cfg(test)]
@@ -732,13 +861,15 @@ mod tests {
             store: temp_store("panic"),
             generation: AtomicU64::new(0),
             creds: Mutex::new(None),
+            alt_urls: Mutex::new(Vec::new()),
             protocol: PROTOCOL_VERSION,
         });
-        let creds = Creds {
-            addr: ServerAddr::parse("https://127.0.0.1:1").unwrap(),
-            fingerprint: "AA".into(),
-            token: "t".into(),
-        };
+        let creds = Creds::new(
+            ServerAddr::parse("https://127.0.0.1:1").unwrap(),
+            &[],
+            "AA".into(),
+            "t".into(),
+        );
         let call = Job::Call {
             id: 7,
             generation: 0,
@@ -767,11 +898,12 @@ mod tests {
             ),
             (
                 Job::Revoke {
-                    creds: Creds {
-                        addr: ServerAddr::parse("https://127.0.0.1:1").unwrap(),
-                        fingerprint: "AA".into(),
-                        token: "t".into(),
-                    },
+                    creds: Creds::new(
+                        ServerAddr::parse("https://127.0.0.1:1").unwrap(),
+                        &[],
+                        "AA".into(),
+                        "t".into(),
+                    ),
                 },
                 |e| matches!(e, Event::Notice(_)),
             ),
@@ -794,6 +926,7 @@ mod tests {
                 url: "https://127.0.0.1:1".into(),
                 fingerprint,
                 token: Some("jeton-secret".into()),
+                alt_urls: Vec::new(),
             })
             .unwrap();
         let dir = store.path().parent().unwrap().to_path_buf();
@@ -846,6 +979,7 @@ mod tests {
                 url: "https://127.0.0.1:1".into(),
                 fingerprint: fingerprint.clone(),
                 token: Some("jeton-secret".into()),
+                alt_urls: Vec::new(),
             })
             .unwrap();
         // Boucle locale, port fermé : la session essaie de se connecter et échoue aussitôt.

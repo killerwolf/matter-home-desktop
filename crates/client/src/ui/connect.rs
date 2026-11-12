@@ -25,6 +25,10 @@ enum Stage {
 
 pub struct ConnectScreen {
     url: String,
+    /// Autres adresses du même serveur (à distance : nom Tailscale, IP 100.x), facultatif.
+    remote: String,
+    /// Le champ `remote` a été rempli depuis le fichier de connexion (une fois par écran).
+    remote_loaded: bool,
     username: String,
     password: String,
     /// Adresse déjà approuvée (fichier de connexion) : pas de nouvelle empreinte à confirmer.
@@ -48,6 +52,8 @@ pub enum Field {
     Server,
     /// Sous le mot de passe (identifiants refusés).
     Password,
+    /// Sous l'adresse à distance.
+    Remote,
     /// Pas de champ en cause : en tête du formulaire.
     General,
 }
@@ -72,6 +78,8 @@ impl ConnectScreen {
     pub fn new() -> Self {
         Self {
             url: String::new(),
+            remote: String::new(),
+            remote_loaded: false,
             username: String::new(),
             password: String::new(),
             pinned_url: None,
@@ -88,6 +96,7 @@ impl ConnectScreen {
     pub fn logged_out(&mut self, url: Option<String>, pinned: bool, reason: Option<String>) {
         self.password.clear();
         self.stage = Stage::Form;
+        self.remote_loaded = false;
         self.pinned_url = url.clone().filter(|_| pinned);
         if let Some(url) = url {
             self.url = url;
@@ -197,6 +206,10 @@ impl ConnectScreen {
     }
 
     fn form(&mut self, ui: &mut egui::Ui, backend: &Backend) {
+        if !self.remote_loaded {
+            self.remote_loaded = true;
+            self.remote = backend.alt_urls().join(" ");
+        }
         // Un message qui ne vise aucun champ reste en tête ; les autres sont sous leur champ.
         let message = self.message.clone();
         let at = message.as_ref().map(|_| self.message_field);
@@ -241,6 +254,25 @@ impl ConnectScreen {
             RichText::new("Elle s'affiche dans le menu du serveur, sur l'autre Mac.")
                 .small()
                 .color(p.text_secondary),
+        );
+        ui.add_space(theme::tokens().space.sm);
+
+        label(ui, "Adresse à distance (facultatif)");
+        ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut self.remote)
+                .hint_text("mac-mini.tail1234.ts.net ou 100.x.y.z")
+                .desired_width(full),
+        );
+        error(ui, Field::Remote);
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "Le même serveur, joint par Tailscale quand vous n'êtes pas chez vous. \
+                 L'app essaie l'adresse ci-dessus, puis celle-ci. Plusieurs : séparez par un espace.",
+            )
+            .small()
+            .color(p.text_secondary),
         );
         ui.add_space(theme::tokens().space.md);
 
@@ -329,6 +361,14 @@ impl ConnectScreen {
             self.message = Some((false, e.message()));
             self.message_field = Field::Server;
             return;
+        }
+        match ServerAddr::parse_list(&self.remote) {
+            Ok(list) => backend.set_alt_urls(list.iter().map(ServerAddr::url).collect()),
+            Err(e) => {
+                self.message = Some((false, e.message()));
+                self.message_field = Field::Remote;
+                return;
+            }
         }
         if self.url_is_pinned() {
             backend.login_saved(self.username.trim(), &self.password);

@@ -450,6 +450,15 @@ fn detail(
         });
     });
     let kind = detail_stream(camera, state.main);
+    if remote_warning(kind, camera, matter_home_client::net::stream::is_remote()) {
+        ui.label(
+            RichText::new(
+                "Connexion à distance : le flux principal est lourd, « Fluide » est conseillé.",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+    }
     ui.add_space(4.0);
     let bar_h = theme::tokens().size.control;
     let avail = ui.available_size();
@@ -474,6 +483,12 @@ fn detail(
             ui.label(RichText::new(text).small().color(color));
         }
     });
+}
+
+/// Hors du réseau de la maison, l'ouverture d'une caméra reste sur le flux réduit (`Fluide`) ;
+/// choisir « Haute » reste possible, avec ce rappel quand une alternative réduite existe.
+pub fn remote_warning(kind: StreamKind, camera: &CameraView, remote: bool) -> bool {
+    remote && kind == StreamKind::Main && camera.has_sub_stream
 }
 
 /// Flux du détail : le principal si demandé, ou s'il n'y a que lui.
@@ -709,6 +724,12 @@ mod tests {
         assert_eq!(detail_stream(&c, true), StreamKind::Main);
         c.has_sub_stream = false;
         assert_eq!(detail_stream(&c, false), StreamKind::Main);
+        // Le rappel « à distance » : seulement le principal, avec une alternative réduite.
+        assert!(!remote_warning(StreamKind::Main, &c, true));
+        c.has_sub_stream = true;
+        assert!(remote_warning(StreamKind::Main, &c, true));
+        assert!(!remote_warning(StreamKind::Main, &c, false));
+        assert!(!remote_warning(StreamKind::Sub, &c, true));
     }
 
     #[test]

@@ -18,7 +18,7 @@ use tungstenite::Message;
 
 use protocol::wire::{ErrorBody, ErrorCode, ServerMessage, VersionInfo};
 
-use super::backend::{Creds, Shared};
+use super::backend::{pick_address, Creds, Shared};
 use super::error::{api_message, NetError};
 use super::http::{self, Request};
 use super::tls::{self, Trust};
@@ -57,12 +57,31 @@ enum Ended {
     Lost(String),
 }
 
-pub(super) fn run(shared: Arc<Shared>, generation: u64, creds: Creds) {
+pub(super) fn run(shared: Arc<Shared>, generation: u64, mut creds: Creds) {
     let mut attempt: u32 = 0;
     let mut quick_resyncs: u32 = 0;
     loop {
         if shared.generation() != generation {
             return;
+        }
+        // Plusieurs adresses (maison / à distance) : à chaque (re)connexion, la première qui
+        // répond avec le bon certificat. Quitter le Wi-Fi de la maison bascule ainsi toute seule.
+        if !creds.alts.is_empty() {
+            if let Some(found) = pick_address(&creds.candidates(), &creds.fingerprint) {
+                if found != creds.addr {
+                    log::info!("adresse du serveur utilisée : {}", found.authority());
+                    shared.emit(Event::Notice(if found == creds.primary {
+                        format!("Retour à l'adresse principale ({}).", found.authority())
+                    } else {
+                        format!("Adresse à distance utilisée : {}.", found.authority())
+                    }));
+                    creds.addr = found;
+                    shared.adopt_address(generation, &creds);
+                }
+            }
+            if shared.generation() != generation {
+                return;
+            }
         }
         let started = Instant::now();
         // Un fil qui meurt sans rien dire laisserait « connecté » affiché sur des données qui ne

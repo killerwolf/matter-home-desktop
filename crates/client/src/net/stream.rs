@@ -73,6 +73,17 @@ pub fn current_generation() -> Option<u64> {
     current().map(|(g, _)| g)
 }
 
+/// Adresse du serveur utilisée par la session en cours (maison ou à distance).
+pub fn active_address() -> Option<super::ServerAddr> {
+    current().map(|(_, c)| c.addr)
+}
+
+/// La session joint le serveur « à distance » (autre adresse que la principale, ou adresse
+/// Tailscale) : le débit est plus faible, la vidéo reste sur le flux réduit par défaut.
+pub fn is_remote() -> bool {
+    current().is_some_and(|(_, c)| c.is_remote())
+}
+
 fn current() -> Option<(u64, Creds)> {
     CURRENT
         .lock()
