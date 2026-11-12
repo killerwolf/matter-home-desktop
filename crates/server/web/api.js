@@ -25,6 +25,7 @@ export class ApiError extends Error {
     super(detail || code);
     this.status = status;
     this.code = code;
+    this.detail = detail;
     this.retryAfter = retryAfter;
   }
 }
@@ -52,6 +53,29 @@ export async function request(method, path, body) {
   const data = await response.json().catch(() => ({}));
   const error = data?.error ?? {};
   if (response.status === 401 && path !== "/api/login") {
+    save(null);
+    unauthorizedListeners.forEach((fn) => fn());
+  }
+  throw new ApiError(response.status, error.code ?? "unknown", error.detail, error.retry_after_s);
+}
+
+/**
+ * Une ressource binaire (l'image fixe d'une caméra) : même en-tête `Authorization` que le reste,
+ * jamais le jeton dans l'URL. Rend un `Blob`.
+ */
+export async function requestBlob(path) {
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let response;
+  try {
+    response = await fetch(path, { method: "GET", headers, cache: "no-store", credentials: "omit" });
+  } catch {
+    throw new ApiError(0, "network", "Serveur injoignable.");
+  }
+  if (response.ok) return response.blob();
+  const data = await response.json().catch(() => ({}));
+  const error = data?.error ?? {};
+  if (response.status === 401) {
     save(null);
     unauthorizedListeners.forEach((fn) => fn());
   }

@@ -12,6 +12,15 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Image fixe des caméras** (ticket n° 12). `GET /api/cameras/{id}/snapshot` rend un JPEG récent,
+  fabriqué en Rust pur (décodage VideoToolbox, encodage `jpeg-encoder`, sans FFmpeg). Cache partagé
+  de 15 s entre tous les clients, une seule capture à la fois par caméra, délai de 12 s ; si la
+  caméra est déjà regardée la capture se joint à la session en cours, sinon elle ouvre une session
+  courte (attend une image clé puis ferme) en respectant le registre des spectateurs et le verrou de
+  la caméra (jamais pendant un test). Le client de bureau et l'app web affichent cette image,
+  rafraîchie toutes les 20 s, dans les vignettes qui ne lisent pas de flux (pas de flux réduit, ou
+  au-delà de 4 flux). La CSP de l'app web ne change pas (l'image passe par `createImageBitmap`, pas
+  par une URL `blob:`). Protocole toujours en version 2. Voir [docs/protocole.md](docs/protocole.md).
 - **App web : refonte du style et des pages** (ticket n° 15). Style « tableau de bord » : coins
   carrés, marges minimales, tuiles jointives séparées par un trait de 1 px (variables `--web-*`
   dans `app.css`, `design/tokens.css` inchangé). **Appareils** : la pastille de température est
