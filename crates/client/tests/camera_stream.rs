@@ -28,16 +28,22 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Cherche `examples/camera_demo` dans les ancêtres de l'exécutable de test : avec le cargo récent
+/// (dossier de construction séparé), le test vit sous `target/debug/build/<crate>/<hash>/…` et non
+/// plus sous `target/debug/deps`.
 fn demo_binary() -> PathBuf {
     let exe = std::env::current_exe().expect("chemin du test");
-    let profile_dir = exe.parent().and_then(Path::parent).expect("dossier target");
-    let bin = profile_dir.join("examples").join("camera_demo");
-    assert!(
-        bin.exists(),
-        "serveur de démonstration introuvable ({}) : `cargo build -p matter-home-server --examples`",
-        bin.display()
-    );
-    bin
+    let bin = exe
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("examples").join("camera_demo"))
+        .find(|p| p.is_file());
+    bin.unwrap_or_else(|| {
+        panic!(
+            "serveur de démonstration introuvable au-dessus de {} : `cargo build -p matter-home-server --examples`",
+            exe.display()
+        )
+    })
 }
 
 fn temp_dir(tag: &str) -> PathBuf {

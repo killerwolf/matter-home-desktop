@@ -18,22 +18,21 @@ pub const PASSWORD: &str = "un-mot-de-passe-solide-pour-les-tests";
 pub const PLUG: u64 = 0xD3_0004;
 pub const LIVING: u64 = 0xD3_0001;
 
-/// Binaire du serveur, construit à côté des tests par `cargo test --workspace`
-/// (`target/debug/deps/<test>` → `target/debug/matter-home-server`).
+/// Binaire du serveur, construit à côté des tests par `cargo test --workspace`. On le cherche dans
+/// les ancêtres de l'exécutable de test, car selon la version de cargo celui-ci est sous
+/// `target/debug/deps` ou sous `target/debug/build/<crate>/<hash>/…`.
 fn server_binary() -> PathBuf {
     let exe = std::env::current_exe().expect("chemin du test");
-    let profile_dir = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("dossier target")
-        .to_path_buf();
-    let bin = profile_dir.join("matter-home-server");
-    assert!(
-        bin.exists(),
-        "serveur introuvable ({}) : lancez `cargo test --workspace` ou `cargo build -p matter-home-server`",
-        bin.display()
-    );
-    bin
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join("matter-home-server"))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "serveur introuvable au-dessus de {} : lancez `cargo test --workspace` ou `cargo build -p matter-home-server`",
+                exe.display()
+            )
+        })
 }
 
 pub fn temp_dir(tag: &str) -> PathBuf {
