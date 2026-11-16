@@ -38,7 +38,9 @@ const CLUSTER_BOOLEAN_STATE: u32 = 0x0045;
 const CLUSTER_ELECTRICAL_POWER: u32 = 0x0090;
 const CLUSTER_ELECTRICAL_ENERGY: u32 = 0x0091;
 pub(crate) const CLUSTER_WINDOW_COVERING: u32 = 0x0102;
+const CLUSTER_ILLUMINANCE: u32 = 0x0400;
 const CLUSTER_TEMPERATURE: u32 = 0x0402;
+const CLUSTER_PRESSURE: u32 = 0x0403;
 const CLUSTER_HUMIDITY: u32 = 0x0405;
 
 const ATTR_MEASURED_VALUE: u32 = 0x0000;
@@ -63,10 +65,43 @@ const COVER_FEATURE_POSITION_AWARE_LIFT: u64 = 0x4;
 /// Type d'appareil « Aggregator » : le nœud est un pont.
 const DEVICE_TYPE_AGGREGATOR: u64 = 0x000E;
 
-/// Bornes demandées pour la souscription : au plus un rapport toutes les 10 s,
-/// au moins un toutes les 5 min (un appareil sur pile peut choisir plus long).
-const SUB_MIN_FLOOR_S: u16 = 10;
-const SUB_MAX_CEILING_S: u16 = 300;
+/// Bornes demandées pour la souscription (MinInterval plancher, MaxInterval plafond) :
+/// - plafond : 900 s (un rapport de vie toutes les 15 min) pour un nœud sur pile,
+///   300 s (5 min) sur secteur ou si l'alimentation est inconnue ;
+/// - plancher : 60 s si tous les attributs suivis sont des mesures lentes
+///   (`SLOW_CLUSTERS`), 10 s dès qu'un attribut est réactif ou non classé.
+///
+/// L'appareil peut négocier un MaxInterval plus long ; `listen` suit la valeur renvoyée.
+const SUB_MIN_FLOOR_FAST_S: u16 = 10;
+const SUB_MIN_FLOOR_SLOW_S: u16 = 60;
+const SUB_MAX_CEILING_MAINS_S: u16 = 300;
+const SUB_MAX_CEILING_BATTERY_S: u16 = 900;
+
+/// Clusters de mesures lentes (liste blanche) : température, humidité relative,
+/// pression, éclairement, Power Source (niveau de pile). Tout le reste est réactif.
+const SLOW_CLUSTERS: [u32; 5] = [
+    CLUSTER_TEMPERATURE,
+    CLUSTER_HUMIDITY,
+    CLUSTER_PRESSURE,
+    CLUSTER_ILLUMINANCE,
+    CLUSTER_POWER_SOURCE,
+];
+
+/// (plancher, plafond) en secondes pour la souscription d'un nœud.
+fn subscription_bounds(on_battery: bool, paths: &[(u16, u32, u32)]) -> (u16, u16) {
+    let slow = !paths.is_empty() && paths.iter().all(|(_, c, _)| SLOW_CLUSTERS.contains(c));
+    let floor = if slow {
+        SUB_MIN_FLOOR_SLOW_S
+    } else {
+        SUB_MIN_FLOOR_FAST_S
+    };
+    let ceiling = if on_battery {
+        SUB_MAX_CEILING_BATTERY_S
+    } else {
+        SUB_MAX_CEILING_MAINS_S
+    };
+    (floor, ceiling)
+}
 
 /// Délai d'une requête simple. Un appareil « sleepy » répond en quelques
 /// secondes à quelques dizaines ; matc (copie locale) retransmet pendant 45 s.
@@ -463,7 +498,8 @@ async fn run_session(ctx: &Ctx, node_id: u64, conn: &Connection) -> Result<()> {
         // Aucune souscription ici (rien à suivre) : pas d'étiquette de fabric.
         return liveness_loop(ctx, node_id, conn).await;
     }
-    match subscribe(ctx, &routes, conn, &paths).await {
+    let bounds = subscription_bounds(node.endpoints.battery_endpoint.is_some(), &paths);
+    match subscribe(ctx, &routes, conn, &paths, bounds).await {
         Ok(max_interval) => {
             mode(
                 ctx,
@@ -867,11 +903,12 @@ async fn subscribe(
     routes: &Routes,
     conn: &Connection,
     paths: &[(u16, u32, u32)],
+    (floor_s, ceiling_s): (u16, u16),
 ) -> Result<u64> {
     let node_id = routes.node_id;
     let priming = timeout(
         REQUEST_TIMEOUT,
-        conn.im_subscribe_request_paths(paths, false, SUB_MIN_FLOOR_S, SUB_MAX_CEILING_S),
+        conn.im_subscribe_request_paths(paths, false, floor_s, ceiling_s),
     )
     .await
     .map_err(|_| anyhow!("pas de réponse à la souscription"))??;
@@ -886,7 +923,7 @@ async fn subscribe(
     ack_report(conn, &priming).await?;
 
     // Le rapport initial peut être découpé ; le SubscribeResponse (avec le MaxInterval) suit.
-    let mut max_interval = SUB_MAX_CEILING_S as u64;
+    let mut max_interval = ceiling_s as u64;
     let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
     loop {
         let ev = match tokio::time::timeout_at(deadline, conn.recv_event()).await {
@@ -1255,6 +1292,34 @@ async fn alongside_fabric_label<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscription_bounds_follow_power_and_reactivity() {
+        let temp = [(1, CLUSTER_TEMPERATURE, ATTR_MEASURED_VALUE)];
+        let temp_bat = [
+            (1, CLUSTER_TEMPERATURE, ATTR_MEASURED_VALUE),
+            (1, CLUSTER_HUMIDITY, ATTR_MEASURED_VALUE),
+            (0, CLUSTER_POWER_SOURCE, ATTR_BAT_PERCENT_REMAINING),
+        ];
+        let contact = [
+            (1, CLUSTER_BOOLEAN_STATE, ATTR_STATE_VALUE),
+            (0, CLUSTER_POWER_SOURCE, ATTR_BAT_PERCENT_REMAINING),
+        ];
+        let plug = [(1, CLUSTER_ON_OFF, ATTR_ON_OFF)];
+        let mixed = [
+            (1, CLUSTER_TEMPERATURE, ATTR_MEASURED_VALUE),
+            (2, CLUSTER_BOOLEAN_STATE, ATTR_STATE_VALUE),
+        ];
+        assert_eq!(subscription_bounds(true, &temp), (60, 900));
+        assert_eq!(subscription_bounds(true, &temp_bat), (60, 900));
+        assert_eq!(subscription_bounds(true, &contact), (10, 900));
+        assert_eq!(subscription_bounds(false, &plug), (10, 300));
+        assert_eq!(subscription_bounds(true, &mixed), (10, 900));
+        // Cluster non classé : réactif par prudence.
+        assert_eq!(subscription_bounds(false, &[(1, 0x9999, 0)]), (10, 300));
+        // Lent mais sur secteur : plafond court.
+        assert_eq!(subscription_bounds(false, &temp), (60, 300));
+    }
 
     fn node_with_bridge() -> StoredNode {
         StoredNode {

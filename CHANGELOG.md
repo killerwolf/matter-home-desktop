@@ -8,6 +8,12 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- Capteurs sur pile : le rapport de vie de la souscription est demandé toutes les 15 min au plus (au lieu de 5 min), et le minimum passe à 60 s quand le nœud ne suit que des mesures lentes (température, humidité, pression, éclairement, niveau de pile), pour économiser les piles.
+
 ## [1.0.0] - 2026-11-13
 
 Version 1 : l'application est séparée en deux parties, **sans aucun cloud**. Le **serveur**

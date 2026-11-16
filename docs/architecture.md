@@ -84,7 +84,7 @@ attributs qu'elle sait afficher :
 | Window Covering `0x0102` | CurrentPositionLiftPercent100ths `0x000E`, OperationalStatus `0x000A` | centièmes de % fermés (0 = ouvert) → % d'ouverture ; bits 0-1 / 2-3 : arrêt, ouverture, fermeture. Commandes UpOrOpen `0x00`, DownOrClose `0x01`, StopMotion `0x02`, GoToLiftPercentage `0x05` (champ 0 : uint16). La position n'est suivie que si la FeatureMap annonce « PositionAwareLift » |
 | Bridged Device Basic Information `0x0039` | Reachable `0x0011` | `false` → l'appareil ponté passe « Injoignable » sans nouvel essai de notre part |
 
-- Intervalle demandé : 10 s minimum, 300 s maximum ; un appareil sur pile peut imposer plus.
+- Intervalle demandé : maximum 900 s (15 min) pour un nœud sur pile (Power Source avec la feature Battery), 300 s sinon ; minimum 60 s si tous les attributs suivis sont des mesures lentes (température, humidité, pression, éclairement, Power Source), 10 s dès qu'un attribut est réactif ou non classé. L'appareil peut imposer plus long.
   Si la souscription échoue, l'application interroge l'appareil toutes les 30 s.
 - Sans rapport pendant MaxInterval + 30 s, ou après deux lectures ratées, le nœud passe
   « Injoignable » ; nouvel essai de 5 s à 120 s. À la reconnexion, l'adresse connue est
