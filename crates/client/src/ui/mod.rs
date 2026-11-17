@@ -171,8 +171,6 @@ struct Toast {
     until: Instant,
 }
 
-/// Largeur de la fenêtre de détail d'un appareil.
-const DETAIL_WIDTH: f32 = 580.0;
 const TOAST_LIFETIME: Duration = Duration::from_secs(20);
 /// Attente maximale des réponses du plan et des règles à la fermeture de la fenêtre.
 const EXIT_FLUSH: Duration = Duration::from_millis(1500);
@@ -189,7 +187,7 @@ pub struct MatterApp {
     selected: Option<u64>,
     /// Commandes d'appareils qui viennent de partir : la tuile montre aussitôt ce qu'on attend.
     expect: HashMap<u64, devices::Expect>,
-    /// Nom et icône à enregistrer à la fin de l'image (choisis dans la fenêtre de détail).
+    /// Nom et icône à enregistrer à la fin de l'image (choisis dans le panneau de détail).
     pending_customize: Option<(u64, String, Option<Symbol>)>,
     code: String,
     pairing: Pairing,
@@ -226,6 +224,8 @@ pub struct MatterApp {
     rules: rules::RulesView,
     /// Appareil dont l'effacement d'historique attend confirmation.
     confirm_clear: Option<u64>,
+    /// Appareil dont l'oubli attend une confirmation.
+    confirm_forget: Option<u64>,
     /// Nom et icône en cours de modification sur la fiche.
     device_edit: Option<customize::DeviceEdit>,
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
@@ -300,6 +300,7 @@ impl MatterApp {
             plan: plan::PlanView::new(),
             rules: rules::RulesView::new(),
             confirm_clear: None,
+            confirm_forget: None,
             device_edit: None,
             select_on_arrival: None,
             data_dialog: None,
@@ -483,7 +484,7 @@ impl MatterApp {
     }
 
     /// Les attentes de commandes se purgent à chaque image : réalisées ou périmées, elles ne sont
-    /// plus montrées (ni dans la grille, ni dans la fenêtre de détail).
+    /// plus montrées (ni dans la grille, ni dans le panneau de détail).
     fn purge_expect(&mut self, now: Instant) {
         let known = &self.model.devices;
         self.expect
@@ -547,8 +548,7 @@ impl MatterApp {
             self.set_cover(id, command);
         }
         if let Some(id) = out.detail {
-            self.selected = Some(id);
-            self.export_message = None;
+            self.select(id);
         }
     }
 
@@ -1022,6 +1022,7 @@ impl MatterApp {
         self.pairing = Pairing::Idle;
         self.code.clear();
         self.confirm_clear = None;
+        self.confirm_forget = None;
         self.device_edit = None;
         self.selected = None;
         self.expect.clear();
@@ -1173,7 +1174,7 @@ impl MatterApp {
             .find(|(_, d)| d.info.name.to_lowercase().contains(&wanted))
             .map(|(id, _)| *id)
         {
-            self.selected = Some(id);
+            self.select(id);
             self.select_on_arrival = None;
         }
     }
@@ -1756,7 +1757,21 @@ impl MatterApp {
         self.selected = None;
         self.device_edit = None;
         self.confirm_clear = None;
+        self.confirm_forget = None;
         self.export_message = None;
+    }
+
+    /// Ouvre le détail d'un appareil. Si ce n'est pas celui déjà ouvert, le nom en cours de
+    /// saisie, les confirmations (effacer, oublier) et le message d'export ne le suivent pas :
+    /// ils concernaient l'autre appareil.
+    fn select(&mut self, id: u64) {
+        if self.selected != Some(id) {
+            self.device_edit = None;
+            self.confirm_clear = None;
+            self.confirm_forget = None;
+            self.export_message = None;
+        }
+        self.selected = Some(id);
     }
 
     /// Une notification dans l'application (pas celle du système).
@@ -1793,32 +1808,69 @@ impl MatterApp {
         self.add_open = open;
     }
 
-    /// La fenêtre de détail : centrée, de la taille de son contenu, sur un fond assombri. « Fermer »,
-    /// la touche Échap ou un clic à l'extérieur la ferment.
-    fn detail_window(&mut self, ctx: &egui::Context, layout: &devices::Layout) {
-        if self.selected_device().is_none() {
+    /// Échap ferme le panneau de détail. Pendant l'édition du nom (ou la confirmation
+    /// d'effacement), elle annule cela sans fermer le panneau.
+    fn detail_escape(&mut self, ctx: &egui::Context) {
+        // Échap appartient d'abord au menu, à la liste ou à la fenêtre ouverte au premier plan.
+        if self.selected_device().is_none()
+            || egui::Popup::is_any_open(ctx)
+            || self.add_open
+            || self.data_dialog.is_some()
+            || self.close_prompt.is_some()
+            || self.plan.has_window()
+            || !ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             return;
         }
-        // Échap pendant l'édition du nom (ou la confirmation d'effacement) annule cela, sans
-        // fermer la fenêtre : la touche est consommée avant que la fenêtre ne la voie.
         let editing = self.selected.is_some_and(|id| {
             self.device_edit.as_ref().is_some_and(|e| e.node_id == id)
                 || self.confirm_clear == Some(id)
+                || self.confirm_forget == Some(id)
         });
-        if editing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if editing {
             self.device_edit = None;
             self.confirm_clear = None;
-        }
-        let modal = egui::Modal::new(egui::Id::unique("device-detail")).show(ctx, |ui| {
-            ui.set_width(DETAIL_WIDTH);
-            self.details(ui, layout);
-        });
-        if modal.should_close() {
+            self.confirm_forget = None;
+        } else {
             self.close_detail();
         }
     }
 
-    /// Le contenu de la fenêtre : l'en-tête (icône, nom, pièce, valeur, commande principale), la
+    /// Le détail est-il assez à l'étroit pour remplacer la grille plutôt que de se mettre à côté ?
+    fn detail_is_narrow(ctx: &egui::Context) -> bool {
+        ctx.content_rect().width() < theme::tokens().size.detail_narrow
+    }
+
+    /// Le panneau de détail, à droite de la vue (inspecteur) : redimensionnable, de la largeur
+    /// des tokens. Sur une fenêtre étroite il n'est pas dessiné ici : `detail_full` le met à la
+    /// place de la vue.
+    fn detail_panel(&mut self, ui: &mut egui::Ui, layout: &devices::Layout) {
+        if self.selected_device().is_none() {
+            return;
+        }
+        self.detail_escape(&ui.ctx().clone());
+        if self.selected_device().is_none() || Self::detail_is_narrow(ui.ctx()) {
+            return;
+        }
+        let size = theme::tokens().size;
+        egui::Panel::right("device_detail")
+            .resizable(true)
+            .default_size(size.detail_panel)
+            .size_range(size.detail_panel_min..=size.detail_panel_max)
+            .show(ui, |ui| self.details(ui, layout));
+    }
+
+    /// Fenêtre étroite : le détail prend toute la largeur, à la place de la vue. Rend `true` s'il
+    /// l'a dessiné.
+    fn detail_full(&mut self, ui: &mut egui::Ui, layout: &devices::Layout) -> bool {
+        if self.selected_device().is_none() || !Self::detail_is_narrow(ui.ctx()) {
+            return false;
+        }
+        self.details(ui, layout);
+        true
+    }
+
+    /// Le contenu du panneau : l'en-tête (icône, nom, pièce, valeur, commande principale), la
     /// courbe seulement si l'appareil en a une, les actions, puis les infos techniques repliées.
     fn details(&mut self, ui: &mut egui::Ui, layout: &devices::Layout) {
         let Some(id) = self.selected else {
@@ -1930,16 +1982,13 @@ impl MatterApp {
         }
         ui.add_space(t.space.sm);
 
-        // Tout ce qui est sous l'en-tête défile, dans la hauteur de la fenêtre moins ses marges et
-        // l'en-tête : à 520 px de haut, rien n'est coupé, tout reste atteignable.
-        let max_height = (ui.ctx().content_rect().height() - 80.0 - 120.0).max(120.0);
+        // Tout ce qui est sous l'en-tête défile, dans la hauteur restante du panneau.
         let window = &mut self.window;
         let empty_series = DeviceSeries::default();
         let series = self.series.get(&id).unwrap_or(&empty_series);
         let export_message = &self.export_message;
         egui::ScrollArea::vertical()
-            .max_height(max_height)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Un appareil injoignable : la raison et le délai du nouvel essai, en tête, pas
                 // repliés dans les infos techniques.
@@ -2027,16 +2076,25 @@ impl MatterApp {
                     {
                         self.confirm_clear = Some(id);
                     }
-                    if device.info.bridge.is_none()
-                && ui
-                    .button("Oublier")
-                    .on_hover_text(
-                        "Retire l'appareil de cette application (il reste dans Apple Home).",
-                    )
-                    .clicked()
-            {
-                forget = true;
-            }
+                    if device.info.bridge.is_none() {
+                        if self.confirm_forget == Some(id) {
+                            ui.label("Oublier cet appareil ?");
+                            forget = ui
+                                .button(RichText::new("Oui, oublier").color(p.error))
+                                .clicked();
+                            if ui.button("Annuler").clicked() {
+                                self.confirm_forget = None;
+                            }
+                        } else if ui
+                            .button("Oublier")
+                            .on_hover_text(
+                                "Retire l'appareil de cette application (il reste dans Apple Home).",
+                            )
+                            .clicked()
+                        {
+                            self.confirm_forget = Some(id);
+                        }
+                    }
                 });
                 let mut save = None;
                 if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
@@ -2156,8 +2214,7 @@ impl MatterApp {
             self.set_cover(id, command);
         }
         if let Some(other) = open_device {
-            self.selected = Some(other);
-            self.export_message = None;
+            self.select(other);
         }
         if customize {
             self.device_edit = Some(fresh_edit);
@@ -2169,6 +2226,7 @@ impl MatterApp {
             self.customize(node, Some(name), icon);
         }
         if forget {
+            self.confirm_forget = None;
             self.forget_device(id);
             self.close_detail();
         }
@@ -2564,11 +2622,11 @@ impl eframe::App for MatterApp {
         }
 
         // Onglet Appareils : les tuiles rangées sont calculées une fois par image, pour la
-        // grille et pour la fenêtre de détail (au clic sur une tuile, ou sur un appareil du plan).
+        // grille et pour le panneau de détail (au clic sur une tuile, ou sur un appareil du plan).
         self.purge_expect(Instant::now());
         let show_detail = match self.view {
             View::Devices => true,
-            // Sur le plan en mode Modifier, un clic sélectionne l'objet : pas de fenêtre.
+            // Sur le plan en mode Modifier, un clic sélectionne l'objet : pas de panneau.
             View::Plan => !self.plan.is_editing(),
             _ => false,
         };
@@ -2579,39 +2637,47 @@ impl eframe::App for MatterApp {
         };
 
         let was_editing = self.plan.is_editing();
-        egui::CentralPanel::default().show(ui, |ui| match self.view {
-            View::Devices => {
-                let out = devices::show(ui, &self.model.devices, &layout, &self.expect);
-                self.apply_tiles(out);
+        if show_detail {
+            self.detail_panel(ui, &layout);
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            if show_detail && self.detail_full(ui, &layout) {
+                return;
             }
-            View::Plan => match self.plan.show(ui, &self.model) {
-                // La même fenêtre de détail que dans Appareils, au-dessus du plan.
-                plan::PlanAction::OpenDevice(id) => {
-                    self.selected = Some(id);
-                    self.export_message = None;
+            match self.view {
+                View::Devices => {
+                    let out = devices::show(
+                        ui,
+                        &self.model.devices,
+                        &layout,
+                        &self.expect,
+                        self.selected,
+                    );
+                    self.apply_tiles(out);
                 }
-                plan::PlanAction::Customize {
-                    node_id,
-                    name,
-                    icon,
-                } => self.customize(node_id, name, icon),
-                plan::PlanAction::None => {}
-            },
-            View::Temperatures => self.temperatures_page(ui),
-            View::Cameras => cameras::show(ui, &self.model, self.plan.plan()),
-            View::Rules => {
-                if let rules::RulesAction::Test(id) =
-                    self.rules
-                        .show(ui, &self.model.devices, &self.model.rule_runs)
-                {
-                    self.test_rule(id);
+                View::Plan => match self.plan.show(ui, &self.model) {
+                    // Le même panneau de détail que dans Appareils, à côté du plan.
+                    plan::PlanAction::OpenDevice(id) => self.select(id),
+                    plan::PlanAction::Customize {
+                        node_id,
+                        name,
+                        icon,
+                    } => self.customize(node_id, name, icon),
+                    plan::PlanAction::None => {}
+                },
+                View::Temperatures => self.temperatures_page(ui),
+                View::Cameras => cameras::show(ui, &self.model, self.plan.plan()),
+                View::Rules => {
+                    if let rules::RulesAction::Test(id) =
+                        self.rules
+                            .show(ui, &self.model.devices, &self.model.rule_runs)
+                    {
+                        self.test_rule(id);
+                    }
                 }
             }
         });
         self.sync_edit_mode(was_editing);
-        if show_detail {
-            self.detail_window(&ui.ctx().clone(), &layout);
-        }
     }
 }
 

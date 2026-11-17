@@ -489,6 +489,7 @@ pub fn show(
     devices: &BTreeMap<u64, Device>,
     layout: &Layout,
     expect: &HashMap<u64, Expect>,
+    selected: Option<u64>,
 ) -> Outcome {
     let mut out = Outcome::default();
     if devices.is_empty() {
@@ -588,6 +589,7 @@ pub fn show(
                         tile_rect,
                         pending.is_some(),
                         busy,
+                        selected == Some(*id),
                         &mut out,
                     );
                 }
@@ -611,6 +613,7 @@ fn card(
     rect: Rect,
     expecting: bool,
     busy: bool,
+    selected: bool,
     out: &mut Outcome,
 ) {
     let t = theme::tokens();
@@ -639,7 +642,9 @@ fn card(
     painter.rect_filled(
         rect,
         radius,
-        if hovered && !tile.lit {
+        if selected {
+            t.selected(p)
+        } else if hovered && !tile.lit {
             t.hover(p)
         } else {
             p.surface
@@ -652,7 +657,7 @@ fn card(
             t.tile.on_tint.gamma_multiply(t.tile.on_tint_alpha),
         );
     }
-    let border = if expecting {
+    let border = if expecting || selected {
         Stroke::new(1.5, p.accent_text)
     } else {
         Stroke::new(1.0, p.line)

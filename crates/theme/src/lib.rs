@@ -169,6 +169,12 @@ pub struct Size {
     pub switch_h: f32,
     /// Hauteur de la légende sous une vignette.
     pub caption_row: f32,
+    /// Panneau de détail d'un appareil (client) : largeur de départ, bornes du redimensionnement.
+    pub detail_panel: f32,
+    pub detail_panel_min: f32,
+    pub detail_panel_max: f32,
+    /// Sous cette largeur de fenêtre, le détail remplace la grille au lieu de se mettre à côté.
+    pub detail_narrow: f32,
 }
 
 /// Une tuile d'appareil (écran Appareils).
