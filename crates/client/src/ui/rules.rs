@@ -13,6 +13,7 @@ use protocol::automation::{
     is_webhook_url, Action, Condition, CoverCommand, OnOffCommand, Rule, RuleSet, Trigger,
 };
 use protocol::events::{now_unix, MeasureKind};
+use protocol::mode::HomeMode;
 use protocol::wire::RuleRunView;
 
 const DAYS: [&str; 7] = ["L", "M", "M", "J", "V", "S", "D"];
@@ -253,6 +254,20 @@ fn hhmm(
     changed
 }
 
+/// Coche ou décoche un mode d'une condition. Le dernier mode coché ne se décoche pas (une
+/// condition sans mode ne serait jamais vraie, et le serveur la refuse) ; l'ordre reste celui de
+/// `HomeMode::ALL`.
+fn toggle_mode(modes: &mut Vec<HomeMode>, mode: HomeMode, on: bool) {
+    if on {
+        if !modes.contains(&mode) {
+            modes.push(mode);
+        }
+    } else if modes.len() > 1 {
+        modes.retain(|m| *m != mode);
+    }
+    modes.sort();
+}
+
 fn trigger_kind(t: &Trigger) -> usize {
     match t {
         Trigger::Contact { .. } => 0,
@@ -260,15 +275,17 @@ fn trigger_kind(t: &Trigger) -> usize {
         Trigger::Switch { .. } => 2,
         Trigger::Unreachable { .. } => 3,
         Trigger::Time { .. } => 4,
+        Trigger::Mode { .. } => 5,
     }
 }
 
-const TRIGGER_KINDS: [&str; 5] = [
+const TRIGGER_KINDS: [&str; 6] = [
     "Une porte / fenêtre change",
     "Une mesure franchit un seuil",
     "Une prise / lampe change",
     "Un appareil reste injoignable",
     "À une heure donnée",
+    "Le mode de la maison change",
 ];
 
 fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
@@ -292,11 +309,24 @@ fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
             node_id: first_device(devices, Need::Any),
             for_s: 3600,
         },
+        5 => Trigger::Mode {
+            to: HomeMode::Absent,
+        },
         _ => Trigger::Time {
             hour: 7,
             minute: 0,
             days: [true; 7],
         },
+    }
+}
+
+/// « Absent », « Absent ou Vacances », « Absent, Nuit ou Vacances ».
+fn modes_text(modes: &[HomeMode]) -> String {
+    let labels: Vec<&str> = modes.iter().map(|m| m.label()).collect();
+    match labels.split_last() {
+        None => "?".to_string(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} ou {last}", rest.join(", ")),
     }
 }
 
@@ -341,6 +371,7 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
             format!("{} injoignable {} min", name(*node_id), for_s / 60)
         }
         Trigger::Time { hour, minute, .. } => format!("à {hour:02}:{minute:02}"),
+        Trigger::Mode { to } => format!("le mode devient {}", to.label()),
     };
     let then: Vec<String> = rule
         .actions
@@ -386,6 +417,7 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
                 measure_label(*measure),
                 if *above { ">" } else { "<" }
             ),
+            Condition::Mode { is } => format!("le mode est {}", modes_text(is)),
         })
         .collect();
     // Une phrase : « Quand Porte s'ouvre, seulement si il est entre 22:00 et 07:00, allumer
@@ -942,6 +974,16 @@ impl RulesView {
                     changed |= ui.toggle_value(&mut days[i], *d).changed();
                 }
             }
+            Trigger::Mode { to } => {
+                ui.label("Le mode devient");
+                egui::ComboBox::from_id_salt(("t_mode", rid))
+                    .selected_text(to.label())
+                    .show_ui(ui, |ui| {
+                        for mode in HomeMode::ALL {
+                            changed |= ui.selectable_value(to, mode, mode.label()).changed();
+                        }
+                    });
+            }
         });
         ui.add_space(6.0);
 
@@ -998,6 +1040,16 @@ impl RulesView {
                         );
                         changed |= ui.add(egui::DragValue::new(value).speed(0.5)).changed();
                     }
+                    Condition::Mode { is } => {
+                        ui.label("le mode est");
+                        for mode in HomeMode::ALL {
+                            let mut on = is.contains(&mode);
+                            if ui.toggle_value(&mut on, mode.label()).changed() {
+                                toggle_mode(is, mode, on);
+                                changed = true;
+                            }
+                        }
+                    }
                 }
                 if ui
                     .small_button("✖")
@@ -1034,6 +1086,13 @@ impl RulesView {
                     rule.conditions.push(Condition::Switch {
                         node_id: first_device(devices, Need::Switch),
                         on: true,
+                    });
+                    changed = true;
+                    ui.close();
+                }
+                if ui.button("Mode de la maison").clicked() {
+                    rule.conditions.push(Condition::Mode {
+                        is: vec![HomeMode::Absent],
                     });
                     changed = true;
                     ui.close();
@@ -1338,6 +1397,51 @@ mod tests {
         assert!(why.contains(&set.rules[1].name), "{why}");
     }
 
+    /// Ticket n° 8 : une règle « quand le mode devient… » et sa condition de mode se lisent en
+    /// français, et une condition garde toujours au moins un mode, dans l'ordre habituel.
+    #[test]
+    fn mode_rules_read_naturally_and_a_condition_keeps_one_mode() {
+        let mut rule = Rule::new(1);
+        rule.trigger = default_trigger(5, &BTreeMap::new());
+        assert_eq!(trigger_kind(&rule.trigger), 5);
+        assert_eq!(TRIGGER_KINDS[5], "Le mode de la maison change");
+        rule.actions.clear();
+        assert_eq!(
+            summary(&rule, &BTreeMap::new()),
+            "Quand le mode devient Absent, ne rien faire."
+        );
+        rule.trigger = Trigger::Contact {
+            node_id: 7,
+            open: true,
+        };
+        rule.conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Absent, HomeMode::Nuit, HomeMode::Vacances],
+        }];
+        assert_eq!(
+            summary(&rule, &BTreeMap::new()),
+            "Quand ? s'ouvre, seulement si le mode est Absent, Nuit ou Vacances, ne rien faire."
+        );
+        assert_eq!(
+            modes_text(&[HomeMode::Nuit, HomeMode::Vacances]),
+            "Nuit ou Vacances"
+        );
+
+        let mut modes = vec![HomeMode::Absent];
+        toggle_mode(&mut modes, HomeMode::Absent, false);
+        assert_eq!(
+            modes,
+            [HomeMode::Absent],
+            "le dernier mode ne se décoche pas"
+        );
+        toggle_mode(&mut modes, HomeMode::Present, true);
+        assert_eq!(
+            modes,
+            [HomeMode::Present, HomeMode::Absent],
+            "ordre habituel"
+        );
+        toggle_mode(&mut modes, HomeMode::Present, false);
+        assert_eq!(modes, [HomeMode::Absent]);
+    }
     #[test]
     fn summary_reads_naturally() {
         let mut devices = BTreeMap::new();

@@ -344,6 +344,8 @@ mod tests {
             status,
             has_sub_stream: true,
             stream: None::<StreamInfo>,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 

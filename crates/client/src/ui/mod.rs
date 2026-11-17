@@ -45,10 +45,11 @@ use matter_home_client::temperatures::{self as temps, TempFetch};
 use protocol::automation::{CoverCommand, OnOffCommand};
 use protocol::events::{now_unix, CoverMotion};
 use protocol::home::{HomePlan, Symbol};
+use protocol::mode::HomeMode;
 use protocol::wire::{
     CoverRequest, CustomizeRequest, HistoryResponse, IdentityInfo, ImportIdentity, ImportResponse,
-    ImportSummary, OnOffRequest, PairRequest, Snapshot, TextIds, WireEvent, WireStatus,
-    HISTORY_MAX_LIMIT,
+    ImportSummary, ModeRequest, OnOffRequest, PairRequest, Snapshot, TextIds, WireEvent,
+    WireStatus, HISTORY_MAX_LIMIT,
 };
 
 /// Ce que les vues d'un appareil demandent à l'application (elles ne parlent pas au réseau).
@@ -412,6 +413,15 @@ impl MatterApp {
 
     fn command(&mut self, what: &'static str, request: Request) {
         self.request(Pending::Command { what, node: None }, request);
+    }
+
+    /// Demande au serveur de changer le mode de la maison. Le sélecteur n'affiche que le mode
+    /// que le serveur confirme (`mode_changed`) : un refus passe par le message d'erreur habituel.
+    fn set_mode(&mut self, mode: HomeMode) {
+        self.command(
+            "Changement de mode",
+            Request::json("PUT", "/api/mode", &ModeRequest { mode }),
+        );
     }
 
     fn pair(&mut self, code: String) {
@@ -1249,6 +1259,7 @@ impl MatterApp {
             Change::RulesChanged(rules) => self.rules.on_server(*rules),
             // `Model::cameras` est déjà à jour ; les pages caméras le relisent à chaque image.
             Change::CamerasChanged => {}
+            Change::ModeChanged(mode) => self.push_log(format!("Mode : {}", mode.label())),
         }
     }
 
@@ -2240,6 +2251,7 @@ impl MatterApp {
         let mut menu_export = false;
         let mut menu_import = false;
         let mut logout = false;
+        let mut chosen_mode = None;
         egui::Panel::top("top").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("Fichier", |ui| {
@@ -2301,6 +2313,26 @@ impl MatterApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Le mode de la maison, visible depuis toutes les vues : un clic ouvre les
+                    // quatre choix (le serveur confirme, le sélecteur suit l'événement).
+                    if self.connected() {
+                        let shown = RichText::new(format!("Mode : {}", self.model.mode.label()))
+                            .strong()
+                            .color(theme::palette(ui).accent_text);
+                        ui.menu_button(shown, |ui| {
+                            for mode in HomeMode::ALL {
+                                if ui
+                                    .selectable_label(mode == self.model.mode, mode.label())
+                                    .clicked()
+                                {
+                                    chosen_mode = Some(mode);
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text("Mode de la maison : commande les caméras et les automatisations");
+                    }
                     if self.connected() && theme::primary_button(ui, "+ Ajouter").clicked() {
                         self.add_open = true;
                         // Un appairage fini (réussi ou non) ne s'affiche pas à la réouverture.
@@ -2370,6 +2402,9 @@ impl MatterApp {
                 }
             }
         });
+        if let Some(mode) = chosen_mode.filter(|m| *m != self.model.mode) {
+            self.set_mode(mode);
+        }
         if menu_export {
             self.export_data();
         }

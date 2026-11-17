@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, VecDeque};
 use protocol::automation::RuleSet;
 use protocol::events::{Capabilities, CoverMotion};
 use protocol::home::HomePlan;
+use protocol::mode::HomeMode;
 use protocol::wire::{
-    CameraView, DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent, WireMode,
-    WireNode, WireStatus, RULE_RUNS_KEPT,
+    CameraBehavior, CameraView, DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent,
+    WireMode, WireNode, WireStatus, RULE_RUNS_KEPT,
 };
 
 /// Dernière valeur connue d'une grandeur, et l'instant de la mesure.
@@ -210,6 +211,8 @@ pub enum Change {
     RulesChanged(Box<RuleSet>),
     /// La liste des caméras (`Model::cameras`) vient de changer.
     CamerasChanged,
+    /// Le mode de la maison a changé (`Model::mode` est déjà à jour) : une ligne au journal.
+    ModeChanged(HomeMode),
 }
 
 #[derive(Debug, Default)]
@@ -220,6 +223,8 @@ pub struct Model {
     /// Les caméras (sans adresse ni mot de passe : le serveur ne les envoie jamais), triées par
     /// nom. Remplacées d'un bloc à chaque `cameras_changed` (voir `docs/protocole.md`).
     pub cameras: Vec<CameraView>,
+    /// Le mode global de la maison, tenu par le serveur (Présent tant qu'il n'a rien dit).
+    pub mode: HomeMode,
     pub pairing_busy: bool,
     /// Numéro du dernier événement pris en compte.
     pub seq: u64,
@@ -247,6 +252,7 @@ impl Model {
         self.rule_runs.truncate_front(RULE_RUNS_KEPT);
         self.pairing_busy = snapshot.pairing_busy;
         self.cameras = snapshot.cameras;
+        self.mode = snapshot.mode;
         self.seq = snapshot.seq;
         (snapshot.plan.0, snapshot.rules.0)
     }
@@ -362,6 +368,10 @@ impl Model {
                 self.cameras = cameras;
                 Change::CamerasChanged
             }
+            WireEvent::ModeChanged { mode } => {
+                self.mode = mode;
+                Change::ModeChanged(mode)
+            }
             // Un événement d'un serveur plus récent : ignoré (son `seq` a déjà été compté).
             WireEvent::Unknown => Change::Nothing,
         }
@@ -370,6 +380,13 @@ impl Model {
     /// Une caméra par son identifiant.
     pub fn camera(&self, id: u64) -> Option<&CameraView> {
         self.cameras.iter().find(|c| c.id == id)
+    }
+
+    /// La caméra est-elle éteinte dans le mode actuel ? Le serveur refuserait le direct et
+    /// l'image fixe : le client ne les demande pas.
+    pub fn camera_is_off(&self, id: u64) -> bool {
+        self.camera(id)
+            .is_some_and(|c| c.modes.get(self.mode) == CameraBehavior::Eteinte)
     }
 }
 
@@ -431,6 +448,7 @@ mod tests {
             rule_runs: vec![],
             pairing_busy: false,
             cameras: vec![],
+            mode: HomeMode::default(),
         }
     }
 
@@ -705,6 +723,8 @@ mod tests {
             status: protocol::wire::CameraStatus::Online,
             has_sub_stream: true,
             stream: None,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 
