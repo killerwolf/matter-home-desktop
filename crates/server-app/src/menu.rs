@@ -1,6 +1,8 @@
 //! Le modèle du menu de la barre de menus, construit sans interface : `main.rs` n'a plus qu'à le
 //! transformer en menu natif. Rien d'autre que ces entrées : pas d'option cachée.
 
+use protocol::mode::HomeMode;
+
 use crate::status::{status_line, Health, Phase};
 use crate::tailscale::WebAccess;
 
@@ -17,6 +19,8 @@ pub enum Action {
     WebOpen,
     WebCopy,
     WebAuth,
+    /// Choisir le mode de la maison (sous-menu « Mode »).
+    Mode(HomeMode),
 }
 
 impl Action {
@@ -33,6 +37,10 @@ impl Action {
             Action::WebOpen => "web-open",
             Action::WebCopy => "web-copy",
             Action::WebAuth => "web-auth",
+            Action::Mode(HomeMode::Present) => "mode-present",
+            Action::Mode(HomeMode::Absent) => "mode-absent",
+            Action::Mode(HomeMode::Nuit) => "mode-nuit",
+            Action::Mode(HomeMode::Vacances) => "mode-vacances",
         }
     }
 
@@ -51,6 +59,7 @@ impl Action {
             Action::WebAuth,
         ]
         .into_iter()
+        .chain(HomeMode::ALL.map(Action::Mode))
         .find(|a| a.id() == id)
     }
 }
@@ -90,6 +99,8 @@ pub struct MenuInput<'a> {
     pub desktop_doubt: bool,
     /// L'ouverture à la connexion peut être (dés)activée (application installée, pas en essai).
     pub login_available: bool,
+    /// Le mode de la maison : `Some` tant que le serveur tourne (c'est lui qui le tient).
+    pub mode: Option<HomeMode>,
 }
 
 fn item(action: Action, label: &str, enabled: bool) -> Entry {
@@ -189,6 +200,21 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
         m.extend(web_entries(i.web));
         m.push(Entry::Separator);
     }
+    // Le mode global : un sous-menu à quatre choix, la coche sur le mode actuel.
+    if let Some(current) = i.mode {
+        m.push(Entry::Submenu {
+            label: format!("Mode : {}", current.label()),
+            entries: HomeMode::ALL
+                .into_iter()
+                .map(|mode| Entry::Item {
+                    action: Action::Mode(mode),
+                    label: mode.label().into(),
+                    enabled: true,
+                    checked: Some(mode == current),
+                })
+                .collect(),
+        });
+    }
     // Les caméras se gèrent depuis le hub du serveur : seulement quand il tourne.
     m.push(item(
         Action::Cameras,
@@ -240,15 +266,50 @@ mod tests {
             login_enabled: true,
             desktop_doubt: false,
             login_available: true,
+            mode: Some(HomeMode::Nuit),
         });
         assert_eq!(
             menu[2],
             Entry::Info("12 appareils en ligne, 1 injoignable".into())
         );
         assert!(menu.contains(&Entry::Info("    Salon".into())));
+        // Le sous-menu « Mode » : quatre choix, la coche sur le mode actuel.
+        let Some(Entry::Submenu { label, entries }) = menu
+            .iter()
+            .find(|e| matches!(e, Entry::Submenu { label, .. } if label.starts_with("Mode")))
+        else {
+            panic!("sous-menu Mode attendu");
+        };
+        assert_eq!(label, "Mode : Nuit");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| match e {
+                    Entry::Item {
+                        label,
+                        checked: Some(on),
+                        ..
+                    } => (label.as_str(), *on),
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            [
+                ("Présent", false),
+                ("Absent", false),
+                ("Nuit", true),
+                ("Vacances", false)
+            ]
+        );
+        for mode in HomeMode::ALL {
+            assert_eq!(
+                Action::from_id(Action::Mode(mode).id()),
+                Some(Action::Mode(mode))
+            );
+        }
         // L'adresse et les deux « Copier » sont dans le sous-menu « Connecter un client ».
-        let Some(Entry::Submenu { label, entries }) =
-            menu.iter().find(|e| matches!(e, Entry::Submenu { .. }))
+        let Some(Entry::Submenu { label, entries }) = menu
+            .iter()
+            .find(|e| matches!(e, Entry::Submenu { label, .. } if label == "Connecter un client"))
         else {
             panic!("sous-menu attendu");
         };
@@ -292,7 +353,9 @@ mod tests {
             login_enabled: false,
             desktop_doubt: false,
             login_available: true,
+            mode: None,
         });
+        // Serveur à l'arrêt : ni adresse, ni sous-menu (pas de mode à choisir).
         assert!(!menu.iter().any(|e| matches!(e, Entry::Submenu { .. })));
         assert!(actions(&menu).contains(&Action::Settings));
         assert!(actions(&menu).contains(&Action::Quit));
@@ -312,6 +375,7 @@ mod tests {
                 login_enabled: false,
                 desktop_doubt: false,
                 login_available: true,
+                mode: None,
             })
             .into_iter()
             .find_map(|e| match e {
@@ -344,6 +408,7 @@ mod tests {
                 login_enabled: false,
                 desktop_doubt: doubt,
                 login_available: true,
+                mode: None,
             })
         };
         assert!(build_with(true)
@@ -365,6 +430,7 @@ mod tests {
             login_enabled: false,
             desktop_doubt: false,
             login_available: true,
+            mode: None,
         })
     }
 

@@ -9,7 +9,7 @@
 use matter_home_server::cameras::{
     describe_stream, split_credentials, CameraAdmin, CameraDraft, StreamKind, StreamTest,
 };
-use protocol::wire::CameraStatus;
+use protocol::wire::{CameraModes, CameraPlacement, CameraStatus};
 
 /// Ce que la fenêtre dit des sauvegardes (demandé par le ticket #4 : « à dire dans l'interface »).
 pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
@@ -117,6 +117,10 @@ pub struct Form {
     pub clear_password: bool,
     /// « Changer » a été cliqué : le champ du mot de passe est affiché.
     pub change_password: bool,
+    /// Où est la caméra (ticket n° 8). Le changer remplit le tableau ci-dessous.
+    pub emplacement: CameraPlacement,
+    /// Ce que fait la caméra dans chaque mode de la maison, modifiable à la main.
+    pub modes: CameraModes,
 }
 
 impl Form {
@@ -135,6 +139,18 @@ impl Form {
             had_password: camera.has_password,
             clear_password: false,
             change_password: false,
+            emplacement: camera.emplacement,
+            modes: camera.modes,
+        }
+    }
+
+    /// Choisit l'emplacement **et** pré-remplit le tableau par mode (voir
+    /// `CameraModes::for_placement`) : à la création, ou quand l'emplacement change. Choisir le
+    /// même emplacement ne touche à rien (les réglages manuels du tableau sont gardés).
+    pub fn set_emplacement(&mut self, emplacement: CameraPlacement) {
+        if emplacement != self.emplacement {
+            self.emplacement = emplacement;
+            self.modes = CameraModes::for_placement(emplacement);
         }
     }
 
@@ -180,6 +196,8 @@ impl Form {
             sub_url: self.sub_url.clone(),
             username: self.username.clone(),
             password,
+            emplacement: self.emplacement,
+            modes: self.modes,
         }
     }
 
@@ -262,9 +280,48 @@ mod tests {
             },
             username: "admin".into(),
             password: Some("secret".into()),
+            ..Default::default()
         })
         .unwrap();
         book.admin_list().remove(0)
+    }
+
+    #[test]
+    fn the_placement_prefills_the_mode_table_and_the_table_stays_editable() {
+        use protocol::mode::HomeMode;
+        use protocol::wire::CameraBehavior::*;
+        // Une nouvelle caméra : extérieure, tableau extérieur.
+        let mut form = Form::new();
+        assert_eq!(form.emplacement, CameraPlacement::Exterieure);
+        assert_eq!(form.draft().modes.get(HomeMode::Present), Diffusion);
+        // Intérieure : le tableau se remplit (éteinte présent et nuit).
+        form.set_emplacement(CameraPlacement::Interieure);
+        let modes = form.draft().modes;
+        assert_eq!(
+            HomeMode::ALL.map(|m| modes.get(m)),
+            [Eteinte, Surveillance, Eteinte, Surveillance]
+        );
+        // Modifiable ensuite, et choisir le même emplacement ne l'écrase pas.
+        form.modes.set(HomeMode::Nuit, Surveillance);
+        form.set_emplacement(CameraPlacement::Interieure);
+        assert_eq!(form.draft().modes.get(HomeMode::Nuit), Surveillance);
+        // Changer d'emplacement remplace tout, y compris les retouches.
+        form.set_emplacement(CameraPlacement::Exterieure);
+        assert_eq!(form.draft().modes, CameraModes::default());
+        // Modifier une caméra enregistrée reprend ses valeurs.
+        let mut book = CameraBook::default();
+        let id = book
+            .add(&CameraDraft {
+                name: "Salon".into(),
+                url: "rtsp://192.0.2.4/m".into(),
+                emplacement: CameraPlacement::Interieure,
+                modes: CameraModes::for_placement(CameraPlacement::Interieure),
+                ..Default::default()
+            })
+            .unwrap();
+        let edit = Form::edit(&book.admin_list().into_iter().find(|c| c.id == id).unwrap());
+        assert_eq!(edit.emplacement, CameraPlacement::Interieure);
+        assert_eq!(edit.draft().modes.get(HomeMode::Present), Eteinte);
     }
 
     #[test]
