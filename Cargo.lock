@@ -3000,7 +3000,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "matter-home-desktop"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "directories",
@@ -3027,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "matter-home-server"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3067,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "matter-home-server-app"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "matter-home-theme"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "eframe",
  "serde",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "matter-home-video"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-media",
@@ -4223,7 +4223,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",

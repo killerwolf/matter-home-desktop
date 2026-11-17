@@ -8,7 +8,7 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-17
 
 ### Ajouté
 
