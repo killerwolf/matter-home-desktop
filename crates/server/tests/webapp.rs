@@ -86,7 +86,17 @@ fn plan_page_is_wired_into_the_shell_and_cached_by_the_service_worker() {
         assert_eq!(plan.status, 200);
         assert!(plan.headers["content-security-policy"].contains("script-src 'self'"));
         let js = plan.text();
-        // Construit en DOM : aucune donnée de la maison dans innerHTML, pas d'eval, pas d'URL.
+        // Construit en DOM : chaque `innerHTML =` ne reçoit que le pictogramme constant, pas d'eval, pas d'URL.
+        for line in js.lines().filter(|l| l.contains("innerHTML")) {
+            let code = line.trim();
+            if code.starts_with("//") || code.starts_with('*') {
+                continue;
+            }
+            assert!(
+                code == "group.innerHTML = icon;",
+                "innerHTML inattendu dans plan.js : {code}"
+            );
+        }
         assert!(
             !js.contains("eval(")
                 && !js.contains("outerHTML")

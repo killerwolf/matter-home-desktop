@@ -292,7 +292,7 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .plan .zoomed .pname { display: inline; }
 .plan .pi { cursor: pointer; }
 .plan .pi.decor { cursor: default; opacity: 0.7; }
-.plan .phit { fill: transparent; } /* cible tactile de 56 px autour du pictogramme (36 px à l'ajustement) */
+.plan .phit { fill: transparent; } /* cible tactile de 48 px, de taille fixe quel que soit le zoom des pictogrammes */
 .plan .pbg { fill: var(--color-surface); stroke: var(--color-line); stroke-width: 1.5; }
 .plan .pico { color: var(--color-text-secondary); }
 .plan .pi.lit .pbg { fill: color-mix(in srgb, var(--tile-on-tint) calc(var(--tile-on-tint-alpha) * 100% + 20%), var(--color-surface)); stroke: var(--tile-on-tint); }

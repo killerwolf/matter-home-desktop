@@ -17,8 +17,8 @@ const ZOOM_OUT = 0.6; // jusqu'à 0,6 fois l'ajustement
 const ZOOM_IN = 14; // jusqu'à 14 fois l'ajustement
 const KEEP_PX = 56; // une part du plan reste toujours à l'écran
 const TAP_SLOP = 8; // en dessous, un doigt qui bouge reste un tap
-const LABELS_ZOOM = 1.8;
-const MARKER_MIN = 0.65; // taille relative des pictogrammes à l'ajustement // les noms apparaissent au-delà de cet agrandissement
+const LABELS_ZOOM = 1.8; // les noms apparaissent au-delà de cet agrandissement
+const MARKER_MIN = 0.65; // taille relative des pictogrammes à l'ajustement
 
 // ---------------------------------------------------------------------------
 // Géométrie (pure, essayée par plan.test.mjs)
@@ -43,6 +43,20 @@ export function fitView(bounds, w, h) {
   const bh = Math.max(bounds.y1 - bounds.y0, 1);
   const s = Math.max(1, Math.min(MAX_FIT, (w - 2 * PAD) / bw, (h - 2 * PAD) / bh));
   return { s, tx: (w - bw * s) / 2 - bounds.x0 * s, ty: (h - bh * s) / 2 - bounds.y0 * s };
+}
+
+/**
+ * Vue d'ouverture. En portrait, un plan plus large que haut laisse beaucoup de hauteur vide et ses
+ * objets se chevauchent : on s'approche (au plus 1,5 fois), centré, le reste se découvre en glissant.
+ * Ailleurs (ou si la hauteur est presque utilisée), c'est l'ajustement complet.
+ */
+export function initialView(bounds, w, h) {
+  const fit = fitView(bounds, w, h);
+  if (h <= w) return fit;
+  const bh = Math.max(bounds.y1 - bounds.y0, 1);
+  const slack = (h - 2 * PAD) / (bh * fit.s); // combien de fois la hauteur utile contient le plan
+  if (slack < 1.3) return fit;
+  return zoomAt(fit, Math.min(1.5, slack), w / 2, h / 2);
 }
 
 export const limitsFor = (fit) => ({ min: fit.s * ZOOM_OUT, max: fit.s * ZOOM_IN });
@@ -209,7 +223,7 @@ export function mountPlan(root, ctx) {
     fit = fitView(bounds, size.w, size.h);
     limits = limitsFor(fit);
     fitted = true;
-    view = fit;
+    view = clampView(initialView(bounds, size.w, size.h), bounds, size.w, size.h, limits);
     schedule();
   };
   const zoomBy = (factor) => {
@@ -249,8 +263,8 @@ export function mountPlan(root, ctx) {
     const value = el("text", { "text-anchor": "middle" }, "pval");
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
-    body.append(el("circle", { r: 28 }, "phit"), disc, icon);
-    group.append(body, value, name);
+    body.append(disc, icon);
+    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
     const entry = {
       node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
       update() {
@@ -303,8 +317,8 @@ export function mountPlan(root, ctx) {
     const value = el("text", { "text-anchor": "middle" }, "pval");
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
-    body.append(el("circle", { r: 28 }, "phit"), el("circle", { r: 17 }, "pbg"), icon);
-    group.append(body, value, name);
+    body.append(el("circle", { r: 17 }, "pbg"), icon);
+    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
     return {
       node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
       update() {
@@ -475,6 +489,8 @@ export function mountPlan(root, ctx) {
   svg.addEventListener("pointerup", (e) => end(e, false));
   svg.addEventListener("pointercancel", (e) => end(e, true));
   svg.addEventListener("lostpointercapture", (e) => { if (pointers.has(e.pointerId)) end(e, true); });
+  // Safari iOS : un pincement qui commence sur la barre du plan zoomerait la page entière.
+  for (const type of ["gesturestart", "gesturechange"]) wrap.addEventListener(type, (e) => e.preventDefault(), { passive: false });
   svg.addEventListener("wheel", (e) => {
     if (!view) return;
     e.preventDefault();
@@ -497,10 +513,12 @@ export function mountPlan(root, ctx) {
 
   function activate(target) {
     const pi = target?.closest?.(".pi");
-    if (!pi) return;
+    if (!pi || !(pi.dataset.id || pi.dataset.camera)) return;
     lastActivate = Date.now();
     if (pi.dataset.id) ctx.onOpenDevice(pi.dataset.id);
-    else if (pi.dataset.camera) ctx.onOpenCameras();
+    // Le changement d'onglet détruit le plan et sa garde : on attend que le `click` fantôme (avalé
+    // ci-dessus pendant 600 ms) soit passé, sinon il tomberait sur une vignette de l'onglet Caméras.
+    else setTimeout(() => { if (!destroyed) ctx.onOpenCameras(); }, 400);
   }
   svg.addEventListener("keydown", (e) => {
     const pi = e.target.closest?.(".pi");
