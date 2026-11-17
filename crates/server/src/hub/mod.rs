@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use protocol::automation::{CoverCommand, OnOffCommand, Rule, RuleSet};
 use protocol::home::HomePlan;
+use protocol::mode::HomeMode;
 use protocol::wire::{
     self, ApiError, CustomizeRequest, DeviceView, ErrorCode, HistoryPoint, HistoryQuery,
     HistoryResponse, IdentityInfo, ImportIdentity, ImportSummary, LatestReading, Metric,
@@ -32,8 +33,10 @@ use crate::events::{
 };
 use crate::export;
 use crate::history_store::{HistorySink, HistoryStore};
+use crate::home_mode;
 use crate::persistence;
 use crate::scrub::Scrubber;
+use crate::security::mode_token::ModeTokenStore;
 use crate::validate;
 
 /// Pourquoi le serveur doit s'arrêter de lui-même.
@@ -123,6 +126,8 @@ struct HubState {
     cameras: CameraBook,
     runs: VecDeque<RuleRunView>,
     pairing_busy: bool,
+    /// Le mode global de la maison (voir `home_mode.rs`).
+    mode: HomeMode,
 }
 
 /// Abonnement d'un client : l'état complet au moment de l'abonnement, puis les événements
@@ -134,6 +139,8 @@ pub struct Subscription {
 
 pub struct Hub {
     state: Mutex<HubState>,
+    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/mode_token.rs`.
+    mode_token: ModeTokenStore,
     tx: broadcast::Sender<Arc<str>>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// Sérialise les modifications du plan, des règles et des caméras (mémoire + disque + diffusion).
@@ -167,19 +174,29 @@ fn internal(context: &str, error: &anyhow::Error) -> ApiError {
 impl Hub {
     pub fn new(config: HubConfig) -> Self {
         let (tx, _) = broadcast::channel(config.broadcast_capacity.max(2));
-        let (plan, rules, cameras) = if config.demo {
+        let (plan, rules, cameras, mode) = if config.demo {
             (
                 crate::demo::demo_plan(),
                 crate::demo::demo_rules(),
                 CameraBook::demo(),
+                HomeMode::default(),
             )
         } else {
             (
                 load_plan(&config.data_dir.join(PLAN_FILE)),
                 load_document::<RuleSet>(&config.data_dir.join(RULES_FILE), "règles"),
                 CameraBook::new(crate::cameras::load(&config.data_dir)),
+                home_mode::load(&config.data_dir),
             )
         };
+        // Le jeton de mode vit dans `serveur/` (jamais exporté). Un dossier inutilisable ne doit
+        // pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
+        let mode_token = crate::security::server_dir(&config.data_dir)
+            .and_then(|dir| ModeTokenStore::open(&dir))
+            .unwrap_or_else(|e| {
+                log::error!("jeton de mode inutilisable, conservé en mémoire seulement : {e:#}");
+                ModeTokenStore::in_memory()
+            });
         Self {
             state: Mutex::new(HubState {
                 seq: 0,
@@ -189,7 +206,9 @@ impl Hub {
                 cameras,
                 runs: VecDeque::new(),
                 pairing_busy: false,
+                mode,
             }),
+            mode_token,
             tx,
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
@@ -329,7 +348,9 @@ impl Hub {
                 }
             }
             Event::PairingDone { .. } | Event::PairingFailed(_) => st.pairing_busy = false,
-            Event::PairingProgress(_)
+            // Le hub le publie lui-même (`set_mode`) : un événement venu du backend ne change rien.
+            Event::HomeModeChanged(_)
+            | Event::PairingProgress(_)
             | Event::Notification { .. }
             | Event::Info(_)
             | Event::Fatal(_) => {}
@@ -365,6 +386,7 @@ impl Hub {
             rule_runs: st.runs.iter().cloned().collect(),
             pairing_busy: st.pairing_busy,
             cameras: st.cameras.views(),
+            mode: st.mode,
         }
     }
 
@@ -392,6 +414,69 @@ impl Hub {
 
     pub fn rules(&self) -> RuleSet {
         self.lock().rules.clone()
+    }
+
+    /// Le mode global de la maison.
+    pub fn mode(&self) -> HomeMode {
+        self.lock().mode
+    }
+
+    /// Apprend au moteur d'automatisations le mode enregistré, sans que ce soit un changement :
+    /// il ne déclenche rien (`Command::InitHomeMode`). `Server::start` l'appelle une fois.
+    pub fn announce_mode(&self) {
+        let _ = self.send(Command::InitHomeMode(self.mode()));
+    }
+
+    /// Change le mode : l'enregistre (`mode.json`), le diffuse (`mode_changed`), prévient le moteur
+    /// d'automatisations (règles « Quand le mode devient… ») ; les lectures de caméras que le
+    /// nouveau mode éteint se ferment d'elles-mêmes (voir `camera_target`). `Ok(false)` : c'était
+    /// déjà le mode actuel, rien n'est enregistré, diffusé ni déclenché. Si l'écriture échoue, le
+    /// mode ne change pas (il commande les caméras : on ne l'annonce pas sans pouvoir le retenir).
+    pub fn set_mode(&self, mode: HomeMode) -> ApiResult<bool> {
+        let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.lock();
+        if st.mode == mode {
+            return Ok(false);
+        }
+        if !self.demo {
+            if let Err(e) = home_mode::save(&self.data_dir, mode) {
+                return Err(internal("enregistrement du mode", &e));
+            }
+        }
+        let previous = std::mem::replace(&mut st.mode, mode);
+        self.publish(&mut st, WireEvent::ModeChanged { mode });
+        drop(st);
+        log::info!("mode : {} → {}", previous.label(), mode.label());
+        // Le moteur peut avoir disparu (arrêt en cours) : le mode est enregistré, c'est l'essentiel.
+        let _ = self.send(Command::SetHomeMode(mode));
+        Ok(true)
+    }
+
+    /// Un nouveau jeton de mode (l'ancien est révoqué), en clair : à montrer une seule fois.
+    pub fn generate_mode_token(&self) -> ApiResult<String> {
+        self.mode_token
+            .generate()
+            .map_err(|e| internal("jeton de mode", &e))
+    }
+
+    /// Supprime le jeton de mode : plus aucun accès par jeton.
+    pub fn revoke_mode_token(&self) -> ApiResult<()> {
+        self.mode_token
+            .revoke()
+            .map_err(|e| internal("jeton de mode", &e))
+    }
+
+    pub fn has_mode_token(&self) -> bool {
+        self.mode_token.exists()
+    }
+
+    pub fn mode_token_created(&self) -> Option<f64> {
+        self.mode_token.created()
+    }
+
+    /// Le jeton présenté est-il le jeton de mode ?
+    pub fn verify_mode_token(&self, token: &str) -> bool {
+        self.mode_token.verify(token)
     }
 
     pub fn receiver_count(&self) -> usize {
@@ -1175,6 +1260,67 @@ pub(crate) mod tests {
             hub.set_plan(empty).unwrap_err().code,
             protocol::wire::ErrorCode::PlanWithoutFloor
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_mode_is_saved_broadcast_and_announced_once_per_change() {
+        let dir = temp("mode");
+        let (hub, mut commands) = hub_with(&dir, 16);
+        let mut sub = hub.subscribe();
+        assert_eq!(hub.mode(), HomeMode::Present);
+        assert_eq!(hub.current_snapshot().mode, HomeMode::Present);
+
+        assert!(hub.set_mode(HomeMode::Absent).unwrap());
+        // Le même mode redemandé (Raccourcis, à l'arrivée) : rien n'est écrit, diffusé ni lancé.
+        assert!(!hub.set_mode(HomeMode::Absent).unwrap());
+        assert_eq!(hub.current_snapshot().mode, HomeMode::Absent);
+        assert_eq!(home_mode::load(&dir), HomeMode::Absent);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SetHomeMode(HomeMode::Absent))
+        ));
+        assert!(commands.try_recv().is_err());
+        let mut changes = 0;
+        while let Ok(m) = sub.rx.try_recv() {
+            let ServerMessage::Event { event, .. } = serde_json::from_str(&m).unwrap() else {
+                panic!()
+            };
+            if let WireEvent::ModeChanged { mode } = event {
+                assert_eq!(mode, HomeMode::Absent);
+                changes += 1;
+            }
+        }
+        assert_eq!(changes, 1);
+
+        // Au redémarrage, le mode enregistré revient et le moteur l'apprend sans déclencher.
+        drop(hub);
+        let (again, mut commands) = hub_with(&dir, 16);
+        assert_eq!(again.mode(), HomeMode::Absent);
+        again.announce_mode();
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::InitHomeMode(HomeMode::Absent))
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_mode_token_is_generated_replaced_and_revoked() {
+        let dir = temp("mode-token");
+        let (hub, _commands) = hub_with(&dir, 16);
+        assert!(!hub.has_mode_token());
+        assert!(!hub.verify_mode_token("rien"));
+        let first = hub.generate_mode_token().unwrap();
+        assert!(hub.has_mode_token() && hub.verify_mode_token(&first));
+        let second = hub.generate_mode_token().unwrap();
+        assert!(!hub.verify_mode_token(&first) && hub.verify_mode_token(&second));
+        // Le jeton survit au redémarrage (son empreinte est dans `serveur/`).
+        drop(hub);
+        let (again, _commands) = hub_with(&dir, 16);
+        assert!(again.verify_mode_token(&second));
+        again.revoke_mode_token().unwrap();
+        assert!(!again.has_mode_token());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

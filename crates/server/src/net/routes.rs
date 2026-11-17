@@ -17,7 +17,7 @@ use protocol::home::HomePlan;
 use protocol::wire::{
     self, Accepted, ApiError, CamerasResponse, CoverRequest, CustomizeRequest, ErrorBody,
     ErrorCode, HistoryQuery, HistoryResponse, ImportResponse, LoginRequest, LoginResponse,
-    OnOffRequest, PairRequest, Snapshot, TextIds, VersionInfo,
+    ModeRequest, ModeResponse, OnOffRequest, PairRequest, Snapshot, TextIds, VersionInfo,
 };
 
 use super::AppState;
@@ -70,6 +70,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/login",
             post(login).layer(DefaultBodyLimit::max(LOGIN_LIMIT)),
+        )
+        // Hors des routes protégées : elle accepte aussi le jeton de mode (`put_mode`).
+        .route(
+            "/api/mode",
+            put(put_mode).layer(DefaultBodyLimit::max(LOGIN_LIMIT)),
         )
         .merge(protected)
         .fallback(|| async { ApiErr(ApiError::new(ErrorCode::NotFound)) })
@@ -440,6 +445,62 @@ async fn require_session(
         }
         None => ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response(),
     }
+}
+
+/// `PUT /api/mode` : change le mode de la maison. Accepte un jeton de session (clients) **ou** le
+/// jeton de mode (Raccourcis de l'iPhone), qui ne vaut que pour cette route. L'authentification
+/// passe avant la lecture du corps. Le jeton de mode est lu dans `Authorization` seulement, jamais
+/// dans l'URL ; ses échecs sont limités par adresse comme ceux de la connexion, avec leur propre
+/// compteur ; il n'est jamais journalisé.
+async fn put_mode(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> ApiResult<Json<ModeResponse>> {
+    let ip = peer.ip();
+    let Some(token) = bearer(request.headers()).map(str::to_owned) else {
+        return Err(ApiError::new(ErrorCode::Unauthorized).into());
+    };
+    let is_session = state
+        .auth
+        .accounts
+        .account_id()
+        .and_then(|account_id| state.auth.sessions.validate(&token, &account_id))
+        .is_some();
+    if !is_session {
+        if let Err(wait) = state.auth.mode_limiter.check(ip) {
+            log::warn!("jeton de mode refusé pour {ip} : trop de tentatives");
+            return Err(too_many(wait.as_secs().max(1)).into());
+        }
+        if !state.hub.verify_mode_token(&token) {
+            let wait = state.auth.mode_limiter.record_failure(ip);
+            log::warn!("changement de mode refusé pour {ip} : jeton invalide");
+            tokio::time::sleep(FAILURE_PAUSE).await;
+            let mut error = ApiError::new(ErrorCode::Unauthorized);
+            error.retry_after_s = wait.map(|w| w.as_secs().max(1));
+            return Err(error.into());
+        }
+        state.auth.mode_limiter.record_success(ip);
+    }
+    let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
+    let ModeRequest { mode } = serde_json::from_slice(&bytes).map_err(|_| {
+        ApiErr(ApiError::with_detail(
+            ErrorCode::BadRequest,
+            "mode attendu : present, absent, nuit ou vacances",
+        ))
+    })?;
+    let hub = state.hub.clone();
+    let changed = blocking(move || hub.set_mode(mode)).await?;
+    log::info!(
+        "mode demandé par {ip} ({}) : {}",
+        if is_session {
+            "session"
+        } else {
+            "jeton de mode"
+        },
+        mode.label()
+    );
+    Ok(Json(ModeResponse { mode, changed }))
 }
 
 async fn logout(

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context as _, Result};
+use protocol::mode::HomeMode;
 use tokio::sync::mpsc;
 
 use crate::events::{now_unix, Event, EventSink, MeasureKind, NodeStatus, StateKind};
@@ -117,6 +118,8 @@ pub struct Firing {
 #[derive(Default)]
 pub struct Engine {
     rules: Vec<Rule>,
+    /// Le mode global de la maison, tenu à jour par `EngineCommand::Mode`.
+    mode: HomeMode,
     nodes: HashMap<u64, NodeState>,
     states: HashMap<u64, RuleState>,
 }
@@ -166,6 +169,26 @@ impl Engine {
         self.rules = rules;
     }
 
+    /// Retient le mode enregistré au démarrage, sans rien déclencher.
+    pub fn init_mode(&mut self, mode: HomeMode) {
+        self.mode = mode;
+    }
+
+    /// Le mode change : le retient et rend les règles « Quand le mode devient… » à exécuter.
+    /// Redemander le mode actuel ne déclenche rien. `{valeur}` vaut le libellé du mode.
+    pub fn on_mode(&mut self, mode: HomeMode, clock: &Clock) -> Vec<Firing> {
+        if self.mode == mode {
+            return Vec::new();
+        }
+        self.mode = mode;
+        let rules: Vec<Rule> = self.rules.clone();
+        rules
+            .iter()
+            .filter(|r| matches!(r.trigger, Trigger::Mode { to } if to == mode))
+            .filter_map(|r| self.try_fire(r, clock, String::new(), mode.label().to_string()))
+            .collect()
+    }
+
     pub fn rule(&self, id: u64) -> Option<&Rule> {
         self.rules.iter().find(|r| r.id == id)
     }
@@ -206,6 +229,7 @@ impl Engine {
                 .get(node_id)
                 .and_then(|n| n.values.get(measure))
                 .is_some_and(|v| compare(*v, *above, *value)),
+            Condition::Mode { is } => is.contains(&self.mode),
         })
     }
 
@@ -589,6 +613,10 @@ async fn run(
 pub enum EngineCommand {
     SetRules(Vec<Rule>),
     Test(u64),
+    /// Le mode de la maison a changé : peut déclencher des règles.
+    Mode(HomeMode),
+    /// Le mode au démarrage : retenu sans rien déclencher.
+    InitMode(HomeMode),
 }
 
 /// Lance le moteur dans le runtime courant.
@@ -611,6 +639,8 @@ pub fn spawn(
                 },
                 cmd = commands.recv() => match cmd {
                     Some(EngineCommand::SetRules(rules)) => { engine.set_rules(rules); Vec::new() }
+                    Some(EngineCommand::InitMode(mode)) => { engine.init_mode(mode); Vec::new() }
+                    Some(EngineCommand::Mode(mode)) => engine.on_mode(mode, &Clock::local()),
                     Some(EngineCommand::Test(id)) => engine
                         .rule(id)
                         .cloned()
@@ -1018,5 +1048,74 @@ mod tests {
         assert!(text.contains("\"Position\":40"), "{text}");
         assert_eq!(serde_json::from_str::<RuleSet>(&text).unwrap(), set);
         assert_eq!(set.next_id(), 2);
+    }
+
+    #[test]
+    fn mode_trigger_fires_on_a_change_only() {
+        let mut e = Engine::new(vec![
+            rule(
+                1,
+                Trigger::Mode {
+                    to: HomeMode::Absent,
+                },
+            ),
+            rule(2, Trigger::Mode { to: HomeMode::Nuit }),
+        ]);
+        // Le mode du démarrage n'est pas un changement, même s'il correspond à une règle.
+        e.init_mode(HomeMode::Absent);
+        assert!(e.on_mode(HomeMode::Absent, &clock(10.0, 0)).is_empty());
+        let fired = e.on_mode(HomeMode::Nuit, &clock(20.0, 600));
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].rule.id, 2);
+        assert_eq!(fired[0].value, "Nuit", "{{valeur}} est le libellé du mode");
+        assert_eq!(fired[0].time, "10:00");
+        // Redemander le mode actuel : rien.
+        assert!(e.on_mode(HomeMode::Nuit, &clock(30.0, 0)).is_empty());
+        let back = e.on_mode(HomeMode::Absent, &clock(40.0, 0));
+        assert_eq!(back.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn mode_condition_accepts_any_listed_mode() {
+        let mut door = rule(
+            1,
+            Trigger::Contact {
+                node_id: 7,
+                open: true,
+            },
+        );
+        door.conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Absent, HomeMode::Vacances],
+        }];
+        let mut e = Engine::new(vec![door]);
+        let fire = |e: &mut Engine, at: f64| {
+            e.on_event(&open(7, false, at), &clock(at, 0));
+            e.on_event(&open(7, true, at + 1.0), &clock(at + 1.0, 0))
+        };
+        e.on_event(&open(7, false, 1.0), &clock(1.0, 0));
+        // Présent (défaut) : la condition échoue.
+        assert!(fire(&mut e, 100.0).is_empty());
+        e.on_mode(HomeMode::Vacances, &clock(200.0, 0));
+        assert_eq!(fire(&mut e, 300.0).len(), 1);
+        e.on_mode(HomeMode::Nuit, &clock(400.0, 0));
+        assert!(fire(&mut e, 500.0).is_empty());
+        e.on_mode(HomeMode::Absent, &clock(600.0, 0));
+        assert_eq!(fire(&mut e, 700.0).len(), 1);
+    }
+
+    #[test]
+    fn mode_rules_round_trip_in_json() {
+        let mut r = Rule::new(1);
+        r.trigger = Trigger::Mode { to: HomeMode::Nuit };
+        r.conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Present],
+        }];
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(
+            text.contains(r#""trigger":{"type":"Mode","to":"nuit"}"#),
+            "{text}"
+        );
+        assert!(text.contains(r#""is":["present"]"#), "{text}");
+        assert_eq!(serde_json::from_str::<Rule>(&text).unwrap(), r);
     }
 }

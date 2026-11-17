@@ -584,6 +584,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                     Command::TestRule(id) => {
                         let _ = engine_tx.send(automation::EngineCommand::Test(id));
                     }
+                    Command::SetHomeMode(mode) => {
+                        let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
+                    }
+                    Command::InitHomeMode(mode) => {
+                        let _ = engine_tx.send(automation::EngineCommand::InitMode(mode));
+                    }
                     Command::Customize { node_id, name, icon } => {
                         if let Some(info) = infos.get_mut(&node_id) {
                             info.custom_name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());

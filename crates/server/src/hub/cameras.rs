@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use protocol::wire::{CameraStatus, CameraView, StreamInfo, WireEvent};
+use protocol::wire::{CameraBehavior, CameraStatus, CameraView, StreamInfo, WireEvent};
 
 use crate::cameras::{
     self, CameraAdmin, CameraBook, CameraDraft, CameraError, CameraTest, ProbeError, StreamKind,
@@ -129,8 +129,32 @@ impl Hub {
 
     /// Adresse et identifiants d'un flux, pour le serveur seulement (lecture, #5). Ne sort
     /// jamais vers un client.
+    ///
+    /// `None` aussi quand la caméra est **éteinte** dans le mode actuel (`camera_is_off`) : c'est
+    /// ce qui ferme, en moins de `target_check` (2 s), une lecture ouverte quand le mode change
+    /// (la session voit sa cible disparaître, comme pour une caméra supprimée).
     pub fn camera_target(&self, id: u64, kind: StreamKind) -> Option<Target> {
-        self.lock().cameras.get(id)?.target(kind)
+        let st = self.lock();
+        let camera = st.cameras.get(id)?;
+        if camera.behavior(st.mode) == CameraBehavior::Eteinte {
+            return None;
+        }
+        camera.target(kind)
+    }
+
+    /// La caméra est-elle éteinte dans le mode actuel (`false` pour une caméra inconnue) ? Le
+    /// serveur refuse alors le direct et les images fixes (`Unavailable`, avec le mode en clair).
+    ///
+    /// `Surveillance` se comporte comme `Diffusion` pour l'instant : c'est ici (et dans
+    /// `CameraBehavior::is_viewable`) que la détection viendra, dans un ticket ultérieur.
+    pub fn camera_is_off(&self, id: u64) -> bool {
+        let st = self.lock();
+        st.cameras.behavior(id, st.mode) == Some(CameraBehavior::Eteinte)
+    }
+
+    /// La phrase du refus d'une caméra éteinte, avec le mode en cours.
+    pub fn camera_off_message(&self) -> String {
+        format!("caméra éteinte en mode {}", self.mode().label())
     }
 
     // -----------------------------------------------------------------------
@@ -149,8 +173,15 @@ impl Hub {
 
     /// Un spectateur de plus pour cette caméra (`None` si elle n'existe pas). Le lâcher le retire.
     /// Tant qu'il y en a un, la surveillance saute la caméra et « Tester » lui est refusé.
+    /// `None` aussi pour une caméra éteinte dans le mode actuel (garde-fou : les appelants testent
+    /// `camera_is_off` d'abord, pour donner le bon refus).
     pub fn acquire_camera_viewer(self: &Arc<Self>, id: u64) -> Option<ViewerLease> {
-        self.lock().cameras.get(id)?;
+        {
+            let st = self.lock();
+            if st.cameras.behavior(id, st.mode)? == CameraBehavior::Eteinte {
+                return None;
+            }
+        }
         Some(self.viewers.acquire(id))
     }
 

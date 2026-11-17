@@ -53,10 +53,24 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
             }
         }
         for cond in &rule.conditions {
-            if let Condition::TimeBetween { from, to } = cond {
-                if [from, to].iter().any(|(h, m)| *h > 23 || *m > 59) {
-                    return Err(bad("heure invalide"));
+            match cond {
+                Condition::TimeBetween { from, to } => {
+                    if [from, to].iter().any(|(h, m)| *h > 23 || *m > 59) {
+                        return Err(bad("heure invalide"));
+                    }
                 }
+                // Une condition de mode sans mode ne serait jamais vraie : on la refuse plutôt
+                // que de laisser une règle muette sans explication.
+                Condition::Mode { is } => {
+                    if is.is_empty() {
+                        return Err(bad("condition de mode sans aucun mode"));
+                    }
+                    let distinct: HashSet<_> = is.iter().collect();
+                    if distinct.len() != is.len() {
+                        return Err(bad("mode répété dans une condition"));
+                    }
+                }
+                _ => {}
             }
         }
         for action in &rule.actions {
@@ -223,6 +237,26 @@ mod tests {
         assert_eq!(plan(&none).unwrap_err().code, ErrorCode::PlanWithoutFloor);
         p.floors[0].name = "x".repeat(MAX_NAME + 1);
         assert!(plan(&p).is_err());
+    }
+
+    #[test]
+    fn mode_conditions_need_at_least_one_distinct_mode() {
+        use protocol::mode::HomeMode;
+        let mut set = RuleSet::default();
+        set.rules.push(Rule::new(1));
+        set.rules[0].trigger = Trigger::Mode {
+            to: HomeMode::Absent,
+        };
+        set.rules[0].conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Nuit, HomeMode::Vacances],
+        }];
+        assert!(rules(&set).is_ok());
+        set.rules[0].conditions = vec![Condition::Mode { is: vec![] }];
+        assert!(rules(&set).is_err());
+        set.rules[0].conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Nuit, HomeMode::Nuit],
+        }];
+        assert!(rules(&set).is_err());
     }
 
     #[test]

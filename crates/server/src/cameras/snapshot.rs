@@ -76,6 +76,8 @@ impl Default for SnapshotConfig {
 pub enum SnapshotError {
     /// Pas de caméra avec cet identifiant.
     UnknownCamera,
+    /// La caméra est éteinte dans le mode actuel de la maison.
+    Off,
     /// Un test ou une vérification de la caméra est en cours : réessayer plus tard.
     Busy,
     /// La caméra n'a pas donné d'image clé à temps, ou ne répond pas.
@@ -153,6 +155,14 @@ impl SnapshotService {
                 .remove(&id);
             return Err(SnapshotError::UnknownCamera);
         }
+        if hub.camera_is_off(id) {
+            // Pas d'image gardée avant le changement de mode : elle ne doit plus sortir.
+            self.slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            return Err(SnapshotError::Off);
+        }
         let slot = self.slot(id);
         let whole = async {
             if let Some(snapshot) = self.cached(&slot)? {
@@ -227,6 +237,7 @@ impl SnapshotService {
             live.subscribe_any(hub, id).map_err(|e| match e {
                 SubscribeError::UnknownCamera => SnapshotError::UnknownCamera,
                 SubscribeError::NoSuchStream => SnapshotError::NoImage,
+                SubscribeError::Off => SnapshotError::Off,
             })?
         };
         let deadline = tokio::time::Instant::now()

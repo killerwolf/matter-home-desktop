@@ -115,6 +115,8 @@ impl Server {
             commands: backend.sender(),
         }));
 
+        hub.announce_mode();
+
         let stop_pump = Arc::new(AtomicBool::new(false));
         let fatal = Arc::new(AtomicBool::new(false));
         let pump = {
@@ -268,6 +270,7 @@ fn log_event(event: &Event) {
         Event::NodeRemoved(id) => log::info!("appareil {id:#x} oublié"),
         Event::Status { node_id, status } => log::info!("appareil {node_id:#x} : {status:?}"),
         Event::RuleRun { .. } => log::info!("{event:?}"),
+        Event::HomeModeChanged(mode) => log::info!("mode : {}", mode.label()),
         Event::PairingProgress(m) | Event::Info(m) => log::info!("{m}"),
         Event::PairingDone { node_id, name } => log::info!("appairage : {name} ({node_id:#x})"),
         Event::PairingFailed(m) => log::warn!("appairage échoué : {m}"),

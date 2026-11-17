@@ -131,6 +131,8 @@ pub enum SubscribeError {
     UnknownCamera,
     /// La caméra n'a pas ce flux (pas de flux réduit configuré).
     NoSuchStream,
+    /// La caméra est éteinte dans le mode actuel de la maison.
+    Off,
 }
 
 #[derive(Clone)]
@@ -474,6 +476,9 @@ impl LiveRegistry {
         id: u64,
         kind: StreamKind,
     ) -> Result<Subscription, SubscribeError> {
+        if hub.camera_is_off(id) {
+            return Err(SubscribeError::Off);
+        }
         let mut map = self.map();
         if let Some(session) = map.get(&(id, kind)) {
             if !session.ended() {
@@ -522,6 +527,9 @@ impl LiveRegistry {
         hub: &Arc<Hub>,
         id: u64,
     ) -> Result<Subscription, SubscribeError> {
+        if hub.camera_is_off(id) {
+            return Err(SubscribeError::Off);
+        }
         {
             let map = self.map();
             let open = [StreamKind::Sub, StreamKind::Main]

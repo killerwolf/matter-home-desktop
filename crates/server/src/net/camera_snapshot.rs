@@ -46,11 +46,11 @@ pub async fn snapshot(
             }
             response
         }
-        Err(error) => ApiErr(api_error(error)).into_response(),
+        Err(error) => ApiErr(api_error(error, state.hub.camera_off_message())).into_response(),
     }
 }
 
-fn api_error(error: SnapshotError) -> ApiError {
+fn api_error(error: SnapshotError, off_message: String) -> ApiError {
     let retry = |mut e: ApiError, secs: u64| {
         e.retry_after_s = Some(secs);
         e
@@ -60,6 +60,8 @@ fn api_error(error: SnapshotError) -> ApiError {
         SnapshotError::UnknownCamera => {
             ApiError::with_detail(ErrorCode::NotFound, "caméra inconnue")
         }
+        // Pas de `retry_after_s` : réessayer ne sert à rien tant que le mode ne change pas.
+        SnapshotError::Off => ApiError::with_detail(ErrorCode::Unavailable, off_message),
         SnapshotError::Busy => retry(
             ApiError::with_detail(
                 ErrorCode::Unavailable,

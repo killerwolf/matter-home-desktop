@@ -18,6 +18,7 @@ fn cam_draft(name: &str) -> CameraDraft {
         sub_url: format!("rtsp://{CAM_HOST}:554/live/ch00_1"),
         username: "admin".into(),
         password: Some(CAM_SECRET.into()),
+        ..Default::default()
     }
 }
 
@@ -434,5 +435,48 @@ fn a_plan_may_reference_a_camera_the_server_does_not_know() {
     });
     hub.set_plan(plan.clone()).unwrap();
     assert_eq!(hub.plan(), plan);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Ticket n° 8 : une caméra éteinte dans le mode actuel n'a plus de cible ni de spectateur ; les
+/// autres modes la rendent. Une ancienne caméra (extérieure) n'est jamais éteinte.
+#[test]
+fn an_off_camera_is_refused_in_that_mode_only() {
+    use protocol::mode::HomeMode;
+    use protocol::wire::{CameraModes, CameraPlacement};
+    let dir = temp("cam-off");
+    let (hub, mut rx) = hub_with(&dir, 32);
+    let hub = Arc::new(hub);
+    let indoor = hub
+        .add_camera(&CameraDraft {
+            emplacement: CameraPlacement::Interieure,
+            modes: CameraModes::for_placement(CameraPlacement::Interieure),
+            ..cam_draft("Salon")
+        })
+        .unwrap();
+    let outdoor = hub.add_camera(&cam_draft("Jardin")).unwrap();
+    // Présent : l'intérieure est éteinte, l'extérieure diffuse.
+    assert_eq!(hub.mode(), HomeMode::Present);
+    assert!(hub.camera_is_off(indoor));
+    assert!(!hub.camera_is_off(outdoor));
+    assert!(hub.camera_target(indoor, StreamKind::Sub).is_none());
+    assert!(hub.camera_target(outdoor, StreamKind::Sub).is_some());
+    assert!(hub.acquire_camera_viewer(indoor).is_none());
+    assert!(hub.acquire_camera_viewer(outdoor).is_some());
+    assert_eq!(hub.camera_off_message(), "caméra éteinte en mode Présent");
+    // Absent : l'intérieure surveille, donc se regarde comme avant.
+    assert!(hub.set_mode(HomeMode::Absent).unwrap());
+    assert!(!hub.camera_is_off(indoor));
+    assert!(hub.camera_target(indoor, StreamKind::Sub).is_some());
+    // Nuit : éteinte de nouveau. Une caméra inconnue n'est pas « éteinte » (c'est un 404).
+    hub.set_mode(HomeMode::Nuit).unwrap();
+    assert!(hub.camera_is_off(indoor));
+    assert!(!hub.camera_is_off(indoor + 1));
+    // Le moteur a été prévenu de chaque vrai changement, et d'eux seuls.
+    let mut sent = Vec::new();
+    while let Ok(c) = rx.try_recv() {
+        sent.push(format!("{c:?}"));
+    }
+    assert_eq!(sent, ["SetHomeMode(Absent)", "SetHomeMode(Nuit)"]);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -670,6 +670,12 @@ async fn run(
                     Command::TestRule(id) => {
                         let _ = engine_tx.send(automation::EngineCommand::Test(id));
                     }
+                    Command::SetHomeMode(mode) => {
+                        let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
+                    }
+                    Command::InitHomeMode(mode) => {
+                        let _ = engine_tx.send(automation::EngineCommand::InitMode(mode));
+                    }
                     Command::Customize { node_id, name, icon } => {
                         let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                         if let Some(info) = ctx.customize(node_id, name, icon) {

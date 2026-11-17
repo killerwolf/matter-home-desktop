@@ -9,6 +9,7 @@ pub mod demo;
 pub mod events;
 pub mod export;
 pub mod history_store;
+pub mod home_mode;
 pub mod hub;
 pub mod logfile;
 pub mod matter;
