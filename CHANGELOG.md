@@ -8,6 +8,33 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Ajouté
+
+- **Mode global de la maison** (ticket n° 8) : **Présent**, **Absent**, **Nuit** ou **Vacances** (Présent
+  par défaut), tenu par le serveur (`mode.json`, atomique, droits 0600, inclus dans la sauvegarde
+  `.matterhome`) et le même pour tous les clients. Protocole toujours en version 2 : champ `mode` dans l'état
+  complet (lu « Présent » s'il manque), événement `mode_changed`, route `PUT /api/mode`. Redemander le mode
+  actuel ne change rien. Il se choisit dans la barre du haut du client de bureau, par la pastille « Mode : … »
+  de l'app web (cache du service worker en `v4`), et par le sous-menu « Mode » de la barre de menus du serveur.
+  Il apparaît au journal. Voir [docs/modes.md](docs/modes.md).
+- **Jeton de mode pour Raccourcis (iPhone)** : un secret à part, généré par le serveur (fenêtre du serveur,
+  affiché une seule fois, régénérable, révocable), qui ne sert **qu'à** `PUT /api/mode` (toute autre route le
+  refuse en 401). Seule son empreinte SHA-256 est gardée (`serveur/jeton-mode.json`, 0600, jamais exportée),
+  il n'est jamais journalisé, et ses échecs ont un limiteur par adresse à part de celui de la connexion.
+  Guide pas à pas « Changer de mode automatiquement avec Raccourcis sur iPhone ».
+- **Caméras selon le mode** : chaque caméra a un **emplacement** (Intérieure ou Extérieure) et un comportement par
+  mode (**Éteinte**, **Diffusion**, **Surveillance**), réglés dans la fenêtre « Caméras… » du serveur ; choisir
+  l'emplacement pré-remplit le tableau (Extérieure : Diffusion en Présent, Surveillance sinon ; Intérieure :
+  Éteinte en Présent et Nuit, Surveillance en Absent et Vacances), modifiable ensuite. Pour une caméra éteinte,
+  le serveur refuse le direct et l'image fixe (503 `unavailable`, « caméra éteinte en mode … ») et ferme les
+  lectures en cours au changement de mode ; les clients n'ouvrent rien. « Surveillance » se comporte comme
+  « Diffusion » (la détection viendra plus tard). Les caméras déjà enregistrées deviennent **Extérieures** : rien ne
+  change pour elles.
+- **Automatisations** : déclencheur « Le mode de la maison change » (`Trigger::Mode`) et condition « le mode est … »
+  (`Condition::Mode`, un ou plusieurs modes). Attention : un client 1.1.0 ne sait pas lire de règle qui en contient.
+
 ## [1.1.0] - 2026-11-17
 
 ### Ajouté
