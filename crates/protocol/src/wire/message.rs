@@ -8,6 +8,7 @@ use super::text_ids::{text_id, TextIds};
 use crate::automation::RuleSet;
 use crate::events::{Capabilities, CoverMotion};
 use crate::home::{HomePlan, Symbol};
+use crate::mode::HomeMode;
 
 /// Grandeur suivie : mesures numériques et états binaires (0 ou 1). Ce sont aussi les
 /// clés de l'historique.
@@ -241,6 +242,10 @@ pub enum WireEvent {
     RulesChanged {
         rules: TextIds<RuleSet>,
     },
+    /// Le mode global de la maison a changé (jamais envoyé si le mode demandé est déjà le bon).
+    ModeChanged {
+        mode: HomeMode,
+    },
     /// La liste des caméras ou l'état de l'une d'elles a changé : la liste **complète**
     /// (une trentaine d'entrées au plus), à appliquer en remplaçant la précédente.
     CamerasChanged {
@@ -269,6 +274,9 @@ pub struct Snapshot {
     /// version 1 (lu comme vide).
     #[serde(default)]
     pub cameras: Vec<CameraView>,
+    /// Le mode global de la maison. Absent d'un serveur plus ancien : lu comme « Présent ».
+    #[serde(default)]
+    pub mode: HomeMode,
 }
 
 /// Message envoyé sur le WebSocket.

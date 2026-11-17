@@ -197,6 +197,7 @@ impl WireEvent {
                 code: ErrorCode::PairingFailed,
                 detail: Some(clean(message)).filter(|s| !s.is_empty()),
             },
+            Event::HomeModeChanged(mode) => WireEvent::ModeChanged { mode: *mode },
             Event::Info(text) => WireEvent::Notice { text: clean(text) },
             Event::Fatal(_) => return None,
         })
@@ -246,6 +247,7 @@ impl WireEvent {
             WireEvent::PairingFailed { detail, .. } => {
                 Event::PairingFailed(detail.unwrap_or_default())
             }
+            WireEvent::ModeChanged { mode } => Event::HomeModeChanged(mode),
             WireEvent::Notice { text } => Event::Info(text),
             WireEvent::Notification { title, message, at } => {
                 Event::Notification { title, message, at }

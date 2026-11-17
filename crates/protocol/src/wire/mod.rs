@@ -267,7 +267,10 @@ mod tests {
                     width: Some(1280),
                     height: Some(720),
                 }),
+                emplacement: CameraPlacement::Interieure,
+                modes: CameraModes::for_placement(CameraPlacement::Interieure),
             }],
+            mode: crate::mode::HomeMode::Nuit,
         };
         let message = ServerMessage::Snapshot(Box::new(snapshot));
         let json = serde_json::to_value(&message).unwrap();
@@ -396,6 +399,8 @@ mod tests {
             status,
             has_sub_stream: false,
             stream: None,
+            emplacement: CameraPlacement::default(),
+            modes: CameraModes::default(),
         }
     }
 
@@ -457,6 +462,8 @@ mod tests {
                 width: Some(1),
                 height: Some(2),
             }),
+            emplacement: CameraPlacement::default(),
+            modes: CameraModes::default(),
         };
         let json = serde_json::to_value(&view).unwrap();
         let mut keys: Vec<String> = Vec::new();
@@ -478,16 +485,22 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "absent",
                 "codec",
                 "detail",
+                "emplacement",
                 "has_sub_stream",
                 "height",
                 "id",
+                "modes",
                 "name",
+                "nuit",
+                "present",
                 "problem",
                 "state",
                 "status",
                 "stream",
+                "vacances",
                 "width"
             ]
         );
@@ -506,6 +519,7 @@ mod tests {
             rule_runs: vec![],
             pairing_busy: false,
             cameras: vec![camera(CAMERA_ID_MIN, CameraStatus::Online)],
+            mode: crate::mode::HomeMode::default(),
         };
         let mut json = serde_json::to_value(&snapshot).unwrap();
         json.as_object_mut().unwrap().remove("cameras");
@@ -590,5 +604,79 @@ mod tests {
             format!("/api/cameras/{}/snapshot", CAMERA_ID_MIN + 3)
         );
         assert_eq!(CAMERA_SNAPSHOT_PATH, "/api/cameras/{id}/snapshot");
+    }
+
+    /// Ticket n° 8 : un serveur plus ancien n'envoie ni `mode`, ni `emplacement`, ni `modes` ;
+    /// un client plus ancien ignore ces champs. Rien ne casse dans un sens comme dans l'autre.
+    #[test]
+    fn mode_fields_are_optional_on_the_wire() {
+        use crate::mode::HomeMode;
+        let mut snapshot = Snapshot {
+            seq: 1,
+            server_time: 1.0,
+            devices: vec![],
+            plan: TextIds(sample_plan()),
+            rules: TextIds(sample_rules()),
+            rule_runs: vec![],
+            pairing_busy: false,
+            cameras: vec![camera(CAMERA_ID_MIN, CameraStatus::Online)],
+            mode: HomeMode::Absent,
+        };
+        let full = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(full["mode"], "absent");
+        assert_eq!(full["cameras"][0]["emplacement"], "exterieure");
+        assert_eq!(full["cameras"][0]["modes"]["present"], "diffusion");
+        let mut old = full.clone();
+        old.as_object_mut().unwrap().remove("mode");
+        old["cameras"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("emplacement");
+        old["cameras"][0].as_object_mut().unwrap().remove("modes");
+        let parsed: Snapshot = serde_json::from_value(old).unwrap();
+        snapshot.mode = HomeMode::Present;
+        assert_eq!(parsed, snapshot, "lu comme Présent, caméra extérieure");
+
+        let event = WireEvent::ModeChanged {
+            mode: HomeMode::Nuit,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "mode_changed", "mode": "nuit"})
+        );
+        assert_eq!(serde_json::from_value::<WireEvent>(json).unwrap(), event);
+        // Conversion vers l'événement interne (journal du client) et retour.
+        let internal = event.clone().into_event().unwrap();
+        assert!(matches!(internal, Event::HomeModeChanged(HomeMode::Nuit)));
+        assert_eq!(
+            WireEvent::from_event(&internal, &|s| s.to_string()),
+            Some(event)
+        );
+    }
+
+    #[test]
+    fn camera_tables_follow_the_placement() {
+        use crate::mode::HomeMode;
+        use CameraBehavior::*;
+        let outdoor = CameraModes::for_placement(CameraPlacement::Exterieure);
+        assert_eq!(outdoor, CameraModes::default());
+        assert_eq!(
+            HomeMode::ALL.map(|m| outdoor.get(m)),
+            [Diffusion, Surveillance, Surveillance, Surveillance]
+        );
+        let indoor = CameraModes::for_placement(CameraPlacement::Interieure);
+        assert_eq!(
+            HomeMode::ALL.map(|m| indoor.get(m)),
+            [Eteinte, Surveillance, Eteinte, Surveillance]
+        );
+        let mut custom = indoor;
+        custom.set(HomeMode::Nuit, Diffusion);
+        assert_eq!(custom.get(HomeMode::Nuit), Diffusion);
+        assert!(!Eteinte.is_viewable() && Diffusion.is_viewable() && Surveillance.is_viewable());
+        // Un tableau partiel (ancien fichier, édition à la main) se complète par l'extérieur.
+        let partial: CameraModes = serde_json::from_str(r#"{"nuit":"eteinte"}"#).unwrap();
+        assert_eq!(partial.nuit, Eteinte);
+        assert_eq!(partial.present, Diffusion);
     }
 }
