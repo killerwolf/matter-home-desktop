@@ -75,6 +75,11 @@ static ASSETS: &[Asset] = &[
         "text/javascript; charset=utf-8",
         "../../web/cameras.js"
     ),
+    text!(
+        "plan.js",
+        "text/javascript; charset=utf-8",
+        "../../web/plan.js"
+    ),
     text!("sw.js", "text/javascript; charset=utf-8", "../../web/sw.js"),
     text!(
         "manifest.webmanifest",
@@ -177,6 +182,24 @@ mod tests {
             let js = std::str::from_utf8(a.body).unwrap();
             assert!(!js.contains("eval("), "{} utilise eval", a.name);
             assert!(!js.contains("localStorage.setItem('password"), "{}", a.name);
+        }
+    }
+
+    #[test]
+    fn service_worker_caches_every_embedded_shell_file() {
+        let sw =
+            std::str::from_utf8(ASSETS.iter().find(|a| a.name == "sw.js").unwrap().body).unwrap();
+        for a in ASSETS.iter().filter(|a| a.name != "sw.js") {
+            let listed = if a.name == "index.html" {
+                "\"index.html\""
+            } else {
+                a.name
+            };
+            assert!(
+                sw.contains(listed),
+                "{} absent du cache du service worker",
+                a.name
+            );
         }
     }
 

@@ -10,6 +10,10 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **App web : le plan de la maison en lecture** (ticket n° 15). Nouvel onglet « Plan » : les pièces dessinées en SVG (teintées selon leur température moyenne), les appareils placés dessus avec leur état en direct (allumé, éteint, température, ouvert, fermé, injoignable), les caméras et leur champ. Un tap sur un appareil ouvre la même feuille de détail que la page Appareils, avec ses commandes. Zoom au pincement (molette et boutons « + » « − » aussi), déplacement au doigt, bouton « Recentrer », un choix d'étage s'il y en a plusieurs. Le plan arrive déjà par le WebSocket (snapshot et `plan_changed`) : aucune nouvelle route. Pas d'édition (elle reste dans l'application de bureau).
+
 ### Modifié
 
 - Écran Appareils (et plan) : le détail d'un appareil s'ouvre dans un panneau à droite, redimensionnable, à côté de la grille de tuiles, au lieu d'une fenêtre modale centrée. La tuile choisie est mise en évidence ; un clic sur une autre tuile change l'appareil, « Fermer » ou Échap referment le panneau. Sur une fenêtre étroite (moins de 800 px), le panneau prend toute la largeur à la place de la grille.

@@ -20,6 +20,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/charts.js", "text/javascript"),
     ("/app/temps.js", "text/javascript"),
     ("/app/cameras.js", "text/javascript"),
+    ("/app/plan.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
@@ -59,6 +60,76 @@ fn shell_is_served_without_a_token_with_strict_headers() {
         // Le service worker ne contrôle que /app/.
         let sw = client.request("GET", "/app/sw.js", None, None).await;
         assert_eq!(sw.headers["service-worker-allowed"], "/app/");
+    });
+}
+
+#[test]
+fn plan_page_is_wired_into_the_shell_and_cached_by_the_service_worker() {
+    let dir = temp_dir("webapp-plan");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let html = client.request("GET", "/app/", None, None).await.text();
+        assert!(html.contains(r#"data-tab="plan""#), "onglet Plan absent");
+        assert!(html.contains(">Plan<"));
+        let app = client
+            .request("GET", "/app/app.js", None, None)
+            .await
+            .text();
+        assert!(
+            app.contains(r#"from "./plan.js""#),
+            "app.js n'importe pas plan.js"
+        );
+        // Le plan arrive par le snapshot du WebSocket et `plan_changed` : aucune route de plus.
+        assert!(app.contains("plan_changed"));
+        let plan = client.request("GET", "/app/plan.js", None, None).await;
+        assert_eq!(plan.status, 200);
+        assert!(plan.headers["content-security-policy"].contains("script-src 'self'"));
+        let js = plan.text();
+        // Construit en DOM : chaque `innerHTML =` ne reçoit que le pictogramme constant, pas d'eval, pas d'URL.
+        for line in js.lines().filter(|l| l.contains("innerHTML")) {
+            let code = line.trim();
+            if code.starts_with("//") || code.starts_with('*') {
+                continue;
+            }
+            assert!(
+                code == "group.innerHTML = icon;",
+                "innerHTML inattendu dans plan.js : {code}"
+            );
+        }
+        assert!(
+            !js.contains("eval(")
+                && !js.contains("outerHTML")
+                && !js.contains("insertAdjacentHTML")
+        );
+        // Seul l'espace de noms SVG (un identifiant, jamais chargé) est une adresse.
+        let js = js.replace("http://www.w3.org/2000/svg", "");
+        assert!(
+            !js.contains("http://") && !js.contains("https://") && !js.contains("document.write")
+        );
+        assert!(js.contains("Le plan se dessine dans l'application de bureau"));
+        // Le service worker garde tous les fichiers de la coquille, plan.js compris.
+        let sw = client.request("GET", "/app/sw.js", None, None).await.text();
+        for file in [
+            "plan.js",
+            "app.js",
+            "tiles.js",
+            "icons.js",
+            "index.html",
+            "tokens.css",
+        ] {
+            assert!(
+                sw.contains(&format!("\"{file}\"")),
+                "{file} absent du cache"
+            );
+        }
+        // Le plan lui-même (donnée de la maison) reste derrière le jeton.
+        let r = client.request("GET", "/api/plan", None, None).await;
+        assert_eq!(r.status, 401);
+        let token = client.login().await;
+        let r = client.get("/api/plan", &token).await;
+        assert_eq!(r.status, 200);
+        assert!(r.text().contains("Salon"));
     });
 }
 
