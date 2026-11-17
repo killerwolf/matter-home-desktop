@@ -21,6 +21,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/temps.js", "text/javascript"),
     ("/app/cameras.js", "text/javascript"),
     ("/app/plan.js", "text/javascript"),
+    ("/app/mode.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
@@ -130,6 +131,50 @@ fn plan_page_is_wired_into_the_shell_and_cached_by_the_service_worker() {
         let r = client.get("/api/plan", &token).await;
         assert_eq!(r.status, 200);
         assert!(r.text().contains("Salon"));
+    });
+}
+
+/// Ticket n° 8 : la pastille du mode est dans la coquille, branchée sur le snapshot, l'événement
+/// `mode_changed` et `PUT /api/mode` ; le service worker change de version et garde `mode.js`.
+#[test]
+fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
+    let dir = temp_dir("webapp-mode");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let html = client.request("GET", "/app/", None, None).await.text();
+        assert!(html.contains(r#"id="mode-chip""#), "pastille absente");
+        assert!(html.contains(r#"id="mode-menu""#) && html.contains(r#"role="menu""#));
+        let app = client
+            .request("GET", "/app/app.js", None, None)
+            .await
+            .text();
+        assert!(app.contains(r#"from "./mode.js""#));
+        // Le mode arrive par le snapshot et `mode_changed` ; le changement passe par la seule
+        // route `PUT /api/mode`, avec le jeton de session de la page (jamais le jeton de mode).
+        assert!(app.contains("mode_changed") && app.contains("s.mode"));
+        assert!(app.contains(r#"api.request("PUT", "/api/mode""#));
+        assert!(!app.contains("jeton-mode") && !app.contains("mode_token"));
+        // Une caméra éteinte n'ouvre ni flux ni image fixe.
+        assert!(app.contains("cameraOff(cam, state.mode)"));
+        let mode = client.request("GET", "/app/mode.js", None, None).await;
+        assert_eq!(mode.status, 200);
+        let js = mode.text();
+        assert!(!js.contains("eval(") && !js.contains("innerHTML"));
+        // Ses quatre modes sont ceux du serveur.
+        for key in ["present", "absent", "nuit", "vacances"] {
+            assert!(js.contains(&format!("\"{key}\"")), "{key}");
+        }
+        let sw = client.request("GET", "/app/sw.js", None, None).await.text();
+        assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
+        assert!(
+            sw.contains("matter-home-shell-v4"),
+            "le cache du service worker doit changer de version"
+        );
+        // Le serveur de démonstration envoie bien le mode dans l'état complet.
+        let token = client.login().await;
+        let state = client.get("/api/state", &token).await.json();
+        assert_eq!(state["mode"], "present");
     });
 }
 

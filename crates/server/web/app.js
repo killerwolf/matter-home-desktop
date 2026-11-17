@@ -9,6 +9,7 @@ import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
+import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -20,6 +21,7 @@ const state = {
   devices: new Map(), // id (texte) -> { id, info, status, last_seen, mode, latest, open_since, cover_motion }
   plan: null,
   cameras: [],
+  mode: DEFAULT_MODE, // le mode global de la maison, tenu par le serveur
   connection: "connecting",
   loaded: false,
 };
@@ -40,6 +42,7 @@ function applySnapshot(s) {
   state.devices = new Map(s.devices.map((v) => { const d = deviceFrom(v); return [d.id, d]; }));
   state.plan = s.plan;
   state.cameras = s.cameras ?? [];
+  state.mode = isMode(s.mode) ? s.mode : DEFAULT_MODE;
   state.loaded = true;
   scheduleRender(true);
 }
@@ -68,6 +71,7 @@ function applyEvent(e) {
     case "cover_motion": if (d(e.node_id)) d(e.node_id).cover_motion = e.motion; break;
     case "plan_changed": state.plan = e.plan; scheduleRender(true); return;
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
+    case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
     default: return;
   }
   settleExpect(e.node_id);
@@ -357,7 +361,7 @@ function renderPlan() {
 let players = [];
 let camCards = []; // { el, cam, canvas, msg, fs, playable, thumb, player, snap, visible }
 let thumbObserver = null;
-const camSignature = () => JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream]));
+const camSignature = () => JSON.stringify(state.cameras.map((c) => [c.id, c.name, c.status?.state, c.has_sub_stream, cameraOff(c, state.mode)]));
 let camsDirty = false; // la grille est à refaire à la sortie du plein écran
 let fullCam = null; // { id, card, player, mode: "api" | "css", pushed }
 const MAX_THUMBNAILS = 4; // au plus 4 vignettes lues en même temps (décodeurs, WebSockets, batterie)
@@ -437,6 +441,8 @@ function renderCameras() {
     cap.textContent = cam.name;
     el.append(canvas, msg, cap);
     grid.appendChild(el);
+    // Éteinte dans le mode actuel : ni flux ni image fixe (le serveur les refuserait).
+    if (cameraOff(cam, state.mode)) { msg.textContent = offText(state.mode); continue; }
     const online = cam.status?.state === "online";
     if (!online) { msg.textContent = cam.status?.state === "unreachable" ? "Caméra injoignable" : "Vérification…"; continue; }
     if (!webCodecsSupported()) { msg.textContent = "Vidéo non prise en charge"; continue; }
@@ -700,7 +706,71 @@ function groupTitle(id) {
 // ---------------------------------------------------------------------------
 const TITLES = { devices: "Appareils", plan: "Plan", temps: "Températures", cameras: "Caméras" };
 
+// ---------------------------------------------------------------------------
+// Le mode de la maison : une pastille en haut, un tap ouvre les quatre choix
+// ---------------------------------------------------------------------------
+const modeChip = $("#mode-chip");
+const modeMenu = $("#mode-menu");
+
+for (const m of MODES) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.setAttribute("role", "menuitemradio");
+  item.dataset.mode = m.id;
+  item.textContent = m.label;
+  item.addEventListener("click", () => chooseMode(m.id));
+  modeMenu.appendChild(item);
+}
+
+function renderModeChip() {
+  modeChip.hidden = !state.loaded;
+  if (modeChip.hidden) closeModeMenu(false);
+  const label = modeLabel(state.mode);
+  modeChip.textContent = `Mode : ${label}`;
+  modeChip.setAttribute("aria-label", `Mode de la maison : ${label}. Changer de mode.`);
+  for (const item of modeMenu.children) item.setAttribute("aria-checked", String(item.dataset.mode === state.mode));
+}
+
+function closeModeMenu(refocus) {
+  if (modeMenu.hidden) return;
+  modeMenu.hidden = true;
+  modeChip.setAttribute("aria-expanded", "false");
+  if (refocus) modeChip.focus();
+}
+
+function openModeMenu() {
+  modeMenu.hidden = false;
+  modeChip.setAttribute("aria-expanded", "true");
+  (modeMenu.querySelector('[aria-checked="true"]') ?? modeMenu.firstElementChild)?.focus();
+}
+
+/** Demande le changement au serveur. La pastille suit sa réponse (et l'événement `mode_changed`
+ *  qu'il diffuse à tous) : rien n'est affiché avant sa confirmation. */
+async function chooseMode(id) {
+  closeModeMenu(true);
+  if (id === state.mode) return;
+  try {
+    const result = await api.request("PUT", "/api/mode", { mode: id });
+    if (isMode(result?.mode)) { state.mode = result.mode; scheduleRender(true); }
+  } catch (error) {
+    toast(error.detail || "Le mode n'a pas pu être changé.");
+  }
+}
+
+modeChip.addEventListener("click", () => (modeMenu.hidden ? openModeMenu() : closeModeMenu(true)));
+document.addEventListener("click", (e) => {
+  if (!modeMenu.hidden && !modeMenu.contains(e.target) && !modeChip.contains(e.target)) closeModeMenu(false);
+});
+modeMenu.addEventListener("keydown", (e) => {
+  const items = [...modeMenu.children];
+  const at = items.indexOf(document.activeElement);
+  if (e.key === "Escape") { e.preventDefault(); closeModeMenu(true); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); items[(at + 1) % items.length].focus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); items[(at - 1 + items.length) % items.length].focus(); }
+});
+
 function render() {
+  renderModeChip();
   const conn = $("#conn");
   conn.hidden = state.connection === "online";
   conn.textContent = state.connection === "connecting" ? "connexion…" : "hors ligne";
@@ -718,7 +788,7 @@ function render() {
       // ou la panne de la caméra affichée fait sortir tout de suite.
       structureDirty = false;
       const shown = state.cameras.find((c) => c.id === fullCam.id);
-      if (!shown || shown.status?.state !== "online") { exitFull(); renderCameras(); view._camSignature = signature; camsDirty = false; }
+      if (!shown || shown.status?.state !== "online" || cameraOff(shown, state.mode)) { exitFull(); renderCameras(); view._camSignature = signature; camsDirty = false; }
       else camsDirty = true;
     } else if (view._tab !== "cameras" || (structureDirty && view._camSignature !== signature)) { structureDirty = false; exitFull(); renderCameras(); view._camSignature = signature; camsDirty = false; }
     else structureDirty = false;

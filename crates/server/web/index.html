@@ -21,7 +21,11 @@
 <div id="app">
   <header id="topbar" hidden>
     <h1 id="title">Appareils</h1>
-    <span id="conn" class="conn" role="status" aria-live="polite" hidden></span>
+    <div class="topright">
+      <span id="conn" class="conn" role="status" aria-live="polite" hidden></span>
+      <button id="mode-chip" class="mode-chip" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="mode-menu" hidden></button>
+    </div>
+    <div id="mode-menu" class="mode-menu" role="menu" aria-label="Mode de la maison" hidden></div>
   </header>
   <main id="view" role="tabpanel" aria-labelledby="tab-devices"></main>
   <nav id="tabs" role="tablist" aria-label="Sections" hidden>
