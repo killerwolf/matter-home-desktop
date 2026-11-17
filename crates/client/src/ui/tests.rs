@@ -2341,12 +2341,12 @@ fn the_top_bar_shows_the_mode_only_when_connected() {
     use protocol::mode::HomeMode;
     let mut f = Fixture::new();
     let ctx = egui::Context::default();
-    let mut texts = |f: &mut Fixture| {
+    let texts = |f: &mut Fixture| {
         let mut out = String::new();
         let output = ctx.run_ui(egui::RawInput::default(), |ui| f.app.top_bar(ui));
         for clipped in &output.shapes {
             if let egui::epaint::Shape::Text(t) = &clipped.shape {
-                out.push_str(&t.galley.text());
+                out.push_str(t.galley.text());
                 out.push('\n');
             }
         }
