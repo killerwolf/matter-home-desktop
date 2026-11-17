@@ -699,6 +699,11 @@ impl PlanView {
         }
     }
 
+    /// Une fenêtre du plan (le direct d'une caméra) est ouverte au premier plan.
+    pub fn has_window(&self) -> bool {
+        self.live_camera.is_some()
+    }
+
     /// Un autre client a modifié le plan pendant l'édition : un choix attend.
     pub fn conflict_pending(&self) -> bool {
         self.sync.remote().is_some()

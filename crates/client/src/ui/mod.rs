@@ -224,6 +224,8 @@ pub struct MatterApp {
     rules: rules::RulesView,
     /// Appareil dont l'effacement d'historique attend confirmation.
     confirm_clear: Option<u64>,
+    /// Appareil dont l'oubli attend une confirmation.
+    confirm_forget: Option<u64>,
     /// Nom et icône en cours de modification sur la fiche.
     device_edit: Option<customize::DeviceEdit>,
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
@@ -298,6 +300,7 @@ impl MatterApp {
             plan: plan::PlanView::new(),
             rules: rules::RulesView::new(),
             confirm_clear: None,
+            confirm_forget: None,
             device_edit: None,
             select_on_arrival: None,
             data_dialog: None,
@@ -545,8 +548,7 @@ impl MatterApp {
             self.set_cover(id, command);
         }
         if let Some(id) = out.detail {
-            self.selected = Some(id);
-            self.export_message = None;
+            self.select(id);
         }
     }
 
@@ -1020,6 +1022,7 @@ impl MatterApp {
         self.pairing = Pairing::Idle;
         self.code.clear();
         self.confirm_clear = None;
+        self.confirm_forget = None;
         self.device_edit = None;
         self.selected = None;
         self.expect.clear();
@@ -1171,7 +1174,7 @@ impl MatterApp {
             .find(|(_, d)| d.info.name.to_lowercase().contains(&wanted))
             .map(|(id, _)| *id)
         {
-            self.selected = Some(id);
+            self.select(id);
             self.select_on_arrival = None;
         }
     }
@@ -1754,7 +1757,21 @@ impl MatterApp {
         self.selected = None;
         self.device_edit = None;
         self.confirm_clear = None;
+        self.confirm_forget = None;
         self.export_message = None;
+    }
+
+    /// Ouvre le détail d'un appareil. Si ce n'est pas celui déjà ouvert, le nom en cours de
+    /// saisie, les confirmations (effacer, oublier) et le message d'export ne le suivent pas :
+    /// ils concernaient l'autre appareil.
+    fn select(&mut self, id: u64) {
+        if self.selected != Some(id) {
+            self.device_edit = None;
+            self.confirm_clear = None;
+            self.confirm_forget = None;
+            self.export_message = None;
+        }
+        self.selected = Some(id);
     }
 
     /// Une notification dans l'application (pas celle du système).
@@ -1794,7 +1811,13 @@ impl MatterApp {
     /// Échap ferme le panneau de détail. Pendant l'édition du nom (ou la confirmation
     /// d'effacement), elle annule cela sans fermer le panneau.
     fn detail_escape(&mut self, ctx: &egui::Context) {
+        // Échap appartient d'abord au menu, à la liste ou à la fenêtre ouverte au premier plan.
         if self.selected_device().is_none()
+            || egui::Popup::is_any_open(ctx)
+            || self.add_open
+            || self.data_dialog.is_some()
+            || self.close_prompt.is_some()
+            || self.plan.has_window()
             || !ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             return;
@@ -1802,10 +1825,12 @@ impl MatterApp {
         let editing = self.selected.is_some_and(|id| {
             self.device_edit.as_ref().is_some_and(|e| e.node_id == id)
                 || self.confirm_clear == Some(id)
+                || self.confirm_forget == Some(id)
         });
         if editing {
             self.device_edit = None;
             self.confirm_clear = None;
+            self.confirm_forget = None;
         } else {
             self.close_detail();
         }
@@ -2051,16 +2076,25 @@ impl MatterApp {
                     {
                         self.confirm_clear = Some(id);
                     }
-                    if device.info.bridge.is_none()
-                && ui
-                    .button("Oublier")
-                    .on_hover_text(
-                        "Retire l'appareil de cette application (il reste dans Apple Home).",
-                    )
-                    .clicked()
-            {
-                forget = true;
-            }
+                    if device.info.bridge.is_none() {
+                        if self.confirm_forget == Some(id) {
+                            ui.label("Oublier cet appareil ?");
+                            forget = ui
+                                .button(RichText::new("Oui, oublier").color(p.error))
+                                .clicked();
+                            if ui.button("Annuler").clicked() {
+                                self.confirm_forget = None;
+                            }
+                        } else if ui
+                            .button("Oublier")
+                            .on_hover_text(
+                                "Retire l'appareil de cette application (il reste dans Apple Home).",
+                            )
+                            .clicked()
+                        {
+                            self.confirm_forget = Some(id);
+                        }
+                    }
                 });
                 let mut save = None;
                 if let Some(edit) = self.device_edit.as_mut().filter(|e| e.node_id == id) {
@@ -2180,8 +2214,7 @@ impl MatterApp {
             self.set_cover(id, command);
         }
         if let Some(other) = open_device {
-            self.selected = Some(other);
-            self.export_message = None;
+            self.select(other);
         }
         if customize {
             self.device_edit = Some(fresh_edit);
@@ -2193,6 +2226,7 @@ impl MatterApp {
             self.customize(node, Some(name), icon);
         }
         if forget {
+            self.confirm_forget = None;
             self.forget_device(id);
             self.close_detail();
         }
@@ -2623,10 +2657,7 @@ impl eframe::App for MatterApp {
                 }
                 View::Plan => match self.plan.show(ui, &self.model) {
                     // Le même panneau de détail que dans Appareils, à côté du plan.
-                    plan::PlanAction::OpenDevice(id) => {
-                        self.selected = Some(id);
-                        self.export_message = None;
-                    }
+                    plan::PlanAction::OpenDevice(id) => self.select(id),
                     plan::PlanAction::Customize {
                         node_id,
                         name,

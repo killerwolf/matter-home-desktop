@@ -2062,15 +2062,127 @@ fn the_detail_panel_draws_for_every_kind_of_device() {
         device: node(3, "Salon", sensor),
     });
     let ctx = egui::Context::default();
+    let width = 1200.0;
+    let min = theme::tokens().size.detail_panel_min;
     for id in [1, 2, 3] {
-        f.app.selected = Some(id);
+        f.app.select(id);
         let layout = devices::groups(&f.app.model.devices, f.app.plan.plan());
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            f.app.detail_panel(ui, &layout);
-        });
-        out.textures_delta.clear();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut central = f32::MAX;
+        // Deux images : la largeur du panneau est mesurée une fois celui-ci en place.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input.clone(), |ui| {
+                f.app.detail_panel(ui, &layout);
+                egui::CentralPanel::default().show(ui, |ui| central = ui.available_width());
+            });
+            out.textures_delta.clear();
+        }
         assert_eq!(f.app.selected, Some(id), "le panneau reste ouvert");
+        assert!(
+            central <= width - min,
+            "le panneau est dessiné à droite : il reste {central} px au centre"
+        );
     }
+    // Fermé : le centre reprend toute la largeur.
+    f.app.close_detail();
+    let layout = devices::groups(&f.app.model.devices, f.app.plan.plan());
+    let mut central = 0.0;
+    let mut out = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 700.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            f.app.detail_panel(ui, &layout);
+            egui::CentralPanel::default().show(ui, |ui| central = ui.available_width());
+        },
+    );
+    out.textures_delta.clear();
+    assert!(central > width - min, "sans panneau, le centre est entier");
+}
+
+/// Changer d'appareil ne laisse ni confirmation ni nom en cours sur le suivant.
+#[test]
+fn selecting_another_device_resets_confirmations_and_the_name_draft() {
+    let mut f = lamp_and_shutter_fixture();
+    f.app.select(1);
+    f.app.confirm_clear = Some(1);
+    f.app.confirm_forget = Some(1);
+    f.app.select(2);
+    f.app.select(1);
+    assert!(f.app.confirm_clear.is_none() && f.app.confirm_forget.is_none());
+
+    f.app.device_edit = Some(customize::DeviceEdit::from_info(
+        &f.app.model.devices[&1].info,
+    ));
+    f.app.export_message = Some((true, "ok".into()));
+    // Rouvrir le même appareil ne perd rien.
+    f.app.select(1);
+    assert!(f.app.device_edit.is_some() && f.app.export_message.is_some());
+    // Les trois chemins qui changent la sélection passent par `select`.
+    f.app.apply_tiles(devices::Outcome {
+        detail: Some(2),
+        ..Default::default()
+    });
+    assert_eq!(f.app.selected, Some(2));
+    assert!(f.app.device_edit.is_none() && f.app.export_message.is_none());
+    f.app.select(1);
+    f.app.device_edit = Some(customize::DeviceEdit::from_info(
+        &f.app.model.devices[&1].info,
+    ));
+    f.app.select(2);
+    f.app.select(1);
+    assert!(f.app.device_edit.is_none(), "le brouillon du nom a disparu");
+}
+
+#[test]
+fn escape_leaves_the_panel_open_while_a_menu_or_a_window_is_open() {
+    let mut f = lamp_and_shutter_fixture();
+    let ctx = egui::Context::default();
+    let wide = 1200.0;
+    f.app.select(1);
+    // Un menu ouvert garde Échap.
+    egui::Popup::open_id(&ctx, egui::Id::unique("un_menu"));
+    detail_frame(&mut f, &ctx, wide, vec![escape_event()]);
+    assert_eq!(f.app.selected, Some(1), "menu ouvert : le panneau reste");
+    egui::Popup::close_all(&ctx);
+    // Une fenêtre au premier plan aussi.
+    f.app.add_open = true;
+    detail_frame(&mut f, &ctx, wide, vec![escape_event()]);
+    assert_eq!(f.app.selected, Some(1), "fenêtre Ajouter ouverte");
+    f.app.add_open = false;
+    f.app.close_prompt = Some("x".into());
+    detail_frame(&mut f, &ctx, wide, vec![escape_event()]);
+    assert_eq!(f.app.selected, Some(1), "invite de fermeture ouverte");
+    f.app.close_prompt = None;
+    // Plus rien d'ouvert : Échap ferme.
+    detail_frame(&mut f, &ctx, wide, vec![escape_event()]);
+    assert_eq!(f.app.selected, None);
+}
+
+#[test]
+fn forgetting_a_device_asks_for_confirmation() {
+    let mut f = lamp_and_shutter_fixture();
+    f.app.select(1);
+    f.app.confirm_forget = Some(1);
+    // Échap annule la confirmation sans fermer le panneau.
+    let ctx = egui::Context::default();
+    detail_frame(&mut f, &ctx, 1200.0, vec![escape_event()]);
+    assert_eq!(f.app.selected, Some(1));
+    assert!(f.app.confirm_forget.is_none());
+    // Fermer le panneau l'efface aussi.
+    f.app.confirm_forget = Some(1);
+    f.app.close_detail();
+    assert!(f.app.confirm_forget.is_none());
 }
 
 #[test]
