@@ -7,6 +7,7 @@ import {
 } from "./tiles.js";
 import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
+import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -318,6 +319,35 @@ function renderTemps() {
     return;
   }
   temps = mountTemps(view, { request: api.request, getSensors: tempSensors });
+}
+
+// ---------------------------------------------------------------------------
+// Rendu : plan de la maison (lecture seule ; un tap sur un appareil ouvre la même feuille de
+// détail que la page Appareils, voir plan.js)
+// ---------------------------------------------------------------------------
+let plan = null;
+
+function stopPlan() {
+  plan?.destroy();
+  plan = null;
+}
+
+function renderPlan() {
+  if (!plan || view._tab !== "plan") {
+    stopPlan();
+    view.replaceChildren();
+    view._tab = "plan";
+    plan = mountPlan(view, {
+      getPlan: () => state.plan,
+      getDevices: () => state.devices,
+      getCameras: () => state.cameras,
+      getExpect: (id) => expects.get(id) ?? null,
+      get loaded() { return state.loaded; },
+      onOpenDevice: openDetail,
+      onOpenCameras: () => selectTab("cameras"),
+    });
+  } else plan.update();
+  if (sheetId) renderSheet();
 }
 
 // ---------------------------------------------------------------------------
@@ -668,14 +698,17 @@ function groupTitle(id) {
 // ---------------------------------------------------------------------------
 // Navigation, connexion, démarrage
 // ---------------------------------------------------------------------------
-const TITLES = { devices: "Appareils", temps: "Températures", cameras: "Caméras" };
+const TITLES = { devices: "Appareils", plan: "Plan", temps: "Températures", cameras: "Caméras" };
 
 function render() {
   const conn = $("#conn");
   conn.hidden = state.connection === "online";
   conn.textContent = state.connection === "connecting" ? "connexion…" : "hors ligne";
   if (tab === "devices") renderDevices();
-  else if (tab === "temps") {
+  else if (tab === "plan") {
+    structureDirty = false;
+    renderPlan();
+  } else if (tab === "temps") {
     structureDirty = false;
     renderTemps();
   } else if (tab === "cameras") {
@@ -697,6 +730,7 @@ function selectTab(name) {
   tab = name;
   if (name !== "cameras") { exitFull(); stopPlayers(); }
   if (name !== "temps") stopTemps();
+  if (name !== "plan") stopPlan();
   $("#title").textContent = TITLES[name];
   document.querySelectorAll("#tabs [role=tab]").forEach((b) => {
     b.setAttribute("aria-selected", String(b.dataset.tab === name));
@@ -716,6 +750,7 @@ function showLogin(message) {
   exitFull();
   stopPlayers();
   stopTemps();
+  stopPlan();
   $("#login").hidden = false;
   $("#app").hidden = true;
   $("#topbar").hidden = true;
@@ -854,7 +889,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
 window.addEventListener("online", () => { if (!document.hidden) wake(); });
-setInterval(() => { if (tab === "devices" && !document.hidden) scheduleRender(false); }, 30_000);
+setInterval(() => { if ((tab === "devices" || tab === "plan") && !document.hidden) scheduleRender(false); }, 30_000);
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js", { scope: "/app/" }).catch(() => {});

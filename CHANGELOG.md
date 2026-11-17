@@ -8,6 +8,12 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Ajouté
+
+- **App web : le plan de la maison en lecture** (ticket n° 15). Nouvel onglet « Plan » : les pièces dessinées en SVG (teintées selon leur température moyenne), les appareils placés dessus avec leur état en direct (allumé, éteint, température, ouvert, fermé, injoignable), les caméras et leur champ. Un tap sur un appareil ouvre la même feuille de détail que la page Appareils, avec ses commandes. Zoom au pincement (molette et boutons « + » « − » aussi), déplacement au doigt, bouton « Recentrer », un choix d'étage s'il y en a plusieurs. Le plan arrive déjà par le WebSocket (snapshot et `plan_changed`) : aucune nouvelle route. Pas d'édition (elle reste dans l'application de bureau).
+
 ## [1.0.1] - 2026-11-17
 
 ### Modifié

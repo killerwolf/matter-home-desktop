@@ -60,14 +60,44 @@ pas de framework, pas de nouvelle dépendance Rust.
   du serveur vers la caméra : connexion, attente d'une image clé, fermeture après 5 s. Une caméra
   qui a un flux réduit mais dont la vignette dépasse les 4 flux en subit autant. Elle est évitée si la
   caméra est déjà regardée (la capture se joint au flux ouvert) ou testée.
+- **Plan** (lecture seule) : `plan.js`. Le plan et les pièces arrivent déjà aux clients : dans le
+  `snapshot` du WebSocket (`plan`) puis `plan_changed` (voir [protocole](protocole.md)), donc **aucune
+  route de plus**. Les pièces sont des rectangles SVG construits par le DOM (`createElementNS`,
+  `textContent` : aucune donnée de la maison dans `innerHTML`, seuls les pictogrammes fixes y passent),
+  teintés par la température moyenne de la pièce (mêmes paliers que la pastille de l'onglet
+  Appareils) ; leur nom est suivi de cette température. Chaque appareil placé est un pictogramme avec
+  sa valeur (« Allumée », « 21,5 °C », « Ouverte »… : le texte de la tuile, `tileOf`), mis à jour par
+  les événements du WebSocket ; son nom apparaît quand on zoome. Le pictogramme choisi sur le plan
+  (`symbol`) et le réglage porte ou fenêtre (`opening`) sont respectés. Les objets décoratifs sont
+  grisés ; une caméra montre son champ (cône ou rectangle) et un tap mène à l'onglet Caméras.
+  **Toucher un appareil ouvre la même feuille de détail** que la page Appareils (commandes
+  « Allumer », « Éteindre », « Ouvrir »… comprises) ; la feuille reste à jour pendant que le plan est
+  affiché. Les textes gardent une taille d'écran fixe ; les pictogrammes grossissent un peu avec le
+  zoom (0,65 à l'ajustement, 1 dès 1,6 fois ; cible tactile de 56 px, 36 px à l'ajustement) ; seules
+  les pièces suivent le zoom pour de bon. Un tap ouvre la feuille sans que le `click` qui suit ne la
+  referme (il est avalé).
+  - **Gestes** (pointer events, `touch-action: none` sur le SVG) : un doigt déplace, deux doigts
+    pincent (le point sous le milieu des doigts reste sous eux), un tap sans déplacement (moins de
+    8 px) ouvre l'appareil. Molette ou pavé tactile : zoom au curseur. Boutons « − » « + » et
+    **« Recentrer »** ; au clavier, `+`, `-`, `0` et les flèches quand le plan a le focus.
+    L'échelle va de 0,6 à 14 fois l'ajustement et un bout du plan reste toujours à l'écran.
+  - **Mise en page** : le plan prend la hauteur libre entre la barre du haut et les onglets
+    (`100dvh`, zones sûres comprises) ; un changement de taille (rotation, iPad) réajuste la vue tant
+    qu'on ne l'a pas déplacée. Plusieurs étages : un sélecteur dans la barre du plan, le premier étage
+    garni d'abord. Même style que les autres pages (coins carrés `--web-radius`, traits `--color-line`,
+    jetons de `tokens.css`, thème clair ou sombre).
+  - **Plan vide** (aucune pièce ni objet) : « Le plan se dessine dans l'application de bureau ».
+  - **Essais** : `node crates/server/web/plan.test.mjs` (géométrie : ajustement, pincement, bornes,
+    comme `charts.test.mjs`, à la main) et des tests du serveur (fichier servi avec la CSP stricte,
+    service worker, onglet).
 - Barre d'onglets en bas (style iOS), `safe-area-inset` respecté, thème clair ou sombre selon le
   système. Installable (manifeste + service worker qui garde la coquille ; **jamais** `/api/`).
-- Hors périmètre : le plan et les automatisations.
+- Hors périmètre : la **modification** du plan (elle reste dans l'application de bureau) et les automatisations.
 
 ## Fichiers
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
-`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
+`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
 192 et 512). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 
