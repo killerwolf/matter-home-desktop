@@ -83,14 +83,19 @@ composants.
 - **En-tête de pièce** (`room_heading`) : le nom en `font.size.title`, l'étage en `caption`
   discret et, si la pièce a un capteur joignable, une pastille de température moyenne teintée par
   l'échelle de température (la même que le plan).
-- **Fenêtre de détail** (`MatterApp::detail_window`, `egui::Modal`) : centrée, de `580` px de large et
-  de la taille de son contenu, sur un fond assombri ; « Fermer », Échap et un clic à l'extérieur la
-  ferment. Un bandeau signale un appareil injoignable ; sous l'en-tête tout défile. Quatre blocs : 1. l'en-tête (grande icône, nom, pièce, valeur en grand quand aucune courbe
+- **Panneau de détail** (`MatterApp::detail_panel`, `egui::Panel::right`) : un inspecteur à droite de
+  la grille (Appareils) ou du plan, de `size.detail_panel` px (360) à l'ouverture, redimensionnable entre
+  `detail_panel_min` et `detail_panel_max` ; la grille se réorganise dans la place restante. La
+  tuile choisie est en `state.selected` avec un contour `accent_text`. Un clic sur une autre tuile
+  change l'appareil ; « Fermer » et Échap ferment (Échap annule d'abord un nom ou une confirmation en
+  cours) ; si l'appareil disparaît, le panneau se ferme. Sous `size.detail_narrow` (800 px) de large, le
+  panneau prend toute la largeur à la place de la grille (`detail_full`). Un bandeau signale un
+  appareil injoignable ; sous l'en-tête tout défile. Quatre blocs : 1. l'en-tête (grande icône, nom, pièce, valeur en grand quand aucune courbe
   ne la montre, interrupteur d'une lumière ou d'une prise) ; 2. la courbe et les périodes,
   seulement si l'appareil en a une (température, ouverture, consommation, volet) : jamais de section
   vide pour une lumière ou une télécommande ; 3. les actions (Reconnecter, Nom et icône, Effacer
   l'historique, Oublier) ; 4. « Infos techniques », repliées (état, pile, type, nœud, fabricant,
-  dernière communication, pont). Le plan ouvre la même fenêtre au clic sur un appareil.
+  dernière communication, pont). Le plan ouvre le même panneau au clic sur un appareil.
 - **Pastille d'état anormal** : un point de `size.dot` et un mot en `caption`, couleur `warn`
   (pile faible) ou `error` (injoignable). Jamais de pastille verte « en ligne ».
 - **Vignette** (`thumbnail`) : une image 16/9 de rayon `radius.md`, le nom dessous, la pièce en

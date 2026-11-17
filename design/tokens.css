@@ -50,6 +50,10 @@
   --size-button-pad-y: 3px;
   --size-caption-row: 26px;
   --size-control: 24px;
+  --size-detail-narrow: 800px;
+  --size-detail-panel: 360px;
+  --size-detail-panel-max: 520px;
+  --size-detail-panel-min: 300px;
   --size-dot: 7px;
   --size-item-gap-y: 6px;
   --size-row: 30px;

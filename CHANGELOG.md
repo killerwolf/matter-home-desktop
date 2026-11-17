@@ -8,6 +8,12 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- Écran Appareils (et plan) : le détail d'un appareil s'ouvre dans un panneau à droite, redimensionnable, à côté de la grille de tuiles, au lieu d'une fenêtre modale centrée. La tuile choisie est mise en évidence ; un clic sur une autre tuile change l'appareil, « Fermer » ou Échap referment le panneau. Sur une fenêtre étroite (moins de 800 px), le panneau prend toute la largeur à la place de la grille.
+
 ## [1.0.1] - 2026-11-17
 
 ### Modifié
