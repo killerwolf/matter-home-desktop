@@ -28,7 +28,8 @@ possède quoi, pour que leurs fusions ne se marchent pas dessus, et ce qui est d
   son comportement est « Éteinte », `Hub::acquire_camera_viewer` et `Hub::camera_target` ne rendent
   rien, le direct et l'image fixe répondent `503 unavailable` (« caméra éteinte en mode … »), et une
   lecture ouverte se ferme d'elle-même (la cible disparaît, comme pour une caméra supprimée).
-  « Surveillance » se comporte comme « Diffusion » jusqu'au ticket de détection.
+  « Surveillance » se regarde comme « Diffusion » ; la détection (ticket n° 18, [Détection](detection.md))
+  s'y abonne **comme un spectateur** du même registre (`Hub::live`) : jamais une connexion de plus.
 - **Personne ne touche `CHANGELOG.md` ni `docs/protocole.md`** pendant la phase parallèle : chaque
   agent note ce qu'il aurait écrit dans son compte rendu, la fusion les rédige.
 - **Seul le ticket n° 5 modifie `Cargo.toml` et `Cargo.lock`** (décodeur vidéo). Si #6 ou #7 a besoin

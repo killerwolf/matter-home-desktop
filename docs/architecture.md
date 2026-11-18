@@ -152,6 +152,9 @@ crates/server/src/     serveur (Matter, règles, historique) : aucune dépendanc
   history_store.rs     historique sur disque : ajout, relecture, rétention (+ tests)
   automation.rs        moteur de règles, actions (+ tests)
   backup.rs            export / import des données
+  detection/           détection sur les caméras en Surveillance (ticket n° 18, docs/detection.md) :
+                       veille et superviseur, pré-enregistrement, mouvement, détecteur (trait +
+                       ONNX/CoreML), passages, MP4 sans réencodage, événements sur disque (+ tests)
   demo.rs              backend simulé (--demo) (+ tests)
   matter/mod.rs        démarrage du backend, appairage, commandes (+ tests)
   matter/node.rs       supervision d'un nœud : CASE, description, souscription
