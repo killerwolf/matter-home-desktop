@@ -22,6 +22,7 @@ const state = {
   plan: null,
   cameras: [],
   mode: DEFAULT_MODE, // le mode global de la maison, tenu par le serveur
+  hasMode: false, // le serveur a annoncé un mode : sinon la pastille reste cachée
   connection: "connecting",
   loaded: false,
 };
@@ -42,7 +43,8 @@ function applySnapshot(s) {
   state.devices = new Map(s.devices.map((v) => { const d = deviceFrom(v); return [d.id, d]; }));
   state.plan = s.plan;
   state.cameras = s.cameras ?? [];
-  state.mode = isMode(s.mode) ? s.mode : DEFAULT_MODE;
+  state.hasMode = isMode(s.mode);
+  state.mode = state.hasMode ? s.mode : DEFAULT_MODE;
   state.loaded = true;
   scheduleRender(true);
 }
@@ -723,7 +725,7 @@ for (const m of MODES) {
 }
 
 function renderModeChip() {
-  modeChip.hidden = !state.loaded;
+  modeChip.hidden = !state.loaded || !state.hasMode;
   if (modeChip.hidden) closeModeMenu(false);
   const label = modeLabel(state.mode);
   modeChip.textContent = `Mode : ${label}`;

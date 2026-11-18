@@ -153,6 +153,8 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         // Le mode arrive par le snapshot et `mode_changed` ; le changement passe par la seule
         // route `PUT /api/mode`, avec le jeton de session de la page (jamais le jeton de mode).
         assert!(app.contains("mode_changed") && app.contains("s.mode"));
+        // Un serveur sans modes : pas de pastille.
+        assert!(app.contains("!state.hasMode"));
         assert!(app.contains(r#"api.request("PUT", "/api/mode""#));
         assert!(!app.contains("jeton-mode") && !app.contains("mode_token"));
         // Une caméra éteinte n'ouvre ni flux ni image fixe.

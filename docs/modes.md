@@ -38,11 +38,18 @@ Choisir l'emplacement **pré-remplit** le tableau, qui reste modifiable ligne pa
   caméra éteinte (« Éteinte en mode Nuit »).
 - **Caméras déjà enregistrées** : elles deviennent **Extérieures** (tableau extérieur : jamais
   éteintes), donc rien ne change tant qu'on n'a pas choisi autre chose.
-- La vérification de joignabilité des caméras (un `DESCRIBE` bref par minute) continue pour une
-  caméra éteinte : « éteinte » ne concerne que le direct et l'image fixe.
+- **Éteinte = aucune connexion** : le serveur ne se connecte plus du tout à la caméra, pas même pour
+  vérifier qu'elle répond (le `DESCRIBE` d'une minute est sauté). Les clients affichent l'état neutre
+  « Éteinte » à la place de la dernière joignabilité connue ; elle est revérifiée dès que le mode la
+  rallume. Le bouton « Tester » de la fenêtre du serveur, lui, reste possible (action manuelle).
 
 ## Automatisations
 
+- **Alors** : « Changer le mode de la maison » (`Action::SetMode`) : par exemple *à 23:00, passer en
+  Nuit*. Le même mode n'a aucun effet. Une règle « quand le mode devient X » qui change le mode doit
+  avoir un **délai entre deux exécutions d'au moins 10 s** (le serveur la refuse sinon) : deux règles
+  qui se renvoient le mode (Nuit → Absent → Nuit…) sont arrêtées par ce délai (60 s par défaut), elles
+  ne bouclent pas sans fin.
 - **Quand** : « Le mode de la maison change » : la règle se lance quand le mode **devient** le mode
   choisi (`{valeur}` vaut le nom du mode). Le mode lu au démarrage du serveur n'est pas un changement.
 - **Seulement si** : « Mode de la maison » : l'un des modes cochés (au moins un), par exemple
@@ -61,11 +68,13 @@ le serveur peut créer un **jeton de mode** : un secret à part, qui ne sert **q
   jamais écrit dans le journal.
 - « Générer un nouveau jeton » **révoque l'ancien** (les automatisations de l'iPhone sont alors à
   mettre à jour) ; « Révoquer le jeton » supprime tout accès par jeton.
-- Il se place dans l'en-tête `Authorization: Bearer <jeton de mode>` (jamais dans l'URL). Les échecs
-  sont limités par adresse, avec un compteur **à part** de celui de la connexion : un Raccourci resté
-  sur un ancien jeton ne bloque pas la connexion par mot de passe. Derrière `tailscale serve`, toutes
-  les connexions viennent de 127.0.0.1 : ce compteur est alors partagé, comme celui de la connexion
-  (voir [Accès à distance](acces-distant.md)).
+- Il se place dans l'en-tête `Authorization: Bearer <jeton de mode>` (jamais dans l'URL). Le jeton est
+  vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et une
+  ligne au journal, **sans blocage par adresse** : derrière `tailscale serve`, toutes les connexions
+  viennent de 127.0.0.1 (voir [Accès à distance](acces-distant.md)), un compteur partagé aurait pu
+  bloquer le bon Raccourci. Le jeton fait 256 bits : l'essai en force est sans espoir.
+- Si `serveur/jeton-mode.json` est illisible, le serveur le met de côté (`jeton-mode.json.illisible`) et
+  repart sans jeton : il suffit d'en générer un nouveau.
 
 ## Changer de mode automatiquement avec Raccourcis sur iPhone
 
@@ -129,7 +138,8 @@ sélecteur du client de bureau, la pastille de l'app web et le menu du serveur s
 
 ## Limites
 
-- Pas encore d'**action** « changer le mode » dans une règle (seulement un déclencheur et une condition).
 - Le mode est global : pas de modes par pièce ni par personne.
-- Un client plus ancien (1.1.0) qui reçoit des règles contenant « Le mode devient… » ne sait pas les
-  lire (les énumérations de règles n'ont pas de repli) : mettez à jour le client avant d'en créer.
+- **Protocole 3** : un client 1.1.0 est refusé (« version incompatible ») : mettez à jour le client
+  (et l'app web, rechargée, suit). Une **sauvegarde** faite avec cette version est refusée par un serveur
+  1.1.0 (`mode.json` inconnu). Un serveur sans modes n'est plus joignable par ces clients ; si jamais
+  l'état complet n'annonce pas de mode, le sélecteur reste caché.

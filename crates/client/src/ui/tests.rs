@@ -49,7 +49,7 @@ fn snapshot(seq: u64, devices: Vec<DeviceView>) -> Snapshot {
         rule_runs: vec![],
         pairing_busy: false,
         cameras: vec![],
-        mode: Default::default(),
+        mode: Some(Default::default()),
     }
 }
 
@@ -2306,7 +2306,7 @@ fn the_home_mode_follows_the_server_and_changes_are_requested_not_assumed() {
     use protocol::mode::HomeMode;
     let mut f = Fixture::new();
     let mut snap = snapshot(1, vec![]);
-    snap.mode = HomeMode::Absent;
+    snap.mode = Some(HomeMode::Absent);
     f.connect(snap);
     assert_eq!(f.app.model.mode, HomeMode::Absent);
     f.live(WireEvent::ModeChanged {
@@ -2355,7 +2355,13 @@ fn the_top_bar_shows_the_mode_only_when_connected() {
     };
     assert!(!texts(&mut f).contains("Mode :"));
     let mut snap = snapshot(1, vec![]);
-    snap.mode = HomeMode::Vacances;
+    snap.mode = Some(HomeMode::Vacances);
     f.connect(snap);
     assert!(texts(&mut f).contains("Mode : Vacances"));
+    // Un serveur sans modes (état complet sans `mode`) : pas de sélecteur.
+    let mut old = snapshot(2, vec![]);
+    old.mode = None;
+    f.connect(old);
+    assert!(!f.app.model.has_mode);
+    assert!(!texts(&mut f).contains("Mode :"));
 }

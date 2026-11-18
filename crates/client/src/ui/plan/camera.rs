@@ -37,7 +37,7 @@ impl CameraState {
             None => CameraState::Missing,
             Some(CameraStatus::Online) => CameraState::Online,
             Some(CameraStatus::Unreachable { .. }) => CameraState::Unreachable,
-            Some(CameraStatus::Unknown) => CameraState::Unknown,
+            Some(CameraStatus::Unknown | CameraStatus::Off) => CameraState::Unknown,
         }
     }
 

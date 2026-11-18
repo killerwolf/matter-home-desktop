@@ -225,6 +225,8 @@ pub struct Model {
     pub cameras: Vec<CameraView>,
     /// Le mode global de la maison, tenu par le serveur (Présent tant qu'il n'a rien dit).
     pub mode: HomeMode,
+    /// Le serveur a annoncé un mode (état complet) : sinon le sélecteur reste caché.
+    pub has_mode: bool,
     pub pairing_busy: bool,
     /// Numéro du dernier événement pris en compte.
     pub seq: u64,
@@ -252,7 +254,8 @@ impl Model {
         self.rule_runs.truncate_front(RULE_RUNS_KEPT);
         self.pairing_busy = snapshot.pairing_busy;
         self.cameras = snapshot.cameras;
-        self.mode = snapshot.mode;
+        self.has_mode = snapshot.mode.is_some();
+        self.mode = snapshot.mode.unwrap_or_default();
         self.seq = snapshot.seq;
         (snapshot.plan.0, snapshot.rules.0)
     }
@@ -448,7 +451,7 @@ mod tests {
             rule_runs: vec![],
             pairing_busy: false,
             cameras: vec![],
-            mode: HomeMode::default(),
+            mode: Some(HomeMode::default()),
         }
     }
 

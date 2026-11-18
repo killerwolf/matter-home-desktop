@@ -14,15 +14,19 @@ Les téléchargements de chaque version sont sur la
 
 - **Mode global de la maison** (ticket n° 8) : **Présent**, **Absent**, **Nuit** ou **Vacances** (Présent
   par défaut), tenu par le serveur (`mode.json`, atomique, droits 0600, inclus dans la sauvegarde
-  `.matterhome`) et le même pour tous les clients. Protocole toujours en version 2 : champ `mode` dans l'état
-  complet (lu « Présent » s'il manque), événement `mode_changed`, route `PUT /api/mode`. Redemander le mode
+  `.matterhome`) et le même pour tous les clients. **Protocole en version 3** (les règles de mode n'ont pas
+  de repli : un client 1.1.0 est refusé en 426 « version incompatible » au lieu de boucler sur une
+  lecture impossible) : champ `mode` dans l'état complet (le sélecteur reste caché s'il manque),
+  événement `mode_changed`, route `PUT /api/mode`. Une sauvegarde faite avec cette version est refusée
+  par un serveur 1.1.0. Redemander le mode
   actuel ne change rien. Il se choisit dans la barre du haut du client de bureau, par la pastille « Mode : … »
   de l'app web (cache du service worker en `v4`), et par le sous-menu « Mode » de la barre de menus du serveur.
   Il apparaît au journal. Voir [docs/modes.md](docs/modes.md).
 - **Jeton de mode pour Raccourcis (iPhone)** : un secret à part, généré par le serveur (fenêtre du serveur,
   affiché une seule fois, régénérable, révocable), qui ne sert **qu'à** `PUT /api/mode` (toute autre route le
   refuse en 401). Seule son empreinte SHA-256 est gardée (`serveur/jeton-mode.json`, 0600, jamais exportée),
-  il n'est jamais journalisé, et ses échecs ont un limiteur par adresse à part de celui de la connexion.
+  il n'est jamais journalisé, et il est vérifié en premier : un bon jeton n'est jamais refusé, un mauvais reçoit 401 après 250 ms
+  (pas de blocage par adresse, qui aurait été partagé derrière `tailscale serve`).
   Guide pas à pas « Changer de mode automatiquement avec Raccourcis sur iPhone ».
 - **Caméras selon le mode** : chaque caméra a un **emplacement** (Intérieure ou Extérieure) et un comportement par
   mode (**Éteinte**, **Diffusion**, **Surveillance**), réglés dans la fenêtre « Caméras… » du serveur ; choisir
@@ -30,10 +34,13 @@ Les téléchargements de chaque version sont sur la
   Éteinte en Présent et Nuit, Surveillance en Absent et Vacances), modifiable ensuite. Pour une caméra éteinte,
   le serveur refuse le direct et l'image fixe (503 `unavailable`, « caméra éteinte en mode … ») et ferme les
   lectures en cours au changement de mode ; les clients n'ouvrent rien. « Surveillance » se comporte comme
-  « Diffusion » (la détection viendra plus tard). Les caméras déjà enregistrées deviennent **Extérieures** : rien ne
-  change pour elles.
-- **Automatisations** : déclencheur « Le mode de la maison change » (`Trigger::Mode`) et condition « le mode est … »
-  (`Condition::Mode`, un ou plusieurs modes). Attention : un client 1.1.0 ne sait pas lire de règle qui en contient.
+  « Diffusion » (la détection viendra plus tard). Éteinte veut dire **aucune connexion** : plus de vérification de
+  joignabilité non plus, l'état affiché est « Éteinte » (nouvel état `off`). Les caméras déjà enregistrées
+  deviennent **Extérieures** : rien ne change pour elles.
+- **Automatisations** : déclencheur « Le mode de la maison change » (`Trigger::Mode`), condition « le mode est … »
+  (`Condition::Mode`, un ou plusieurs modes) et action « Changer le mode de la maison » (`Action::SetMode`, par
+  exemple « à 23:00, passer en Nuit »). Une règle de mode qui change le mode garde un délai d'au moins 10 s :
+  deux règles qui se renvoient le mode ne bouclent pas.
 
 ## [1.1.0] - 2026-11-17
 

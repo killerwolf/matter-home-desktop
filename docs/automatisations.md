@@ -11,7 +11,7 @@ de la règle sélectionnée et le journal des dernières exécutions.
 |---|---|
 | **Quand** | le mode de la maison devient Présent, Absent, Nuit ou Vacances (voir [Modes](modes.md)) ; une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
 | **Si** (toutes les conditions) | plage horaire (elle peut passer minuit : 22:00 → 07:00) ; le mode de la maison est l'un des modes cochés (« Absent ou Vacances ») ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
-| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes |
+| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes ; changer le mode de la maison (voir [Modes](modes.md)) |
 
 **« ▶ Tester »** exécute les actions tout de suite, sans vérifier « Quand » ni « Si ».
 

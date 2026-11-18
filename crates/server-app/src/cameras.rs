@@ -31,6 +31,7 @@ pub enum Tone {
 /// L'état d'une caméra, en une ligne.
 pub fn status_line(camera: &CameraAdmin) -> (Tone, String) {
     match &camera.status {
+        CameraStatus::Off => (Tone::Neutral, "Éteinte dans le mode actuel".into()),
         CameraStatus::Unknown => (Tone::Neutral, "Pas encore vérifiée".into()),
         CameraStatus::Online => {
             let stream = camera.stream.as_ref().map(|info| {

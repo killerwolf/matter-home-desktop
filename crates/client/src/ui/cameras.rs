@@ -204,6 +204,7 @@ pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Opti
             }
             ("Injoignable", Some(text), Some(Severity::Warn))
         }
+        CameraStatus::Off => ("Éteinte", None, None),
         CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), None),
     }
 }
@@ -230,6 +231,7 @@ fn placeholder_text(video: TileVideo, camera: &CameraView, capped: bool) -> Stri
             "Pas de flux réduit : ouvrez la caméra pour voir le direct".into()
         }
         TileVideo::NotOnline => match &camera.status {
+            CameraStatus::Off => "Éteinte dans ce mode".into(),
             CameraStatus::Unknown => "Vérification en cours…".into(),
             CameraStatus::Unreachable {
                 since: Some(since), ..

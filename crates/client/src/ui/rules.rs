@@ -60,6 +60,17 @@ fn rules_problem(set: &RuleSet) -> Option<String> {
                  (http:// ou https://, sans espace)",
                     rule.name
                 )),
+                // Le serveur refuse ce couple (anti-boucle) : on le dit avant d'envoyer.
+                Action::SetMode { .. }
+                    if matches!(rule.trigger, Trigger::Mode { .. })
+                        && rule.cooldown_s < protocol::automation::MIN_MODE_COOLDOWN_S =>
+                {
+                    Some(format!(
+                        "la règle « {} » change le mode quand le mode change : son délai entre deux exécutions doit être d'au moins {} s",
+                        rule.name,
+                        protocol::automation::MIN_MODE_COOLDOWN_S
+                    ))
+                }
                 _ => None,
             })
         })
@@ -386,6 +397,7 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
             }
             Action::Webhook { .. } => "appeler une adresse web".to_string(),
             Action::Delay { seconds } => format!("attendre {seconds} s"),
+            Action::SetMode { mode } => format!("passer en mode {}", mode.label()),
         })
         .collect();
     let conditions: Vec<String> = rule
@@ -1198,6 +1210,17 @@ impl RulesView {
                                 )
                                 .changed();
                         }
+                        Action::SetMode { mode } => {
+                            ui.label("Passer en mode");
+                            egui::ComboBox::from_id_salt(("a_mode", rid, i))
+                                .selected_text(mode.label())
+                                .show_ui(ui, |ui| {
+                                    for m in HomeMode::ALL {
+                                        changed |=
+                                            ui.selectable_value(mode, m, m.label()).changed();
+                                    }
+                                });
+                        }
                         Action::Delay { seconds } => {
                             ui.label("Attendre");
                             changed |= ui
@@ -1258,6 +1281,13 @@ impl RulesView {
                 rule.actions.push(Action::Webhook {
                     url: String::new(),
                     body: String::new(),
+                });
+                changed = true;
+                ui.close();
+            }
+            if ui.button("Changer le mode de la maison").clicked() {
+                rule.actions.push(Action::SetMode {
+                    mode: HomeMode::Nuit,
                 });
                 changed = true;
                 ui.close();
@@ -1401,6 +1431,25 @@ mod tests {
     /// français, et une condition garde toujours au moins un mode, dans l'ordre habituel.
     #[test]
     fn mode_rules_read_naturally_and_a_condition_keeps_one_mode() {
+        // « Changer le mode » se lit dans la liste, et le couple anti-boucle est signalé.
+        let mut r = Rule::new(1);
+        r.trigger = Trigger::Mode { to: HomeMode::Nuit };
+        r.actions = vec![Action::SetMode {
+            mode: HomeMode::Absent,
+        }];
+        assert!(summary(&r, &BTreeMap::new()).ends_with("passer en mode Absent."));
+        r.cooldown_s = 0;
+        let set = RuleSet {
+            version: 1,
+            rules: vec![r.clone()],
+        };
+        assert!(rules_problem(&set).is_some_and(|p| p.contains("délai")));
+        r.cooldown_s = 60;
+        let set = RuleSet {
+            version: 1,
+            rules: vec![r],
+        };
+        assert!(rules_problem(&set).is_none());
         let mut rule = Rule::new(1);
         rule.trigger = default_trigger(5, &BTreeMap::new());
         assert_eq!(trigger_kind(&rule.trigger), 5);
