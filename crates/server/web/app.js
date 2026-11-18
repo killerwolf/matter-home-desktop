@@ -898,7 +898,7 @@ function groupTitle(id) {
 // ---------------------------------------------------------------------------
 // Notifications web push (ticket n° 17) : réglages dans une feuille
 // ---------------------------------------------------------------------------
-const pushUi = { open: false, status: null, mine: null, message: "", busy: false, error: "" };
+const pushUi = { open: false, registration: null, status: null, mine: null, message: "", busy: false, error: "" };
 
 function pushEnv() {
   return {
@@ -912,10 +912,13 @@ function pushEnv() {
   };
 }
 
-async function pushDeps() {
+/** Sans attente : la demande de permission doit rester la première attente du toucher
+ *  (Safari). L'inscription du service worker est chargée à l'ouverture de la feuille. */
+function pushDeps() {
+  if (!pushUi.registration) throw new Error("Service worker indisponible : rechargez l'app et réessayez.");
   return {
     Notification: window.Notification,
-    registration: await navigator.serviceWorker.ready,
+    registration: pushUi.registration,
     request: api.request,
     publicKey: pushUi.status?.public_key ?? "",
     label: push.deviceLabel(navigator.userAgent, navigator.maxTouchPoints > 1),
@@ -935,8 +938,15 @@ async function openNotifications() {
   try {
     pushUi.status = await api.request("GET", "/api/push");
     const support = push.pushSupport(pushEnv());
-    pushUi.mine = support.ok && Notification.permission === "granted"
-      ? await push.currentSubscription(await pushDeps()).catch(() => null)
+    if (support.ok && !pushUi.registration) {
+      // Au plus 5 s : sans service worker actif, `ready` ne se résout jamais.
+      pushUi.registration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => { setTimeout(() => resolve(null), 5000); }),
+      ]);
+    }
+    pushUi.mine = support.ok && pushUi.registration && Notification.permission === "granted"
+      ? await push.currentSubscription(pushDeps()).catch(() => null)
       : null;
     if (pushUi.mine) pushUi.status = await api.request("GET", "/api/push");
   } catch (error) {
@@ -1002,7 +1012,7 @@ function renderPush() {
     b.disabled = pushUi.busy || !st.public_key;
     // La permission est la première chose demandée au toucher (exigence de Safari).
     b.addEventListener("click", () => pushAction(async () => {
-      const result = await push.subscribe(await pushDeps());
+      const result = await push.subscribe(pushDeps());
       if (result.status === "denied") throw new Error("Notifications refusées : réautorisez-les dans Réglages › Notifications › Maison.");
       pushUi.mine = result.view;
       pushUi.message = "Cet appareil est abonné.";
@@ -1020,7 +1030,7 @@ function renderPush() {
         pushUi.message = "Essai envoyé : il arrive dans quelques secondes.";
       })),
       button("Désactiver sur cet appareil", () => pushAction(async () => {
-        await push.unsubscribe(await pushDeps(), mine.id);
+        await push.unsubscribe(pushDeps(), mine.id);
         pushUi.mine = null;
         pushUi.message = "Cet appareil ne recevra plus rien.";
       })),
