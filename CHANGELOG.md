@@ -18,8 +18,9 @@ Les téléchargements de chaque version sont sur la
   pour une caméra Éteinte ou en Diffusion. Pré-enregistrement des ~10 dernières secondes de H.264 brut en
   mémoire ; mouvement sur 2 images décodées par seconde (VideoToolbox décode tout mais ne convertit que
   celles-là) ; puis le modèle sur les images en mouvement : **ONNX Runtime + CoreML** par la caisse `ort`
-  en chargement dynamique (rien de lié ni de téléchargé : `libonnxruntime.dylib` et le modèle se déposent
-  dans `<données>/models/`, voir [docs/detection.md](docs/detection.md)), YOLOX (sortie brute de la grille)
+  en chargement dynamique (rien de lié à la compilation ; `libonnxruntime.dylib` et les modèles sont
+  embarqués dans l'application du serveur, `<données>/models/` reste un recours pour les utilisateurs
+  avancés, voir [docs/detection.md](docs/detection.md)), YOLOX (sortie brute de la grille)
   et YOLOv8/YOLO11 reconnus, repli sur un petit modèle processeur (`detector-cpu.onnx`). Sans modèle : la
   détection est désactivée et le dit. Un passage = un événement (8 s sans détection le ferment) : fiche,
   capture JPEG et clip **MP4 sans réencodage** (avant + passage + après), dans `<données>/events/`, 7 jours

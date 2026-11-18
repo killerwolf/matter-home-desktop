@@ -123,6 +123,8 @@ pub struct Tracker<T> {
     config: TrackerConfig,
     open: Option<Passage<T>>,
     tracks: Vec<Track>,
+    /// Classes apparues dans le passage en cours depuis le dernier [`Tracker::take_new_classes`].
+    new_classes: Vec<DetectedClass>,
 }
 
 impl<T> Tracker<T> {
@@ -131,6 +133,7 @@ impl<T> Tracker<T> {
             config,
             open: None,
             tracks: Vec::new(),
+            new_classes: Vec::new(),
         }
     }
 
@@ -221,6 +224,12 @@ impl<T> Tracker<T> {
         });
         passage.last = now;
         for d in &active {
+            if !opened
+                && !passage.classes.contains_key(&d.class)
+                && !self.new_classes.contains(&d.class)
+            {
+                self.new_classes.push(d.class);
+            }
             let s = passage.classes.entry(d.class).or_insert(0.0);
             *s = s.max(d.score);
         }
@@ -232,6 +241,11 @@ impl<T> Tracker<T> {
         } else {
             Step::Extended
         }
+    }
+
+    /// Les classes apparues en cours de passage (pas à son ouverture) depuis le dernier appel.
+    pub fn take_new_classes(&mut self) -> Vec<DetectedClass> {
+        std::mem::take(&mut self.new_classes)
     }
 
     /// Le temps passe sans image (ou sans détection) : ferme un passage resté sans nouvelle, ou
@@ -247,6 +261,9 @@ impl<T> Tracker<T> {
 
     fn expire(&mut self, now: f64) -> Option<Passage<T>> {
         let p = self.open.as_ref()?;
+        if now - p.start >= self.config.max_duration || now - p.last >= self.config.close_after {
+            self.new_classes.clear();
+        }
         if now - p.start >= self.config.max_duration {
             let mut p = self.open.take()?;
             p.cut = true;
@@ -299,6 +316,26 @@ mod tests {
         );
         assert_eq!(closed.best, Some((0.9, 2)));
         assert!(!t.is_open());
+    }
+
+    /// Un chien, puis une personne dans le même passage : la personne est une classe nouvelle.
+    #[test]
+    fn a_class_appearing_mid_passage_is_reported_once() {
+        let mut t: Tracker<()> = Tracker::new(TrackerConfig::default());
+        assert_eq!(
+            t.observe(0.0, &[det(DetectedClass::Chien, 0.8, 0.2, 0.9)], || ()),
+            Step::Opened
+        );
+        assert!(
+            t.take_new_classes().is_empty(),
+            "l'ouverture n'en compte pas"
+        );
+        t.observe(1.0, &[det(DetectedClass::Chien, 0.8, 0.35, 0.9)], || ());
+        assert!(t.take_new_classes().is_empty());
+        t.observe(2.0, &[det(DetectedClass::Personne, 0.9, 0.6, 0.9)], || ());
+        assert_eq!(t.take_new_classes(), [DetectedClass::Personne]);
+        t.observe(3.0, &[det(DetectedClass::Personne, 0.9, 0.75, 0.9)], || ());
+        assert!(t.take_new_classes().is_empty(), "une seule fois");
     }
 
     #[test]

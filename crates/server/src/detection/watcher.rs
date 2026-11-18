@@ -257,6 +257,13 @@ enum WriteJob {
         event: DetectionEventView,
         jpeg: Vec<u8>,
     },
+    /// Une classe nouvelle en cours de passage (une personne sort de la voiture) : l'événement
+    /// en cours est mis à jour, et les règles qui suivent cette classe partent.
+    Update {
+        event: DetectionEventView,
+        jpeg: Vec<u8>,
+        new_classes: Vec<protocol::wire::DetectedClass>,
+    },
     /// Il est fini : la capture finale et le clip.
     Close {
         event: DetectionEventView,
@@ -291,10 +298,16 @@ impl Writer {
 }
 
 fn write_job(hub: &Hub, job: WriteJob) {
-    let (event, jpeg, clip, opening) = match job {
-        WriteJob::Open { event, jpeg } => (event, jpeg, None, true),
-        WriteJob::Close { event, jpeg, clip } => (event, jpeg, clip, false),
+    let (event, jpeg, clip, rules) = match job {
+        WriteJob::Open { event, jpeg } => (event, jpeg, None, Some((true, Vec::new()))),
+        WriteJob::Update {
+            event,
+            jpeg,
+            new_classes,
+        } => (event, jpeg, None, Some((false, new_classes))),
+        WriteJob::Close { event, jpeg, clip } => (event, jpeg, clip, None),
     };
+    let opening = rules.is_some();
     let mut event = event;
     let camera = event.camera_id;
     let mp4 = clip.as_ref().and_then(clip_to_mp4);
@@ -317,7 +330,7 @@ fn write_job(hub: &Hub, job: WriteJob) {
         };
     if opening {
         log::info!(
-            "détection sur « {} » ({:#x}) : {} (score {:.2}), en cours",
+            "détection sur « {} » ({:#x}) : {} (score {:.2}), passage en cours",
             saved.camera_name,
             saved.camera_id,
             saved.class().lower(),
@@ -333,9 +346,9 @@ fn write_job(hub: &Hub, job: WriteJob) {
             saved.clip_s
         );
     }
-    // Les automatisations partent à l'ouverture (on veut être prévenu tout de suite) ; la fin
-    // ne fait que compléter l'événement chez les clients.
-    hub.publish_detection(&saved, opening);
+    // Les automatisations partent à l'ouverture (on veut être prévenu tout de suite), et pour une
+    // classe nouvelle en cours de passage ; la fin ne fait que compléter l'événement.
+    hub.publish_detection(&saved, rules);
 }
 
 /// L'événement d'un passage (en cours ou fini). L'identifiant vient du début : le même à
@@ -738,7 +751,23 @@ fn analyse_loop(
                                     open(&tracker);
                                 }
                             }
-                            Step::Nothing | Step::Extended => {}
+                            Step::Extended => {
+                                let new_classes = tracker.take_new_classes();
+                                if let (false, Some(p)) =
+                                    (new_classes.is_empty(), tracker.current())
+                                {
+                                    writer.send(WriteJob::Update {
+                                        event: event_of(hub, id, p, true),
+                                        jpeg: p
+                                            .best
+                                            .as_ref()
+                                            .map(|(_, j)| j.clone())
+                                            .unwrap_or_default(),
+                                        new_classes,
+                                    });
+                                }
+                            }
+                            Step::Nothing => {}
                         }
                         load.record(hub, id, started.elapsed(), interval, config.pause());
                     }

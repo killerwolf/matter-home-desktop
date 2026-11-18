@@ -41,7 +41,7 @@ est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tour
 | `cameras.json` | caméras RTSP : nom, adresses, identifiant, emplacement et comportement par mode, et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.matterhome` |
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
 | `events/<id>.json`, `.jpg`, `.mp4` | événements de détection (ticket n° 18) : fiche, capture, clip ; 7 jours et 2 Go au plus ; **pas** dans la sauvegarde `.matterhome` (voir [Détection](detection.md)) |
-| `models/` | modèle de détection et ONNX Runtime, à déposer soi-même ; pas dans la sauvegarde |
+| `models/` | facultatif (utilisateurs avancés) : modèle de détection et ONNX Runtime pris quand l'application n'embarque pas les siens ; `coreml-cache/` (modèle compilé par CoreML, 0700) ; pas dans la sauvegarde |
 | `detection.json` | facultatif : plafond des événements, images analysées par seconde |
 
 En mode démo, l'application utilise `maison-demo.json` et `regles-demo.json`, et n'écrit

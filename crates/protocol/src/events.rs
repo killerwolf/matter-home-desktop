@@ -31,7 +31,13 @@ pub enum Command {
     SetHomeMode(HomeMode),
     /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18) : le moteur
     /// d'automatisations déclenche les règles « Quand … est détecté ».
-    Detection(Box<crate::wire::DetectionEventView>),
+    /// `opening` : le passage commence (toutes les règles qui le couvrent) ; sinon, une classe
+    /// **nouvelle** dans un passage en cours (`event.classes` ne porte qu'elle) : seules les règles
+    /// qui suivent cette classe partent.
+    Detection {
+        event: Box<crate::wire::DetectionEventView>,
+        opening: bool,
+    },
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {
         node_id: u64,

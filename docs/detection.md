@@ -170,7 +170,7 @@ Ces réglages sont relus à chaud (sans redémarrer la surveillance).
   `GET /api/events/{id}/snapshot`, `GET /api/events/{id}/clip` (avec `Range`),
   `DELETE /api/events/{id}`, et l'événement `detection` du WebSocket (voir [Protocole](protocole.md)).
 - **Automatisations** : « Quand une caméra détecte… » (voir [Automatisations](automatisations.md)),
-  au **début** du passage.
+  au **début** du passage, ou quand une classe suivie par la règle apparaît en cours de passage.
 
 ## Vie privée
 

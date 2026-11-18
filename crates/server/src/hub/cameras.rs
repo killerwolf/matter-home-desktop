@@ -183,9 +183,14 @@ impl Hub {
     }
 
     /// Un passage détecté (déjà enregistré) : diffusé aux clients (`WireEvent::Detection`, en cours
-    /// à l'ouverture puis complet à la fin, même `id`). `fire_rules` : transmis au moteur
-    /// d'automatisations (à l'ouverture seulement : une règle part une fois par passage).
-    pub fn publish_detection(&self, event: &DetectionEventView, fire_rules: bool) {
+    /// à l'ouverture puis complet à la fin, même `id`). `rules` : transmis au moteur
+    /// d'automatisations : `Some((true, _))` à l'ouverture, `Some((false, classes))` quand des
+    /// classes nouvelles apparaissent en cours de passage, `None` à la fin.
+    pub fn publish_detection(
+        &self,
+        event: &DetectionEventView,
+        rules: Option<(bool, Vec<protocol::wire::DetectedClass>)>,
+    ) {
         {
             let mut st = self.lock();
             self.publish(
@@ -195,10 +200,15 @@ impl Hub {
                 },
             );
         }
-        if fire_rules {
-            let _ = self.send(protocol::events::Command::Detection(Box::new(
-                event.clone(),
-            )));
+        if let Some((opening, classes)) = rules {
+            let mut for_rules = event.clone();
+            if !opening {
+                for_rules.classes = classes;
+            }
+            let _ = self.send(protocol::events::Command::Detection {
+                event: Box::new(for_rules),
+                opening,
+            });
         }
     }
 

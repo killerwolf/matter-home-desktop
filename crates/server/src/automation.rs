@@ -192,15 +192,23 @@ impl Engine {
     /// Un passage détecté (ticket n° 18) : les règles « Quand … est détecté » qui le couvrent.
     /// `{appareil}` vaut le nom de la caméra, `{valeur}` la classe (« personne »). Un passage =
     /// un événement : une règle part une fois par passage (et l'anti-rafale s'applique).
+    ///
+    /// `opening` : le passage commence. Sinon, `event.classes` ne porte que les classes **nouvelles**
+    /// d'un passage en cours (une personne sort de la voiture) : seules les règles qui suivent l'une
+    /// d'elles partent ; une règle « n'importe quelle classe » est déjà partie à l'ouverture.
     pub fn on_detection(
         &mut self,
         event: &protocol::wire::DetectionEventView,
+        opening: bool,
         clock: &Clock,
     ) -> Vec<Firing> {
         let rules: Vec<Rule> = self.rules.clone();
         rules
             .iter()
             .filter(|r| r.trigger.matches_detection(event.camera_id, &event.classes))
+            .filter(|r| {
+                opening || matches!(&r.trigger, Trigger::Detection { classes, .. } if !classes.is_empty())
+            })
             .filter_map(|r| {
                 // La classe qui a fait partir la règle (la plus sûre parmi celles qu'elle suit).
                 let class = match &r.trigger {
@@ -658,7 +666,8 @@ pub enum EngineCommand {
     /// Le mode de la maison a changé : peut déclencher des règles.
     Mode(HomeMode),
     /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18).
-    Detection(Box<protocol::wire::DetectionEventView>),
+    /// `true` : début du passage ; `false` : classe nouvelle en cours de passage.
+    Detection(Box<protocol::wire::DetectionEventView>, bool),
 }
 
 /// Lance le moteur dans le runtime courant.
@@ -685,7 +694,7 @@ pub fn spawn(
                 cmd = commands.recv() => match cmd {
                     Some(EngineCommand::SetRules(rules)) => { engine.set_rules(rules); Vec::new() }
                     Some(EngineCommand::Mode(mode)) => engine.on_mode(mode, &Clock::local()),
-                    Some(EngineCommand::Detection(event)) => engine.on_detection(&event, &Clock::local()),
+                    Some(EngineCommand::Detection(event, opening)) => engine.on_detection(&event, opening, &Clock::local()),
                     Some(EngineCommand::Test(id)) => engine
                         .rule(id)
                         .cloned()
@@ -1157,6 +1166,7 @@ mod tests {
         // Un chien puis une personne : la règle 1 nomme la classe qu'elle suit.
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Chien, DetectedClass::Personne]),
+            true,
             &clock(100.0, 0),
         );
         assert_eq!(fired.len(), 2);
@@ -1168,13 +1178,30 @@ mod tests {
         let two = fired.iter().find(|f| f.rule.id == 2).unwrap();
         assert_eq!(two.value, "chien", "la classe la plus sûre");
         // Autre caméra, ou autre classe : seule la règle « toutes » part (après l'anti-rafale).
-        let fired = e.on_detection(&event(8, vec![DetectedClass::Personne]), &clock(500.0, 0));
+        let fired = e.on_detection(
+            &event(8, vec![DetectedClass::Personne]),
+            true,
+            &clock(500.0, 0),
+        );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
-        let fired = e.on_detection(&event(9, vec![DetectedClass::Chat]), &clock(900.0, 0));
+        let fired = e.on_detection(&event(9, vec![DetectedClass::Chat]), true, &clock(900.0, 0));
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
+        // En cours de passage, une classe nouvelle (la personne après le chien) : seules les règles
+        // qui la suivent partent, pas la règle « toutes classes » (déjà partie à l'ouverture).
+        e.on_mode(HomeMode::Absent, &clock(950.0, 0));
+        let fired = e.on_detection(
+            &event(9, vec![DetectedClass::Personne]),
+            false,
+            &clock(1500.0, 0),
+        );
+        assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
         // Présent : la condition de mode retient la règle 1.
         e.on_mode(HomeMode::Present, &clock(1000.0, 0));
-        let fired = e.on_detection(&event(9, vec![DetectedClass::Personne]), &clock(2000.0, 0));
+        let fired = e.on_detection(
+            &event(9, vec![DetectedClass::Personne]),
+            true,
+            &clock(2000.0, 0),
+        );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
         // Le JSON de la règle (identifiant de caméra en texte sur le fil).
         let text = serde_json::to_string(&protocol::wire::TextIds(RuleSet {
