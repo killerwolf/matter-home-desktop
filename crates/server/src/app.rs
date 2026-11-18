@@ -115,6 +115,9 @@ impl Server {
             commands: backend.sender(),
         }));
 
+        // Le fil des notifications web push : il surveille aussi les appareils injoignables.
+        hub.push().start();
+
         let stop_pump = Arc::new(AtomicBool::new(false));
         let fatal = Arc::new(AtomicBool::new(false));
         let pump = {
@@ -230,6 +233,7 @@ impl Server {
         if let Some(writer) = self.demo_history_writer.take() {
             clean &= writer.join().is_ok();
         }
+        self.hub.push().shutdown();
         clean
     }
 }

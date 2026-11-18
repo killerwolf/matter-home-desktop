@@ -10,8 +10,33 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **Notifications sur iPhone et iPad** (ticket n° 17) : l'app web ajoutée à l'écran d'accueil
+  (iOS 16.4 ou plus, adresse `.ts.net`) reçoit des alertes **même fermée**, par le web push standard
+  (VAPID, message chiffré de bout en bout `aes128gcm`, RFC 8291 et 8292, avec `ring` déjà présent :
+  aucune dépendance nouvelle). Quatre catégories, à cocher par appareil : actions « Notifier » des
+  règles, **passages détectés** sur une caméra en Surveillance (un message par passage, avec sa
+  description si elle est attendue ; le toucher ouvre la fiche de l'événement), **pile faible**
+  (sous 15 %, une fois jusqu'à 20 %) et **appareil injoignable** depuis 10 minutes. Réglages dans
+  l'app web (Appareils › Notifications : activer, essai, catégories, appareils abonnés révocables)
+  et dans la fenêtre du serveur (onglet Connexion : interrupteur général, révocation). Envoi par le `curl` du système
+  vers les seuls services de push connus (Apple, Google, Mozilla, Microsoft) ; jamais d'adresse, de
+  mot de passe de caméra ni d'identifiant d'appareil brut dans le texte. Clé VAPID et abonnements
+  dans `serveur/` (0600), jamais exportés. Nouvelles routes `/api/push…` (protocole inchangé,
+  version 3) ; service worker de l'app web en version 7. Voir `docs/notifications.md`.
+
 ### Modifié
 
+- **Client : les clips des événements se lisent dans l'application** (ticket n° 22). « Lire le clip »
+  ne télécharge plus le fichier pour l'ouvrir dans QuickTime : le clip se lit sous l'événement, avec
+  lecture / pause, barre de progression (on peut se déplacer dans le clip), temps écoulé et durée
+  totale, boucle facultative, image à la largeur du panneau. Un démultiplexeur MP4 minimal lit le
+  fichier du serveur et le décodeur VideoToolbox des flux en direct fait le reste, dans un fil à
+  part : l'interface ne se bloque pas, les images sont montrées aux instants du MP4, et seules
+  quelques images décodées sont gardées en mémoire. Un clip illisible ou un décodeur en échec
+  affiche un message dans le panneau. « Ouvrir dans QuickTime » reste disponible. Aucune dépendance
+  nouvelle.
 - **Serveur : l'application de la barre de menus est réorganisée** (ticket n° 21). Le menu répond
   d'abord à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à regarder »,
   « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection, accès à

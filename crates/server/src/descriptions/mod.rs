@@ -106,14 +106,15 @@ impl Default for Limits {
     }
 }
 
-/// Les corps de requête laissés dans le dossier temporaire par un arrêt brutal.
-fn clean_leftover_bodies() {
+/// Les corps de requête laissés dans le dossier temporaire par un arrêt brutal (descriptions,
+/// et notifications web push avec leur propre préfixe).
+pub(crate) fn clean_leftover_bodies(prefix: &str) {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if !name.to_string_lossy().starts_with("mh-description-") {
+        if !name.to_string_lossy().starts_with(prefix) {
             continue;
         }
         // Moins de 10 minutes : peut-être celui d'un appel en cours (autre processus).
@@ -151,7 +152,7 @@ impl Descriptions {
     pub fn new(data_dir: &Path, demo: bool) -> Descriptions {
         let data_dir = (!demo).then(|| data_dir.to_path_buf());
         if !demo {
-            clean_leftover_bodies();
+            clean_leftover_bodies(api::BODY_PREFIX);
         }
         let usage = data_dir.as_ref().and_then(|d| {
             let path = d.join(crate::persistence::SERVER_DIR).join(USAGE_FILE);
@@ -382,6 +383,12 @@ impl Descriptions {
             );
             self.resolve(hub, &id);
         }
+    }
+
+    /// Une description de cet événement est-elle attendue ? (Notifications web push : le passage
+    /// est notifié à sa description plutôt qu'à sa fin.)
+    pub(crate) fn is_awaiting(&self, id: &str) -> bool {
+        lock(&self.awaiting).contains_key(id)
     }
 
     #[cfg(test)]

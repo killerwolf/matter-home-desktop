@@ -684,6 +684,9 @@ impl App {
         widgets::section(ui, "Depuis l'iPhone, même hors de la maison", |ui| {
             self.remote_steps(ui, st);
         });
+        widgets::section(ui, "Notifications sur l'iPhone et l'iPad", |ui| {
+            self.push_section(ui, &hub);
+        });
         widgets::section(
             ui,
             "Changer de mode automatiquement (Raccourcis de l'iPhone)",
@@ -835,6 +838,50 @@ impl App {
         if toggle {
             self.toggle_web(st);
         }
+    }
+
+    /// Les notifications web push (ticket n° 17) : le réglage général et les appareils abonnés,
+    /// révocables. L'abonnement lui-même se fait depuis l'app web de l'appareil.
+    fn push_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
+        let p = theme::palette(ui);
+        let push = hub.push();
+        let status = push.status();
+        ui.label("Matter Home peut prévenir l'iPhone ou l'iPad, même app fermée : passage devant une caméra, pile faible, appareil injoignable, règle « Notifier ».");
+        ui.add_space(4.0);
+        let mut enabled = status.enabled;
+        if ui
+            .checkbox(
+                &mut enabled,
+                "Envoyer les notifications aux appareils abonnés",
+            )
+            .changed()
+            && push.set_enabled(enabled).is_err()
+        {
+            self.local_notice = Some(Notice::Err(
+                "Le réglage n'a pas pu être enregistré (voir le journal, onglet Réglages).".into(),
+            ));
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("Appareils abonnés").strong());
+        if status.subscriptions.is_empty() {
+            ui.label(RichText::new("Aucun pour l'instant.").color(p.text_secondary));
+        }
+        for sub in &status.subscriptions {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} · {}", sub.label, sub.service));
+                if let Some(error) = &sub.last_error {
+                    ui.colored_label(p.error, format!("dernier envoi : {error}"));
+                }
+                if ui.button("Révoquer").clicked() && push.remove(&sub.id).is_err() {
+                    self.local_notice = Some(Notice::Err(
+                        "L'abonnement n'a pas pu être révoqué (voir le journal, onglet Réglages)."
+                            .into(),
+                    ));
+                }
+            });
+        }
+        ui.add_space(4.0);
+        widgets::hint(ui, "Pour abonner un appareil : ouvrez Matter Home sur l'iPhone depuis son icône de l'écran d'accueil (étape 4 ci-dessus, iOS 16.4 ou plus), puis Appareils › Notifications. Les messages passent chiffrés par le service de notifications d'Apple.");
     }
 
     /// Le jeton de mode, pas à pas. Le jeton n'est montré qu'à sa création ; ensuite le serveur

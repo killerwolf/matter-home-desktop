@@ -137,7 +137,7 @@ Le calcul est dans `crates/server-app/src/overview.rs` (sans interface, testé) 
 | **Vue d'ensemble** | Le bandeau « Tout va bien » (ou ce qui ne va pas), les mêmes lignes que le menu avec un bouton vers l'onglet concerné, le mode de la maison (quatre boutons), et « Que voulez-vous faire ? » : les tâches rares, chacune menant au bon onglet. Serveur à l'arrêt : l'explication complète, « Réessayer » et « Ouvrir le journal ». |
 | **Appareils** | Combien répondent, lesquels sont injoignables et quoi faire ; « Ajouter un appareil » en trois étapes (cela se fait dans le client) ; où voir et piloter ses appareils. |
 | **Caméras** | La liste et le formulaire (inchangés sur le fond), l'état de la détection, et « Décrire les événements par IA » : état, puis une page en deux étapes (créer et coller la clé Anthropic, activer et régler). |
-| **Connexion** | Trois marches à suivre : *depuis un ordinateur de la maison* (adresse et code de vérification à copier), *depuis l'iPhone, même hors de la maison* (Tailscale sur ce Mac, activer l'accès, Tailscale sur l'iPhone, adresse à ouvrir dans Safari), *changer de mode automatiquement* (accès à distance, code secret, champs à remplir dans Raccourcis). |
+| **Connexion** | Quatre blocs : *depuis un ordinateur de la maison* (adresse et code de vérification à copier), *depuis l'iPhone, même hors de la maison* (Tailscale sur ce Mac, activer l'accès, Tailscale sur l'iPhone, adresse à ouvrir dans Safari), *notifications sur l'iPhone et l'iPad* (ticket n° 17 : interrupteur général, appareils abonnés, « Révoquer »), *changer de mode automatiquement* (accès à distance, code secret, champs à remplir dans Raccourcis). |
 | **Réglages** | Compte (identifiant et mot de passe), démarrage et veille, sauvegarde (où elle se fait, comment la reprendre), dépannage (journal, dossier des données, version). |
 
 Les onglets apparaissent une fois la première installation terminée. Un onglet qui a besoin du
@@ -186,6 +186,7 @@ Rien n'est supprimé. Ce qui a quitté le menu est dans la fenêtre :
 | Caméras, Descriptions | Menu « Caméras… » ; boutons dans la fenêtre | Onglet Caméras (le menu y mène) ; Descriptions depuis l'onglet Caméras |
 | Jeton de mode (créer, renouveler, révoquer) | Fenêtre, section « Mode de la maison » | Onglet Connexion, « Changer de mode automatiquement » |
 | Compte, veille, dossier des données | Fenêtre | Onglet Réglages |
+| Notifications push (interrupteur général, appareils abonnés, Révoquer ; ticket n° 17) | Fenêtre, section « Notifications (iPhone, iPad) » | Onglet Connexion, « Notifications sur l'iPhone et l'iPad », juste après l'accès depuis l'iPhone (l'abonnement se fait depuis l'app web ouverte par cet accès). Même comportement. Pas de ligne dans le résumé : un abonnement en erreur n'empêche rien de tourner, et le résumé ne lit pas un état de plus à chaque passe. |
 
 Ajouts, tous à l'initiative de l'utilisateur :
 

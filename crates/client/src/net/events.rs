@@ -1,8 +1,8 @@
 //! Événements de détection (ticket n° 18) : la liste (`GET /api/events`), les captures, et le clip.
 //!
 //! Comme les images fixes ([`super::snapshot`]) : des fils réseau, jamais celui de l'interface. Le
-//! clip n'est pas lu dans la fenêtre (il faudrait un démultiplexeur MP4 et un lecteur de plus) : il
-//! est téléchargé dans un dossier temporaire privé (0600) puis ouvert par le lecteur du Mac
+//! clip est lu dans le panneau (`crate::clip`, ticket n° 22) ; « Ouvrir dans QuickTime » le
+//! télécharge dans un dossier temporaire privé (0600) puis le fait ouvrir par le lecteur du Mac
 //! (`open`, QuickTime Player par défaut).
 
 use std::path::PathBuf;
@@ -236,6 +236,15 @@ pub fn purge_old_clips() {
 /// Le dossier des clips téléchargés : privé (0700), dans le dossier temporaire du compte.
 pub fn clips_dir() -> PathBuf {
     std::env::temp_dir().join("matter-home-clips")
+}
+
+/// Télécharge le clip en mémoire (lecteur intégré, ticket n° 22).
+pub fn fetch_clip(id: &str) -> Result<Vec<u8>, String> {
+    if !is_event_id(id) {
+        return Err("Clip indisponible : identifiant invalide.".into());
+    }
+    get(&format!("/api/events/{id}/clip"))
+        .map_err(|e| format!("Clip indisponible : {}.", e.message()))
 }
 
 fn download_clip(id: &str) -> Result<PathBuf, String> {

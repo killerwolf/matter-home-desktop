@@ -87,7 +87,8 @@ ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
 - Les règles sont exécutées par **le serveur**, en continu, même quand aucun client n'est ouvert.
   Elles s'arrêtent si le serveur s'arrête (Mac en veille, service arrêté).
 - Les notifications partent vers les clients connectés au serveur et s'affichent dans leur
-  interface ; un client fermé ne reçoit rien.
+  interface, **et** vers les iPhone et iPad abonnés en web push, même app fermée (catégorie
+  « Règles », voir [Notifications](notifications.md)). Un client de bureau fermé ne reçoit rien.
 - Pas encore de déclencheur « appui sur un bouton » (BILRESA…).
 
 ## Sauvegarde

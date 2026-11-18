@@ -7,6 +7,7 @@ mod body;
 mod camera_snapshot;
 mod camera_stream;
 mod events;
+mod push;
 mod routes;
 mod webapp;
 mod ws;
