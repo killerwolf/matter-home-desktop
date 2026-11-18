@@ -113,6 +113,14 @@ impl EventsView {
             });
             return;
         }
+        // L'événement a disparu de la liste (purge, rafraîchissement) : son clip se ferme.
+        if self
+            .clip
+            .as_ref()
+            .is_some_and(|c| !state.items.iter().any(|i| i.event.id == c.player.id))
+        {
+            self.clip = None;
+        }
         let mut action: Option<Action> = None;
         let playing_id = self.clip.as_ref().map(|c| c.player.id.clone());
         egui::ScrollArea::vertical()

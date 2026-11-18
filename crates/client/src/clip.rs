@@ -268,8 +268,12 @@ impl ClipPlayer {
         let spawned = std::thread::Builder::new()
             .name("lecteur-clip".into())
             .spawn(move || {
-                let outcome = crate::net::events::fetch_clip(&clip_id)
-                    .and_then(|bytes| start(bytes, n.clone()));
+                let fetched = crate::net::events::fetch_clip(&clip_id);
+                // Lecteur fermé pendant le téléchargement : le résultat est jeté.
+                if Arc::strong_count(&p) == 1 {
+                    return;
+                }
+                let outcome = fetched.and_then(|bytes| start(bytes, n.clone()));
                 *p.lock().unwrap_or_else(PoisonError::into_inner) = match outcome {
                     Ok(ready) => ready,
                     Err(why) => Phase::Failed(why),
@@ -339,7 +343,13 @@ impl ClipPlayer {
         self.clock.position(self.now_ms(), self.duration_ms())
     }
 
+    /// La lecture n'a pas encore commencé : elle démarre à la première image décodée.
+    pub fn waiting_for_start(&self) -> bool {
+        self.autoplay
+    }
+
     pub fn toggle_play(&mut self) {
+        self.autoplay = false;
         let (now, duration) = (self.now_ms(), self.duration_ms());
         if self.clock.playing() {
             self.clock.pause(now, duration);
@@ -359,6 +369,9 @@ impl ClipPlayer {
         if let Phase::Ready { shared, .. } = &*self.phase() {
             let mut inner = shared.lock();
             inner.seek = Some(ms);
+            // Le clip n'est plus « fini » : le fil de décodage repart (et `update` ne conclut pas
+            // à la fin sur l'état d'avant le déplacement).
+            inner.finished = false;
             inner.queue.clear();
             shared.wake.notify_all();
         }
@@ -368,12 +381,9 @@ impl ClipPlayer {
     /// rend l'image à montrer si une nouvelle est due (l'interface se redessine tant que ça joue).
     pub fn update(&mut self) -> Option<Arc<Image>> {
         let (now, duration) = (self.now_ms(), self.duration_ms());
-        if self.autoplay && duration > 0 {
-            self.autoplay = false;
-            self.clock.play(now, duration);
-        }
         let mut shown = None;
-        let (finished_and_empty, ready) = match &*self.phase() {
+        let mut first_frame = false;
+        let ready = match &*self.phase() {
             Phase::Ready { shared, .. } => {
                 let mut inner = shared.lock();
                 let pos = self.clock.position(now, duration);
@@ -383,13 +393,21 @@ impl ClipPlayer {
                     shared.wake.notify_all();
                     shown = frame;
                 }
-                (inner.finished && inner.queue.is_empty(), true)
+                // La lecture démarre à la première image décodée, pas au téléchargement.
+                first_frame = shown.is_some() || !inner.queue.is_empty();
+                true
             }
-            _ => (false, false),
+            _ => false,
         };
+        if self.autoplay && first_frame {
+            self.autoplay = false;
+            self.clock.play(now, duration);
+        }
         if ready && self.clock.playing() {
+            // Fin : quand l'horloge atteint la durée, donc après la dernière image montrée pendant
+            // sa durée ; la position reste alors à la durée du clip.
             let pos = self.clock.position(now, duration);
-            if pos >= duration || (finished_and_empty && shown.is_none()) {
+            if pos >= duration {
                 if self.looping {
                     self.seek(0);
                 } else {

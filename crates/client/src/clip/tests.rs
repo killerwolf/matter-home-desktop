@@ -211,9 +211,9 @@ fn a_real_clip_plays_to_the_end_seeks_and_loops() {
     };
     // Lecture complète : 45 images × 66 ms ≈ 3 s.
     let began = Instant::now();
-    // (La lecture démarre au premier `update` : on ne regarde l'arrêt qu'après un instant.)
+    // (La lecture démarre à la première image décodée : on ne regarde l'arrêt qu'après.)
     let images = run(&mut player, 20_000, &|p| {
-        began.elapsed().as_millis() > 500 && !p.playing()
+        !p.waiting_for_start() && !p.playing()
     });
     assert!(player.error().is_none(), "{:?}", player.error());
     assert_eq!(player.duration_ms(), 45 * 66);
@@ -233,4 +233,24 @@ fn a_real_clip_plays_to_the_end_seeks_and_loops() {
     assert!(player.playing(), "la boucle continue");
     assert!(player.error().is_none());
     assert!(images >= 30, "{images} images");
+}
+
+/// Régression : après la fin, ▶ replace au début ; `update` ne doit pas conclure à la fin du clip
+/// sur l'état d'avant le déplacement (clip « fini », file vide) et remettre aussitôt en pause.
+#[cfg(target_os = "macos")]
+#[test]
+fn play_after_the_end_restarts_and_does_not_pause_again() {
+    let mut player = ClipPlayer::from_bytes("1-1", real_clip(), || {});
+    let start = Instant::now();
+    while (player.waiting_for_start() || player.playing()) && start.elapsed().as_secs() < 20 {
+        player.update();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!player.playing());
+    // À l'arrêt, la position est la durée du clip.
+    assert_eq!(player.position_ms(), 45 * 66);
+    player.toggle_play();
+    player.update();
+    assert!(player.playing(), "remis en pause tout de suite");
+    assert!(player.position_ms() < 1000);
 }

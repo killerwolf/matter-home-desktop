@@ -9,6 +9,9 @@
 //!
 //! Rien n'est copié : la piste ne garde que, pour chaque image, sa place dans le fichier.
 
+/// Plafond du nombre d'images d'un clip (un clip de 20 s à 30 images/s en a 600).
+const MAX_SAMPLES: usize = 1 << 20;
+
 /// Où est une image dans le fichier, et quand elle est montrée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleRef {
@@ -175,11 +178,17 @@ fn parse_track(trak: &[u8], file_len: u64) -> Result<Option<Track>, Mp4Error> {
         .ok_or(Mp4Error::BadTables)?;
     let constant = be32(stsz, 0).ok_or(Mp4Error::BadTables)?;
     let count = be32(stsz, 4).ok_or(Mp4Error::BadTables)? as usize;
-    if count == 0 {
+    // Le nombre annoncé est borné avant toute allocation (on n'alloue pas sur la foi d'un
+    // en-tête) : plafond absolu, jamais plus d'images que d'octets dans le fichier, et la table des
+    // tailles doit tenir dans la boîte.
+    if count == 0 || count > MAX_SAMPLES || count as u64 > file_len {
         return Err(Mp4Error::BadTables);
     }
-    // Le nombre annoncé doit tenir dans la boîte (on n'alloue pas sur la foi d'un en-tête).
-    if constant == 0 && 8 + 4 * count > stsz.len() {
+    if constant == 0 {
+        if 8 + 4 * count > stsz.len() {
+            return Err(Mp4Error::BadTables);
+        }
+    } else if count as u64 > file_len / u64::from(constant) {
         return Err(Mp4Error::BadTables);
     }
     let size_of = |i: usize| -> Option<u32> {
@@ -228,6 +237,10 @@ fn parse_track(trak: &[u8], file_len: u64) -> Result<Option<Track>, Mp4Error> {
     for g in 0..stsc_n {
         let first = be32(stsc, 4 + 12 * g).ok_or(Mp4Error::BadTables)?;
         let per = be32(stsc, 8 + 12 * g).ok_or(Mp4Error::BadTables)?;
+        // Triées par premier bloc, strictement croissantes (la lecture en dépend).
+        if first == 0 || groups.last().is_some_and(|(prev, _)| *prev >= first) {
+            return Err(Mp4Error::BadTables);
+        }
         groups.push((first, per));
     }
     let chunk_offsets: Vec<u64> = if let Some(co) = child(stbl, b"stco").and_then(full_body) {
@@ -253,13 +266,18 @@ fn parse_track(trak: &[u8], file_len: u64) -> Result<Option<Track>, Mp4Error> {
 
     let mut samples = Vec::with_capacity(count);
     let mut index = 0usize;
+    // Curseur dans les groupes `stsc` : un seul passage, jamais de rebalayage.
+    let mut group = 0usize;
     'chunks: for (c, base) in chunk_offsets.iter().enumerate() {
         let chunk_no = c as u32 + 1;
-        let per = groups
-            .iter()
-            .take_while(|(first, _)| *first <= chunk_no)
-            .last()
-            .map_or(0, |(_, per)| *per);
+        while group + 1 < groups.len() && groups[group + 1].0 <= chunk_no {
+            group += 1;
+        }
+        let per = if groups[group].0 <= chunk_no {
+            groups[group].1
+        } else {
+            0
+        };
         let mut at = *base;
         for _ in 0..per {
             if index == count {
@@ -536,6 +554,54 @@ mod tests {
         let stsz = file.windows(4).position(|w| w == b"stsz").unwrap();
         file[stsz + 12..stsz + 16].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(parse(&file), Err(Mp4Error::BadTables));
+    }
+
+    /// Écrit un `u32` à `offset` après le début de la boîte `kind`.
+    fn patch(file: &mut [u8], kind: &[u8; 4], offset: usize, value: u32) {
+        let at = file.windows(4).position(|w| w == kind).unwrap();
+        file[at + offset..at + offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+
+    #[test]
+    fn a_huge_sample_count_with_a_constant_size_is_refused_before_any_allocation() {
+        // stsz : taille constante 1, nombre d'images 4 milliards ; stts : une suite de 4 milliards.
+        let (mut file, _) = clip(7, &simple());
+        patch(&mut file, b"stsz", 8, 1);
+        patch(&mut file, b"stsz", 12, u32::MAX);
+        patch(&mut file, b"stts", 12, u32::MAX);
+        assert_eq!(parse(&file), Err(Mp4Error::BadTables));
+        // Un nombre plausible pour l'en-tête mais plus grand que le fichier : refusé aussi.
+        let (mut file, _) = clip(7, &simple());
+        patch(&mut file, b"stsz", 8, 1);
+        patch(&mut file, b"stsz", 12, 1 << 19);
+        patch(&mut file, b"stts", 12, 1 << 19);
+        assert_eq!(parse(&file), Err(Mp4Error::BadTables));
+        // Taille constante : le nombre ne peut pas dépasser fichier / taille.
+        let (mut file, _) = clip(7, &simple());
+        patch(&mut file, b"stsz", 8, 1_000_000);
+        patch(&mut file, b"stsz", 12, 1000);
+        assert_eq!(parse(&file), Err(Mp4Error::BadTables));
+    }
+
+    #[test]
+    fn unsorted_or_repeated_stsc_groups_are_refused() {
+        let layout = Layout {
+            chunks: vec![2, 3, 2],
+            moov_first: true,
+            no_stss: false,
+            wide: false,
+        };
+        let (file, _) = clip(7, &layout);
+        // Les trois groupes (1,2) (2,3) (3,2) sont lus.
+        assert_eq!(parse(&file).unwrap().samples.len(), 7);
+        // Le deuxième groupe repasse au bloc 1 : non croissant.
+        let mut bad = file.clone();
+        patch(&mut bad, b"stsc", 8 + 4 + 12, 1);
+        assert_eq!(parse(&bad), Err(Mp4Error::BadTables));
+        // Premier bloc 0 : refusé.
+        let mut bad = file;
+        patch(&mut bad, b"stsc", 8 + 4, 0);
+        assert_eq!(parse(&bad), Err(Mp4Error::BadTables));
     }
 
     #[test]
