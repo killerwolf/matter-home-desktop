@@ -9,7 +9,7 @@ import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
-import { classesText, deleteEvent, drawSnapshot, loadEvents, playClip, whenText } from "./events.js";
+import { classesText, createThumbCache, deleteEvent, loadEvents, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -422,9 +422,17 @@ function reconcileCams() {
 // ---------------------------------------------------------------------------
 // Événements de détection (ticket n° 18), sous les caméras
 // ---------------------------------------------------------------------------
-const detections = { list: [], status: null, loaded: false, error: "", box: null };
+const detections = { list: [], status: null, loaded: false, error: "", box: null, at: 0 };
+const thumbs = createThumbCache();
+
+/** La liste n'est relue qu'à l'entrée dans l'onglet (au plus une fois par minute) ; ensuite, les
+ *  événements `detection` du WebSocket la complètent. */
+function maybeRefreshDetections() {
+  if (!detections.loaded || Date.now() - detections.at > 60_000) refreshDetections();
+}
 
 async function refreshDetections() {
+  detections.at = Date.now();
   try {
     const r = await loadEvents();
     if (r === null) { detections.status = null; detections.error = "absent"; }
@@ -470,6 +478,7 @@ function renderDetections() {
     box.appendChild(p);
     return;
   }
+  thumbs.newRender();
   const ul = document.createElement("ul");
   ul.className = "ev-list";
   for (const ev of detections.list) {
@@ -491,7 +500,7 @@ function renderDetections() {
     b.addEventListener("click", () => openEvent(ev));
     li.appendChild(b);
     ul.appendChild(li);
-    drawSnapshot(ev.id, canvas).catch(() => {});
+    thumbs.draw(ev.id, canvas);
   }
   box.appendChild(ul);
 }
@@ -509,7 +518,7 @@ function openEvent(ev) {
   const shot = document.createElement("canvas");
   shot.className = "ev-shot";
   body.append(when, shot);
-  drawSnapshot(ev.id, shot).catch(() => { shot.hidden = true; });
+  thumbs.draw(ev.id, shot).then((ok) => { if (!ok) shot.hidden = true; });
   if (ev.has_clip) {
     const video = document.createElement("video");
     video.className = "ev-clip";
@@ -546,6 +555,7 @@ function openEvent(ev) {
     try {
       await deleteEvent(ev.id);
       detections.list = detections.list.filter((x) => x.id !== ev.id);
+      thumbs.forget(ev.id);
       closeSheet();
       renderDetections();
     } catch (error) {
@@ -569,7 +579,7 @@ function renderCameras() {
   detections.box = document.createElement("section");
   detections.box.className = "events";
   detections.box.setAttribute("aria-label", "Événements de détection");
-  refreshDetections();
+  maybeRefreshDetections();
   if (!state.cameras.length) {
     const p = document.createElement("p");
     p.className = "empty";

@@ -430,7 +430,7 @@ fn analyse_loop(
                         } else {
                             Vec::new()
                         };
-                        let step = tracker.observe(unix_now(), &found, || {
+                        let snapshot = || {
                             let config = SnapshotConfig {
                                 max_width: 960,
                                 quality: 80,
@@ -439,15 +439,17 @@ fn analyse_loop(
                             encode_jpeg(&image, &config)
                                 .map(|b| b.to_vec())
                                 .unwrap_or_default()
-                        });
+                        };
+                        let step = tracker.observe(unix_now(), &found, snapshot);
                         match step {
                             Step::Opened => lock(recorder).start_clip(),
                             Step::Closed(passage) => {
-                                finish(hub, id, passage, lock(recorder).finish_clip());
+                                // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
+                                let clip = lock(recorder).finish_clip();
+                                finish(hub, id, passage, clip);
                                 if !found.is_empty() {
                                     // L'image qui a clos le passage précédent en ouvre un autre.
-                                    let jpeg = Vec::new();
-                                    tracker.observe(unix_now(), &found, || jpeg);
+                                    tracker.observe(unix_now(), &found, snapshot);
                                     lock(recorder).start_clip();
                                 }
                             }
@@ -465,12 +467,16 @@ fn analyse_loop(
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(passage) = tracker.tick(unix_now()) {
-            finish(hub, id, passage, lock(recorder).finish_clip());
+            // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
+            let clip = lock(recorder).finish_clip();
+            finish(hub, id, passage, clip);
         }
     }
     // Arrêt de la veille (changement de mode, caméra modifiée) : le passage en cours est gardé.
     if let Some(passage) = tracker.flush() {
-        finish(hub, id, passage, lock(recorder).finish_clip());
+        // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
+        let clip = lock(recorder).finish_clip();
+        finish(hub, id, passage, clip);
     }
 }
 

@@ -246,3 +246,39 @@ impl Detector for OnnxDetector {
         self.engine.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Essai manuel avec un vrai modèle (jamais en CI : ni modèle ni ONNX Runtime dans le dépôt) :
+    /// `MH_MODELS=<dossier avec detector.onnx> ORT_DYLIB_PATH=<libonnxruntime.dylib>
+    /// cargo test -p matter-home-server onnx -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manuel : MH_MODELS et ORT_DYLIB_PATH"]
+    fn a_real_model_loads_and_runs() {
+        let dir = PathBuf::from(std::env::var("MH_MODELS").expect("MH_MODELS"));
+        let mut detector = OnnxDetector::load(&dir).expect("détecteur");
+        let image = Image {
+            width: 1280,
+            height: 720,
+            rgb: vec![90; 1280 * 720 * 3],
+        };
+        let started = std::time::Instant::now();
+        let first = detector.detect(&image).expect("inférence");
+        let warm = std::time::Instant::now();
+        for _ in 0..5 {
+            detector.detect(&image).expect("inférence");
+        }
+        eprintln!(
+            "{} : première image {:?}, puis {:?} par image, {} détection(s) sur une image grise, \
+             sortie {:?}",
+            detector.engine(),
+            warm - started,
+            warm.elapsed() / 5,
+            first.len(),
+            detector.layout
+        );
+        assert!(first.is_empty(), "une image grise ne contient personne");
+    }
+}

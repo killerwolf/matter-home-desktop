@@ -19,7 +19,7 @@ dossier de données du serveur (voir [Données](donnees.md)) :
 |---|---|
 | `detector.onnx` | le modèle principal, exécuté par **CoreML** (GPU) : **YOLOX-s 640** conseillé |
 | `detector-cpu.onnx` | facultatif : un modèle léger pour le **processeur**, si CoreML ne démarre pas : **YOLOX-nano 416** |
-| `libonnxruntime.dylib` | ONNX Runtime **1.20 ou plus récent**, version macOS universelle de Microsoft (elle contient CoreML) |
+| `libonnxruntime.dylib` | ONNX Runtime (essayé avec la **1.23** ; 1.20 au minimum), version macOS universelle de Microsoft (elle contient CoreML) |
 | `detector.json` | facultatif : réglages du modèle (voir plus bas) |
 
 1. **ONNX Runtime** : sur la page des versions de `microsoft/onnxruntime` (GitHub), prendre l'archive

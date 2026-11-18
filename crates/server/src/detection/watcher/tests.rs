@@ -163,6 +163,10 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
     assert!(event.has_clip, "un clip");
     let clip = std::fs::read(store.part(&event.id, crate::detection::Part::Clip).unwrap()).unwrap();
     assert_eq!(&clip[4..8], b"ftyp");
+    // Pour l'essayer dans un lecteur : `MH_KEEP_CLIP=/chemin/clip.mp4 cargo test …`.
+    if let Some(path) = std::env::var_os("MH_KEEP_CLIP") {
+        std::fs::write(path, &clip).unwrap();
+    }
     assert!(store
         .part(&event.id, crate::detection::Part::Snapshot)
         .is_some());

@@ -37,14 +37,55 @@ export async function loadEvents(limit = 60) {
 
 export const deleteEvent = (id) => request("DELETE", `/api/events/${encodeURIComponent(id)}`);
 
-/** Dessine la capture d'un événement dans `canvas`. */
-export async function drawSnapshot(id, canvas) {
+/** La capture d'un événement, prête à dessiner. */
+export async function loadSnapshot(id) {
   const blob = await requestBlob(`/api/events/${encodeURIComponent(id)}/snapshot`);
-  const bitmap = await createImageBitmap(blob);
+  return createImageBitmap(blob);
+}
+
+export function drawBitmap(bitmap, canvas) {
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
   canvas.getContext("2d").drawImage(bitmap, 0, 0);
-  bitmap.close?.();
+}
+
+/**
+ * Les captures déjà chargées, par événement (un événement ne change jamais) : la liste se redessine
+ * sans rien redemander au serveur. Au plus `max` captures gardées, au plus `perRender` chargées à
+ * chaque affichage de la liste.
+ */
+export function createThumbCache(max = 40, perRender = 20) {
+  const bitmaps = new Map();
+  const pending = new Map();
+  let budget = perRender;
+  const get = (id) => {
+    if (bitmaps.has(id)) return Promise.resolve(bitmaps.get(id));
+    if (pending.has(id)) return pending.get(id);
+    if (budget <= 0) return Promise.resolve(null);
+    budget -= 1;
+    const p = loadSnapshot(id)
+      .then((bitmap) => {
+        bitmaps.set(id, bitmap);
+        while (bitmaps.size > max) {
+          const [old] = bitmaps.keys();
+          bitmaps.get(old)?.close?.();
+          bitmaps.delete(old);
+        }
+        return bitmap;
+      })
+      .catch(() => null)
+      .finally(() => pending.delete(id));
+    pending.set(id, p);
+    return p;
+  };
+  return {
+    /** Dessine la capture dans `canvas` (si elle se charge). */
+    draw(id, canvas) { return get(id).then((b) => { if (b) drawBitmap(b, canvas); return Boolean(b); }); },
+    /** Un nouvel affichage de la liste : un nouveau budget de chargements. */
+    newRender() { budget = perRender; },
+    forget(id) { bitmaps.get(id)?.close?.(); bitmaps.delete(id); },
+    clear() { for (const b of bitmaps.values()) b.close?.(); bitmaps.clear(); },
+  };
 }
 
 /** Charge le clip et le donne au `<video>`. Rend la fonction qui libère l'URL. */
