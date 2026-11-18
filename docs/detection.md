@@ -8,32 +8,51 @@ est analysée en continu par le serveur : quand une **personne**, un **chat**, u
 une capture et un clip vidéo (quelques secondes avant, le passage, quelques secondes après). Comme
 Frigate, mais **sans enregistrement continu** : rien n'est écrit sur le disque tant que rien ne passe.
 
-## Ce qu'il faut installer
+## Rien à installer
 
-Le dépôt ne contient **ni le modèle ni le moteur** : ils se déposent dans le dossier `models/` du
-dossier de données du serveur (voir [Données](donnees.md)) :
-`~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/models/`, ou
-`<dossier>/models/` avec `--data-dir`.
+**L'application du serveur embarque tout** (`Matter Home Server.app`, depuis la version qui
+contient ce ticket) : les modèles **YOLOX-s 640** (CoreML) et **YOLOX-nano 416** (processeur), et
+**ONNX Runtime 1.23.2** (version macOS universelle de Microsoft, avec CoreML). Au lancement, le
+journal dit `détection prête : CoreML, entrée 640×640` ; la fenêtre du serveur (« Caméras… »,
+section « Détection ») affiche le moteur et les caméras analysées.
 
-| Fichier | Rôle |
-|---|---|
-| `detector.onnx` | le modèle principal, exécuté par **CoreML** (GPU) : **YOLOX-s 640** conseillé |
-| `detector-cpu.onnx` | facultatif : un modèle léger pour le **processeur**, si CoreML ne démarre pas : **YOLOX-nano 416** |
-| `libonnxruntime.dylib` | ONNX Runtime (essayé avec la **1.23** ; 1.20 au minimum), version macOS universelle de Microsoft (elle contient CoreML) |
-| `detector.json` | facultatif : réglages du modèle (voir plus bas) |
+| Dans l'application | Contenu | Licence |
+|---|---|---|
+| `Contents/Resources/models/detector.onnx` | `yolox_s.onnx`, version 0.1.1rc0 de `Megvii-BaseDetection/YOLOX` | Apache-2.0 |
+| `Contents/Resources/models/detector-cpu.onnx` | `yolox_nano.onnx`, même version | Apache-2.0 |
+| `Contents/Frameworks/libonnxruntime.dylib` | `onnxruntime-osx-universal2-1.23.2.tgz` de `microsoft/onnxruntime` | MIT |
+| `Contents/Resources/licences/` | `YOLOX-LICENSE`, `onnxruntime-LICENSE`, `onnxruntime-ThirdPartyNotices.txt` | — |
 
-1. **ONNX Runtime** : sur la page des versions de `microsoft/onnxruntime` (GitHub), prendre l'archive
-   `onnxruntime-osx-universal2-<version>.tgz`, et copier son `lib/libonnxruntime.<version>.dylib` en
-   `models/libonnxruntime.dylib`. Le serveur la cherche aussi à côté de son programme, dans
-   `Contents/Frameworks` de l'application, puis dans la variable `ORT_DYLIB_PATH`.
-2. **Modèle** : YOLOX (licence **Apache-2.0**, version officielle 0.1.1rc0 de
-   `Megvii-BaseDetection/YOLOX`) : `yolox_s.onnx` → `models/detector.onnx`, et `yolox_nano.onnx` →
-   `models/detector-cpu.onnx`.
-3. Redémarrer le serveur, ou changer de mode : il réessaie aussi toutes les 5 minutes. Le journal
-   dit `détection prête : CoreML, entrée 640×640` ; la fenêtre du serveur (Réglages, « Détection »)
-   affiche le moteur et les caméras surveillées.
+Ces fichiers ne sont **pas** dans le dépôt : `scripts/bundle-server-app.sh --with-detection` (la CI
+de publication le passe) les télécharge depuis leurs versions officielles avec
+`scripts/fetch-detection-assets.sh`, vérifie leur empreinte **SHA-256 épinglée**
+(`scripts/detection-assets.sha256`) et s'arrête au moindre écart. La bibliothèque est signée (ad hoc)
+avec l'application, qui scelle aussi les modèles.
 
-Sans ces fichiers, la détection est **désactivée** : le journal le dit une fois
+### Épingler une empreinte
+
+Une ligne `A_EPINGLER` dans `scripts/detection-assets.sha256` arrête la construction. Pour la
+remplir : `scripts/fetch-detection-assets.sh --pin` télécharge les fichiers dans un dossier
+temporaire et affiche leurs empreintes ; vérifiez-les (par exemple avec celles publiées par le
+projet, `gh release view <version> -R <dépôt> --json assets`), puis recopiez-les dans le fichier.
+
+### Utilisateurs avancés : `<données>/models/`
+
+Sans fichiers embarqués (serveur en ligne de commande, version de développement), le serveur
+prend ceux de `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/models/` (ou
+`<dossier>/models/` avec `--data-dir`) : `detector.onnx`, `detector-cpu.onnx`, `detector.json`,
+`libonnxruntime.dylib` (cherchée aussi à côté du programme, puis dans `ORT_DYLIB_PATH`). Ceux de
+l'application **l'emportent** ; seul `models/detector.json` s'applique en plus (réglages).
+
+- Un fichier qui n'appartient pas à votre compte (ou à root), ou modifiable par le groupe ou les
+  autres comptes, est **refusé** (c'est du code que le serveur exécute) : `chmod 644` (`755` pour la
+  bibliothèque).
+- Une bibliothèque téléchargée par un navigateur porte l'attribut de quarantaine, et macOS peut
+  refuser de la charger : `xattr -d com.apple.quarantine models/libonnxruntime.dylib`.
+- Un échec de chargement (fichier absent, refusé) est **réessayé** toutes les 5 minutes et à chaque
+  changement de mode ou de caméra : un fichier déposé ensuite est pris sans redémarrer.
+
+Sans détecteur, la détection est **désactivée** : le journal le dit une fois
 (`détection désactivée : …`), la fenêtre du serveur aussi, et une caméra en Surveillance se comporte
 comme en Diffusion (aucune connexion de plus).
 
@@ -71,16 +90,23 @@ collée en haut à gauche, bordure grise (114). Un autre modèle s'ajoute dans
 1. **Une seule connexion par caméra** : la détection est un spectateur de la même session RTSP que
    le direct et les vignettes (flux réduit s'il existe). Une Aqara G100 échoue au-delà de 2 ou 3
    canaux : on n'en ouvre jamais un de plus. Pendant ce temps, « Tester » est refusé pour cette
-   caméra (comme pendant un direct).
+   caméra (comme pendant un direct). Une caméra sans aucune classe cochée n'est pas analysée.
 2. **Pré-enregistrement** : les ~10 dernières secondes de H.264 brut restent en mémoire (à partir
-   d'une image clé, 8 Mo au plus par caméra), sans décodage ni disque.
+   d'une image clé, 8 Mo au plus par caméra, même si la caméra n'envoie pas d'image clé), sans
+   décodage ni disque.
 3. **Mouvement** : le décodeur matériel (VideoToolbox) décode toutes les images mais n'en convertit
    que **2 par seconde** ; chacune est réduite en petite image grise et comparée à la précédente.
-4. **Objets** : seulement s'il y a du mouvement (hors masques), ou pendant un passage, le modèle
-   cherche les objets. Un seul modèle sert à toutes les caméras.
-5. **Passage** : le premier objet sûr ouvre l'événement, les suivants le prolongent, **8 s** sans rien
-   le ferment. Le clip = pré-enregistrement + passage + ces 8 s, en **MP4 sans réencodage** (les
-   images de la caméra telles quelles), 2 minutes au plus.
+4. **Objets** : le modèle ne tourne **que s'il y a du mouvement** (hors masques), et une boîte où
+   rien n'a bougé ne compte pas. Un seul modèle sert à toutes les caméras. Chaque objet est suivi
+   d'une image à l'autre : immobile depuis **10 s** (voiture garée, chat endormi), il ne compte
+   plus, jusqu'à ce qu'il bouge.
+5. **Passage** : le premier objet actif ouvre l'événement, **annoncé tout de suite « en cours »**
+   (capture, automatisations) ; les suivants le prolongent ; **8 s** sans objet actif le ferment et
+   l'événement est complété (meilleure capture, clip). Un passage dure **2 minutes au plus** : il
+   est alors fermé et enregistré, et le suivant demande un nouvel objet en mouvement. Le clip =
+   pré-enregistrement + passage + ces 8 s, en **MP4 sans réencodage** (les images de la caméra
+   telles quelles ; les flux des caméras n'ont pas d'images B, l'ordre de décodage est celui de
+   l'affichage).
 
 ### Réglages par caméra (fenêtre « Caméras… » du serveur, section « Détection »)
 
@@ -94,9 +120,14 @@ collée en haut à gauche, bordure grise (114). Un autre modèle s'ajoute dans
 ### Charge machine
 
 - 2 images analysées par seconde et par caméra au plus (`fps` dans `detection.json`).
-- Si l'analyse prend du retard (file d'attente pleine), les images sont sautées jusqu'à la prochaine
-  image clé et la détection se **suspend 30 s** ; le journal dit `détection suspendue …`, la fenêtre
-  du serveur aussi. Le pré-enregistrement, lui, continue.
+- La détection d'une caméra se **suspend 30 s** (`pause_s`), avec une ligne au journal, si :
+  - la file d'attente de l'analyse est pleine (les images sont sautées jusqu'à la prochaine
+    image clé) ;
+  - l'analyse d'une image prend plus que son budget (500 ms à 2 images/s) 10 fois d'affilée ;
+- elle se suspend aussi tant que macOS juge le Mac **trop chaud** (`ProcessInfo.thermalState`
+  « sérieux » ou « critique »), relu toutes les 10 s.
+- La fenêtre du serveur et les clients disent quelles caméras sont suspendues et pourquoi. Le
+  pré-enregistrement, lui, continue. L'écriture des clips (MP4, disque) se fait dans un fil à part.
 
 ## Ce qui est enregistré
 
@@ -109,8 +140,13 @@ Dossier `<données>/events/` (droits 0600), trois fichiers par passage :
 | `<id>.mp4` | le clip (avant + passage + après) |
 
 - **Rétention** : 7 jours, et un **plafond total** de 2 Go (`max_total_bytes` dans
-  `<données>/detection.json`) au-delà duquel les plus anciens partent ; appliqués au démarrage puis
-  toutes les heures. Un événement se supprime aussi à la main (app web).
+  `<données>/detection.json`) au-delà duquel les plus anciens partent ; appliqués au démarrage,
+  toutes les heures, et dès qu'un enregistrement dépasse le plafond. Un événement se supprime aussi à
+  la main (app web).
+- **Disque presque plein** : moins de 2 Go libres (ou 5 % d'un disque de moins de 40 Go) après
+  écriture, le clip n'est **pas** enregistré (la fiche et la capture, si) et le journal le dit.
+- Une fiche illisible est ignorée, jamais effacée ; un événement resté « en cours » (serveur arrêté
+  pendant un passage) est clos au redémarrage suivant.
 - Les événements **ne sont pas** dans les sauvegardes `.matterhome` (ni les modèles) ; à
   l'import d'une sauvegarde, ceux de ce Mac sont gardés (`events/`, `models/` et `detection.json`
   sont recopiés dans le nouveau dossier de données, comme `serveur/`).
@@ -121,16 +157,20 @@ Dossier `<données>/events/` (droits 0600), trois fichiers par passage :
 { "max_total_bytes": 2147483648, "fps": 2.0, "close_after_s": 8.0, "pause_s": 30 }
 ```
 
+Ces réglages sont relus à chaud (sans redémarrer la surveillance).
+
 ## Où les voir
 
 - **App web** : onglet Caméras → « Événements » : vignette, classe, caméra, heure ; un tap ouvre la
   capture et lit le clip.
-- **Client de bureau** : onglet Caméras, liste des événements avec la capture ; le clip s'ouvre
-  dans le navigateur ou le lecteur du Mac.
+- **Client de bureau** : onglet Caméras, colonne « Événements » avec la capture ; le clip est
+  téléchargé dans un dossier temporaire privé et s'ouvre dans le lecteur du Mac (les clips de plus
+  d'un jour sont effacés au lancement du client).
 - **API** : `GET /api/events?since=&camera=&limit=`, `GET /api/events/{id}`,
   `GET /api/events/{id}/snapshot`, `GET /api/events/{id}/clip` (avec `Range`),
   `DELETE /api/events/{id}`, et l'événement `detection` du WebSocket (voir [Protocole](protocole.md)).
-- **Automatisations** : « Quand une caméra détecte… » (voir [Automatisations](automatisations.md)).
+- **Automatisations** : « Quand une caméra détecte… » (voir [Automatisations](automatisations.md)),
+  au **début** du passage.
 
 ## Vie privée
 

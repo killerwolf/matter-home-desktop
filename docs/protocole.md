@@ -358,15 +358,16 @@ Ticket n° 18 (voir [Détection](detection.md)). Ajouté **dans le protocole 3**
 client qui ne connaît pas l'événement `detection` l'ignore (`Unknown`), une classe inconnue se lit
 `unknown`.
 
-- **WebSocket** : `{"type": "detection", "event": {…}}` à la **fin** d'un passage (un passage = un
-  événement). `event` : `id` (texte opaque), `camera_id` (texte), `camera_name`, `classes`
+- **WebSocket** : `{"type": "detection", "event": {…}}` au **début** d'un passage (`in_progress:
+  true`, capture seulement), puis de nouveau, complet, à sa **fin** (`in_progress: false`, même `id` :
+  le client remplace l'ancien). Un passage = un événement. `event` : `id` (texte opaque), `camera_id` (texte), `camera_name`, `classes`
   (`personne`, `chat`, `chien`, `vehicule`, la plus sûre d'abord), `score` (0 à 1), `start` et `end`
   (s Unix), `has_clip`, `clip_s`.
 - **Routes** (jeton de session) :
 
   | route | réponse |
   |---|---|
-  | `GET /api/events?since=&camera=&limit=` | `{"events": […], "detection": {"available", "engine", "watched", "paused"}}`, les plus récents d'abord ; `limit` 100 par défaut, 1000 au plus |
+  | `GET /api/events?since=&camera=&limit=` | `{"events": […], "detection": {"available", "engine", "watched", "paused", "paused_cameras", "pause_reason"}}`, les plus récents d'abord ; `limit` 100 par défaut, 1000 au plus |
   | `GET /api/events/{id}` | l'événement |
   | `DELETE /api/events/{id}` | `202` ; `404` (`detail`) s'il n'existe pas |
   | `GET /api/events/{id}/snapshot` | la meilleure image, `image/jpeg` |
@@ -374,7 +375,9 @@ client qui ne connaît pas l'événement `detection` l'ignore (`Unknown`), une c
 
 - **Règles** : `Trigger::Detection { camera_id, classes }` (`{"type": "Detection", "camera_id":
   "…" | null, "classes": ["personne"]}`). Comme pour les règles de mode, un client plus ancien ne
-  sait pas lire une règle qui l'utilise.
+  sait pas lire une règle qui l'utilise. Depuis ce ticket, `Trigger`, `Condition` et `Action` ont une
+  variante de repli (`Unknown`) : un type inconnu est lu sans faire échouer l'état complet, n'est
+  jamais exécuté, et le serveur refuse de l'enregistrer.
 
 ### Porte ou fenêtre sur le plan
 

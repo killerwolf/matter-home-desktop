@@ -188,6 +188,8 @@ crates/client/tests/   couche connexion contre le vrai matter-home-server --demo
 vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md
+scripts/fetch-detection-assets.sh  modèles YOLOX et ONNX Runtime à embarquer, empreintes vérifiées
+                       (scripts/detection-assets.sha256)
 scripts/make-icon.*    génération de l'icône (assets/icon.png, assets/icon.icns)
 scripts/dmg-settings.py           mise en page de la fenêtre du DMG (dmgbuild)
 scripts/make-dmg-background.swift fond du DMG (assets/dmg/background*.png)

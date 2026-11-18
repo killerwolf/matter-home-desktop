@@ -33,6 +33,16 @@ Les téléchargements de chaque version sont sur la
   « Événements » sous les caméras, capture et lecture du clip (cache du service worker en `v5`, la politique
   de sécurité autorise `media-src blob:` pour ce seul usage). Client de bureau : colonne « Événements » à
   côté de la mosaïque, le clip s'ouvre dans le lecteur du Mac.
+- **Détection embarquée** : `Matter Home Server.app` contient les modèles YOLOX-s et YOLOX-nano
+  (Apache-2.0) et ONNX Runtime 1.23.2 (MIT), avec leurs licences (`Contents/Resources/licences`) :
+  rien à installer. Ils sont téléchargés à la construction (`scripts/bundle-server-app.sh
+  --with-detection`) et vérifiés par empreinte SHA-256 épinglée (`scripts/detection-assets.sha256`).
+  Objets suivis d'une image à l'autre (un objet immobile depuis 10 s ne compte plus), détecteur
+  lancé seulement s'il y a du mouvement, passage coupé à 2 minutes, événement annoncé « en cours »
+  dès la première détection puis complété ; pause par caméra si l'analyse ne suit plus ou si le Mac
+  chauffe ; pas de clip sur un disque presque plein.
+- **Règles d'un serveur plus récent** : `Trigger`, `Condition` et `Action` ont une variante de repli
+  (`Unknown`), refusée à l'enregistrement.
 - **Automatisations** : « Quand une caméra détecte… » (`Trigger::Detection`, une caméra ou toutes, une ou
   plusieurs classes), avec `{appareil}` = la caméra et `{valeur}` = la classe ; utilisable avec « Seulement
   si le mode est… ».

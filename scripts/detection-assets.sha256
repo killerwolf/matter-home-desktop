@@ -1,0 +1,10 @@
+# Empreintes SHA-256 des fichiers de la détection (ticket n° 18) embarqués dans « Matter Home
+# Server.app » par scripts/fetch-detection-assets.sh. Une ligne par fichier : empreinte, nom, adresse.
+# Le script refuse tout fichier dont l'empreinte diffère, et tout fichier sans empreinte (ligne
+# « A_EPINGLER ») : voir docs/detection.md, « Épingler une empreinte ».
+#
+# YOLOX (Apache-2.0), version officielle 0.1.1rc0 de Megvii-BaseDetection/YOLOX.
+c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  yolox_s.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+A_EPINGLER  yolox_nano.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+# ONNX Runtime (MIT), version officielle 1.23.2 de microsoft/onnxruntime, macOS universelle.
+A_EPINGLER  onnxruntime-osx-universal2-1.23.2.tgz  https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-universal2-1.23.2.tgz

@@ -66,7 +66,7 @@ ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
 - **Mode** : une règle « Quand le mode devient X » ne se lance que sur un **changement** : redemander
   le mode actuel, ou le mode lu au démarrage du serveur, ne déclenche rien. Dans « Seulement si », au
   moins un mode doit être coché (le serveur refuse une condition sans mode).
-- **Détection** : une règle part **une fois par passage**, à sa fin (quand le clip est prêt), pas à
+- **Détection** : une règle part **une fois par passage**, à son début (dès la première détection), pas à
   chaque image ; l'anti-rafale s'applique en plus. Sans case cochée, n'importe quelle classe compte.
 - **Changements uniquement** : au démarrage ou à la reconnexion, la première valeur connue
   d'un appareil ne déclenche rien, pas plus que les mesures relues de l'historique.

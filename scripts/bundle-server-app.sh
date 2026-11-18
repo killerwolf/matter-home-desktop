@@ -4,6 +4,13 @@
 #
 #   scripts/bundle-server-app.sh          # dist/Matter Home Server.app
 #   scripts/bundle-server-app.sh --dmg    # ...et dist/MatterHomeServer-<version>-<arch>.dmg
+#   ... --with-detection                  # embarque modèles YOLOX et ONNX Runtime (ticket n° 18)
+#
+# --with-detection (la CI de publication le passe) : scripts/fetch-detection-assets.sh télécharge
+# les fichiers officiels et vérifie leurs empreintes SHA-256 épinglées, puis ils vont dans
+# Contents/Frameworks (ONNX Runtime, signé avec l'application) et Contents/Resources/models,
+# licences dans Contents/Resources/licences. Sans l'option, l'application n'a pas de détection
+# embarquée (elle lit alors <données>/models/, voir docs/detection.md).
 #
 # Binaire universel (arm64 + x86_64) quand les deux cibles sont installées
 # (`rustup target add aarch64-apple-darwin x86_64-apple-darwin`) ; sinon celui de ce Mac, et le
@@ -30,6 +37,16 @@ fi
 BUNDLE_ID="dev.matter-home-desktop.server-app"
 MIN_X86_64="${MH_MIN_MACOS_X86_64:-10.15}"
 MIN_ARM64="${MH_MIN_MACOS_ARM64:-11.0}"
+
+DMG_WANTED=0
+WITH_DETECTION=0
+for arg in "$@"; do
+  case "$arg" in
+    --dmg) DMG_WANTED=1 ;;
+    --with-detection) WITH_DETECTION=1 ;;
+    *) echo "option inconnue : $arg" >&2; exit 1 ;;
+  esac
+done
 
 log() { printf '\033[1m▸\033[0m %s\n' "$*"; }
 min_for() { case "$1" in aarch64-apple-darwin) echo "$MIN_ARM64" ;; *) echo "$MIN_X86_64" ;; esac; }
@@ -107,6 +124,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+if [ "$WITH_DETECTION" = 1 ]; then
+  log "Détection : modèles YOLOX et ONNX Runtime (empreintes vérifiées)"
+  ASSETS="$ROOT/target/detection-bundle"
+  "$ROOT/scripts/fetch-detection-assets.sh" "$ASSETS"
+  mkdir -p "$APP/Contents/Frameworks" "$APP/Contents/Resources/models" "$APP/Contents/Resources/licences"
+  install -m 0755 "$ASSETS/Frameworks/libonnxruntime.dylib" "$APP/Contents/Frameworks/libonnxruntime.dylib"
+  install -m 0644 "$ASSETS/models/detector.onnx" "$ASSETS/models/detector-cpu.onnx" "$APP/Contents/Resources/models/"
+  install -m 0644 "$ASSETS/licences/"* "$APP/Contents/Resources/licences/"
+  # La bibliothèque d'abord (signature ad hoc, comme l'application), puis l'application qui la
+  # scelle avec les modèles : un fichier modifié après coup invalide la signature.
+  codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/libonnxruntime.dylib"
+fi
+
 log "Signature (ad hoc)"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --strict "$APP"
@@ -139,7 +169,7 @@ echo "  $APP  ($(du -sh "$APP" | cut -f1), $ARCHS)"
 
 # ---- DMG -------------------------------------------------------------------
 
-if [ "${1:-}" = "--dmg" ]; then
+if [ "$DMG_WANTED" = 1 ]; then
   DMG="$DIST/MatterHomeServer-$VERSION-$FLAVOUR.dmg"
   log "Construction de $(basename "$DMG")"
   rm -f "$DMG"

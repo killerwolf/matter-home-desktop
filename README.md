@@ -240,6 +240,7 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 | [Plan de la maison](docs/plan.md) | dessin, couleurs, sauvegarde |
 | [Modes de la maison](docs/modes.md) | Présent, Absent, Nuit, Vacances ; caméras selon le mode ; changer de mode avec Raccourcis sur iPhone |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
+| [Détection](docs/detection.md) | personnes, animaux, véhicules sur les caméras en Surveillance ; événements, clips, rétention, vie privée |
 | [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
 | [Accès à distance](docs/acces-distant.md) | Tailscale, adresses multiples, certificats, flux caméra |
 | [Dépannage](docs/depannage.md) | problèmes connus, diagnostic réseau |
@@ -250,3 +251,9 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 
 MIT, voir [LICENSE](LICENSE). Le dossier `vendor/matc` est une copie modifiée de
 [matc](https://github.com/tom-code/rust-matc), sous licence BSD-2-Clause.
+
+L'application du serveur embarque, pour la détection (voir [docs/detection.md](docs/detection.md)),
+les modèles [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0, texte dans
+`assets/licences/YOLOX-LICENSE`) et [ONNX Runtime](https://onnxruntime.ai) (MIT, avec ses avis de
+tiers) ; leurs licences sont dans `Contents/Resources/licences/` de l'application. Ces fichiers ne
+sont pas dans le dépôt : ils sont téléchargés et vérifiés (SHA-256) à la construction.

@@ -162,7 +162,12 @@ pub fn detection_line(status: &protocol::wire::DetectionStatusView) -> (Tone, St
         (
             Tone::Bad,
             format!(
-                "Détection suspendue (machine surchargée) · {}",
+                "Détection suspendue sur {} caméra(s) : {} · {}",
+                status.paused_cameras.len(),
+                status
+                    .pause_reason
+                    .as_deref()
+                    .unwrap_or("machine surchargée"),
                 status.engine
             ),
         )
