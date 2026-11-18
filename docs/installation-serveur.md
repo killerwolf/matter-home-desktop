@@ -40,7 +40,8 @@ comme option avancée.
 
 ### Première configuration (une seule fois)
 
-Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fenêtre s'ouvre :
+Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fenêtre s'ouvre, en
+trois étapes numérotées :
 
 1. **Reprendre une sauvegarde** (fichier `.matterhome`, exporté depuis la v0.2.1 ou depuis un
    autre serveur) : l'application affiche le contenu du fichier et la comparaison des identités.
@@ -51,27 +52,41 @@ Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fe
    Ou **Créer une nouvelle maison**, pour une première installation sans aucun appareil.
 2. **Créer le compte** : un identifiant et un mot de passe (10 caractères au minimum), saisis
    deux fois.
-3. L'écran de fin donne **l'adresse du serveur** (`https://nom-du-mac.local:8443`) et
-   **l'empreinte du certificat** : dans le client, saisissez l'adresse, comparez l'empreinte
-   affichée avec celle-ci, puis connectez-vous.
+3. L'écran de fin donne, pas à pas, **l'adresse du serveur** (`https://nom-du-mac.local:8443`) et
+   le **code de vérification** (l'empreinte du certificat) : dans le client, saisissez l'adresse,
+   comparez l'empreinte affichée avec celle-ci, puis connectez-vous. Les mêmes étapes restent
+   dans l'onglet **Connexion** de la fenêtre.
 
 Si l'identité et le compte existent déjà (par exemple parce que vous avez déjà utilisé le serveur
 sur ce Mac), l'application démarre directement le serveur, sans rien demander ni importer.
 
 ### Le menu de la barre de menus
 
-L'icône change de forme : maison pleine (en marche), maison creuse (démarrage), maison avec un
-point d'exclamation (problème ou configuration à terminer). Le menu montre l'état en une
-ligne (« 8 appareils en ligne », ou « 12 appareils en ligne, 1 injoignable »), les appareils
-injoignables, puis un sous-menu « Connecter un client » (l'adresse du serveur, « Copier l'adresse »
-et « Copier l'empreinte du certificat »), « Caméras… », « Réglages… », « Journal », « Ouvrir à la
-connexion » (avec une coche) et « Quitter ». Quitter demande confirmation : les
-automatismes s'arrêtent tant que l'application n'est pas rouverte.
+L'icône change de forme : maison pleine (tout va bien), maison avec une pastille en haut à droite
+(le serveur tourne, un point est à regarder), maison creuse (démarrage), maison avec un point
+d'exclamation (le serveur ne tourne pas : problème ou configuration à terminer).
+
+Le menu répond à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à
+regarder », « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection,
+accès à distance) et, seulement quand quelque chose ne va pas, une action (« Voir l'appareil
+injoignable… »). Viennent ensuite le sous-menu « Mode de la maison », puis « Ouvrir Matter Home
+Server… », « Connecter un Mac ou un iPhone… », « Caméras… », « Réglages… » (ils ouvrent la fenêtre
+sur l'onglet correspondant) et « Quitter ». Quitter demande confirmation : les automatismes
+s'arrêtent tant que l'application n'est pas rouverte.
+
+### La fenêtre
+
+Cinq onglets : **Vue d'ensemble** (l'état, le mode, les tâches courantes), **Appareils**
+(injoignables, comment en ajouter un), **Caméras** (liste, détection, descriptions par IA),
+**Connexion** (connecter un ordinateur, l'iPhone à distance, les Raccourcis) et **Réglages**
+(compte, lancement à l'ouverture de session, sauvegarde, journal). Le détail et les raisons sont
+dans [Expérience utilisateur du serveur](ux-serveur.md).
 
 ### Ouvrir à la connexion, ouverture de session automatique
 
 L'application se relance toute seule à l'ouverture de votre session et après un plantage tant que
-la case « Ouvrir à la connexion » est cochée. Elle l'est **par défaut** dès la première fois que le
+la case « Lancer Matter Home Server à l'ouverture de session de ce Mac » (onglet Réglages) est
+cochée. Elle l'est **par défaut** dès la première fois que le
 serveur tourne dans l'application (fin de la configuration, ou premier lancement sur des données
 déjà en place, par exemple après le passage depuis le service) ; si vous la décochez, l'application
 respecte ce choix aux lancements suivants. Cela passe par un fichier dans `~/Library/LaunchAgents`,
@@ -107,7 +122,7 @@ mais c'est un réglage à faire vous-même.
 
 ### Quand l'application ne démarre pas le serveur
 
-Elle le dit dans le menu (et dans « Réglages… ») et ne démarre rien, plutôt que de
+Elle le dit dans le menu (et dans la vue d'ensemble de la fenêtre) et ne démarre rien, plutôt que de
 risquer deux serveurs sur les mêmes données :
 
 - **Le service installé au Terminal tient les données** (fichier
@@ -159,7 +174,7 @@ Tant que le service est installé, l'application le dit et ne démarre rien.
 
 ### Où sont les choses
 
-- Journal : menu « Journal » (`~/Library/Logs/Matter Home Server/serveur.log`).
+- Journal : fenêtre, onglet Réglages, « Ouvrir le journal » (`~/Library/Logs/Matter Home Server/serveur.log`).
 - Données : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`.
 - Ouverture à la connexion : `~/Library/LaunchAgents/dev.matter-home-desktop.server-app.plist`.
 

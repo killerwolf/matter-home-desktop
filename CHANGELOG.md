@@ -20,7 +20,7 @@ Les téléchargements de chaque version sont sur la
   description si elle est attendue ; le toucher ouvre la fiche de l'événement), **pile faible**
   (sous 15 %, une fois jusqu'à 20 %) et **appareil injoignable** depuis 10 minutes. Réglages dans
   l'app web (Appareils › Notifications : activer, essai, catégories, appareils abonnés révocables)
-  et dans la fenêtre du serveur (interrupteur général, révocation). Envoi par le `curl` du système
+  et dans la fenêtre du serveur (onglet Connexion : interrupteur général, révocation). Envoi par le `curl` du système
   vers les seuls services de push connus (Apple, Google, Mozilla, Microsoft) ; jamais d'adresse, de
   mot de passe de caméra ni d'identifiant d'appareil brut dans le texte. Clé VAPID et abonnements
   dans `serveur/` (0600), jamais exportés. Nouvelles routes `/api/push…` (protocole inchangé,
@@ -37,6 +37,18 @@ Les téléchargements de chaque version sont sur la
   quelques images décodées sont gardées en mémoire. Un clip illisible ou un décodeur en échec
   affiche un message dans le panneau. « Ouvrir dans QuickTime » reste disponible. Aucune dépendance
   nouvelle.
+- **Serveur : l'application de la barre de menus est réorganisée** (ticket n° 21). Le menu répond
+  d'abord à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à regarder »,
+  « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection, accès à
+  distance) et une seule action quand quelque chose ne va pas. L'icône gagne une forme « un point
+  est à regarder » (maison avec une pastille). La fenêtre passe à cinq onglets, **Vue d'ensemble**,
+  **Appareils**, **Caméras**, **Connexion**, **Réglages**, avec le même aspect que le client
+  (tokens partagés). Les tâches rares sont guidées pas à pas : première installation en trois
+  étapes, connecter un ordinateur, iPhone hors de la maison (Tailscale), changement de mode par
+  Raccourcis, clé Anthropic, ajout d'un appareil. Vocabulaire revu (« accès à distance », « code de
+  vérification », « code secret »). Rien n'est supprimé : copier l'adresse et l'empreinte, l'accès
+  web, le journal, le lancement à l'ouverture de session et la version quittent le menu pour la
+  fenêtre. Le comportement du serveur ne change pas. Détail : `docs/ux-serveur.md`.
 
 ## [1.2.1] - 2026-11-18
 

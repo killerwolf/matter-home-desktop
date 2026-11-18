@@ -66,7 +66,7 @@ C'est le seul passage par un service extérieur, et il est réduit au minimum :
   message en clair n'est jamais écrit dans le journal.
 
 Pour que rien ne parte : **couper** « Notifications activées sur le serveur » (feuille Notifications
-de l'app web, ou fenêtre du serveur, Réglages). Les abonnements restent, rien n'est envoyé. Tant
+de l'app web, ou fenêtre du serveur, onglet Connexion). Les abonnements restent, rien n'est envoyé. Tant
 qu'aucun appareil n'est abonné, rien ne part non plus. En mode démonstration, rien n'est jamais
 envoyé.
 
@@ -75,7 +75,7 @@ envoyé.
 - Depuis l'appareil : **Notifications** → **Désactiver sur cet appareil**.
 - Depuis n'importe quel appareil connecté : **Appareils abonnés** → **Révoquer** (un iPhone perdu,
   par exemple).
-- Depuis la fenêtre du serveur (Réglages, « Notifications ») : **Révoquer** sur la ligne de l'appareil.
+- Depuis la fenêtre du serveur (onglet Connexion, « Notifications sur l'iPhone et l'iPad ») : **Révoquer** sur la ligne de l'appareil.
 - Supprimer l'app de l'écran d'accueil, ou retirer l'autorisation dans Réglages › Notifications :
   le service de push répond alors « abonnement inconnu » (404 ou 410) au prochain envoi, et le
   serveur l'oublie de lui-même.

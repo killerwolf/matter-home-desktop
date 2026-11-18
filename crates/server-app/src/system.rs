@@ -134,6 +134,50 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// Les pages d'aide que la fenêtre propose d'ouvrir : des adresses fixes, écrites ici, jamais
+/// reçues d'ailleurs (contrairement à `open_url`, qui ne laisse passer que Tailscale).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpPage {
+    /// Télécharger Tailscale.
+    TailscaleDownload,
+    /// La console d'Anthropic, où se crée la clé d'API.
+    AnthropicConsole,
+    /// Le pas-à-pas des Raccourcis de l'iPhone (docs/modes.md).
+    ShortcutsGuide,
+}
+
+impl HelpPage {
+    pub const ALL: [HelpPage; 3] = [
+        HelpPage::TailscaleDownload,
+        HelpPage::AnthropicConsole,
+        HelpPage::ShortcutsGuide,
+    ];
+
+    pub fn url(self) -> &'static str {
+        match self {
+            HelpPage::TailscaleDownload => "https://tailscale.com/download",
+            HelpPage::AnthropicConsole => "https://console.anthropic.com",
+            HelpPage::ShortcutsGuide => {
+                "https://github.com/killerwolf/matter-home-desktop/blob/main/docs/modes.md"
+            }
+        }
+    }
+
+    /// L'adresse telle qu'on l'écrit à côté du bouton.
+    pub fn shown(self) -> &'static str {
+        self.url().trim_start_matches("https://")
+    }
+}
+
+pub fn open_help(page: HelpPage) {
+    let _ = Command::new("/usr/bin/open").arg(page.url()).spawn();
+}
+
+/// Montre un dossier dans le Finder.
+pub fn open_folder(path: &Path) {
+    let _ = Command::new("/usr/bin/open").arg(path).spawn();
+}
+
 pub fn open_file(path: &Path) {
     let _ = Command::new("/usr/bin/open").arg("-t").arg(path).spawn();
 }
@@ -141,6 +185,16 @@ pub fn open_file(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_pages_are_fixed_https_addresses() {
+        for page in HelpPage::ALL {
+            let url = page.url();
+            assert!(url.starts_with("https://"), "{url}");
+            assert!(url.bytes().all(|b| b.is_ascii_graphic()), "{url}");
+            assert!(!page.shown().contains("://"));
+        }
+    }
 
     #[test]
     fn real_exe_path_of_this_process() {

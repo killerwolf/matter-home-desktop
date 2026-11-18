@@ -1,6 +1,7 @@
-//! L'interface : icône de la barre de menus (tray-icon) et petite fenêtre egui, toutes deux sur
-//! le fil principal, dans la boucle d'événements d'eframe. La fenêtre est cachée tant qu'on ne la
-//! demande pas.
+//! L'interface : icône de la barre de menus (tray-icon) et fenêtre egui, toutes deux sur le fil
+//! principal, dans la boucle d'événements d'eframe. La fenêtre est cachée tant qu'on ne la
+//! demande pas. Ce fichier tient l'icône, le menu et la vie de la fenêtre ; ses pages sont dans
+//! `ui/pages.rs` et leurs briques dans `ui/widgets.rs` (voir `docs/ux-serveur.md`).
 //!
 //! Tout ce qui ne dessine pas (clics du menu, icône, infobulle, ligne d'état, phases du serveur,
 //! ouverture à la connexion, croix de la fenêtre) se fait dans `App::logic`, pas dans `App::ui` :
@@ -8,6 +9,9 @@
 //! (passe « logique seule », sans egui), réveillée par les clics du menu (`request_repaint`) et
 //! par un minuteur lent. Une fenêtre jamais montrée n'en profite pas : elle reçoit une passe
 //! complète (`ui()` compris, qui ne dessine rien) à chaque réveil.
+
+mod pages;
+pub(crate) mod widgets;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,10 +26,12 @@ use matter_home_server::backup;
 use matter_home_server::setup::{self, IdentityComparison, IdentityState};
 use matter_home_server_app::controller::{Cmd, Handle, Notice, State};
 use matter_home_server_app::menu::{self, Action, Entry, MenuInput};
+use matter_home_server_app::overview::{self, CameraSummary, Overview, Tab};
 use matter_home_server_app::startup::SetupNeed;
 use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use matter_home_server_app::tailscale::{self, WebAccess};
-use matter_home_server_app::{agent, icon, system, version};
+use matter_home_server_app::{agent, icon, system};
+use matter_home_theme as theme;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -39,12 +45,13 @@ const VISIBLE_TICK: Duration = Duration::from_millis(500);
 
 const SLEEP_NOTE: &str = "Tant que Matter Home Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
 
-pub fn run(handle: Handle, demo: bool) -> eframe::Result {
+/// `open` : l'onglet sur lequel ouvrir la fenêtre dès le lancement (`--open`, pour les essais).
+pub fn run(handle: Handle, demo: bool, open: Option<Tab>) -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Matter Home Server")
-            .with_inner_size([500.0, 640.0])
-            .with_min_inner_size([420.0, 480.0])
+            .with_inner_size([640.0, 700.0])
+            .with_min_inner_size([560.0, 480.0])
             .with_visible(false),
         // Pas d'icône dans le Dock : l'application ne vit que dans la barre de menus (la clé
         // LSUIElement de l'Info.plist fait la même chose pour l'application installée).
@@ -77,7 +84,7 @@ pub fn run(handle: Handle, demo: bool) -> eframe::Result {
                 .with_tooltip("Matter Home Server")
                 .build()
                 .map_err(|e| format!("icône de la barre de menus : {e}"))?;
-            Ok(Box::new(App::new(handle, demo, tray, rx)))
+            Ok(Box::new(App::new(handle, demo, tray, rx, open)))
         }),
     )
 }
@@ -133,6 +140,17 @@ fn phase_effects(now: &Phase, setup_session: bool) -> PhaseEffects {
         }
     }
     e
+}
+
+/// L'onglet à montrer quand le menu demande d'ouvrir la fenêtre sur `wanted`. Une saisie en cours
+/// (formulaire de caméra, clé Anthropic, nouveau mot de passe) n'est jamais jetée par un clic
+/// dans le menu : la fenêtre revient au premier plan là où elle en était.
+fn menu_target(current: Tab, wanted: Tab, unsaved: bool) -> Tab {
+    if unsaved {
+        current
+    } else {
+        wanted
+    }
 }
 
 /// Comment passer du menu affiché au menu voulu.
@@ -388,12 +406,18 @@ struct App {
     picking: Option<Receiver<Result<Restore, String>>>,
     // Interrupteur : l'écran de fin a déjà activé l'ouverture à la connexion.
     login_defaulted: bool,
-    /// La page « Caméras » remplace les réglages (menu « Caméras… »).
-    cameras_open: bool,
+    /// L'onglet affiché.
+    tab: Tab,
+    /// À ouvrir dès que le serveur a fini de démarrer (`--open`).
+    open_at_start: Option<Tab>,
+    /// Le résumé « est-ce que tout va bien ? » : menu, icône et vue d'ensemble le partagent.
+    overview: Overview,
     cameras: CamerasUi,
-    /// La page « Descriptions » (ticket n° 19) remplace aussi les réglages.
+    /// La page « Descriptions » (ticket n° 19), ouverte depuis l'onglet Caméras.
     descriptions_open: bool,
     descriptions: DescriptionsUi,
+    /// Le dernier bouton « Copier » cliqué : il affiche « Copié » deux secondes.
+    copied: Option<(&'static str, std::time::Instant)>,
     /// La confirmation « Quitter » est à l'écran : un second clic n'en ouvre pas une autre.
     quit_dialog_open: Arc<AtomicBool>,
     /// L'accès web par Tailscale, tel que Tailscale le dit (rien n'est gardé sur disque).
@@ -413,7 +437,13 @@ struct App {
 }
 
 impl App {
-    fn new(handle: Handle, demo: bool, tray: TrayIcon, actions: Receiver<Action>) -> Self {
+    fn new(
+        handle: Handle,
+        demo: bool,
+        tray: TrayIcon,
+        actions: Receiver<Action>,
+        open_at_start: Option<Tab>,
+    ) -> Self {
         let app = Self {
             handle,
             demo,
@@ -436,7 +466,10 @@ impl App {
             local_notice: None,
             login_defaulted: false,
             picking: None,
-            cameras_open: false,
+            tab: Tab::Overview,
+            open_at_start,
+            overview: Overview::default(),
+            copied: None,
             descriptions_open: false,
             descriptions: DescriptionsUi::default(),
             cameras: CamerasUi::default(),
@@ -534,6 +567,41 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Une saisie est en cours dans la fenêtre : formulaire de caméra, page de la clé Anthropic,
+    /// changement de mot de passe.
+    fn has_unsaved_input(&self) -> bool {
+        self.cameras.editing() || self.descriptions_open || self.change_account
+    }
+
+    /// Le menu demande la fenêtre sur un onglet : on l'amène au premier plan, sans jeter une
+    /// saisie en cours (voir `menu_target`).
+    fn open_from_menu(&mut self, ctx: &egui::Context, wanted: Tab) {
+        let tab = menu_target(self.tab, wanted, self.has_unsaved_input());
+        if tab != self.tab {
+            self.open_tab(tab);
+        } else if tab == Tab::Connect {
+            self.web_stale = true;
+        }
+        self.show_window(ctx);
+    }
+
+    /// Change d'onglet depuis la fenêtre (barre d'onglets, bouton d'une autre page).
+    fn open_tab(&mut self, tab: Tab) {
+        if tab != self.tab || self.descriptions_open {
+            // On repart d'une page propre : ni formulaire de caméra ni saisie de clé à moitié faits.
+            self.cameras.reset();
+            self.descriptions.reset();
+            self.descriptions_open = false;
+            self.change_account = false;
+            self.form = AccountForm::default();
+        }
+        self.tab = tab;
+        // L'onglet Connexion montre l'état de Tailscale : on le relit.
+        if tab == Tab::Connect {
+            self.web_stale = true;
+        }
+    }
+
     fn hide_window(&mut self, ctx: &egui::Context) {
         // Quel que soit le moyen de cacher l'écran de fin (« Terminer » ou la croix), la
         // configuration de cette session est finie : un `Running` ultérieur (après un blocage
@@ -624,65 +692,44 @@ impl App {
 
     fn do_action(&mut self, ctx: &egui::Context, action: Action, st: &State) {
         match action {
-            Action::WebAccess => self.toggle_web(st),
-            Action::WebOpen => {
-                if let Some(url) = self.web.web_url() {
-                    system::open_url(&url);
-                }
+            Action::Fix => {
+                let tab = self.overview.fix.as_ref().map_or(Tab::Overview, |f| f.tab);
+                self.open_from_menu(ctx, tab);
             }
-            Action::WebCopy => {
-                if let Some(url) = self.web.web_url() {
-                    let _ = system::copy_to_clipboard(&url);
-                }
-            }
-            Action::WebAuth => {
-                if let WebAccess::NeedsAuth { url } = &self.web {
-                    system::open_url(url);
-                }
-            }
-            Action::CopyUrl => {
-                if let Some(u) = &st.url {
-                    let _ = system::copy_to_clipboard(u);
-                }
-            }
-            Action::CopyFingerprint => {
-                if let Some(f) = &st.fingerprint {
-                    let _ = system::copy_to_clipboard(f);
-                }
-            }
-            Action::OpenLog => system::open_file(&st.log_path),
-            Action::ToggleLogin => {
-                if self.login_available() {
-                    let on = !self.login_enabled;
-                    self.set_login(on);
-                }
-            }
-            Action::Cameras => {
-                if st.hub.is_some() {
-                    self.descriptions_open = false;
-                    self.cameras_open = true;
-                    self.show_window(ctx);
-                }
-            }
-            Action::Settings => {
-                self.cameras_open = false;
-                self.descriptions_open = false;
-                self.show_window(ctx);
-            }
+            Action::Open(tab) => self.open_from_menu(ctx, tab),
             Action::Quit => self.ask_quit(),
             Action::Mode(mode) => {
-                if let Some(hub) = &st.hub {
-                    if let Err(e) = hub.0.set_mode(mode) {
-                        log::warn!("mode non changé depuis le menu : {e:?}");
-                        self.local_notice =
-                            Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
-                    }
-                }
+                self.set_mode(st, mode);
                 // Un clic sur le mode déjà coché le décoche côté système sans que le modèle
                 // change : on redessine le menu pour remettre la coche.
                 self.shown_menu.clear();
             }
         }
+    }
+
+    /// Change le mode de la maison (menu ou vue d'ensemble).
+    fn set_mode(&mut self, st: &State, mode: protocol::mode::HomeMode) {
+        if let Some(hub) = &st.hub {
+            if let Err(e) = hub.0.set_mode(mode) {
+                log::warn!("mode non changé : {e:?}");
+                self.local_notice = Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
+            }
+        }
+    }
+
+    /// Recalcule le résumé depuis l'état du serveur (caméras et détection lues dans le hub).
+    fn refresh_overview(&mut self, st: &State) {
+        let cameras = st
+            .hub
+            .as_ref()
+            .map(|hub| CameraSummary::new(&hub.0.camera_admin_list(), &hub.0.detection().status()));
+        self.overview = overview::build(
+            &st.phase,
+            &st.health,
+            cameras.as_ref(),
+            &self.web,
+            st.desktop_doubt,
+        );
     }
 
     /// Nouveau menu natif complet (la structure a changé) ; garde les éléments pour les mises à
@@ -704,27 +751,18 @@ impl App {
 
     /// Met à jour l'icône, l'infobulle et le menu quand ils ont changé.
     fn sync_tray(&mut self, st: &State) {
-        let kind = icon_kind(&st.phase);
+        let kind = icon_kind(&st.phase, &self.overview);
         if self.shown_icon != Some(kind) {
             self.shown_icon = Some(kind);
             let _ = self.tray.set_icon_templated(Some(tray_image(kind)));
         }
-        let tip = tooltip(&st.phase, &st.health);
+        let tip = tooltip(&self.overview);
         if tip != self.shown_tooltip {
             let _ = self.tray.set_tooltip(Some(&tip));
             self.shown_tooltip = tip;
         }
-        let version = version::display_version();
         let model = menu::build(&MenuInput {
-            version: &version,
-            web: &self.web,
-            phase: &st.phase,
-            health: &st.health,
-            url: st.url.as_deref(),
-            fingerprint: st.fingerprint.as_deref(),
-            login_enabled: self.login_enabled,
-            desktop_doubt: st.desktop_doubt,
-            login_available: self.login_available(),
+            overview: &self.overview,
             mode: st.hub.as_ref().map(|h| h.0.mode()),
         });
         match plan_menu(&self.shown_menu, &model) {
@@ -738,7 +776,7 @@ impl App {
                 // (`cancelTrackingWithoutAnimation`) : le menu ouvert disparaîtrait sous la souris.
                 // `logic()` tourne pendant ce suivi (toutes les 2 s) : on attend donc que la boucle
                 // soit revenue à son mode normal, c'est-à-dire que le menu soit refermé. La
-                // structure ne change que rarement (appareil qui disparaît ou revient).
+                // structure ne change que rarement (l'action corrective apparaît ou disparaît).
                 if !system::run_loop_is_default_mode() {
                     log::debug!("menu : changement de structure différé (menu ouvert)");
                     return;
@@ -784,6 +822,7 @@ impl eframe::App for App {
         self.refresh_login();
         self.poll_picking();
         self.poll_web(&st);
+        self.refresh_overview(&st);
         while let Ok(action) = self.actions.try_recv() {
             self.do_action(ctx, action, &st);
         }
@@ -801,6 +840,13 @@ impl eframe::App for App {
             }
             if effects.open_window {
                 self.show_window(ctx);
+            }
+            // `--open` : la fenêtre s'ouvre sur l'onglet demandé dès que le serveur tourne.
+            if st.phase == Phase::Running && !self.show_done {
+                if let Some(tab) = self.open_at_start.take() {
+                    self.open_tab(tab);
+                    self.show_window(ctx);
+                }
             }
             self.last_phase = Some(st.phase.clone());
         }
@@ -825,14 +871,13 @@ impl eframe::App for App {
             return;
         }
         let st = self.handle.snapshot();
-        // Page Caméras : l'avertissement de sécurité reste en pied de fenêtre.
-        if st.busy.is_none()
-            && !self.show_done
-            && matches!(st.phase, Phase::Running)
-            && self.cameras_open
-            && st.hub.is_some()
-        {
-            egui::Panel::bottom("cameras_footer").show(ui, crate::cameras_ui::footer);
+        // Les onglets : dès que la première configuration est finie.
+        if self.tabs_visible(&st) {
+            egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
+            // Onglet Caméras : l'avertissement de sécurité reste en pied de fenêtre.
+            if self.tab == Tab::Cameras && st.hub.is_some() && !self.descriptions_open {
+                egui::Panel::bottom("cameras_footer").show(ui, crate::cameras_ui::footer);
+            }
         }
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
@@ -840,565 +885,11 @@ impl eframe::App for App {
     }
 }
 
-fn notice_label(ui: &mut egui::Ui, notice: &Notice) {
-    let p = matter_home_theme::palette(ui);
-    match notice {
-        Notice::Ok(t) => ui.colored_label(p.ok, t),
-        Notice::Err(t) => ui.colored_label(p.error, t),
-    };
-}
-
-fn copy_row(ui: &mut egui::Ui, title: &str, value: &str) {
-    ui.label(RichText::new(title).strong());
-    ui.horizontal(|ui| {
-        ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());
-    });
-    if ui.button("Copier").clicked() {
-        let _ = system::copy_to_clipboard(value);
-    }
-    ui.add_space(6.0);
-}
-
-impl App {
-    fn content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
-        ui.add_space(6.0);
-        if let Some(busy) = &st.busy {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(busy);
-            });
-            return;
-        }
-        match (&st.phase, &st.setup) {
-            (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
-                self.identity_page(ui, st, unreadable.as_deref())
-            }
-            (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st, false),
-            (Phase::Running, _) if self.show_done => self.done_page(ui, ctx, st),
-            (Phase::Running, _) if self.descriptions_open && st.hub.is_some() => {
-                if let Some(hub) = &st.hub {
-                    if self.descriptions.show(ui, &hub.0) {
-                        self.descriptions_open = false;
-                        self.descriptions.reset();
-                    }
-                }
-            }
-            (Phase::Running, _) if self.cameras_open && st.hub.is_some() => {
-                if let Some(hub) = &st.hub {
-                    if self.cameras.show(ui, ctx, &hub.0) {
-                        self.cameras_open = false;
-                        self.cameras.reset();
-                    }
-                }
-            }
-            _ => self.settings_page(ui, st),
-        }
-        if let Some(n) = &self.local_notice {
-            ui.add_space(8.0);
-            notice_label(ui, n);
-        }
-    }
-
-    fn identity_page(&mut self, ui: &mut egui::Ui, st: &State, unreadable: Option<&str>) {
-        ui.heading("Bienvenue dans Matter Home Server");
-        ui.add_space(6.0);
-        ui.label("Ce Mac va devenir le serveur de votre maison : il pilote vos appareils Matter, exécute les automatismes et garde l'historique des capteurs. Vos autres appareils (Mac, ordinateurs) s'y connectent avec l'application cliente.");
-        ui.add_space(8.0);
-        if let Some(n) = &st.notice {
-            notice_label(ui, n);
-            ui.add_space(6.0);
-        }
-        match &mut self.page {
-            Page::Start => {
-                if let Some(reason) = unreadable {
-                    ui.colored_label(
-                        matter_home_theme::palette(ui).error,
-                        format!("Les données de ce Mac contiennent une identité Matter illisible ({reason}). Rien n'a été modifié. Vous pouvez reprendre une sauvegarde pour la remplacer."),
-                    );
-                    ui.add_space(6.0);
-                } else {
-                    ui.label("Aucune donnée n'a été trouvée ici. Que voulez-vous faire ?");
-                    ui.add_space(8.0);
-                }
-                ui.label(RichText::new("J'ai déjà des appareils appairés").strong());
-                ui.label("Reprenez la sauvegarde (fichier .matterhome) de l'ancienne application ou d'un autre Mac : rien à réappairer.");
-                if self.picking.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Lecture de la sauvegarde…");
-                    });
-                } else if ui.button("Reprendre une sauvegarde…").clicked() {
-                    self.pick_backup(&ui.ctx().clone(), st);
-                }
-                if setup::import_in_progress(&st.data_dir) {
-                    ui.add_space(6.0);
-                    ui.label("Un import précédent n'est pas terminé.");
-                    if ui.button("Renoncer à l'import en attente").clicked() {
-                        let _ = self.handle.tx.send(Cmd::AbandonImport);
-                    }
-                }
-                if unreadable.is_none() {
-                    ui.add_space(14.0);
-                    ui.label(RichText::new("C'est ma première installation").strong());
-                    ui.label("Vous partez de zéro : aucun appareil pour l'instant, vous les appairerez ensuite depuis le client.");
-                    if ui.button("Créer une nouvelle maison…").clicked() {
-                        self.page = Page::NewHome;
-                    }
-                }
-            }
-            Page::NewHome => {
-                ui.label(RichText::new("Créer une nouvelle maison").strong());
-                ui.label("Une nouvelle identité Matter va être créée sur ce Mac. Aucun appareil n'est repris : ceux déjà appairés avec une autre installation ne seront pas reconnus et il faudra les appairer de nouveau. Si vous avez une sauvegarde, ne continuez pas : reprenez-la.");
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Retour").clicked() {
-                        self.page = Page::Start;
-                    }
-                    if ui.button("Créer une nouvelle maison").clicked() {
-                        let _ = self.handle.tx.send(Cmd::NewHome);
-                        self.page = Page::Start;
-                    }
-                });
-            }
-            Page::Restore(r) => {
-                let mut back = false;
-                let mut go = false;
-                ui.label(RichText::new("Reprendre cette sauvegarde").strong());
-                ui.label(format!(
-                    "Fichier : {}",
-                    r.file.file_name().unwrap_or_default().to_string_lossy()
-                ));
-                ui.label(format!("Contenu : {}", r.summary));
-                ui.label(format!(
-                    "Identité de la sauvegarde : {}",
-                    r.comparison.incoming.describe()
-                ));
-                ui.label(match &r.comparison.current {
-                    IdentityState::Missing => {
-                        "Identité actuelle de ce Mac : aucune (rien n'est remplacé).".to_string()
-                    }
-                    IdentityState::Present(c) => {
-                        format!("Identité actuelle de ce Mac : {}", c.describe())
-                    }
-                    IdentityState::Unreadable(e) => {
-                        format!("Identité actuelle de ce Mac : illisible ({e})")
-                    }
-                });
-                if r.comparison.differs {
-                    ui.add_space(6.0);
-                    ui.colored_label(
-                        matter_home_theme::palette(ui).error,
-                        setup::replace_refusal_for_app(),
-                    );
-                    ui.checkbox(&mut r.replace_ack, "Je veux bien remplacer l'identité actuelle (l'ancien dossier est conservé)");
-                } else if matches!(r.comparison.current, IdentityState::Present(_)) {
-                    ui.label("Même identité : les appareils appairés restent reconnus.");
-                }
-                ui.add_space(6.0);
-                ui.label(setup::OTHER_INSTANCES_REMINDER);
-                ui.checkbox(
-                    &mut r.stopped_ack,
-                    "L'ancienne application est arrêtée sur tous mes Mac",
-                );
-                ui.add_space(8.0);
-                let ready = r.stopped_ack && (!r.comparison.differs || r.replace_ack);
-                ui.horizontal(|ui| {
-                    if ui.button("Retour").clicked() {
-                        back = true;
-                    }
-                    if ui
-                        .add_enabled(ready, egui::Button::new("Reprendre cette sauvegarde"))
-                        .clicked()
-                    {
-                        go = true;
-                    }
-                });
-                if go {
-                    let _ = self.handle.tx.send(Cmd::Import {
-                        file: r.file.clone(),
-                        replace_identity: r.comparison.differs && r.replace_ack,
-                    });
-                    back = true;
-                }
-                if back {
-                    self.page = Page::Start;
-                }
-            }
-        }
-    }
-
-    /// Le sélecteur de fichier reste sur le fil principal ; la lecture et l'analyse du fichier
-    /// (qui peut être gros) se font dans un fil, le résultat revient par `picking`.
-    fn pick_backup(&mut self, ctx: &egui::Context, st: &State) {
-        let Some(file) = rfd::FileDialog::new()
-            .set_title("Choisir une sauvegarde Matter Home")
-            .add_filter("Sauvegarde Matter Home", &[backup::EXTENSION])
-            .pick_file()
-        else {
-            return;
-        };
-        let (tx, rx) = mpsc::channel();
-        let (ctx, data_dir) = (ctx.clone(), st.data_dir.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(inspect_backup(&data_dir, file));
-            ctx.request_repaint();
-        });
-        self.local_notice = None;
-        self.picking = Some(rx);
-    }
-
-    /// Reçoit le résultat de l'analyse, s'il est arrivé.
-    fn poll_picking(&mut self) {
-        let Some(rx) = &self.picking else { return };
-        match rx.try_recv() {
-            Ok(Ok(restore)) => {
-                self.page = Page::Restore(Box::new(restore));
-                self.picking = None;
-            }
-            Ok(Err(message)) => {
-                self.local_notice = Some(Notice::Err(message));
-                self.picking = None;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => self.picking = None,
-        }
-    }
-
-    fn account_page(&mut self, ui: &mut egui::Ui, st: &State, replace: bool) {
-        if !replace {
-            ui.heading("Créez votre compte");
-            ui.add_space(6.0);
-            ui.label("C'est avec cet identifiant et ce mot de passe que vous vous connecterez depuis le client. Il n'y a qu'un seul compte.");
-        } else {
-            ui.label("Choisissez un nouvel identifiant et un nouveau mot de passe. Les clients déjà connectés devront se reconnecter, et le serveur redémarre quelques secondes.");
-        }
-        if let Some(n) = &st.notice {
-            ui.add_space(6.0);
-            notice_label(ui, n);
-        }
-        ui.add_space(8.0);
-        ui.label("Identifiant");
-        ui.text_edit_singleline(&mut self.form.username);
-        ui.label("Mot de passe (10 caractères au minimum)");
-        ui.add(egui::TextEdit::singleline(&mut self.form.password).password(true));
-        ui.label("Confirmez le mot de passe");
-        ui.add(egui::TextEdit::singleline(&mut self.form.confirm).password(true));
-        let check = self.form.check();
-        if let Err(e) = &check {
-            if !self.form.password.is_empty() || !self.form.username.is_empty() {
-                ui.colored_label(matter_home_theme::palette(ui).error, e);
-            }
-        }
-        ui.add_space(8.0);
-        let label = if replace {
-            "Remplacer le compte"
-        } else {
-            "Créer le compte"
-        };
-        if ui
-            .add_enabled(check.is_ok(), egui::Button::new(label))
-            .clicked()
-        {
-            let (username, password) = (
-                self.form.username.clone(),
-                std::mem::take(&mut self.form.password),
-            );
-            self.form.confirm.clear();
-            let _ = self.handle.tx.send(if replace {
-                Cmd::ReplaceAccount { username, password }
-            } else {
-                Cmd::CreateAccount { username, password }
-            });
-            if replace {
-                self.change_account = false;
-            }
-        }
-    }
-
-    fn done_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
-        ui.heading("Tout est prêt");
-        ui.add_space(6.0);
-        ui.label("Le serveur tourne. Dans le client Matter Home Desktop, saisissez l'adresse ci-dessous, puis comparez l'empreinte affichée par le client avec celle-ci avant d'accepter : si elles sont identiques, c'est bien votre serveur.");
-        ui.add_space(8.0);
-        if let Some(u) = &st.url {
-            copy_row(ui, "Adresse du serveur", u);
-        }
-        if let Some(f) = &st.fingerprint {
-            copy_row(ui, "Empreinte du certificat", f);
-        }
-        if self.login_available() {
-            let mut on = self.login_enabled;
-            if ui
-                .checkbox(&mut on, "Ouvrir Matter Home Server à la connexion")
-                .changed()
-            {
-                self.set_login(on);
-            }
-            ui.add_space(6.0);
-        }
-        ui.label(SLEEP_NOTE);
-        ui.add_space(10.0);
-        if ui.button("Terminer").clicked() {
-            self.hide_window(ctx);
-        }
-    }
-
-    /// Le mode de la maison et le jeton de mode (Raccourcis de l'iPhone) : le jeton n'est montré
-    /// qu'à sa création ; ensuite le serveur n'en connaît que l'empreinte.
-    fn mode_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
-        let p = matter_home_theme::palette(ui);
-        let space = matter_home_theme::tokens().space;
-        ui.label(RichText::new("Mode de la maison").strong());
-        ui.label(format!("Mode actuel : {}", hub.mode().label()));
-        ui.add_space(space.xs);
-        ui.label(RichText::new("Changer de mode avec Raccourcis (iPhone)").strong());
-        if let Some(token) = self.mode_token_shown.clone() {
-            ui.colored_label(
-                p.ok,
-                "Nouveau jeton de mode. Copiez-le maintenant : il ne sera plus jamais affiché.",
-            );
-            copy_row(ui, "Jeton de mode", &token);
-            if ui.button("J'ai copié le jeton").clicked() {
-                self.mode_token_shown = None;
-            }
-        } else {
-            let has = hub.has_mode_token();
-            ui.label(if has {
-                "Un jeton de mode est configuré (il ne peut pas être réaffiché)."
-            } else {
-                "Aucun jeton de mode : une automatisation Raccourcis ne peut pas changer le mode."
-            });
-            if self.mode_token_confirm {
-                ui.colored_label(
-                    p.error,
-                    "L'ancien jeton cessera de fonctionner : les automatisations déjà créées sur l'iPhone devront être mises à jour.",
-                );
-                ui.horizontal(|ui| {
-                    if ui.button("Oui, générer un nouveau jeton").clicked() {
-                        self.generate_mode_token(hub);
-                    }
-                    if ui.button("Annuler").clicked() {
-                        self.mode_token_confirm = false;
-                    }
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    let label = if has {
-                        "Générer un nouveau jeton…"
-                    } else {
-                        "Générer un jeton de mode"
-                    };
-                    if ui.button(label).clicked() {
-                        if has {
-                            self.mode_token_confirm = true;
-                        } else {
-                            self.generate_mode_token(hub);
-                        }
-                    }
-                    if has && ui.button("Révoquer le jeton").clicked() {
-                        match hub.revoke_mode_token() {
-                            Ok(()) => {
-                                self.local_notice =
-                                    Some(Notice::Ok("Jeton de mode révoqué.".into()));
-                            }
-                            Err(_) => {
-                                self.local_notice = Some(Notice::Err(
-                                    "Le jeton n'a pas pu être révoqué (voir le journal).".into(),
-                                ));
-                            }
-                        }
-                    }
-                });
-            }
-        }
-        ui.add_space(space.xs);
-        ui.label(
-            RichText::new(
-                "Dans Raccourcis : Automatisation personnelle, action « Obtenir le contenu de l'URL » \
-                 (méthode PUT, en-tête Authorization : Bearer <jeton>, corps JSON {\"mode\": \"absent\"}). \
-                 Ce jeton ne sert qu'à changer le mode. Pas à pas : docs/modes.md.",
-            )
-            .small()
-            .color(p.text_secondary),
-        );
-    }
-
-    /// Les notifications web push (ticket n° 17) : le réglage général et les appareils abonnés,
-    /// révocables. L'abonnement lui-même se fait depuis l'app web de l'appareil.
-    fn push_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
-        let p = matter_home_theme::palette(ui);
-        let push = hub.push();
-        let status = push.status();
-        ui.label(RichText::new("Notifications (iPhone, iPad)").strong());
-        let mut enabled = status.enabled;
-        if ui
-            .checkbox(
-                &mut enabled,
-                "Envoyer les notifications aux appareils abonnés",
-            )
-            .changed()
-            && push.set_enabled(enabled).is_err()
-        {
-            self.local_notice = Some(Notice::Err(
-                "Le réglage n'a pas pu être enregistré (voir le journal).".into(),
-            ));
-        }
-        if status.subscriptions.is_empty() {
-            ui.label("Aucun appareil abonné.");
-        }
-        for sub in &status.subscriptions {
-            ui.horizontal(|ui| {
-                ui.label(format!("{} · {}", sub.label, sub.service));
-                if let Some(error) = &sub.last_error {
-                    ui.colored_label(p.error, format!("dernier envoi : {error}"));
-                }
-                if ui.button("Révoquer").clicked() && push.remove(&sub.id).is_err() {
-                    self.local_notice = Some(Notice::Err(
-                        "L'abonnement n'a pas pu être révoqué (voir le journal).".into(),
-                    ));
-                }
-            });
-        }
-        ui.label(
-            RichText::new(
-                "Pour abonner un appareil : app web ajoutée à l'écran d'accueil (iOS 16.4 ou plus), \
-                 Appareils › Notifications. Les messages passent chiffrés par le service de push \
-                 d'Apple. Détails : docs/notifications.md.",
-            )
-            .small()
-            .color(p.text_secondary),
-        );
-    }
-
-    fn generate_mode_token(&mut self, hub: &Arc<matter_home_server::hub::Hub>) {
-        self.mode_token_confirm = false;
-        match hub.generate_mode_token() {
-            Ok(token) => self.mode_token_shown = Some(token),
-            Err(_) => {
-                self.local_notice = Some(Notice::Err(
-                    "Le jeton n'a pas pu être créé (voir le journal).".into(),
-                ));
-            }
-        }
-    }
-
-    fn settings_page(&mut self, ui: &mut egui::Ui, st: &State) {
-        ui.heading("Matter Home Server");
-        ui.add_space(4.0);
-        ui.label(matter_home_server_app::status::status_line(
-            &st.phase, &st.health,
-        ));
-        ui.add_space(8.0);
-        match &st.phase {
-            Phase::Blocked(b) => {
-                ui.label(b.explain());
-                ui.add_space(6.0);
-                if ui.button("Réessayer maintenant").clicked() {
-                    let _ = self.handle.tx.send(Cmd::Retry);
-                }
-            }
-            Phase::Problem(e) => {
-                ui.colored_label(matter_home_theme::palette(ui).error, e);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Journal").clicked() {
-                        system::open_file(&st.log_path);
-                    }
-                    if ui.button("Réessayer").clicked() {
-                        let _ = self.handle.tx.send(Cmd::Retry);
-                    }
-                });
-            }
-            Phase::Running => {
-                if let Some(u) = &st.url {
-                    copy_row(ui, "Adresse du serveur", u);
-                }
-                if let Some(f) = &st.fingerprint {
-                    copy_row(ui, "Empreinte du certificat", f);
-                }
-                if !st.health.unreachable.is_empty() {
-                    ui.label(RichText::new("Appareils injoignables").strong());
-                    for n in &st.health.unreachable {
-                        ui.label(format!("• {n}"));
-                    }
-                    ui.add_space(6.0);
-                }
-                ui.separator();
-                ui.label(RichText::new("Caméras").strong());
-                if st.hub.is_some() && ui.button("Caméras…").clicked() {
-                    self.descriptions_open = false;
-                    self.cameras_open = true;
-                }
-                if st.hub.is_some()
-                    && ui
-                        .button("Descriptions des événements…")
-                        .on_hover_text("Décrire les événements de détection avec l'API Anthropic")
-                        .clicked()
-                {
-                    self.cameras_open = false;
-                    self.descriptions_open = true;
-                }
-                ui.add_space(6.0);
-                ui.separator();
-                if let Some(hub) = &st.hub {
-                    self.mode_section(ui, &hub.0);
-                    ui.add_space(6.0);
-                    ui.separator();
-                    self.push_section(ui, &hub.0);
-                    ui.add_space(6.0);
-                    ui.separator();
-                }
-                ui.label(RichText::new("Compte").strong());
-                if self.change_account {
-                    self.account_page(ui, st, true);
-                    if ui.button("Annuler").clicked() {
-                        self.change_account = false;
-                        // Aucun mot de passe ne reste en mémoire dans le formulaire.
-                        self.form = AccountForm::default();
-                    }
-                } else {
-                    if let Some(n) = &st.notice {
-                        notice_label(ui, n);
-                    }
-                    if ui
-                        .button("Changer l'identifiant ou le mot de passe…")
-                        .clicked()
-                    {
-                        self.change_account = true;
-                    }
-                }
-            }
-            _ => {}
-        }
-        ui.add_space(10.0);
-        ui.separator();
-        if self.login_available() {
-            let mut on = self.login_enabled;
-            if ui
-                .checkbox(&mut on, "Ouvrir Matter Home Server à la connexion")
-                .changed()
-            {
-                self.set_login(on);
-            }
-        } else if self.demo {
-            ui.label("Mode démo : l'ouverture à la connexion est désactivée.");
-        } else if let Ok(exe) = std::env::current_exe() {
-            if agent::is_temporary_location(&exe) {
-                ui.label(agent::refusal(&exe));
-            }
-        }
-        ui.add_space(4.0);
-        ui.label(RichText::new("Veille").strong());
-        ui.label(SLEEP_NOTE);
-        ui.add_space(6.0);
-        ui.label(format!("Données : {}", st.data_dir.display()));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use eframe::egui_wgpu::{wgpu, WgpuConfiguration, WgpuSetup};
+    use protocol::mode::HomeMode;
 
     fn connect_menu(address: &str, with_submenu: bool) -> Vec<Entry> {
         let mut m = vec![Entry::Info("8 appareils en ligne".into()), Entry::Separator];
@@ -1408,7 +899,7 @@ mod tests {
                 entries: vec![
                     Entry::Info(format!("Adresse : {address}")),
                     Entry::Item {
-                        action: Action::CopyUrl,
+                        action: Action::Open(Tab::Connect),
                         label: "Copier l'adresse".into(),
                         enabled: true,
                         checked: None,
@@ -1444,6 +935,26 @@ mod tests {
             entries.push(Entry::Separator);
         }
         assert_eq!(plan_menu(&with, &longer), MenuPlan::Rebuild);
+    }
+
+    #[test]
+    fn the_menu_never_discards_a_form_being_filled() {
+        // Formulaire de caméra ouvert (mot de passe saisi) : « Ouvrir Matter Home Server… » ou
+        // l'action corrective ramènent la fenêtre telle quelle.
+        assert_eq!(menu_target(Tab::Cameras, Tab::Overview, true), Tab::Cameras);
+        assert_eq!(
+            menu_target(Tab::Settings, Tab::Devices, true),
+            Tab::Settings
+        );
+        // Rien en cours : le menu mène où il le dit.
+        assert_eq!(
+            menu_target(Tab::Cameras, Tab::Overview, false),
+            Tab::Overview
+        );
+        assert_eq!(
+            menu_target(Tab::Overview, Tab::Overview, false),
+            Tab::Overview
+        );
     }
 
     #[test]
@@ -1488,38 +999,37 @@ mod tests {
         }
     }
 
-    fn running_menu(unreachable: &[&str], login: bool) -> Vec<Entry> {
+    fn running_menu(unreachable: &[&str], mode: protocol::mode::HomeMode) -> Vec<Entry> {
         let health = matter_home_server_app::status::Health {
             total: 5,
             online: 5 - unreachable.len(),
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
         };
+        let overview = overview::build(
+            &Phase::Running,
+            &health,
+            Some(&CameraSummary::default()),
+            &WebAccess::Checking,
+            false,
+        );
         menu::build(&MenuInput {
-            version: "1.0.0",
-            web: &matter_home_server_app::tailscale::WebAccess::Checking,
-            phase: &Phase::Running,
-            health: &health,
-            url: Some("https://mac.local:8443"),
-            fingerprint: Some("AB:CD"),
-            login_enabled: login,
-            desktop_doubt: false,
-            login_available: true,
-            mode: Some(protocol::mode::HomeMode::Present),
+            overview: &overview,
+            mode: Some(mode),
         })
     }
 
     #[test]
     fn identical_menus_are_kept() {
-        let m = running_menu(&["Salon"], false);
+        let m = running_menu(&["Salon"], HomeMode::Present);
         assert_eq!(plan_menu(&m, &m.clone()), MenuPlan::Keep);
     }
 
     #[test]
     fn text_and_check_changes_are_updated_in_place() {
-        // Même nombre d'appareils injoignables, un autre nom ; case cochée en plus.
+        // Un autre appareil injoignable, un autre mode : mêmes lignes, autres textes et coches.
         let (a, b) = (
-            running_menu(&["Salon"], false),
-            running_menu(&["Cuisine"], true),
+            running_menu(&["Salon"], HomeMode::Present),
+            running_menu(&["Cuisine", "Entrée"], HomeMode::Nuit),
         );
         assert_ne!(a, b);
         assert_eq!(plan_menu(&a, &b), MenuPlan::InPlace);
@@ -1527,13 +1037,13 @@ mod tests {
 
     #[test]
     fn a_line_added_or_removed_rebuilds() {
-        let (none, one, two) = (
-            running_menu(&[], false),
-            running_menu(&["Salon"], false),
-            running_menu(&["Salon", "Cuisine"], false),
+        // L'action corrective n'existe que lorsque quelque chose ne va pas.
+        let (none, one) = (
+            running_menu(&[], HomeMode::Present),
+            running_menu(&["Salon"], HomeMode::Present),
         );
         assert_eq!(plan_menu(&none, &one), MenuPlan::Rebuild);
-        assert_eq!(plan_menu(&one, &two), MenuPlan::Rebuild);
+        assert_eq!(plan_menu(&one, &none), MenuPlan::Rebuild);
         assert_eq!(plan_menu(&[], &none), MenuPlan::Rebuild);
     }
 

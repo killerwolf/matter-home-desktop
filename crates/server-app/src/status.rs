@@ -1,5 +1,7 @@
-//! Ce que l'application dit de l'état du serveur : phase, santé des appareils, texte du menu.
+//! Ce que l'application dit de l'état du serveur : phase, santé des appareils, icône et infobulle
+//! (le résumé lui-même est dans `overview`).
 
+use crate::overview::Overview;
 use crate::startup::Blocker;
 
 /// Où en est le serveur.
@@ -29,110 +31,77 @@ pub struct Health {
 pub enum IconKind {
     Starting,
     Running,
+    /// Le serveur tourne, mais un point est à regarder (appareil injoignable, caméra hors ligne…).
+    Attention,
     Problem,
 }
 
-pub fn icon_kind(phase: &Phase) -> IconKind {
+/// L'icône : la phase du serveur d'abord ; en marche, elle signale aussi un point à regarder.
+pub fn icon_kind(phase: &Phase, overview: &Overview) -> IconKind {
     match phase {
+        Phase::Running if overview.level.needs_attention() => IconKind::Attention,
         Phase::Running => IconKind::Running,
         Phase::Starting | Phase::Stopping => IconKind::Starting,
         Phase::NeedsSetup | Phase::Blocked(_) | Phase::Problem(_) => IconKind::Problem,
     }
 }
 
-fn devices_text(health: &Health) -> String {
-    let plural = |n: usize| if n > 1 { "s" } else { "" };
-    let missing = health.total.saturating_sub(health.online);
-    match (health.total, missing) {
-        (0, _) => "Aucun appareil appairé".to_string(),
-        (_, 0) => format!(
-            "{} appareil{} en ligne",
-            health.online,
-            plural(health.online)
-        ),
-        (_, m) => format!(
-            "{} appareil{} en ligne, {m} injoignable{}",
-            health.online,
-            plural(health.online),
-            plural(m)
-        ),
+/// L'infobulle de l'icône : le titre du résumé, puis ce qui ne va pas (une ligne par point).
+pub fn tooltip(overview: &Overview) -> String {
+    let mut text = format!("Matter Home Server : {}", overview.headline);
+    for check in overview.checks.iter().filter(|c| c.level.needs_attention()) {
+        text.push_str(&format!("\n{} : {}", check.title, check.text));
     }
-}
-
-/// La première ligne du menu, en une ligne : « 8 appareils en ligne ».
-pub fn status_line(phase: &Phase, health: &Health) -> String {
-    match phase {
-        Phase::Starting => "Démarrage…".into(),
-        Phase::Running => devices_text(health),
-        Phase::NeedsSetup => "Configuration à terminer".into(),
-        Phase::Blocked(b) => format!("À l'arrêt · {}", b.short()),
-        Phase::Problem(_) => "Problème : le serveur ne tourne pas".into(),
-        Phase::Stopping => "Arrêt en cours…".into(),
-    }
-}
-
-/// Une phrase pour l'infobulle de l'icône.
-pub fn tooltip(phase: &Phase, health: &Health) -> String {
-    format!("Matter Home Server : {}", status_line(phase, health))
+    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overview;
+    use crate::tailscale::WebAccess;
 
-    fn health(total: usize, online: usize) -> Health {
-        Health {
-            total,
-            online,
-            unreachable: vec![],
-        }
-    }
-
-    #[test]
-    fn running_line_counts_devices() {
-        assert_eq!(
-            status_line(&Phase::Running, &health(8, 8)),
-            "8 appareils en ligne"
-        );
-        assert_eq!(
-            status_line(&Phase::Running, &health(1, 1)),
-            "1 appareil en ligne"
-        );
-        assert_eq!(
-            status_line(&Phase::Running, &health(13, 12)),
-            "12 appareils en ligne, 1 injoignable"
-        );
-        assert_eq!(
-            status_line(&Phase::Running, &health(13, 1)),
-            "1 appareil en ligne, 12 injoignables"
-        );
-        assert_eq!(
-            status_line(&Phase::Running, &health(0, 0)),
-            "Aucun appareil appairé"
-        );
-    }
-
-    #[test]
-    fn other_phases() {
-        let h = Health::default();
-        assert_eq!(status_line(&Phase::Starting, &h), "Démarrage…");
-        assert_eq!(
-            status_line(&Phase::NeedsSetup, &h),
-            "Configuration à terminer"
-        );
-        assert!(status_line(&Phase::Problem("x".into()), &h).starts_with("Problème"));
-        assert!(status_line(&Phase::Blocked(Blocker::DesktopV02), &h).starts_with("À l'arrêt"));
+    fn overview_of(phase: &Phase, unreachable: &[&str]) -> Overview {
+        let health = Health {
+            total: 5,
+            online: 5 - unreachable.len(),
+            unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
+        };
+        overview::build(phase, &health, None, &WebAccess::Checking, false)
     }
 
     #[test]
     fn icon_follows_phase() {
-        assert_eq!(icon_kind(&Phase::Running), IconKind::Running);
-        assert_eq!(icon_kind(&Phase::Starting), IconKind::Starting);
-        assert_eq!(icon_kind(&Phase::NeedsSetup), IconKind::Problem);
+        let kind = |p: &Phase| icon_kind(p, &overview_of(p, &[]));
+        assert_eq!(kind(&Phase::Running), IconKind::Running);
+        assert_eq!(kind(&Phase::Starting), IconKind::Starting);
+        assert_eq!(kind(&Phase::NeedsSetup), IconKind::Problem);
         assert_eq!(
-            icon_kind(&Phase::Blocked(Blocker::OtherServer)),
+            kind(&Phase::Blocked(Blocker::OtherServer)),
             IconKind::Problem
         );
-        assert_eq!(icon_kind(&Phase::Problem("x".into())), IconKind::Problem);
+        assert_eq!(kind(&Phase::Problem("x".into())), IconKind::Problem);
+    }
+
+    #[test]
+    fn a_running_server_with_a_point_to_look_at_has_its_own_icon() {
+        let o = overview_of(&Phase::Running, &["Salon"]);
+        assert_eq!(icon_kind(&Phase::Running, &o), IconKind::Attention);
+    }
+
+    #[test]
+    fn tooltip_says_what_is_wrong_and_nothing_else() {
+        assert_eq!(
+            tooltip(&overview_of(&Phase::Running, &[])),
+            "Matter Home Server : Tout va bien"
+        );
+        assert_eq!(
+            tooltip(&overview_of(&Phase::Running, &["Salon"])),
+            "Matter Home Server : 1 point à regarder\nAppareils : 4 sur 5 joignables · injoignable : Salon"
+        );
+        assert_eq!(
+            tooltip(&overview_of(&Phase::Blocked(Blocker::DesktopV02), &[])),
+            "Matter Home Server : Le serveur est à l'arrêt\nServeur : l'ancienne application de bureau tourne"
+        );
     }
 }

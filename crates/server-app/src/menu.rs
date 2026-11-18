@@ -1,24 +1,22 @@
-//! Le modèle du menu de la barre de menus, construit sans interface : `main.rs` n'a plus qu'à le
+//! Le modèle du menu de la barre de menus, construit sans interface : `ui.rs` n'a plus qu'à le
 //! transformer en menu natif. Rien d'autre que ces entrées : pas d'option cachée.
+//!
+//! Le menu répond à une question, « est-ce que tout va bien ? » : le titre du résumé, une ligne
+//! par sujet, et une seule action quand quelque chose ne va pas. Les tâches rares (connecter un
+//! appareil, accès à distance, réglages, journal) sont dans la fenêtre, où il y a la place de les
+//! expliquer : le menu ne fait que l'ouvrir au bon onglet.
 
 use protocol::mode::HomeMode;
 
-use crate::status::{status_line, Health, Phase};
-use crate::tailscale::WebAccess;
+use crate::overview::{Overview, Tab};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    CopyUrl,
-    CopyFingerprint,
-    OpenLog,
-    ToggleLogin,
-    Cameras,
-    Settings,
+    /// L'action proposée par le résumé (`Overview::fix`) : ouvre la fenêtre là où ça se règle.
+    Fix,
+    /// Ouvrir la fenêtre sur un onglet.
+    Open(Tab),
     Quit,
-    WebAccess,
-    WebOpen,
-    WebCopy,
-    WebAuth,
     /// Choisir le mode de la maison (sous-menu « Mode »).
     Mode(HomeMode),
 }
@@ -26,17 +24,13 @@ pub enum Action {
 impl Action {
     pub fn id(self) -> &'static str {
         match self {
-            Action::CopyUrl => "copy-url",
-            Action::CopyFingerprint => "copy-fingerprint",
-            Action::OpenLog => "open-log",
-            Action::ToggleLogin => "toggle-login",
-            Action::Cameras => "cameras",
-            Action::Settings => "settings",
+            Action::Fix => "fix",
+            Action::Open(Tab::Overview) => "open-vue",
+            Action::Open(Tab::Devices) => "open-appareils",
+            Action::Open(Tab::Cameras) => "open-cameras",
+            Action::Open(Tab::Connect) => "open-connexion",
+            Action::Open(Tab::Settings) => "open-reglages",
             Action::Quit => "quit",
-            Action::WebAccess => "web-access",
-            Action::WebOpen => "web-open",
-            Action::WebCopy => "web-copy",
-            Action::WebAuth => "web-auth",
             Action::Mode(HomeMode::Present) => "mode-present",
             Action::Mode(HomeMode::Absent) => "mode-absent",
             Action::Mode(HomeMode::Nuit) => "mode-nuit",
@@ -44,23 +38,15 @@ impl Action {
         }
     }
 
+    pub fn all() -> impl Iterator<Item = Action> {
+        [Action::Fix, Action::Quit]
+            .into_iter()
+            .chain(Tab::ALL.map(Action::Open))
+            .chain(HomeMode::ALL.map(Action::Mode))
+    }
+
     pub fn from_id(id: &str) -> Option<Action> {
-        [
-            Action::CopyUrl,
-            Action::CopyFingerprint,
-            Action::OpenLog,
-            Action::ToggleLogin,
-            Action::Cameras,
-            Action::Settings,
-            Action::Quit,
-            Action::WebAccess,
-            Action::WebOpen,
-            Action::WebCopy,
-            Action::WebAuth,
-        ]
-        .into_iter()
-        .chain(HomeMode::ALL.map(Action::Mode))
-        .find(|a| a.id() == id)
+        Action::all().find(|a| a.id() == id)
     }
 }
 
@@ -86,124 +72,38 @@ pub enum Entry {
 /// Ce que le menu montre.
 #[derive(Debug, Clone)]
 pub struct MenuInput<'a> {
-    /// Le nom complet de la version (`version::display_version`).
-    pub version: &'a str,
-    /// L'accès web par Tailscale (lu hors du fil principal).
-    pub web: &'a WebAccess,
-    pub phase: &'a Phase,
-    pub health: &'a Health,
-    pub url: Option<&'a str>,
-    pub fingerprint: Option<&'a str>,
-    pub login_enabled: bool,
-    /// Un processus `matter-home-desktop` incertain : le serveur tourne, mais on le signale.
-    pub desktop_doubt: bool,
-    /// L'ouverture à la connexion peut être (dés)activée (application installée, pas en essai).
-    pub login_available: bool,
+    /// Le résumé (« Tout va bien », une ligne par sujet, l'action à proposer).
+    pub overview: &'a Overview,
     /// Le mode de la maison : `Some` tant que le serveur tourne (c'est lui qui le tient).
     pub mode: Option<HomeMode>,
 }
 
-fn item(action: Action, label: &str, enabled: bool) -> Entry {
+fn item(action: Action, label: &str) -> Entry {
     Entry::Item {
         action,
         label: label.into(),
-        enabled,
+        enabled: true,
         checked: None,
     }
 }
 
-/// Les lignes de l'accès web. Un état qui n'est pas actif ne propose rien d'autre que la case
-/// (grisée quand elle ne peut rien faire) ; actif, il propose d'ouvrir et de copier l'adresse.
-fn web_entries(web: &WebAccess) -> Vec<Entry> {
-    let check = |label: &str, enabled: bool, on: bool| Entry::Item {
-        action: Action::WebAccess,
-        label: label.into(),
-        enabled,
-        checked: Some(on),
-    };
-    match web {
-        WebAccess::Checking => vec![check("Accès web (Tailscale)", false, false)],
-        WebAccess::Off { .. } => vec![check("Accès web (Tailscale)", true, false)],
-        WebAccess::On { dns } => vec![
-            check("Accès web (Tailscale)", true, true),
-            item(Action::WebOpen, &format!("Ouvrir https://{dns}/app/"), true),
-            item(Action::WebCopy, "Copier l'adresse", true),
-        ],
-        WebAccess::NotInstalled => vec![check("Accès web : Tailscale non installé", false, false)],
-        WebAccess::Disconnected => vec![check("Accès web : Tailscale déconnecté", false, false)],
-        WebAccess::PortBusy => vec![check(
-            "Accès web : port 443 déjà utilisé par Tailscale",
-            false,
-            false,
-        )],
-        WebAccess::Funnel => vec![check(
-            "Accès web : Funnel actif (public), à couper dans Tailscale",
-            false,
-            false,
-        )],
-        WebAccess::NeedsAuth { .. } => vec![
-            check("Accès web : à autoriser dans Tailscale", true, false),
-            item(
-                Action::WebAuth,
-                "Ouvrir la page d'autorisation de Tailscale…",
-                true,
-            ),
-        ],
-        WebAccess::Unavailable => vec![check(
-            "Accès web : état de Tailscale illisible",
-            false,
-            false,
-        )],
-    }
-}
-
 pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
-    let mut m = vec![
-        Entry::Info(format!("Matter Home Server {}", i.version)),
-        Entry::Separator,
-        Entry::Info(status_line(i.phase, i.health)),
-    ];
-    match i.phase {
-        Phase::Running if !i.health.unreachable.is_empty() => {
-            m.push(Entry::Info("Appareils injoignables :".into()));
-            for name in &i.health.unreachable {
-                m.push(Entry::Info(format!("    {name}")));
-            }
-        }
-        Phase::Blocked(_) => m.push(Entry::Info(
-            "Ouvrez « Réglages… » pour la marche à suivre.".into(),
-        )),
-        Phase::Problem(_) => m.push(Entry::Info("Ouvrez « Journal » pour le détail.".into())),
-        _ => {}
-    }
-    if i.desktop_doubt && matches!(i.phase, Phase::Running) {
-        m.push(Entry::Info(
-            "Un programme « matter-home-desktop » est incertain : si c'est la v0.2, fermez-la."
-                .into(),
-        ));
+    let o = i.overview;
+    let mut m = vec![Entry::Info(o.headline.clone())];
+    m.extend(
+        o.checks
+            .iter()
+            .map(|c| Entry::Info(format!("{} : {}", c.title, c.text))),
+    );
+    // Une seule action, et seulement quand quelque chose attend l'utilisateur.
+    if let Some(fix) = &o.fix {
+        m.push(item(Action::Fix, &fix.label));
     }
     m.push(Entry::Separator);
-    if let Some(url) = i.url {
-        // L'adresse et les deux « Copier » : ce qu'il faut donner au client pour se connecter.
-        m.push(Entry::Submenu {
-            label: "Connecter un client".into(),
-            entries: vec![
-                Entry::Info(format!("Adresse : {url}")),
-                item(Action::CopyUrl, "Copier l'adresse", true),
-                item(
-                    Action::CopyFingerprint,
-                    "Copier l'empreinte du certificat",
-                    i.fingerprint.is_some(),
-                ),
-            ],
-        });
-        m.extend(web_entries(i.web));
-        m.push(Entry::Separator);
-    }
     // Le mode global : un sous-menu à quatre choix, la coche sur le mode actuel.
     if let Some(current) = i.mode {
         m.push(Entry::Submenu {
-            label: format!("Mode : {}", current.label()),
+            label: format!("Mode de la maison : {}", current.label()),
             entries: HomeMode::ALL
                 .into_iter()
                 .map(|mode| Entry::Item {
@@ -214,31 +114,33 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
                 })
                 .collect(),
         });
+        m.push(Entry::Separator);
     }
-    // Les caméras se gèrent depuis le hub du serveur : seulement quand il tourne.
     m.push(item(
-        Action::Cameras,
-        "Caméras…",
-        matches!(i.phase, Phase::Running),
+        Action::Open(Tab::Overview),
+        "Ouvrir Matter Home Server…",
     ));
-    m.push(item(Action::Settings, "Réglages…", true));
-    m.push(item(Action::OpenLog, "Journal", true));
+    // Ces deux onglets n'ont de contenu que lorsque le serveur tourne.
+    if i.mode.is_some() {
+        m.push(item(
+            Action::Open(Tab::Connect),
+            "Connecter un Mac ou un iPhone…",
+        ));
+        m.push(item(Action::Open(Tab::Cameras), "Caméras…"));
+    }
+    m.push(item(Action::Open(Tab::Settings), "Réglages…"));
     m.push(Entry::Separator);
-    m.push(Entry::Item {
-        action: Action::ToggleLogin,
-        label: "Ouvrir à la connexion".into(),
-        enabled: i.login_available,
-        checked: Some(i.login_enabled),
-    });
-    m.push(Entry::Separator);
-    m.push(item(Action::Quit, "Quitter Matter Home Server…", true));
+    m.push(item(Action::Quit, "Quitter Matter Home Server…"));
     m
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overview::{self, CameraSummary};
     use crate::startup::Blocker;
+    use crate::status::{Health, Phase};
+    use crate::tailscale::WebAccess;
 
     fn actions(menu: &[Entry]) -> Vec<Action> {
         menu.iter()
@@ -249,38 +151,100 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn running_menu_has_exactly_the_requested_entries() {
+    fn infos(menu: &[Entry]) -> Vec<&str> {
+        menu.iter()
+            .filter_map(|e| match e {
+                Entry::Info(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn running(unreachable: &[&str], web: &WebAccess) -> Overview {
         let health = Health {
             total: 13,
-            online: 12,
-            unreachable: vec!["Salon".into()],
+            online: 13 - unreachable.len(),
+            unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
         };
+        let cameras = CameraSummary {
+            total: 2,
+            online: 2,
+            ..CameraSummary::default()
+        };
+        overview::build(&Phase::Running, &health, Some(&cameras), web, false)
+    }
+
+    #[test]
+    fn a_healthy_server_shows_its_summary_and_no_corrective_action() {
+        let o = running(&[], &WebAccess::Off { dns: None });
         let menu = build(&MenuInput {
-            version: "1.0.0-rc.7",
-            web: &WebAccess::Checking,
-            phase: &Phase::Running,
-            health: &health,
-            url: Some("https://mac.local:8443"),
-            fingerprint: Some("AA:BB"),
-            login_enabled: true,
-            desktop_doubt: false,
-            login_available: true,
+            overview: &o,
             mode: Some(HomeMode::Nuit),
         });
         assert_eq!(
-            menu[2],
-            Entry::Info("12 appareils en ligne, 1 injoignable".into())
+            infos(&menu),
+            [
+                "Tout va bien",
+                "Appareils : 13 appareils, tous joignables",
+                "Caméras : 2 caméras en service · détection indisponible",
+                "Accès à distance : désactivé",
+            ]
         );
-        assert!(menu.contains(&Entry::Info("    Salon".into())));
-        // Le sous-menu « Mode » : quatre choix, la coche sur le mode actuel.
-        let Some(Entry::Submenu { label, entries }) = menu
-            .iter()
-            .find(|e| matches!(e, Entry::Submenu { label, .. } if label.starts_with("Mode")))
+        assert_eq!(
+            actions(&menu),
+            [
+                Action::Open(Tab::Overview),
+                Action::Open(Tab::Connect),
+                Action::Open(Tab::Cameras),
+                Action::Open(Tab::Settings),
+                Action::Quit
+            ]
+        );
+    }
+
+    #[test]
+    fn something_wrong_adds_exactly_one_action_right_under_the_summary() {
+        let o = running(
+            &["Salon"],
+            &WebAccess::NeedsAuth {
+                url: "https://login.tailscale.com/f/serve?node=x".into(),
+            },
+        );
+        let menu = build(&MenuInput {
+            overview: &o,
+            mode: Some(HomeMode::Present),
+        });
+        assert_eq!(menu[0], Entry::Info("2 points à regarder".into()));
+        assert_eq!(
+            menu[4],
+            Entry::Item {
+                action: Action::Fix,
+                label: "Voir l'appareil injoignable…".into(),
+                enabled: true,
+                checked: None
+            }
+        );
+        assert_eq!(
+            actions(&menu).iter().filter(|a| **a == Action::Fix).count(),
+            1
+        );
+        // Aucun lien ni adresse dans le menu.
+        assert!(!infos(&menu).join(" ").contains("http"));
+    }
+
+    #[test]
+    fn the_mode_submenu_has_four_choices_and_one_check() {
+        let o = running(&[], &WebAccess::Checking);
+        let menu = build(&MenuInput {
+            overview: &o,
+            mode: Some(HomeMode::Nuit),
+        });
+        let Some(Entry::Submenu { label, entries }) =
+            menu.iter().find(|e| matches!(e, Entry::Submenu { .. }))
         else {
             panic!("sous-menu Mode attendu");
         };
-        assert_eq!(label, "Mode : Nuit");
+        assert_eq!(label, "Mode de la maison : Nuit");
         assert_eq!(
             entries
                 .iter()
@@ -300,254 +264,50 @@ mod tests {
                 ("Vacances", false)
             ]
         );
-        for mode in HomeMode::ALL {
-            assert_eq!(
-                Action::from_id(Action::Mode(mode).id()),
-                Some(Action::Mode(mode))
-            );
-        }
-        // L'adresse et les deux « Copier » sont dans le sous-menu « Connecter un client ».
-        let Some(Entry::Submenu { label, entries }) = menu
-            .iter()
-            .find(|e| matches!(e, Entry::Submenu { label, .. } if label == "Connecter un client"))
-        else {
-            panic!("sous-menu attendu");
-        };
-        assert_eq!(label, "Connecter un client");
-        assert_eq!(
-            entries[0],
-            Entry::Info("Adresse : https://mac.local:8443".into())
+    }
+
+    #[test]
+    fn a_stopped_server_points_to_the_window_and_offers_no_mode() {
+        let o = overview::build(
+            &Phase::Blocked(Blocker::Service),
+            &Health::default(),
+            None,
+            &WebAccess::Checking,
+            false,
         );
-        assert_eq!(actions(entries), [Action::CopyUrl, Action::CopyFingerprint]);
+        let menu = build(&MenuInput {
+            overview: &o,
+            mode: None,
+        });
+        assert_eq!(
+            infos(&menu),
+            [
+                "Le serveur est à l'arrêt",
+                "Serveur : le service installé tient les données"
+            ]
+        );
+        assert!(!menu.iter().any(|e| matches!(e, Entry::Submenu { .. })));
         assert_eq!(
             actions(&menu),
             [
-                Action::WebAccess,
-                Action::Cameras,
-                Action::Settings,
-                Action::OpenLog,
-                Action::ToggleLogin,
+                Action::Fix,
+                Action::Open(Tab::Overview),
+                Action::Open(Tab::Settings),
                 Action::Quit
             ]
         );
-        assert!(menu.iter().any(|e| matches!(
-            e,
-            Entry::Item {
-                action: Action::ToggleLogin,
-                checked: Some(true),
-                ..
-            }
-        )));
     }
 
     #[test]
-    fn blocked_menu_has_no_address_and_points_to_the_window() {
-        let health = Health::default();
-        let menu = build(&MenuInput {
-            version: "1.0.0-rc.7",
-            web: &WebAccess::Checking,
-            phase: &Phase::Blocked(Blocker::Service),
-            health: &health,
-            url: None,
-            fingerprint: None,
-            login_enabled: false,
-            desktop_doubt: false,
-            login_available: true,
-            mode: None,
-        });
-        // Serveur à l'arrêt : ni adresse, ni sous-menu (pas de mode à choisir).
-        assert!(!menu.iter().any(|e| matches!(e, Entry::Submenu { .. })));
-        assert!(actions(&menu).contains(&Action::Settings));
-        assert!(actions(&menu).contains(&Action::Quit));
-    }
-
-    #[test]
-    fn the_cameras_entry_is_only_enabled_while_the_server_runs() {
-        let health = Health::default();
-        let entry = |phase: &Phase| {
-            build(&MenuInput {
-                version: "1.0.0",
-                web: &WebAccess::Checking,
-                phase,
-                health: &health,
-                url: None,
-                fingerprint: None,
-                login_enabled: false,
-                desktop_doubt: false,
-                login_available: true,
-                mode: None,
-            })
-            .into_iter()
-            .find_map(|e| match e {
-                Entry::Item {
-                    action: Action::Cameras,
-                    label,
-                    enabled,
-                    ..
-                } => Some((label, enabled)),
-                _ => None,
-            })
-            .expect("entrée Caméras")
-        };
-        assert_eq!(entry(&Phase::Running), ("Caméras…".to_string(), true));
-        assert!(!entry(&Phase::Starting).1);
-        assert!(!entry(&Phase::Blocked(Blocker::Service)).1);
-    }
-
-    #[test]
-    fn running_menu_mentions_an_uncertain_desktop_process() {
-        let health = Health::default();
-        let build_with = |doubt| {
-            build(&MenuInput {
-                version: "1.0.0",
-                web: &WebAccess::Checking,
-                phase: &Phase::Running,
-                health: &health,
-                url: None,
-                fingerprint: None,
-                login_enabled: false,
-                desktop_doubt: doubt,
-                login_available: true,
-                mode: None,
-            })
-        };
-        assert!(build_with(true)
-            .iter()
-            .any(|e| matches!(e, Entry::Info(t) if t.contains("matter-home-desktop"))));
-        assert!(!build_with(false)
-            .iter()
-            .any(|e| matches!(e, Entry::Info(t) if t.contains("matter-home-desktop"))));
-    }
-
-    fn menu_with(web: &WebAccess) -> Vec<Entry> {
-        build(&MenuInput {
-            version: "1.0.0-rc.7",
-            web,
-            phase: &Phase::Running,
-            health: &Health::default(),
-            url: Some("https://mac.local:8443"),
-            fingerprint: None,
-            login_enabled: false,
-            desktop_doubt: false,
-            login_available: true,
-            mode: None,
-        })
-    }
-
-    fn web_items(menu: &[Entry]) -> Vec<(Action, String, bool, Option<bool>)> {
-        menu.iter()
-            .filter_map(|e| match e {
-                Entry::Item {
-                    action:
-                        action @ (Action::WebAccess
-                        | Action::WebOpen
-                        | Action::WebCopy
-                        | Action::WebAuth),
-                    label,
-                    enabled,
-                    checked,
-                } => Some((*action, label.clone(), *enabled, *checked)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_version_is_the_first_line_and_not_clickable() {
-        let menu = menu_with(&WebAccess::Checking);
-        assert_eq!(menu[0], Entry::Info("Matter Home Server 1.0.0-rc.7".into()));
-    }
-
-    #[test]
-    fn web_access_shows_the_reason_when_it_cannot_be_used() {
-        for (web, label) in [
-            (
-                WebAccess::NotInstalled,
-                "Accès web : Tailscale non installé",
-            ),
-            (WebAccess::Disconnected, "Accès web : Tailscale déconnecté"),
-            (
-                WebAccess::PortBusy,
-                "Accès web : port 443 déjà utilisé par Tailscale",
-            ),
-            (
-                WebAccess::Funnel,
-                "Accès web : Funnel actif (public), à couper dans Tailscale",
-            ),
-        ] {
-            assert_eq!(
-                web_items(&menu_with(&web)),
-                [(Action::WebAccess, label.to_string(), false, Some(false))]
-            );
+    fn ids_round_trip_and_are_unique() {
+        let all: Vec<Action> = Action::all().collect();
+        for a in &all {
+            assert_eq!(Action::from_id(a.id()), Some(*a));
         }
-    }
-
-    #[test]
-    fn web_access_when_off_is_an_enabled_unchecked_box() {
-        let web = WebAccess::Off { dns: None };
-        assert_eq!(
-            web_items(&menu_with(&web)),
-            [(
-                Action::WebAccess,
-                "Accès web (Tailscale)".to_string(),
-                true,
-                Some(false)
-            )]
-        );
-    }
-
-    #[test]
-    fn active_web_access_offers_to_open_and_copy_the_address() {
-        let web = WebAccess::On {
-            dns: "mac.tailnet.ts.net".into(),
-        };
-        assert_eq!(
-            web_items(&menu_with(&web)),
-            [
-                (
-                    Action::WebAccess,
-                    "Accès web (Tailscale)".to_string(),
-                    true,
-                    Some(true)
-                ),
-                (
-                    Action::WebOpen,
-                    "Ouvrir https://mac.tailnet.ts.net/app/".to_string(),
-                    true,
-                    None
-                ),
-                (Action::WebCopy, "Copier l'adresse".to_string(), true, None),
-            ]
-        );
-    }
-
-    #[test]
-    fn serve_to_authorise_offers_the_link() {
-        let web = WebAccess::NeedsAuth {
-            url: "https://login.tailscale.com/f/serve?node=x".into(),
-        };
-        let items = web_items(&menu_with(&web));
-        assert_eq!(items[0].1, "Accès web : à autoriser dans Tailscale");
-        assert_eq!(items[1].0, Action::WebAuth);
-    }
-
-    #[test]
-    fn ids_round_trip() {
-        for a in [
-            Action::CopyUrl,
-            Action::CopyFingerprint,
-            Action::OpenLog,
-            Action::ToggleLogin,
-            Action::Cameras,
-            Action::Settings,
-            Action::Quit,
-            Action::WebAccess,
-            Action::WebOpen,
-            Action::WebCopy,
-            Action::WebAuth,
-        ] {
-            assert_eq!(Action::from_id(a.id()), Some(a));
-        }
+        let mut ids: Vec<&str> = all.iter().map(|a| a.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), all.len());
         assert_eq!(Action::from_id("autre"), None);
     }
 }

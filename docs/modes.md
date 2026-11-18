@@ -62,12 +62,13 @@ Pour qu'une automatisation de l'iPhone change le mode **sans** connaître le mot
 le serveur peut créer un **jeton de mode** : un secret à part, qui ne sert **qu'à** `PUT /api/mode`
 (il ne lit rien et ne commande rien d'autre : toute autre route répond 401).
 
-- Dans la fenêtre du serveur (Réglages, « Mode de la maison ») : « Générer un jeton de mode ». Le jeton
+- Dans la fenêtre du serveur (onglet Connexion, « Changer de mode automatiquement ») : « Créer le code
+  secret » (le jeton de mode). Le jeton
   s'affiche **une seule fois** (bouton « Copier ») ; le serveur n'en garde que l'**empreinte**
   (`serveur/jeton-mode.json`, droits 0600, jamais exportée ni importée avec les sauvegardes). Il n'est
   jamais écrit dans le journal.
-- « Générer un nouveau jeton » **révoque l'ancien** (les automatisations de l'iPhone sont alors à
-  mettre à jour) ; « Révoquer le jeton » supprime tout accès par jeton.
+- « Créer un nouveau code… » **révoque l'ancien** (les automatisations de l'iPhone sont alors à
+  mettre à jour) ; « Supprimer le code » supprime tout accès par jeton.
 - Il se place dans l'en-tête `Authorization: Bearer <jeton de mode>` (jamais dans l'URL). Le jeton est
   vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et une
   ligne au journal, **sans blocage par adresse** : derrière `tailscale serve`, toutes les connexions
@@ -81,10 +82,10 @@ le serveur peut créer un **jeton de mode** : un secret à part, qui ne sert **q
 **Avant de commencer**
 
 1. L'iPhone et le Mac du serveur sont sur le même tailnet Tailscale ([Accès à distance](acces-distant.md)).
-2. Sur le Mac, menu du serveur : **« Accès web (Tailscale) »** coché. L'adresse est alors
+2. Sur le Mac, fenêtre du serveur, onglet Connexion : **accès à distance activé**. L'adresse est alors
    `https://<nom-du-mac>.<tailnet>.ts.net/` (port 443, certificat public). **N'utilisez pas** l'adresse
    directe en `:8443` : son certificat est auto-signé et Raccourcis le refuse.
-3. Générez le **jeton de mode** (fenêtre du serveur, Réglages) et copiez-le : vous le collerez dans
+3. Générez le **jeton de mode** (fenêtre du serveur, onglet Connexion) et copiez-le : vous le collerez dans
    chaque automatisation. Dans ce qui suit, `<jeton de mode>` est à remplacer par ce jeton.
 
 **Une automatisation « Quitter la maison → Absent »**
@@ -134,7 +135,7 @@ sélecteur du client de bureau, la pastille de l'app web et le menu du serveur s
 | `401 unauthorized` | jeton faux, révoqué ou remplacé : générez-en un nouveau et corrigez l'en-tête |
 | `429 too_many_attempts` | trop d'échecs de jeton : attendez le délai de `Retry-After` |
 | `400 bad_request` | corps mal formé : le mode doit être `present`, `absent`, `nuit` ou `vacances` |
-| rien ne se passe | l'iPhone n'est pas sur le tailnet, « Accès web » est décoché, ou l'automatisation est restée sur « Exécuter après confirmation » |
+| rien ne se passe | l'iPhone n'est pas sur le tailnet, l'accès à distance est désactivé, ou l'automatisation est restée sur « Exécuter après confirmation » |
 
 ## Limites
 
