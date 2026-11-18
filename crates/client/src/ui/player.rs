@@ -95,6 +95,12 @@ fn show(ui: &mut egui::Ui, model: &Model, camera_id: u64, requested: StreamKind,
         ui.label("Cette caméra n'existe plus.");
         return;
     };
+    // Éteinte dans le mode actuel : on n'ouvre rien (ne plus appeler le lecteur coupe la liaison
+    // en cours) et on le dit, au lieu de laisser le serveur refuser en boucle.
+    if model.camera_is_off(camera_id) {
+        ui.label(format!("Caméra éteinte en mode {}.", model.mode.label()));
+        return;
+    }
     let kind = effective_kind(ui, camera_id, requested, camera.has_sub_stream, toggle);
     if kind == StreamKind::Sub && !camera.has_sub_stream {
         ui.label("Cette caméra n'a pas de flux réduit.");
@@ -497,6 +503,8 @@ mod tests {
                 status: CameraStatus::Online,
                 has_sub_stream: true,
                 stream: None,
+                emplacement: Default::default(),
+                modes: Default::default(),
             }],
             ..Model::default()
         };
@@ -530,6 +538,8 @@ mod tests {
             status: CameraStatus::Online,
             has_sub_stream: has_sub,
             stream: None,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 
@@ -564,6 +574,32 @@ mod tests {
         // Le lecteur avec choix, lui, se replie sur le principal.
         draw(&ctx, &model, false, StreamKind::Sub);
         assert!(has_handle(&ctx, 7, StreamKind::Main));
+    }
+
+    /// Ticket n° 8 : une caméra éteinte dans le mode actuel n'ouvre aucune liaison (le serveur la
+    /// refuserait), et la rouvre dès que le mode change.
+    #[test]
+    fn an_off_camera_opens_no_stream_until_the_mode_allows_it() {
+        use protocol::mode::HomeMode;
+        use protocol::wire::{CameraModes, CameraPlacement};
+        let ctx = egui::Context::default();
+        let mut indoor = camera(7, true);
+        indoor.emplacement = CameraPlacement::Interieure;
+        indoor.modes = CameraModes::for_placement(CameraPlacement::Interieure);
+        let mut model = Model {
+            cameras: vec![indoor],
+            mode: HomeMode::Present,
+            ..Model::default()
+        };
+        assert!(model.camera_is_off(7));
+        draw(&ctx, &model, true, StreamKind::Sub);
+        draw(&ctx, &model, false, StreamKind::Sub);
+        assert!(!has_handle(&ctx, 7, StreamKind::Sub));
+        assert!(!has_handle(&ctx, 7, StreamKind::Main));
+        model.mode = HomeMode::Absent;
+        assert!(!model.camera_is_off(7));
+        draw(&ctx, &model, true, StreamKind::Sub);
+        assert!(has_handle(&ctx, 7, StreamKind::Sub));
     }
 
     #[test]

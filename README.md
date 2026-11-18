@@ -238,6 +238,7 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 | [Migrer la v0.2.1](docs/migration.md) | reprendre ses données sans réappairer, installation neuve, reprise après coupure |
 | [Guide d'utilisation](docs/utilisation.md) | fiches des appareils, nom et icône, export CSV, options de lancement |
 | [Plan de la maison](docs/plan.md) | dessin, couleurs, sauvegarde |
+| [Modes de la maison](docs/modes.md) | Présent, Absent, Nuit, Vacances ; caméras selon le mode ; changer de mode avec Raccourcis sur iPhone |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
 | [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
 | [Accès à distance](docs/acces-distant.md) | Tailscale, adresses multiples, certificats, flux caméra |

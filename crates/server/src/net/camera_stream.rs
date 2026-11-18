@@ -107,6 +107,14 @@ async fn upgrade(
         Err(SubscribeError::NoSuchStream) => {
             return bad("cette caméra n'a pas de flux réduit").into_response()
         }
+        // Éteinte dans le mode actuel : pas de `retry_after_s`, réessayer ne sert à rien.
+        Err(SubscribeError::Off) => {
+            return ApiErr(ApiError::with_detail(
+                ErrorCode::Unavailable,
+                state.hub.camera_off_message(),
+            ))
+            .into_response();
+        }
     };
     let stall = live.config().write_stall;
     ws.protocols([super::routes::WS_SUBPROTOCOL])

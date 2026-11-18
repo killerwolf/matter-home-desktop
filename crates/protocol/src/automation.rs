@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::events::MeasureKind;
+use crate::mode::HomeMode;
 
 /// Une adresse de webhook acceptable : http(s) seulement, sans espace ni caractère de contrôle.
 /// Le serveur refuse les autres (`PUT /api/rules`) ; le client s'en sert pour ne pas envoyer
@@ -117,6 +118,9 @@ pub enum Trigger {
         #[serde(default = "all_days")]
         days: [bool; 7],
     },
+    /// Le mode de la maison devient `to` (un changement seulement : redemander le mode actuel
+    /// ne déclenche rien).
+    Mode { to: HomeMode },
 }
 
 fn all_days() -> [bool; 7] {
@@ -144,6 +148,10 @@ pub enum Condition {
         measure: MeasureKind,
         above: bool,
         value: f64,
+    },
+    /// Le mode de la maison est l'un de ceux-là (au moins un ; « Absent ou Vacances »).
+    Mode {
+        is: Vec<HomeMode>,
     },
 }
 
@@ -174,7 +182,16 @@ pub enum Action {
     Delay {
         seconds: u64,
     },
+    /// Change le mode de la maison (ticket n° 8). Le même mode : sans effet. Une règle de mode qui
+    /// change le mode doit garder un délai anti-rafale d'au moins `MIN_MODE_COOLDOWN_S` (refusé sinon).
+    SetMode {
+        mode: HomeMode,
+    },
 }
+
+/// Délai minimal d'une règle qui change le mode quand le mode change : sans lui, deux règles
+/// « devient Nuit → Absent » et « devient Absent → Nuit » se relanceraient sans fin.
+pub const MIN_MODE_COOLDOWN_S: u64 = 10;
 
 fn default_cooldown() -> u64 {
     60

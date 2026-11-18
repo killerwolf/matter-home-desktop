@@ -76,6 +76,8 @@ impl Default for SnapshotConfig {
 pub enum SnapshotError {
     /// Pas de caméra avec cet identifiant.
     UnknownCamera,
+    /// La caméra est éteinte dans le mode actuel de la maison.
+    Off,
     /// Un test ou une vérification de la caméra est en cours : réessayer plus tard.
     Busy,
     /// La caméra n'a pas donné d'image clé à temps, ou ne répond pas.
@@ -145,12 +147,14 @@ impl SnapshotService {
         hub: &Arc<Hub>,
         id: u64,
     ) -> Result<Snapshot, SnapshotError> {
+        if hub.camera_is_off(id) {
+            // Pas d'image gardée avant le changement de mode : elle ne doit plus sortir.
+            self.forget(id);
+            return Err(SnapshotError::Off);
+        }
         if hub.camera_probe_target(id).is_none() {
             // Une caméra supprimée n'a plus d'image, même gardée.
-            self.slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
+            self.forget(id);
             return Err(SnapshotError::UnknownCamera);
         }
         let slot = self.slot(id);
@@ -180,10 +184,24 @@ impl SnapshotService {
                 age: started.elapsed(),
             })
         };
-        match tokio::time::timeout(self.config.timeout, whole).await {
+        let result = match tokio::time::timeout(self.config.timeout, whole).await {
             Ok(result) => result,
             Err(_) => Err(SnapshotError::NoImage),
+        };
+        // Le mode a pu changer pendant la capture (ou l'image sort du cache) : une caméra éteinte
+        // ne rend jamais d'image, même celle qu'on vient de prendre.
+        if result.is_ok() && hub.camera_is_off(id) {
+            self.forget(id);
+            return Err(SnapshotError::Off);
         }
+        result
+    }
+
+    fn forget(&self, id: u64) {
+        self.slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
 
     /// `Ok(Some)` : une image assez récente. `Err` : un échec récent gardé. `Ok(None)` : il faut
@@ -227,6 +245,7 @@ impl SnapshotService {
             live.subscribe_any(hub, id).map_err(|e| match e {
                 SubscribeError::UnknownCamera => SnapshotError::UnknownCamera,
                 SubscribeError::NoSuchStream => SnapshotError::NoImage,
+                SubscribeError::Off => SnapshotError::Off,
             })?
         };
         let deadline = tokio::time::Instant::now()

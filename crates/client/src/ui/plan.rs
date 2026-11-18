@@ -2179,6 +2179,8 @@ mod tests {
             status,
             has_sub_stream: false,
             stream: None,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 

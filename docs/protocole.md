@@ -13,8 +13,9 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
   la connexion et le WebSocket (`?protocol=2`) l'exigent identique, sinon l'erreur
   `version_incompatible` (HTTP 426). Ajouter un champ optionnel ne change pas la version ;
   ajouter une **variante** d'énumération (un type d'événement, un code d'erreur) la change, car
-  `serde` refuse les variantes inconnues. Historique : **2** = caméras (ticket n° 4, événement
-  `cameras_changed`) ; 1 = la v1.0.0.
+  `serde` refuse les variantes inconnues. Historique : **3** = mode de la maison (ticket n° 8 : `Trigger::Mode`,
+  `Condition::Mode`, `Action::SetMode` n'ont pas de variante de repli ; un client 1.1.0 est refusé en 426) ;
+  **2** = caméras (ticket n° 4, événement `cameras_changed`) ; 1 = la v1.0.0.
 - **Identifiants en texte** : appareils, règles, étages, pièces, objets sont des chaînes
   décimales (`"18446744073709551615"`), car un `u64` dépasse 2^53 et JavaScript l'arrondirait.
   Un identifiant numérique, ou avec zéro initial, est refusé. Les compteurs (`seq`) restent
@@ -89,6 +90,7 @@ aux essais et aux tests.
 | `DELETE /api/devices/{id}/history` | effacer l'historique (202) |
 | `GET`, `PUT /api/plan` | lire, remplacer le plan de la maison (au moins un étage : sinon `plan_without_floor`, 400) |
 | `GET`, `PUT /api/rules` | lire, remplacer les règles |
+| `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances"}` : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
 | `GET /api/export` | sauvegarde `.matterhome` (**clés privées et mots de passe des caméras en clair**) |
@@ -136,7 +138,8 @@ Aucun message ne part du client (ses commandes passent par l'API). Le serveur en
 
 Événements (`event.type`) : `device_updated`, `device_removed`, `status`, `seen`, `mode`,
 `reading` (mesure ou état), `cover_motion`, `rule_run`, `pairing_progress`, `pairing_done`,
-`pairing_failed`, `notice`, `notification`, `plan_changed`, `rules_changed`, `cameras_changed`.
+`pairing_failed`, `notice`, `notification`, `plan_changed`, `rules_changed`, `cameras_changed`,
+`mode_changed`.
 
 Le `seq` croît de 1 à chaque événement : un client qui voit un trou rouvre une connexion.
 **Client lent** : le serveur ne l'attend jamais. S'il prend du retard, il reçoit un nouveau
@@ -144,6 +147,42 @@ Le `seq` croît de 1 à chaque événement : un client qui voit un trou rouvre u
 s'il y retombe plus de 3 fois par minute, ou n'avance plus (écriture bloquée 10 s), il est
 déconnecté. Il se reconnecte alors et repart d'un état complet. Un client fermé ne reçoit
 rien, notifications comprises : le serveur n'a pas de file d'attente pour les absents.
+
+## Le mode de la maison
+
+Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nuit`, `vacances`.
+
+- **Où** : le champ `mode` de l'état complet (absent : un serveur sans modes, le client cache son
+  sélecteur), l'événement
+  `{"type": "mode_changed", "mode": "nuit"}` (jamais envoyé si le mode demandé est déjà le bon), et
+  `PUT /api/mode`. Rien n'est enregistré, diffusé ni déclenché quand le mode ne change pas
+  (`changed: false`). Version du protocole : **3** (les règles de mode
+  n'ont pas de repli : un client de version 2, 1.1.0, est refusé d'emblée par `version_incompatible`,
+  plutôt que d'échouer à lire l'état complet en boucle).
+- **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode**, un secret
+  à part que le serveur crée à la demande (fenêtre du serveur), qui ne vaut que pour cette route :
+  `GET /api/state`, le WebSocket, le plan, les règles, l'export… répondent 401 avec lui. Il se
+  présente dans `Authorization: Bearer …` (jamais dans l'URL), le serveur n'en garde que l'empreinte
+  SHA-256 (`serveur/jeton-mode.json`, 0600), et il n'est jamais journalisé. Un jeton absent ou faux : 401
+  (`unauthorized`, après 250 ms). Le jeton est vérifié **d'abord** et un bon jeton n'est jamais refusé :
+  pas de blocage par adresse (derrière `tailscale serve`, toutes les connexions viennent de 127.0.0.1 et
+  un compteur partagé aurait bloqué le bon Raccourci), seulement une ligne au journal par échec.
+- **Caméras** : `CameraView` porte `emplacement` (`interieure` \| `exterieure`) et `modes`
+  (`present`, `absent`, `nuit`, `vacances` → `eteinte` \| `diffusion` \| `surveillance`), tous deux
+  optionnels (absents d'un serveur plus ancien : extérieure, jamais éteinte). Pour une caméra
+  **éteinte** dans le mode actuel, `GET /api/cameras/{id}/snapshot` et le WebSocket du flux répondent
+  `503 unavailable` avec `detail` « caméra éteinte en mode … » (sans `retry_after_s`) ; une lecture
+  ouverte est coupée (`EndReason::Changed`) dans les 2 s qui suivent le changement de mode. Pas de
+  nouveau code d'erreur : un client plus ancien le lit comme n'importe quel 503. **Éteinte = aucune
+  connexion** : le serveur ne vérifie plus non plus la joignabilité de cette caméra (pas de `DESCRIBE`),
+  et son état est le nouvel état `{"state": "off"}` (un client plus ancien le lit `unknown`) ; le
+  changement de mode renvoie `cameras_changed`.
+- **Règles** : `Trigger::Mode {to}`, `Condition::Mode {is: [...]}` (au moins un mode, sans doublon) et
+  `Action::SetMode {mode}`. Une règle « quand le mode devient X » qui change le mode doit avoir un délai
+  anti-rafale d'au moins 10 s (`400 bad_request` sinon). Un client de la 1.1.0 est refusé (version 3).
+- **Sauvegarde** : `mode.json` en fait partie (valeur inconnue : sauvegarde refusée). Une sauvegarde
+  faite avec cette version est **refusée par un serveur 1.1.0** (il ne connaît pas `mode.json`) : en
+  retirer le fichier du `.matterhome` n'est pas prévu, mettez le serveur à jour.
 
 ## Caméras
 

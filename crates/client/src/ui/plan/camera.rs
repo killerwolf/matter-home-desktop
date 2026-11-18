@@ -37,7 +37,7 @@ impl CameraState {
             None => CameraState::Missing,
             Some(CameraStatus::Online) => CameraState::Online,
             Some(CameraStatus::Unreachable { .. }) => CameraState::Unreachable,
-            Some(CameraStatus::Unknown) => CameraState::Unknown,
+            Some(CameraStatus::Unknown | CameraStatus::Off) => CameraState::Unknown,
         }
     }
 
@@ -344,6 +344,8 @@ mod tests {
             status,
             has_sub_stream: true,
             stream: None::<StreamInfo>,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 

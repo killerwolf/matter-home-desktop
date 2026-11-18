@@ -157,7 +157,7 @@ fn every_route_requires_the_token() {
             ("GET", "/api/export"),
             ("POST", "/api/import"),
             ("POST", "/api/import?dry_run=1"),
-            ("GET", "/api/ws?protocol=2"),
+            ("GET", "/api/ws?protocol=3"),
         ];
         for (method, path) in routes {
             let none = client.request(method, path, None, Some(b"{}")).await;

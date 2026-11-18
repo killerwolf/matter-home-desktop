@@ -284,3 +284,37 @@ fn big_images_are_reduced_before_encoding() {
     };
     assert!(encode_jpeg(&broken, &SnapshotConfig::default()).is_none());
 }
+
+/// Ticket n° 8 : en mode « éteinte », pas d'image, même si une capture récente est en cache.
+#[tokio::test]
+async fn a_camera_that_is_off_serves_no_image_not_even_a_cached_one() {
+    use protocol::mode::HomeMode;
+    use protocol::wire::{CameraModes, CameraPlacement};
+    let camera = fake_camera::start(Options::default()).await;
+    let (hub, id) = hub_with("off", camera.port);
+    // Surveillance quand on est absent, éteinte la nuit.
+    let mut draft = CameraDraft {
+        name: "Locale".into(),
+        url: format!("rtsp://127.0.0.1:{}/live/ch00_0", camera.port),
+        emplacement: CameraPlacement::Interieure,
+        modes: CameraModes::for_placement(CameraPlacement::Interieure),
+        ..CameraDraft::default()
+    };
+    draft
+        .modes
+        .set(HomeMode::Present, protocol::wire::CameraBehavior::Diffusion);
+    hub.update_camera(id, &draft).unwrap();
+    let live = LiveRegistry::new(live_config());
+    let service = SnapshotService::new(config());
+    let image = service.get(&live, &hub, id).await.unwrap();
+    assert!(jpeg_size(&image.jpeg).is_some());
+    // Le cache est encore frais (15 s), mais la caméra s'éteint : plus d'image.
+    hub.set_mode(HomeMode::Nuit).unwrap();
+    assert_eq!(
+        service.get(&live, &hub, id).await.unwrap_err(),
+        SnapshotError::Off
+    );
+    // Elle redevient disponible avec le mode suivant.
+    hub.set_mode(HomeMode::Present).unwrap();
+    assert!(service.get(&live, &hub, id).await.is_ok());
+}

@@ -381,6 +381,55 @@ async fn a_camera_that_is_changed_or_deleted_cuts_its_viewers() {
     );
 }
 
+/// Ticket n° 8 : un changement de mode qui éteint la caméra coupe la lecture en cours (la cible
+/// disparaît, comme pour une caméra supprimée), et le direct suivant est refusé clairement.
+#[tokio::test]
+async fn a_mode_that_turns_the_camera_off_cuts_its_viewers_and_refuses_new_ones() {
+    use protocol::mode::HomeMode;
+    use protocol::wire::{CameraModes, CameraPlacement};
+    let camera = fake_camera::start(Options::default()).await;
+    // Intérieure : éteinte en Présent, surveillance en Absent.
+    let (hub, id) = hub_with(
+        "mode-off",
+        &CameraDraft {
+            emplacement: CameraPlacement::Interieure,
+            modes: CameraModes::for_placement(CameraPlacement::Interieure),
+            ..draft(camera.port, "live/ch00_0")
+        },
+    );
+    let live = LiveRegistry::new(fast());
+    assert_eq!(
+        live.subscribe(&hub, id, StreamKind::Main).err(),
+        Some(SubscribeError::Off)
+    );
+    assert_eq!(
+        live.subscribe_any(&hub, id).err(),
+        Some(SubscribeError::Off)
+    );
+    assert_eq!(
+        camera.open(),
+        0,
+        "rien n'est ouvert vers une caméra éteinte"
+    );
+
+    hub.set_mode(HomeMode::Absent).unwrap();
+    let mut sub = live.subscribe(&hub, id, StreamKind::Main).unwrap();
+    let mut seen = Seen::default();
+    read_until(&mut sub, &mut seen, |s| s.frames.len() >= 2).await;
+
+    // Nuit : éteinte de nouveau, la session est fermée pour son spectateur.
+    hub.set_mode(HomeMode::Nuit).unwrap();
+    read_until(&mut sub, &mut seen, |_| false).await;
+    assert_eq!(seen.ended, Some(EndReason::Changed));
+    until("coupée", || camera.open() == 0).await;
+    until("témoin rendu", || hub.camera_viewers(id) == 0).await;
+    assert_eq!(live.sessions(), 0);
+    assert_eq!(
+        live.subscribe(&hub, id, StreamKind::Main).err(),
+        Some(SubscribeError::Off)
+    );
+}
+
 #[tokio::test]
 async fn the_default_stream_must_exist() {
     let camera = fake_camera::start(Options::default()).await;

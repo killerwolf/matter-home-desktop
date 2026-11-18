@@ -13,6 +13,7 @@
 
 use eframe::egui::{self, RichText};
 use protocol::home::HomePlan;
+use protocol::mode::HomeMode;
 use protocol::wire::{CameraStatus, CameraView, StreamKind};
 
 use super::camera_text::{offline_since_now, problem_text};
@@ -151,8 +152,8 @@ pub fn tile_visible(clip: egui::Rect, tile: egui::Rect) -> bool {
 /// Une tuile veut un flux si sa caméra est en ligne et en a un réduit, ou si elle en lisait déjà
 /// un (la caméra devient injoignable : le serveur reprend tout seul, la tuile continue de
 /// l'afficher et le message du lecteur dit ce qui se passe).
-fn tile_wants_stream(ctx: &egui::Context, camera: &CameraView) -> bool {
-    matches!(tile_video(camera), TileVideo::Live(_))
+fn tile_wants_stream(ctx: &egui::Context, camera: &CameraView, off: bool) -> bool {
+    !off && matches!(tile_video(camera), TileVideo::Live(_))
         || tile_stream(camera).is_some_and(|kind| is_active(ctx, camera.id, kind))
 }
 
@@ -203,6 +204,7 @@ pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Opti
             }
             ("Injoignable", Some(text), Some(Severity::Warn))
         }
+        CameraStatus::Off => ("Éteinte", None, None),
         CameraStatus::Unknown => ("Inconnu", Some("Pas encore vérifiée.".to_string()), None),
     }
 }
@@ -217,6 +219,11 @@ pub fn stream_summary(camera: &CameraView) -> Option<String> {
     })
 }
 
+/// Ce que dit la zone vidéo d'une caméra éteinte dans le mode actuel.
+pub fn off_text(mode: HomeMode) -> String {
+    format!("Éteinte en mode {}", mode.label())
+}
+
 /// Texte de la zone vidéo quand rien n'est lu.
 fn placeholder_text(video: TileVideo, camera: &CameraView, capped: bool) -> String {
     match video {
@@ -224,6 +231,7 @@ fn placeholder_text(video: TileVideo, camera: &CameraView, capped: bool) -> Stri
             "Pas de flux réduit : ouvrez la caméra pour voir le direct".into()
         }
         TileVideo::NotOnline => match &camera.status {
+            CameraStatus::Off => "Éteinte dans ce mode".into(),
             CameraStatus::Unknown => "Vérification en cours…".into(),
             CameraStatus::Unreachable {
                 since: Some(since), ..
@@ -323,7 +331,12 @@ fn mosaic(ui: &mut egui::Ui, model: &Model, plan: &HomePlan, state: &mut PageSta
                 let wants: Vec<(bool, bool)> = row
                     .iter()
                     .zip(&rects)
-                    .map(|((c, _), r)| (tile_wants_stream(ui.ctx(), c), tile_visible(clip, *r)))
+                    .map(|((c, _), r)| {
+                        (
+                            tile_wants_stream(ui.ctx(), c, model.camera_is_off(c.id)),
+                            tile_visible(clip, *r),
+                        )
+                    })
                     .collect();
                 let live = live_slots(&wants, live_budget);
                 live_budget -= live.iter().filter(|l| **l).count();
@@ -360,13 +373,17 @@ fn tile(
         egui::Sense::click(),
     );
     let video = tile_video(camera);
-    let stream = tile_stream(camera).filter(|_| live);
+    // Éteinte dans le mode actuel : ni flux ni image fixe (le serveur les refuserait).
+    let off = model.camera_is_off(camera.id);
+    let stream = tile_stream(camera).filter(|_| live && !off);
     let capped = matches!(video, TileVideo::Live(_));
     // Pas de flux lu dans cette tuile (pas de flux réduit, ou au-delà de `MAX_LIVE_TILES`) mais la
     // caméra répond : image fixe du serveur, rafraîchie toutes les 20 s (ticket n° 12).
-    let still = stream.is_none() && matches!(camera.status, CameraStatus::Online);
+    let still = !off && stream.is_none() && matches!(camera.status, CameraStatus::Online);
     let has_still = still && super::snapshot::poll(ui.ctx(), camera.id);
-    let text = if stream.is_some() || has_still {
+    let text = if off {
+        off_text(model.mode)
+    } else if stream.is_some() || has_still {
         String::new()
     } else if still {
         super::snapshot::notice(ui.ctx(), camera.id)
@@ -533,6 +550,8 @@ mod tests {
             status,
             has_sub_stream: sub,
             stream: None,
+            emplacement: Default::default(),
+            modes: Default::default(),
         }
     }
 

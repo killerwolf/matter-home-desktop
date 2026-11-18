@@ -49,6 +49,7 @@ fn snapshot(seq: u64, devices: Vec<DeviceView>) -> Snapshot {
         rule_runs: vec![],
         pairing_busy: false,
         cameras: vec![],
+        mode: Some(Default::default()),
     }
 }
 
@@ -2296,4 +2297,71 @@ fn a_long_address_is_cut_with_an_ellipsis_and_a_short_one_is_kept() {
     let cut = shorten(&long, 48);
     assert_eq!(cut.chars().count(), 48);
     assert!(cut.ends_with('…'));
+}
+
+/// Ticket n° 8 : le mode vient du serveur (état complet puis `mode_changed`), s'écrit au journal,
+/// et le sélecteur demande le changement au serveur sans l'afficher avant sa confirmation.
+#[test]
+fn the_home_mode_follows_the_server_and_changes_are_requested_not_assumed() {
+    use protocol::mode::HomeMode;
+    let mut f = Fixture::new();
+    let mut snap = snapshot(1, vec![]);
+    snap.mode = Some(HomeMode::Absent);
+    f.connect(snap);
+    assert_eq!(f.app.model.mode, HomeMode::Absent);
+    f.live(WireEvent::ModeChanged {
+        mode: HomeMode::Nuit,
+    });
+    assert_eq!(f.app.model.mode, HomeMode::Nuit);
+    assert!(f.app.log.back().is_some_and(|l| l.contains("Mode : Nuit")));
+
+    f.app.set_mode(HomeMode::Vacances);
+    let sent = pending_of(
+        &f,
+        |p| matches!(p, Pending::Command { what, .. } if *what == "Changement de mode"),
+    );
+    assert!(sent.is_some(), "la demande part");
+    assert_eq!(
+        f.app.model.mode,
+        HomeMode::Nuit,
+        "rien n'est affiché avant la confirmation du serveur"
+    );
+    // Un refus du serveur est montré, le mode affiché ne bouge pas.
+    f.send(err_reply(
+        sent.unwrap(),
+        api_error(401, ErrorCode::Unauthorized),
+    ));
+    f.app.pump_network();
+    assert_eq!(f.app.model.mode, HomeMode::Nuit);
+}
+
+/// La barre du haut montre le mode (un seul sélecteur, visible depuis toutes les vues).
+#[test]
+fn the_top_bar_shows_the_mode_only_when_connected() {
+    use protocol::mode::HomeMode;
+    let mut f = Fixture::new();
+    let ctx = egui::Context::default();
+    let texts = |f: &mut Fixture| {
+        let mut out = String::new();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| f.app.top_bar(ui));
+        for clipped in &output.shapes {
+            if let egui::epaint::Shape::Text(t) = &clipped.shape {
+                out.push_str(t.galley.text());
+                out.push('\n');
+            }
+        }
+        output.drop_without_applying_deltas();
+        out
+    };
+    assert!(!texts(&mut f).contains("Mode :"));
+    let mut snap = snapshot(1, vec![]);
+    snap.mode = Some(HomeMode::Vacances);
+    f.connect(snap);
+    assert!(texts(&mut f).contains("Mode : Vacances"));
+    // Un serveur sans modes (état complet sans `mode`) : pas de sélecteur.
+    let mut old = snapshot(2, vec![]);
+    old.mode = None;
+    f.connect(old);
+    assert!(!f.app.model.has_mode);
+    assert!(!texts(&mut f).contains("Mode :"));
 }

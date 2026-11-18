@@ -4,6 +4,7 @@
 
 pub mod account;
 pub mod limiter;
+pub mod mode_token;
 pub mod sessions;
 pub mod tls;
 

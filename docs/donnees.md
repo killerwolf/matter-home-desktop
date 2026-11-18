@@ -36,7 +36,9 @@ est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tour
 | `controller.json` | identité du contrôleur (fabric, clés et certificats), appareils appairés, noms et icônes choisis |
 | `maison.json` | plan de la maison |
 | `regles.json` | automatisations |
-| `cameras.json` | caméras RTSP : nom, adresses, identifiant et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.matterhome` |
+| `mode.json` | mode global de la maison (`present`, `absent`, `nuit` ou `vacances`) ; inclus dans la sauvegarde `.matterhome` |
+| `serveur/jeton-mode.json` | **empreinte** (SHA-256, jamais le jeton) du jeton de mode des Raccourcis de l'iPhone, droits 0600 ; propre à ce Mac, jamais exportée (comme le reste de `serveur/`) |
+| `cameras.json` | caméras RTSP : nom, adresses, identifiant, emplacement et comportement par mode, et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.matterhome` |
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
 
 En mode démo, l'application utilise `maison-demo.json` et `regles-demo.json`, et n'écrit

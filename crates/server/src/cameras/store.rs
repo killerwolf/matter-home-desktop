@@ -11,9 +11,10 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use protocol::mode::HomeMode;
 use protocol::wire::{
-    is_camera_id, CameraProblem, CameraStatus, CameraView, StreamInfo, StreamKind, CAMERA_ID_MAX,
-    CAMERA_ID_MIN, MAX_CAMERAS,
+    is_camera_id, CameraBehavior, CameraModes, CameraPlacement, CameraProblem, CameraStatus,
+    CameraView, StreamInfo, StreamKind, CAMERA_ID_MAX, CAMERA_ID_MIN, MAX_CAMERAS,
 };
 
 use crate::security::write_secret;
@@ -86,6 +87,13 @@ pub struct StoredCamera {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// Où est la caméra (ticket n° 8). Un ancien fichier n'en a pas : extérieure.
+    #[serde(default)]
+    pub emplacement: CameraPlacement,
+    /// Ce que fait la caméra dans chaque mode de la maison. Un ancien fichier n'en a pas : le
+    /// tableau d'une caméra extérieure (jamais éteinte, comme avant).
+    #[serde(default)]
+    pub modes: CameraModes,
     // Extension : tout champ ajouté ici doit avoir `#[serde(default)]` (anciens fichiers, et
     // sauvegarde d'un autre Mac) et rester absent de `CameraView` s'il est sensible.
 }
@@ -99,11 +107,18 @@ impl fmt::Debug for StoredCamera {
             .field("sub_url", &self.sub_url.as_ref().map(|_| "…"))
             .field("username", &self.username.as_ref().map(|_| "…"))
             .field("password", &self.password.as_ref().map(|_| "…"))
+            .field("emplacement", &self.emplacement)
+            .field("modes", &self.modes)
             .finish()
     }
 }
 
 impl StoredCamera {
+    /// Ce que fait la caméra dans ce mode de la maison.
+    pub fn behavior(&self, mode: HomeMode) -> CameraBehavior {
+        self.modes.get(mode)
+    }
+
     pub fn has_sub_stream(&self) -> bool {
         self.sub_url.is_some()
     }
@@ -315,6 +330,10 @@ pub struct CameraDraft {
     /// `None` : garder le mot de passe enregistré (modification d'une caméra existante).
     /// `Some("")` : l'effacer. `Some(texte)` : le remplacer.
     pub password: Option<String>,
+    /// Où est la caméra. Le formulaire recopie `CameraModes::for_placement` dans `modes` quand
+    /// cet emplacement change (et à la création) ; le tableau reste modifiable ensuite.
+    pub emplacement: CameraPlacement,
+    pub modes: CameraModes,
 }
 
 impl fmt::Debug for CameraDraft {
@@ -325,6 +344,8 @@ impl fmt::Debug for CameraDraft {
             .field("sub_url", &"…")
             .field("username", &"…")
             .field("password", &self.password.as_ref().map(|_| "…"))
+            .field("emplacement", &self.emplacement)
+            .field("modes", &self.modes)
             .finish()
     }
 }
@@ -413,6 +434,8 @@ impl CameraDraft {
             sub_url,
             username,
             password,
+            emplacement: self.emplacement,
+            modes: self.modes,
         })
     }
 }
@@ -533,6 +556,8 @@ pub struct CameraAdmin {
     pub has_password: bool,
     pub status: CameraStatus,
     pub stream: Option<StreamInfo>,
+    pub emplacement: CameraPlacement,
+    pub modes: CameraModes,
 }
 
 /// Les caméras et leur état de joignabilité (qui n'est pas enregistré).
@@ -585,6 +610,8 @@ impl CameraBook {
     /// Le mode démo : des caméras factices avec un état fixe, sans réseau.
     pub fn demo() -> Self {
         let camera = |n: u64, name: &str, sub: bool| StoredCamera {
+            emplacement: CameraPlacement::Exterieure,
+            modes: CameraModes::for_placement(CameraPlacement::Exterieure),
             id: CAMERA_ID_MIN + n,
             name: name.into(),
             // Adresses de documentation (RFC 5737) : jamais routées.
@@ -642,12 +669,23 @@ impl CameraBook {
         self.cameras.iter().find(|c| c.id == id)
     }
 
+    /// Ce que fait la caméra dans ce mode (`None` : caméra inconnue).
+    pub fn behavior(&self, id: u64, mode: HomeMode) -> Option<CameraBehavior> {
+        self.get(id).map(|c| c.behavior(mode))
+    }
+
     pub fn ids(&self) -> Vec<u64> {
         self.cameras.iter().map(|c| c.id).collect()
     }
 
-    /// Ce que voient les clients, trié par nom (puis par identifiant).
+    /// Ce que voient les clients, trié par nom (puis par identifiant), sans tenir compte du mode.
     pub fn views(&self) -> Vec<CameraView> {
+        self.views_in(None)
+    }
+
+    /// Comme `views`, avec le mode de la maison : une caméra éteinte dans ce mode montre l'état
+    /// neutre `Off` (aucune connexion n'est ouverte vers elle, on ne sait rien de sa joignabilité).
+    pub fn views_in(&self, mode: Option<HomeMode>) -> Vec<CameraView> {
         let mut views: Vec<CameraView> = self
             .cameras
             .iter()
@@ -657,12 +695,19 @@ impl CameraBook {
                     .get(&c.id)
                     .cloned()
                     .unwrap_or_else(Health::unknown);
+                let off = mode.is_some_and(|m| c.behavior(m) == CameraBehavior::Eteinte);
                 CameraView {
                     id: c.id,
                     name: c.name.clone(),
-                    status: health.status,
+                    status: if off {
+                        CameraStatus::Off
+                    } else {
+                        health.status
+                    },
                     has_sub_stream: c.has_sub_stream(),
                     stream: health.stream,
+                    emplacement: c.emplacement,
+                    modes: c.modes,
                 }
             })
             .collect();
@@ -677,7 +722,12 @@ impl CameraBook {
 
     /// La liste pour la fenêtre du serveur (sans mot de passe), triée comme celle des clients.
     pub fn admin_list(&self) -> Vec<CameraAdmin> {
-        self.views()
+        self.admin_list_in(None)
+    }
+
+    /// Comme `admin_list`, avec le mode de la maison (voir `views_in`).
+    pub fn admin_list_in(&self, mode: Option<HomeMode>) -> Vec<CameraAdmin> {
+        self.views_in(mode)
             .into_iter()
             .filter_map(|view| {
                 let c = self.get(view.id)?;
@@ -690,6 +740,8 @@ impl CameraBook {
                     has_password: c.password.is_some(),
                     status: view.status,
                     stream: view.stream,
+                    emplacement: c.emplacement,
+                    modes: c.modes,
                 })
             })
             .collect()

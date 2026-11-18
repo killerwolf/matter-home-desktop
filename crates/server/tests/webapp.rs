@@ -21,6 +21,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/temps.js", "text/javascript"),
     ("/app/cameras.js", "text/javascript"),
     ("/app/plan.js", "text/javascript"),
+    ("/app/mode.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
@@ -133,6 +134,52 @@ fn plan_page_is_wired_into_the_shell_and_cached_by_the_service_worker() {
     });
 }
 
+/// Ticket n° 8 : la pastille du mode est dans la coquille, branchée sur le snapshot, l'événement
+/// `mode_changed` et `PUT /api/mode` ; le service worker change de version et garde `mode.js`.
+#[test]
+fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
+    let dir = temp_dir("webapp-mode");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let html = client.request("GET", "/app/", None, None).await.text();
+        assert!(html.contains(r#"id="mode-chip""#), "pastille absente");
+        assert!(html.contains(r#"id="mode-menu""#) && html.contains(r#"role="menu""#));
+        let app = client
+            .request("GET", "/app/app.js", None, None)
+            .await
+            .text();
+        assert!(app.contains(r#"from "./mode.js""#));
+        // Le mode arrive par le snapshot et `mode_changed` ; le changement passe par la seule
+        // route `PUT /api/mode`, avec le jeton de session de la page (jamais le jeton de mode).
+        assert!(app.contains("mode_changed") && app.contains("s.mode"));
+        // Un serveur sans modes : pas de pastille.
+        assert!(app.contains("!state.hasMode"));
+        assert!(app.contains(r#"api.request("PUT", "/api/mode""#));
+        assert!(!app.contains("jeton-mode") && !app.contains("mode_token"));
+        // Une caméra éteinte n'ouvre ni flux ni image fixe.
+        assert!(app.contains("cameraOff(cam, state.mode)"));
+        let mode = client.request("GET", "/app/mode.js", None, None).await;
+        assert_eq!(mode.status, 200);
+        let js = mode.text();
+        assert!(!js.contains("eval(") && !js.contains("innerHTML"));
+        // Ses quatre modes sont ceux du serveur.
+        for key in ["present", "absent", "nuit", "vacances"] {
+            assert!(js.contains(&format!("\"{key}\"")), "{key}");
+        }
+        let sw = client.request("GET", "/app/sw.js", None, None).await.text();
+        assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
+        assert!(
+            sw.contains("matter-home-shell-v4"),
+            "le cache du service worker doit changer de version"
+        );
+        // Le serveur de démonstration envoie bien le mode dans l'état complet.
+        let token = client.login().await;
+        let state = client.get("/api/state", &token).await.json();
+        assert_eq!(state["mode"], "present");
+    });
+}
+
 #[test]
 fn served_design_tokens_are_the_design_system_file() {
     let dir = temp_dir("webapp-tokens");
@@ -186,7 +233,7 @@ fn api_still_needs_a_token_and_the_shell_carries_no_house_data() {
             ("GET", "/api/devices/1/history"),
             ("POST", "/api/devices/1/on-off"),
             ("POST", "/api/devices/1/cover"),
-            ("GET", "/api/ws?protocol=2"),
+            ("GET", "/api/ws?protocol=3"),
             ("GET", "/api/cameras/18446744073709551615/stream"),
         ] {
             let r = client.request(method, path, None, Some(b"{}")).await;
@@ -259,7 +306,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         // `matter-home.v1`, jamais avec l'entrée qui porte le jeton.
         let (chosen, hello) = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             &format!("matter-home.v1, bearer.{token}"),
             None,
             None,
@@ -273,7 +320,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         // Un mauvais jeton : refusé.
         let refused = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             &format!("matter-home.v1, bearer.{}", "1".repeat(64)),
             None,
             None,
@@ -355,7 +402,7 @@ fn subprotocol_token_is_only_for_the_two_websocket_routes_with_a_real_upgrade() 
         ] {
             let mut headers = extra.clone();
             headers.push(("Sec-WebSocket-Protocol", &bearer));
-            let (status, _) = raw_get(&client, "/api/ws?protocol=2", &headers).await;
+            let (status, _) = raw_get(&client, "/api/ws?protocol=3", &headers).await;
             assert_eq!(status, 401, "{extra:?}");
         }
     });
@@ -372,7 +419,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         let same = format!("https://localhost:{}", client.addr.port());
         // Même origine que l'hôte : accepté.
         assert!(
-            ws_with_protocols(&client, "/api/ws?protocol=2", &protocols, None, Some(&same))
+            ws_with_protocols(&client, "/api/ws?protocol=3", &protocols, None, Some(&same))
                 .await
                 .is_ok()
         );
@@ -380,7 +427,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         for origin in ["https://evil.example", "http://localhost", "null"] {
             let refused = ws_with_protocols(
                 &client,
-                "/api/ws?protocol=2",
+                "/api/ws?protocol=3",
                 &protocols,
                 None,
                 Some(origin),
@@ -393,7 +440,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         let bearer = format!("Bearer {token}");
         let refused = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             "matter-home.v1",
             Some(&bearer),
             Some("https://evil.example"),

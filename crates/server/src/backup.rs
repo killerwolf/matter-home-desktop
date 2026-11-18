@@ -3,7 +3,8 @@
 //!
 //! Le fichier est un JSON qui embarque les fichiers du dossier de données :
 //! `controller.json`, `maison.json`, `regles.json`, `cameras.json` (adresses et **mots de passe**
-//! des caméras RTSP, en clair comme les clés du contrôleur) et `history/*.jsonl`.
+//! des caméras RTSP, en clair comme les clés du contrôleur), `mode.json` (le mode global de la
+//! maison) et `history/*.jsonl`.
 //!
 //! # Import
 //!
@@ -53,6 +54,7 @@ const PENDING: &str = "import-en-attente.matterhome";
 const PLAN: &str = "maison.json";
 const RULES: &str = "regles.json";
 const CAMERAS: &str = crate::cameras::FILE_NAME;
+const MODE: &str = crate::home_mode::FILE_NAME;
 /// Suffixes des dossiers voisins du dossier de données pendant un import.
 const PARTIAL_SUFFIX: &str = ".import-partiel";
 const NEW_SUFFIX: &str = ".import-nouveau";
@@ -159,7 +161,7 @@ impl std::error::Error for StageError {}
 
 /// Seuls ces fichiers sont exportés et acceptés à l'import : jamais de chemin libre.
 fn is_allowed(name: &str) -> bool {
-    if matches!(name, FILE_NAME | PLAN | RULES | CAMERAS) {
+    if matches!(name, FILE_NAME | PLAN | RULES | CAMERAS | MODE) {
         return true;
     }
     name.strip_prefix("history/")
@@ -247,6 +249,13 @@ fn summarize(bundle: &Bundle, strict: bool) -> Result<Summary, Invalid> {
             Ok(file)
         })
         .transpose()?;
+
+    // Le mode global : un mot connu et la bonne version, sinon la sauvegarde est refusée.
+    if strict {
+        if let Some(text) = bundle.files.get(MODE) {
+            crate::home_mode::ModeFile::parse(text).map_err(Invalid)?;
+        }
+    }
 
     Ok(Summary {
         created: bundle.created.clone(),
@@ -428,7 +437,7 @@ pub fn export(dir: &Path, dest: &Path) -> Result<Summary> {
 /// Elle contient les clés privées en clair.
 pub fn export_to_string(dir: &Path) -> Result<(String, Summary)> {
     let mut files = BTreeMap::new();
-    for name in [FILE_NAME, PLAN, RULES, CAMERAS] {
+    for name in [FILE_NAME, PLAN, RULES, CAMERAS, MODE] {
         let path = dir.join(name);
         if path.exists() {
             let text = std::fs::read_to_string(&path)
@@ -1490,6 +1499,7 @@ mod tests {
                 sub_url: "rtsp://192.0.2.9:554/live/ch00_1".into(),
                 username: "admin".into(),
                 password: Some("mdp-de-la-camera".into()),
+                ..Default::default()
             })
             .unwrap();
         }
@@ -1498,6 +1508,36 @@ mod tests {
             cameras: book.cameras().to_vec(),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn the_home_mode_travels_with_the_backup_and_a_bad_one_is_refused() {
+        assert!(is_allowed("mode.json"));
+        let base = temp("home-mode");
+        let old = sample_dir(&base);
+        crate::home_mode::save(&old, protocol::mode::HomeMode::Vacances).unwrap();
+        let (text, _) = export_to_string(&old).unwrap();
+        assert!(inspect_text(&text).is_ok());
+        let dest = base.join("export.matterhome");
+        export(&old, &dest).unwrap();
+        let new = base
+            .join("neuf")
+            .join("dev.matter-home-desktop.MatterHomeDesktop");
+        std::fs::create_dir_all(&new).unwrap();
+        stage_import(&new, &dest).unwrap();
+        apply_pending(&new).unwrap().unwrap();
+        assert_eq!(
+            crate::home_mode::load(&new),
+            protocol::mode::HomeMode::Vacances
+        );
+        // Un mode inconnu refuse toute la sauvegarde.
+        let bad = bundle_text(&[
+            (FILE_NAME, controller("X")),
+            (MODE, r#"{"version":1,"mode":"dehors"}"#.into()),
+        ]);
+        let why = inspect_text(&bad).unwrap_err().0;
+        assert!(why.contains("mode.json"), "{why}");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

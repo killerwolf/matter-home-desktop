@@ -131,6 +131,8 @@ pub enum SubscribeError {
     UnknownCamera,
     /// La caméra n'a pas ce flux (pas de flux réduit configuré).
     NoSuchStream,
+    /// La caméra est éteinte dans le mode actuel de la maison.
+    Off,
 }
 
 #[derive(Clone)]
@@ -475,6 +477,10 @@ impl LiveRegistry {
         kind: StreamKind,
     ) -> Result<Subscription, SubscribeError> {
         let mut map = self.map();
+        // Sous le verrou du registre : une caméra éteinte ne rejoint ni n'ouvre aucune session.
+        if hub.camera_is_off(id) {
+            return Err(SubscribeError::Off);
+        }
         if let Some(session) = map.get(&(id, kind)) {
             if !session.ended() {
                 return Ok(session.join());
@@ -482,9 +488,14 @@ impl LiveRegistry {
             map.remove(&(id, kind));
         }
         // Le témoin dit aussi si la caméra existe.
-        let lease = hub
-            .acquire_camera_viewer(id)
-            .ok_or(SubscribeError::UnknownCamera)?;
+        let lease = hub.acquire_camera_viewer(id).ok_or_else(|| {
+            // Éteinte entre-temps (le mode vient de changer) : un refus clair, pas un 404.
+            if hub.camera_is_off(id) {
+                SubscribeError::Off
+            } else {
+                SubscribeError::UnknownCamera
+            }
+        })?;
         let target = hub
             .camera_target(id, kind)
             .ok_or(SubscribeError::NoSuchStream)?;
@@ -522,6 +533,9 @@ impl LiveRegistry {
         hub: &Arc<Hub>,
         id: u64,
     ) -> Result<Subscription, SubscribeError> {
+        if hub.camera_is_off(id) {
+            return Err(SubscribeError::Off);
+        }
         {
             let map = self.map();
             let open = [StreamKind::Sub, StreamKind::Main]

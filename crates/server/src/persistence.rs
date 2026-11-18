@@ -308,7 +308,12 @@ pub fn check_fresh_start(dir: &Path) -> Result<()> {
         );
     }
     let mut found = Vec::new();
-    for name in ["maison.json", "regles.json", crate::cameras::FILE_NAME] {
+    for name in [
+        "maison.json",
+        "regles.json",
+        crate::cameras::FILE_NAME,
+        crate::home_mode::FILE_NAME,
+    ] {
         if dir.join(name).exists() {
             found.push(name.to_string());
         }

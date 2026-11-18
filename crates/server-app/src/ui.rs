@@ -401,6 +401,11 @@ struct App {
     menu_was_open: bool,
     /// Le lien d'autorisation de Serve, gardé jusqu'à la prochaine tentative d'activation.
     web_auth_url: Option<String>,
+    /// Le jeton de mode qui vient d'être généré, en clair : montré une seule fois (il disparaît
+    /// quand on le valide ou qu'on cache la fenêtre ; le serveur n'en garde que l'empreinte).
+    mode_token_shown: Option<String>,
+    /// « Générer un nouveau jeton » demande une confirmation : l'ancien cessera de marcher.
+    mode_token_confirm: bool,
 }
 
 impl App {
@@ -435,6 +440,8 @@ impl App {
             web_stale: true,
             menu_was_open: false,
             web_auth_url: None,
+            mode_token_shown: None,
+            mode_token_confirm: false,
         };
         // Application déplacée : l'agent pointait ailleurs, on le réécrit.
         if !app.demo {
@@ -529,6 +536,9 @@ impl App {
             self.show_done = false;
             self.setup_session = false;
         }
+        // Un jeton montré une seule fois ne reste pas à l'écran d'une fenêtre qu'on cache.
+        self.mode_token_shown = None;
+        self.mode_token_confirm = false;
         self.visible = false;
         self.hide_sent = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -652,6 +662,18 @@ impl App {
                 self.show_window(ctx);
             }
             Action::Quit => self.ask_quit(),
+            Action::Mode(mode) => {
+                if let Some(hub) = &st.hub {
+                    if let Err(e) = hub.0.set_mode(mode) {
+                        log::warn!("mode non changé depuis le menu : {e:?}");
+                        self.local_notice =
+                            Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
+                    }
+                }
+                // Un clic sur le mode déjà coché le décoche côté système sans que le modèle
+                // change : on redessine le menu pour remettre la coche.
+                self.shown_menu.clear();
+            }
         }
     }
 
@@ -695,6 +717,7 @@ impl App {
             login_enabled: self.login_enabled,
             desktop_doubt: st.desktop_doubt,
             login_available: self.login_available(),
+            mode: st.hub.as_ref().map(|h| h.0.mode()),
         });
         match plan_menu(&self.shown_menu, &model) {
             MenuPlan::Keep => {}
@@ -1104,6 +1127,98 @@ impl App {
         }
     }
 
+    /// Le mode de la maison et le jeton de mode (Raccourcis de l'iPhone) : le jeton n'est montré
+    /// qu'à sa création ; ensuite le serveur n'en connaît que l'empreinte.
+    fn mode_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
+        let p = matter_home_theme::palette(ui);
+        let space = matter_home_theme::tokens().space;
+        ui.label(RichText::new("Mode de la maison").strong());
+        ui.label(format!("Mode actuel : {}", hub.mode().label()));
+        ui.add_space(space.xs);
+        ui.label(RichText::new("Changer de mode avec Raccourcis (iPhone)").strong());
+        if let Some(token) = self.mode_token_shown.clone() {
+            ui.colored_label(
+                p.ok,
+                "Nouveau jeton de mode. Copiez-le maintenant : il ne sera plus jamais affiché.",
+            );
+            copy_row(ui, "Jeton de mode", &token);
+            if ui.button("J'ai copié le jeton").clicked() {
+                self.mode_token_shown = None;
+            }
+        } else {
+            let has = hub.has_mode_token();
+            ui.label(if has {
+                "Un jeton de mode est configuré (il ne peut pas être réaffiché)."
+            } else {
+                "Aucun jeton de mode : une automatisation Raccourcis ne peut pas changer le mode."
+            });
+            if self.mode_token_confirm {
+                ui.colored_label(
+                    p.error,
+                    "L'ancien jeton cessera de fonctionner : les automatisations déjà créées sur l'iPhone devront être mises à jour.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Oui, générer un nouveau jeton").clicked() {
+                        self.generate_mode_token(hub);
+                    }
+                    if ui.button("Annuler").clicked() {
+                        self.mode_token_confirm = false;
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    let label = if has {
+                        "Générer un nouveau jeton…"
+                    } else {
+                        "Générer un jeton de mode"
+                    };
+                    if ui.button(label).clicked() {
+                        if has {
+                            self.mode_token_confirm = true;
+                        } else {
+                            self.generate_mode_token(hub);
+                        }
+                    }
+                    if has && ui.button("Révoquer le jeton").clicked() {
+                        match hub.revoke_mode_token() {
+                            Ok(()) => {
+                                self.local_notice =
+                                    Some(Notice::Ok("Jeton de mode révoqué.".into()));
+                            }
+                            Err(_) => {
+                                self.local_notice = Some(Notice::Err(
+                                    "Le jeton n'a pas pu être révoqué (voir le journal).".into(),
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        ui.add_space(space.xs);
+        ui.label(
+            RichText::new(
+                "Dans Raccourcis : Automatisation personnelle, action « Obtenir le contenu de l'URL » \
+                 (méthode PUT, en-tête Authorization : Bearer <jeton>, corps JSON {\"mode\": \"absent\"}). \
+                 Ce jeton ne sert qu'à changer le mode. Pas à pas : docs/modes.md.",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+    }
+
+    fn generate_mode_token(&mut self, hub: &Arc<matter_home_server::hub::Hub>) {
+        self.mode_token_confirm = false;
+        match hub.generate_mode_token() {
+            Ok(token) => self.mode_token_shown = Some(token),
+            Err(_) => {
+                self.local_notice = Some(Notice::Err(
+                    "Le jeton n'a pas pu être créé (voir le journal).".into(),
+                ));
+            }
+        }
+    }
+
     fn settings_page(&mut self, ui: &mut egui::Ui, st: &State) {
         ui.heading("Matter Home Server");
         ui.add_space(4.0);
@@ -1152,6 +1267,11 @@ impl App {
                 }
                 ui.add_space(6.0);
                 ui.separator();
+                if let Some(hub) = &st.hub {
+                    self.mode_section(ui, &hub.0);
+                    ui.add_space(6.0);
+                    ui.separator();
+                }
                 ui.label(RichText::new("Compte").strong());
                 if self.change_account {
                     self.account_page(ui, st, true);
@@ -1308,6 +1428,7 @@ mod tests {
             login_enabled: login,
             desktop_doubt: false,
             login_available: true,
+            mode: Some(protocol::mode::HomeMode::Present),
         })
     }
 

@@ -90,6 +90,12 @@ pas de framework, pas de nouvelle dépendance Rust.
   - **Essais** : `node crates/server/web/plan.test.mjs` (géométrie : ajustement, pincement, bornes,
     comme `charts.test.mjs`, à la main) et des tests du serveur (fichier servi avec la CSP stricte,
     service worker, onglet).
+- **Mode de la maison** (ticket n° 8) : `mode.js` (libellés, caméra éteinte ou non, sans dépendance). La
+  pastille « Mode : … » de la barre du haut suit le `mode` du snapshot et l'événement `mode_changed` ;
+  un tap ouvre un petit menu de quatre choix (`PUT /api/mode` avec le jeton de session de la page, la
+  pastille ne change qu'à la confirmation du serveur). Une caméra éteinte dans le mode actuel n'ouvre ni
+  flux ni image fixe (« Éteinte en mode Nuit »). Essai : `node crates/server/web/mode.test.mjs`. Le
+  cache du service worker passe en `v4`.
 - Barre d'onglets en bas (style iOS), `safe-area-inset` respecté, thème clair ou sombre selon le
   système. Installable (manifeste + service worker qui garde la coquille ; **jamais** `/api/`).
 - Hors périmètre : la **modification** du plan (elle reste dans l'application de bureau) et les automatisations.
@@ -97,7 +103,7 @@ pas de framework, pas de nouvelle dépendance Rust.
 ## Fichiers
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
-`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
+`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
 192 et 512). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 

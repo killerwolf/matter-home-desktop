@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::automation::{CoverCommand, OnOffCommand, Rule};
 use crate::home::Symbol;
+use crate::mode::HomeMode;
 
 /// Commandes envoyées par l'interface.
 #[derive(Debug, Clone)]
@@ -25,6 +26,9 @@ pub enum Command {
     SetRules(Vec<Rule>),
     /// Exécuter tout de suite les actions d'une règle (bouton « Tester »).
     TestRule(u64),
+    /// Le mode de la maison vient de changer (déjà enregistré par le serveur) : le moteur
+    /// d'automatisations le retient et déclenche les règles « Quand le mode devient… ».
+    SetHomeMode(HomeMode),
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {
         node_id: u64,
@@ -198,6 +202,11 @@ pub enum Event {
         message: String,
         at: f64,
     },
+    /// Le mode global de la maison a changé (le client le met à son journal).
+    HomeModeChanged(HomeMode),
+    /// Une règle demande ce mode (`Action::SetMode`) : le serveur le prend en compte comme une
+    /// demande d'API (rien ne part vers les clients sous cette forme).
+    HomeModeRequested(HomeMode),
     PairingProgress(String),
     PairingDone {
         node_id: u64,

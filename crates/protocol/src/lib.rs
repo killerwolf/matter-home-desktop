@@ -9,4 +9,5 @@ pub mod downsample;
 pub mod events;
 pub mod format;
 pub mod home;
+pub mod mode;
 pub mod wire;

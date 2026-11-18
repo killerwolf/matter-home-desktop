@@ -15,6 +15,8 @@ use matter_home_server_app::cameras::{
     AQARA_TITLE, BACKUP_NOTE, NO_SUB_NOTE,
 };
 use matter_home_theme as theme;
+use protocol::mode::HomeMode;
+use protocol::wire::{CameraBehavior, CameraPlacement};
 
 #[derive(Default)]
 pub struct CamerasUi {
@@ -260,6 +262,8 @@ impl CamerasUi {
         }
 
         ui.add_space(6.0);
+        modes_ui(ui, form);
+        ui.add_space(6.0);
         egui::CollapsingHeader::new(AQARA_TITLE).show(ui, |ui| {
             ui.label(RichText::new(AQARA_HINT).color(p.text_secondary));
         });
@@ -350,6 +354,53 @@ impl CamerasUi {
             self.close_form();
         }
     }
+}
+
+/// L'emplacement de la caméra et son comportement dans chaque mode de la maison (ticket n° 8).
+/// Choisir l'emplacement pré-remplit le tableau ; chaque ligne reste modifiable.
+fn modes_ui(ui: &mut egui::Ui, form: &mut Form) {
+    let p = theme::palette(ui);
+    let space = theme::tokens().space;
+    ui.label(RichText::new("Emplacement et modes de la maison").strong());
+    ui.horizontal(|ui| {
+        ui.label("Emplacement");
+        let mut chosen = form.emplacement;
+        egui::ComboBox::from_id_salt("camera_emplacement")
+            .selected_text(chosen.label())
+            .show_ui(ui, |ui| {
+                for placement in CameraPlacement::ALL {
+                    ui.selectable_value(&mut chosen, placement, placement.label());
+                }
+            });
+        form.set_emplacement(chosen);
+    });
+    ui.add_space(space.xs);
+    egui::Grid::new("camera_modes")
+        .num_columns(2)
+        .spacing([space.md, space.xs])
+        .show(ui, |ui| {
+            for mode in HomeMode::ALL {
+                ui.label(mode.label());
+                let mut behavior = form.modes.get(mode);
+                egui::ComboBox::from_id_salt(("camera_mode", mode.key()))
+                    .selected_text(behavior.label())
+                    .show_ui(ui, |ui| {
+                        for option in CameraBehavior::ALL {
+                            ui.selectable_value(&mut behavior, option, option.label());
+                        }
+                    });
+                form.modes.set(mode, behavior);
+                ui.end_row();
+            }
+        });
+    ui.label(
+        RichText::new(
+            "Éteinte : ni direct ni image dans ce mode. Diffusion : on peut la regarder. \
+             Surveillance : comme Diffusion pour l'instant (la détection viendra plus tard).",
+        )
+        .small()
+        .color(p.text_secondary),
+    );
 }
 
 /// Le résultat du test d'un flux, sous son adresse.

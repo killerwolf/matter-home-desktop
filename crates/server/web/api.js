@@ -3,7 +3,7 @@
 // natif garde le sien dans connexion.json : il est révocable (POST /api/logout) et expire côté
 // serveur. Il ne part jamais dans une URL : en-tête Authorization pour le REST, sous-protocole
 // WebSocket pour le temps réel (un navigateur ne peut pas poser d'en-tête sur un WebSocket).
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 const KEY = "matter-home.session";
 const SUBPROTOCOL = "matter-home.v1";
 

@@ -24,6 +24,11 @@ possède quoi, pour que leurs fusions ne se marchent pas dessus, et ce qui est d
   hexadécimal, rien d'autre.
 - **Une caméra regardée a un spectateur** (`Hub::acquire_camera_viewer`). Sans spectateur, le
   serveur n'ouvre aucune connexion vers elle ; avec, il n'en ouvre qu'une par flux.
+- **Une caméra éteinte n'a ni spectateur ni cible** (ticket n° 8, [Modes](modes.md)) : dans un mode où
+  son comportement est « Éteinte », `Hub::acquire_camera_viewer` et `Hub::camera_target` ne rendent
+  rien, le direct et l'image fixe répondent `503 unavailable` (« caméra éteinte en mode … »), et une
+  lecture ouverte se ferme d'elle-même (la cible disparaît, comme pour une caméra supprimée).
+  « Surveillance » se comporte comme « Diffusion » jusqu'au ticket de détection.
 - **Personne ne touche `CHANGELOG.md` ni `docs/protocole.md`** pendant la phase parallèle : chaque
   agent note ce qu'il aurait écrit dans son compte rendu, la fusion les rédige.
 - **Seul le ticket n° 5 modifie `Cargo.toml` et `Cargo.lock`** (décodeur vidéo). Si #6 ou #7 a besoin

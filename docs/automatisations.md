@@ -9,9 +9,9 @@ de la règle sélectionnée et le journal des dernières exécutions.
 
 | | Possibilités |
 |---|---|
-| **Quand** | une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
-| **Si** (toutes les conditions) | plage horaire (elle peut passer minuit : 22:00 → 07:00) ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
-| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes |
+| **Quand** | le mode de la maison devient Présent, Absent, Nuit ou Vacances (voir [Modes](modes.md)) ; une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
+| **Si** (toutes les conditions) | plage horaire (elle peut passer minuit : 22:00 → 07:00) ; le mode de la maison est l'un des modes cochés (« Absent ou Vacances ») ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
+| **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes ; changer le mode de la maison (voir [Modes](modes.md)) |
 
 **« ▶ Tester »** exécute les actions tout de suite, sans vérifier « Quand » ni « Si ».
 
@@ -27,6 +27,10 @@ de la règle sélectionnée et le journal des dernières exécutions.
 - **Volets du soir** — Quand : à 21:30. Alors : fermer le volet du salon, ouvrir à 20 % celui
   de la cuisine. L'ouverture d'un volet ne sert de seuil que si le moteur connaît sa position.
 
+- **Alerte de porte selon le mode** — Quand : la porte d'entrée s'ouvre. Si : le mode est Absent
+  ou Vacances. Alors : notifier « {appareil} ouverte à {heure} ».
+- **Accueil** — Quand : le mode devient Présent. Alors : allumer la lampe de l'entrée.
+
 ## Textes et variables
 
 Les textes des notifications et des webhooks acceptent :
@@ -34,7 +38,7 @@ Les textes des notifications et des webhooks acceptent :
 | Variable | Remplacée par |
 |---|---|
 | `{appareil}` | nom de l'appareil qui a déclenché la règle |
-| `{valeur}` | valeur ou état (« ouverte », « 26,40 °C », « allumée »…) |
+| `{valeur}` | valeur ou état (« ouverte », « 26,40 °C », « allumée »…, ou le nom du mode pour « Quand le mode devient… ») |
 | `{heure}` | heure du déclenchement (HH:MM) |
 | `{regle}` | nom de la règle |
 
@@ -57,6 +61,9 @@ ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
 - **Seuils** : une règle ne se déclenche qu'une fois tant que le seuil reste franchi ; elle
   se réarme quand la mesure repasse de l'autre côté. Un seuil déjà franchi au démarrage se
   déclenche à la première mesure reçue.
+- **Mode** : une règle « Quand le mode devient X » ne se lance que sur un **changement** : redemander
+  le mode actuel, ou le mode lu au démarrage du serveur, ne déclenche rien. Dans « Seulement si », au
+  moins un mode doit être coché (le serveur refuse une condition sans mode).
 - **Changements uniquement** : au démarrage ou à la reconnexion, la première valeur connue
   d'un appareil ne déclenche rien, pas plus que les mesures relues de l'historique.
 - **Commandes** : une prise, une lampe ou un volet ne peut être commandé que si l'appareil

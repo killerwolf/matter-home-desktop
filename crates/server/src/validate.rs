@@ -53,10 +53,24 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
             }
         }
         for cond in &rule.conditions {
-            if let Condition::TimeBetween { from, to } = cond {
-                if [from, to].iter().any(|(h, m)| *h > 23 || *m > 59) {
-                    return Err(bad("heure invalide"));
+            match cond {
+                Condition::TimeBetween { from, to } => {
+                    if [from, to].iter().any(|(h, m)| *h > 23 || *m > 59) {
+                        return Err(bad("heure invalide"));
+                    }
                 }
+                // Une condition de mode sans mode ne serait jamais vraie : on la refuse plutôt
+                // que de laisser une règle muette sans explication.
+                Condition::Mode { is } => {
+                    if is.is_empty() {
+                        return Err(bad("condition de mode sans aucun mode"));
+                    }
+                    let distinct: HashSet<_> = is.iter().collect();
+                    if distinct.len() != is.len() {
+                        return Err(bad("mode répété dans une condition"));
+                    }
+                }
+                _ => {}
             }
         }
         for action in &rule.actions {
@@ -78,6 +92,16 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
                             "adresse de webhook invalide (http:// ou https:// attendu, sans espace)",
                         ));
                     }
+                }
+                // Anti-boucle : une règle « quand le mode devient X » qui change le mode garde un
+                // délai minimal (deux règles se renvoyant la balle sont bornées par ce délai).
+                Action::SetMode { .. }
+                    if matches!(rule.trigger, Trigger::Mode { .. })
+                        && rule.cooldown_s < protocol::automation::MIN_MODE_COOLDOWN_S =>
+                {
+                    return Err(bad(
+                        "une règle qui change le mode quand le mode change doit attendre au moins 10 s entre deux exécutions",
+                    ));
                 }
                 Action::Delay { seconds } if *seconds > MAX_DELAY_S => {
                     return Err(bad("attente trop longue (une heure au plus)"));
@@ -223,6 +247,50 @@ mod tests {
         assert_eq!(plan(&none).unwrap_err().code, ErrorCode::PlanWithoutFloor);
         p.floors[0].name = "x".repeat(MAX_NAME + 1);
         assert!(plan(&p).is_err());
+    }
+
+    #[test]
+    fn mode_conditions_need_at_least_one_distinct_mode() {
+        use protocol::mode::HomeMode;
+        let mut set = RuleSet::default();
+        set.rules.push(Rule::new(1));
+        set.rules[0].trigger = Trigger::Mode {
+            to: HomeMode::Absent,
+        };
+        set.rules[0].conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Nuit, HomeMode::Vacances],
+        }];
+        assert!(rules(&set).is_ok());
+        set.rules[0].conditions = vec![Condition::Mode { is: vec![] }];
+        assert!(rules(&set).is_err());
+        set.rules[0].conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Nuit, HomeMode::Nuit],
+        }];
+        assert!(rules(&set).is_err());
+    }
+
+    #[test]
+    fn a_mode_rule_that_sets_the_mode_needs_a_cooldown() {
+        use protocol::mode::HomeMode;
+        let mut set = RuleSet::default();
+        let mut rule = Rule::new(1);
+        rule.trigger = Trigger::Mode { to: HomeMode::Nuit };
+        rule.actions = vec![Action::SetMode {
+            mode: HomeMode::Absent,
+        }];
+        rule.cooldown_s = 0;
+        set.rules.push(rule);
+        assert!(rules(&set).is_err());
+        set.rules[0].cooldown_s = 10;
+        assert!(rules(&set).is_ok());
+        // Une règle horaire qui change le mode n'a pas cette contrainte.
+        set.rules[0].trigger = Trigger::Time {
+            hour: 23,
+            minute: 0,
+            days: [true; 7],
+        };
+        set.rules[0].cooldown_s = 0;
+        assert!(rules(&set).is_ok());
     }
 
     #[test]

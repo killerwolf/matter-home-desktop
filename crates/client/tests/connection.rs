@@ -234,7 +234,8 @@ fn incompatible_protocol_is_reported_clearly() {
     match link {
         Link::Incompatible { message } => {
             assert!(
-                message.contains("version 99") && message.contains("version 2"),
+                message.contains("version 99")
+                    && message.contains(&format!("version {}", protocol::wire::PROTOCOL_VERSION)),
                 "{message}"
             )
         }

@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::text_ids::text_id;
+use crate::mode::HomeMode;
 
 /// Plage dans laquelle le serveur tire les identifiants de **nouvelles** caméras : 2^35 valeurs
 /// tout en haut de l'espace 64 bits, que Matter réserve (jamais attribuée à un nœud appairé).
@@ -137,6 +138,9 @@ pub enum CameraStatus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
     },
+    /// Éteinte dans le mode actuel de la maison (ticket n° 8) : aucune connexion n'est ouverte vers
+    /// elle, on ne sait donc rien de sa joignabilité. Un client plus ancien le lit `unknown`.
+    Off,
     /// Pas encore vérifiée (ajout ou démarrage récent). Aussi lu quand un serveur plus récent
     /// envoie un état que ce client ne connaît pas : il l'affiche comme « inconnu ».
     #[serde(other)]
@@ -157,6 +161,121 @@ pub struct StreamInfo {
     pub height: Option<u32>,
 }
 
+/// Où est la caméra : le choix pré-remplit son comportement par mode (voir [`CameraModes`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraPlacement {
+    /// Dans la maison : éteinte quand on est là.
+    Interieure,
+    /// Dehors : on la regarde et on la surveille. **Valeur des caméras déjà enregistrées**
+    /// (ticket n° 8) : elles se comportent comme avant (jamais éteintes).
+    #[default]
+    Exterieure,
+}
+
+impl CameraPlacement {
+    pub const ALL: [CameraPlacement; 2] =
+        [CameraPlacement::Interieure, CameraPlacement::Exterieure];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CameraPlacement::Interieure => "Intérieure",
+            CameraPlacement::Exterieure => "Extérieure",
+        }
+    }
+}
+
+/// Ce que fait une caméra dans un mode de la maison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraBehavior {
+    /// Éteinte : le serveur refuse le direct et les images fixes, et ferme les lectures en cours.
+    Eteinte,
+    /// On peut la regarder (direct et images fixes).
+    Diffusion,
+    /// Regardable comme en `Diffusion`, et destinée à la détection (ticket ultérieur : pour
+    /// l'instant les deux se comportent pareil).
+    Surveillance,
+}
+
+impl CameraBehavior {
+    pub const ALL: [CameraBehavior; 3] = [
+        CameraBehavior::Eteinte,
+        CameraBehavior::Diffusion,
+        CameraBehavior::Surveillance,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CameraBehavior::Eteinte => "Éteinte",
+            CameraBehavior::Diffusion => "Diffusion",
+            CameraBehavior::Surveillance => "Surveillance",
+        }
+    }
+
+    /// Le serveur sert-il le direct et les images fixes ? (Tout sauf `Eteinte`.)
+    pub fn is_viewable(self) -> bool {
+        !matches!(self, CameraBehavior::Eteinte)
+    }
+}
+
+/// Le comportement d'une caméra dans chacun des quatre modes. Tout champ absent d'un ancien
+/// fichier vaut la valeur d'une caméra **extérieure** (`CameraModes::default()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraModes {
+    pub present: CameraBehavior,
+    pub absent: CameraBehavior,
+    pub nuit: CameraBehavior,
+    pub vacances: CameraBehavior,
+}
+
+impl Default for CameraModes {
+    fn default() -> Self {
+        CameraModes::for_placement(CameraPlacement::Exterieure)
+    }
+}
+
+impl CameraModes {
+    /// Le tableau proposé pour un emplacement. Extérieure : diffusion quand on est là,
+    /// surveillance sinon. Intérieure : éteinte présent et nuit, surveillance absent et vacances.
+    pub fn for_placement(placement: CameraPlacement) -> CameraModes {
+        use CameraBehavior::*;
+        match placement {
+            CameraPlacement::Exterieure => CameraModes {
+                present: Diffusion,
+                absent: Surveillance,
+                nuit: Surveillance,
+                vacances: Surveillance,
+            },
+            CameraPlacement::Interieure => CameraModes {
+                present: Eteinte,
+                absent: Surveillance,
+                nuit: Eteinte,
+                vacances: Surveillance,
+            },
+        }
+    }
+
+    pub fn get(&self, mode: HomeMode) -> CameraBehavior {
+        match mode {
+            HomeMode::Present => self.present,
+            HomeMode::Absent => self.absent,
+            HomeMode::Nuit => self.nuit,
+            HomeMode::Vacances => self.vacances,
+        }
+    }
+
+    pub fn set(&mut self, mode: HomeMode, behavior: CameraBehavior) {
+        match mode {
+            HomeMode::Present => self.present = behavior,
+            HomeMode::Absent => self.absent = behavior,
+            HomeMode::Nuit => self.nuit = behavior,
+            HomeMode::Vacances => self.vacances = behavior,
+        }
+    }
+}
+
 /// Une caméra, sans aucun secret.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraView {
@@ -172,6 +291,13 @@ pub struct CameraView {
     /// vérification n'a réussi.
     #[serde(default)]
     pub stream: Option<StreamInfo>,
+    /// Où est la caméra (absent d'un serveur plus ancien : extérieure).
+    #[serde(default)]
+    pub emplacement: CameraPlacement,
+    /// Ce que fait la caméra dans chaque mode de la maison (absent d'un serveur plus ancien :
+    /// tableau d'une caméra extérieure, jamais éteinte).
+    #[serde(default)]
+    pub modes: CameraModes,
 }
 
 /// Réponse de `GET /api/cameras` : les caméras triées par nom.
