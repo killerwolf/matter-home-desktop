@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Télécharge et vérifie les fichiers de la détection (ticket n° 18) à embarquer dans
-# « Matter Home Server.app » : les modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT).
+# « Matter Home Server.app » : les modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT, roues PyPI
+# officielles de Microsoft, une par architecture, réunies en une bibliothèque universelle).
 #
 #   scripts/fetch-detection-assets.sh <dossier>        # télécharge, vérifie, prépare <dossier>
 #   scripts/fetch-detection-assets.sh --pin            # affiche les empreintes à épingler
@@ -76,25 +77,34 @@ install -m 0644 "$CACHE/yolox_s.onnx" "$OUT/models/detector.onnx"
 install -m 0644 "$CACHE/yolox_nano.onnx" "$OUT/models/detector-cpu.onnx"
 install -m 0644 "$ROOT/assets/licences/YOLOX-LICENSE" "$OUT/licences/YOLOX-LICENSE"
 
-TGZ="$CACHE/onnxruntime-osx-universal2-$ORT_VERSION.tgz"
+# ONNX Runtime : les roues officielles de PyPI (une par architecture, macOS 13 minimum). Une roue
+# est une archive zip ; on n'en prend que la bibliothèque C et les licences.
 UNPACK="$(mktemp -d)"
 trap 'rm -rf "$UNPACK"' EXIT
-tar -xzf "$TGZ" -C "$UNPACK"
-BASE="$UNPACK/onnxruntime-osx-universal2-$ORT_VERSION"
-DYLIB="$BASE/lib/libonnxruntime.$ORT_VERSION.dylib"
-[ -f "$DYLIB" ] || die "libonnxruntime.$ORT_VERSION.dylib absente de l'archive"
-ARCHS="$(lipo -archs "$DYLIB")"
+SLICES=()
 for arch in x86_64 arm64; do
-  grep -qw "$arch" <<< "$ARCHS" || die "ONNX Runtime sans tranche $arch ($ARCHS)"
+  wheel="$CACHE/onnxruntime-$ORT_VERSION-cp312-cp312-macosx_13_0_$arch.whl"
+  [ -f "$wheel" ] || die "roue ONNX Runtime $arch absente ($wheel)"
+  mkdir -p "$UNPACK/$arch"
+  unzip -q "$wheel" 'onnxruntime/capi/libonnxruntime*.dylib' 'onnxruntime/LICENSE' \
+    'onnxruntime/ThirdPartyNotices.txt' -d "$UNPACK/$arch" ||
+    die "roue ONNX Runtime $arch : bibliothèque ou licences introuvables"
+  found=("$UNPACK/$arch"/onnxruntime/capi/libonnxruntime*.dylib)
+  if [ ${#found[@]} -ne 1 ] || [ ! -f "${found[0]}" ]; then
+    die "roue ONNX Runtime $arch : une seule libonnxruntime*.dylib attendue (${#found[@]})"
+  fi
+  got="$(lipo -archs "${found[0]}")"
+  [ "$got" = "$arch" ] || die "roue ONNX Runtime $arch : tranche $got"
+  SLICES+=("${found[0]}")
 done
-install -m 0755 "$DYLIB" "$OUT/Frameworks/libonnxruntime.dylib"
+lipo -create -output "$OUT/Frameworks/libonnxruntime.dylib" "${SLICES[@]}"
+chmod 0755 "$OUT/Frameworks/libonnxruntime.dylib"
+ARCHS="$(lipo -archs "$OUT/Frameworks/libonnxruntime.dylib")"
 # La bibliothèque se désigne elle-même par @rpath/libonnxruntime.<version>.dylib : sans effet ici,
 # le serveur la charge par son chemin (`dlopen`), mais on la renomme pour qu'elle dise vrai.
 install_name_tool -id "@rpath/libonnxruntime.dylib" "$OUT/Frameworks/libonnxruntime.dylib"
-install -m 0644 "$BASE/LICENSE" "$OUT/licences/onnxruntime-LICENSE"
-if [ -f "$BASE/ThirdPartyNotices.txt" ]; then
-  install -m 0644 "$BASE/ThirdPartyNotices.txt" "$OUT/licences/onnxruntime-ThirdPartyNotices.txt"
-else
-  die "ThirdPartyNotices.txt absent de l'archive d'ONNX Runtime"
-fi
+# Licence MIT et avis de tiers d'ONNX Runtime, tels que la roue les livre.
+install -m 0644 "$UNPACK/x86_64/onnxruntime/LICENSE" "$OUT/licences/onnxruntime-LICENSE"
+install -m 0644 "$UNPACK/x86_64/onnxruntime/ThirdPartyNotices.txt" \
+  "$OUT/licences/onnxruntime-ThirdPartyNotices.txt"
 echo "  $OUT : modèles, ONNX Runtime ($ARCHS) et licences prêts"

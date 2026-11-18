@@ -12,7 +12,9 @@ Frigate, mais **sans enregistrement continu** : rien n'est écrit sur le disque 
 
 **L'application du serveur embarque tout** (`Matter Home Server.app`, depuis la version qui
 contient ce ticket) : les modèles **YOLOX-s 640** (CoreML) et **YOLOX-nano 416** (processeur), et
-**ONNX Runtime 1.23.2** (version macOS universelle de Microsoft, avec CoreML). Au lancement, le
+**ONNX Runtime 1.23.2** (avec CoreML), tiré des roues officielles publiées par Microsoft sur PyPI
+(`onnxruntime`, une par architecture, réunies en une bibliothèque universelle ; **macOS 13**
+minimum : sur un système plus ancien, la détection reste désactivée et le dit). Au lancement, le
 journal dit `détection prête : CoreML, entrée 640×640` ; la fenêtre du serveur (« Caméras… »,
 section « Détection ») affiche le moteur et les caméras analysées.
 
@@ -20,8 +22,8 @@ section « Détection ») affiche le moteur et les caméras analysées.
 |---|---|---|
 | `Contents/Resources/models/detector.onnx` | `yolox_s.onnx`, version 0.1.1rc0 de `Megvii-BaseDetection/YOLOX` | Apache-2.0 |
 | `Contents/Resources/models/detector-cpu.onnx` | `yolox_nano.onnx`, même version | Apache-2.0 |
-| `Contents/Frameworks/libonnxruntime.dylib` | `onnxruntime-osx-universal2-1.23.2.tgz` de `microsoft/onnxruntime` | MIT |
-| `Contents/Resources/licences/` | `YOLOX-LICENSE`, `onnxruntime-LICENSE`, `onnxruntime-ThirdPartyNotices.txt` | — |
+| `Contents/Frameworks/libonnxruntime.dylib` | `onnxruntime/capi/libonnxruntime.1.23.2.dylib` des roues PyPI `onnxruntime-1.23.2-cp312-cp312-macosx_13_0_{x86_64,arm64}.whl` (`lipo -create`) | MIT |
+| `Contents/Resources/licences/` | `YOLOX-LICENSE` (copie dans `assets/licences/`), `onnxruntime-LICENSE` et `onnxruntime-ThirdPartyNotices.txt` (tirés de la roue) | — |
 
 Ces fichiers ne sont **pas** dans le dépôt : `scripts/bundle-server-app.sh --with-detection` (la CI
 de publication le passe) les télécharge depuis leurs versions officielles avec
@@ -34,7 +36,9 @@ avec l'application, qui scelle aussi les modèles.
 Une ligne `A_EPINGLER` dans `scripts/detection-assets.sha256` arrête la construction. Pour la
 remplir : `scripts/fetch-detection-assets.sh --pin` télécharge les fichiers dans un dossier
 temporaire et affiche leurs empreintes ; vérifiez-les (par exemple avec celles publiées par le
-projet, `gh release view <version> -R <dépôt> --json assets`), puis recopiez-les dans le fichier.
+projet : `digests.sha256` de `https://pypi.org/pypi/onnxruntime/1.23.2/json` pour les roues ONNX
+Runtime, `gh release view <version> -R <dépôt> --json assets` pour GitHub), puis recopiez-les dans
+le fichier. `yolox_nano.onnx` reste à épingler (la version de YOLOX ne publie pas d'empreinte).
 
 ### Utilisateurs avancés : `<données>/models/`
 
