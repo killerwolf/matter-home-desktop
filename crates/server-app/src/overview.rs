@@ -117,21 +117,57 @@ pub struct DetectionSummary {
     pub watched: usize,
     /// Suspendue (Mac surchargé ou trop chaud), avec la raison en clair.
     pub paused: Option<String>,
+    /// La suspension vient de la température du Mac : elle dure, et mérite un coup d'œil. Les
+    /// autres (analyse qui ne suit plus, trop lente) durent trente secondes et reviennent d'elles-
+    /// mêmes : les signaler ferait clignoter l'icône et le menu.
+    pub thermal: bool,
+}
+
+/// Une suspension pour cause de chaleur, d'après la raison donnée par le serveur (« le Mac est
+/// trop chaud »). Le serveur ne transmet que ce texte : c'est le seul repère.
+pub fn is_thermal_pause(reason: &str) -> bool {
+    reason.contains("chaud")
+}
+
+/// La phrase de l'onglet Appareils : combien répondent, et ce que font les autres. Elle dit la
+/// même chose que la ligne « Appareils » du résumé (au démarrage, les appareils se connectent).
+pub fn devices_sentence(health: &Health) -> String {
+    let n = health.online;
+    let mut text = format!(
+        "{n} appareil{} sur {} répond{} au serveur.",
+        plural(n),
+        health.total,
+        if n > 1 { "ent" } else { "" },
+    );
+    let connecting = health
+        .total
+        .saturating_sub(n)
+        .saturating_sub(health.unreachable.len());
+    if connecting > 0 {
+        text.push_str(if connecting > 1 {
+            " Les autres se connectent."
+        } else {
+            " Le dernier se connecte."
+        });
+    }
+    text
 }
 
 impl CameraSummary {
     pub fn new(cameras: &[CameraAdmin], detection: &DetectionStatusView) -> Self {
+        let paused = detection.paused.then(|| {
+            detection
+                .pause_reason
+                .clone()
+                .unwrap_or_else(|| "Mac surchargé".into())
+        });
         let mut s = CameraSummary {
             total: cameras.len(),
             detection: DetectionSummary {
                 available: detection.available,
                 watched: detection.watched.len(),
-                paused: detection.paused.then(|| {
-                    detection
-                        .pause_reason
-                        .clone()
-                        .unwrap_or_else(|| "Mac surchargé".into())
-                }),
+                thermal: paused.as_deref().is_some_and(is_thermal_pause),
+                paused,
             },
             ..CameraSummary::default()
         };
@@ -253,7 +289,18 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
     let down = cameras.unreachable.len();
     let mut level = Level::Ok;
     let mut action = None;
-    let mut text = if down > 0 {
+    // « En service » : celles qui répondent vraiment. Une caméra éteinte dans ce mode ou pas
+    // encore vérifiée n'en fait pas partie, et le détail le dit.
+    let mut text = if cameras.online == cameras.total {
+        format!(
+            "{} caméra{} en service",
+            cameras.total,
+            plural(cameras.total)
+        )
+    } else {
+        format!("{} sur {} en service", cameras.online, cameras.total)
+    };
+    if down > 0 {
         level = Level::Warn;
         action = fix(
             if down > 1 {
@@ -263,19 +310,8 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
             },
             Tab::Cameras,
         );
-        format!(
-            "{} sur {} en service · hors ligne : {}",
-            cameras.total - down,
-            cameras.total,
-            names(&cameras.unreachable)
-        )
-    } else {
-        format!(
-            "{} caméra{} en service",
-            cameras.total,
-            plural(cameras.total)
-        )
-    };
+        text.push_str(&format!(" · hors ligne : {}", names(&cameras.unreachable)));
+    }
     if cameras.off > 0 {
         text.push_str(&format!(
             " · {} éteinte{} dans ce mode",
@@ -283,11 +319,26 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
             plural(cameras.off)
         ));
     }
+    let unknown = cameras
+        .total
+        .saturating_sub(cameras.online + cameras.off + down);
+    if unknown > 0 {
+        text.push_str(&format!(
+            " · {unknown} pas encore vérifiée{}",
+            plural(unknown)
+        ));
+    }
     let d = &cameras.detection;
     if let Some(reason) = &d.paused {
-        level = level.max(Level::Warn);
-        action = action.or(fix("Voir la détection…", Tab::Cameras));
-        text.push_str(&format!(" · détection suspendue ({reason})"));
+        if d.thermal {
+            level = level.max(Level::Warn);
+            action = action.or(fix("Voir la détection…", Tab::Cameras));
+            text.push_str(&format!(" · détection suspendue ({reason})"));
+        } else {
+            // Pause courte (trente secondes), qui se lève seule : dite, sans alerte.
+            level = level.max(Level::Info);
+            text.push_str(" · détection en pause un instant");
+        }
     } else if !d.available {
         // Sans moteur de détection, les caméras se regardent quand même : on le dit, sans alarme.
         text.push_str(" · détection indisponible");
@@ -445,6 +496,7 @@ mod tests {
                 available: true,
                 watched: 0,
                 paused: None,
+                thermal: false,
             },
         }
     }
@@ -525,7 +577,8 @@ mod tests {
     #[test]
     fn several_problems_are_counted_and_the_first_one_leads() {
         let mut c = cameras(3, &["Entrée", "Jardin"]);
-        c.detection.paused = Some("Mac trop chaud".into());
+        c.detection.paused = Some("le Mac est trop chaud".into());
+        c.detection.thermal = true;
         let o = running(
             &health(5, &["A", "B", "C", "D"]),
             &c,
@@ -540,7 +593,7 @@ mod tests {
         );
         assert_eq!(
             o.checks[1].text,
-            "1 sur 3 en service · hors ligne : Entrée et Jardin · détection suspendue (Mac trop chaud)"
+            "1 sur 3 en service · hors ligne : Entrée et Jardin · détection suspendue (le Mac est trop chaud)"
         );
         assert_eq!(o.fix.as_ref().map(|f| f.tab), Some(Tab::Devices));
         // Le lien d'autorisation n'est jamais écrit dans le résumé.
@@ -565,13 +618,97 @@ mod tests {
     #[test]
     fn cameras_off_in_this_mode_are_said_without_alarm() {
         let mut c = cameras(3, &[]);
+        c.online = 1;
         c.off = 2;
         c.detection.available = false;
         let check = cameras_check(&c);
         assert_eq!(check.level, Level::Ok);
         assert_eq!(
             check.text,
-            "3 caméras en service · 2 éteintes dans ce mode · détection indisponible"
+            "1 sur 3 en service · 2 éteintes dans ce mode · détection indisponible"
+        );
+    }
+
+    #[test]
+    fn only_cameras_that_answer_count_as_in_service() {
+        // 4 caméras : 1 répond, 1 éteinte dans ce mode, 1 hors ligne, 1 pas encore vérifiée.
+        let mut c = cameras(4, &["Garage"]);
+        c.online = 1;
+        c.off = 1;
+        let check = cameras_check(&c);
+        assert_eq!(check.level, Level::Warn);
+        assert_eq!(
+            check.text,
+            "1 sur 4 en service · hors ligne : Garage · 1 éteinte dans ce mode · 1 pas encore vérifiée"
+        );
+        // Toutes répondent : la forme courte.
+        assert_eq!(cameras_check(&cameras(2, &[])).text, "2 caméras en service");
+    }
+
+    #[test]
+    fn a_short_detection_pause_is_said_without_raising_attention() {
+        // Les pauses de trente secondes du serveur (« file », « lent ») : jamais d'alerte, donc
+        // ni icône « à regarder » ni action dans le menu qui apparaît puis disparaît.
+        for reason in [
+            "l'analyse ne suit plus le flux",
+            "analyse trop lente pour cette machine",
+        ] {
+            assert!(!is_thermal_pause(reason));
+            let mut c = cameras(2, &[]);
+            c.detection.paused = Some(reason.into());
+            let check = cameras_check(&c);
+            assert_eq!(check.level, Level::Info, "{reason}");
+            assert_eq!(check.fix, None);
+            assert_eq!(
+                check.text,
+                "2 caméras en service · détection en pause un instant"
+            );
+            let o = running(&health(3, &[]), &c, &WebAccess::Off { dns: None });
+            assert_eq!((o.headline.as_str(), o.level), ("Tout va bien", Level::Ok));
+            assert_eq!(o.fix, None);
+        }
+        // La chaleur dure : elle reste un point à regarder.
+        assert!(is_thermal_pause("le Mac est trop chaud"));
+        let mut c = cameras(2, &[]);
+        c.detection.paused = Some("le Mac est trop chaud".into());
+        c.detection.thermal = true;
+        let o = running(&health(3, &[]), &c, &WebAccess::Off { dns: None });
+        assert_eq!(o.headline, "1 point à regarder");
+        assert_eq!(o.fix.map(|f| f.tab), Some(Tab::Cameras));
+    }
+
+    #[test]
+    fn the_devices_sentence_counts_only_those_that_answer() {
+        assert_eq!(
+            devices_sentence(&health(8, &[])),
+            "8 appareils sur 8 répondent au serveur."
+        );
+        assert_eq!(
+            devices_sentence(&health(1, &[])),
+            "1 appareil sur 1 répond au serveur."
+        );
+        assert_eq!(
+            devices_sentence(&health(5, &["Salon"])),
+            "4 appareils sur 5 répondent au serveur."
+        );
+        // Au démarrage : rien n'est injoignable, mais tous ne répondent pas encore.
+        let starting = Health {
+            total: 8,
+            online: 3,
+            unreachable: vec![],
+        };
+        assert_eq!(
+            devices_sentence(&starting),
+            "3 appareils sur 8 répondent au serveur. Les autres se connectent."
+        );
+        let almost = Health {
+            total: 8,
+            online: 6,
+            unreachable: vec!["Salon".into()],
+        };
+        assert_eq!(
+            devices_sentence(&almost),
+            "6 appareils sur 8 répondent au serveur. Le dernier se connecte."
         );
     }
 

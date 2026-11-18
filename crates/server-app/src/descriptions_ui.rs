@@ -131,7 +131,8 @@ impl DescriptionsUi {
             (false, _) => StepState::Todo,
         };
         let mut save = false;
-        let cap = parse_cap(&self.cap);
+        // Lu après le dessin du champ : le bouton suit la saisie dans la même image.
+        let mut cap = None;
         let cameras = hub.camera_admin_list();
         let (draft_slot, cap_text) = (&mut self.draft, &mut self.cap);
         widgets::step(ui, 2, settings_state, |ui| {
@@ -197,6 +198,7 @@ impl DescriptionsUi {
                 ui.add(egui::TextEdit::singleline(cap_text).desired_width(70.0));
                 ui.label("descriptions par jour (au-delà, l'événement reste sans description)");
             });
+            cap = parse_cap(cap_text);
             widgets::hint(ui, SPEND_NOTE);
             widgets::hint(ui, RULES_NOTE);
             ui.add_space(8.0);

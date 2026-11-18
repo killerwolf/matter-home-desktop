@@ -142,6 +142,17 @@ fn phase_effects(now: &Phase, setup_session: bool) -> PhaseEffects {
     e
 }
 
+/// L'onglet à montrer quand le menu demande d'ouvrir la fenêtre sur `wanted`. Une saisie en cours
+/// (formulaire de caméra, clé Anthropic, nouveau mot de passe) n'est jamais jetée par un clic
+/// dans le menu : la fenêtre revient au premier plan là où elle en était.
+fn menu_target(current: Tab, wanted: Tab, unsaved: bool) -> Tab {
+    if unsaved {
+        current
+    } else {
+        wanted
+    }
+}
+
 /// Comment passer du menu affiché au menu voulu.
 #[derive(Debug, PartialEq, Eq)]
 enum MenuPlan {
@@ -556,7 +567,25 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// Ouvre la fenêtre sur un onglet (menu, ou bouton d'une autre page).
+    /// Une saisie est en cours dans la fenêtre : formulaire de caméra, page de la clé Anthropic,
+    /// changement de mot de passe.
+    fn has_unsaved_input(&self) -> bool {
+        self.cameras.editing() || self.descriptions_open || self.change_account
+    }
+
+    /// Le menu demande la fenêtre sur un onglet : on l'amène au premier plan, sans jeter une
+    /// saisie en cours (voir `menu_target`).
+    fn open_from_menu(&mut self, ctx: &egui::Context, wanted: Tab) {
+        let tab = menu_target(self.tab, wanted, self.has_unsaved_input());
+        if tab != self.tab {
+            self.open_tab(tab);
+        } else if tab == Tab::Connect {
+            self.web_stale = true;
+        }
+        self.show_window(ctx);
+    }
+
+    /// Change d'onglet depuis la fenêtre (barre d'onglets, bouton d'une autre page).
     fn open_tab(&mut self, tab: Tab) {
         if tab != self.tab || self.descriptions_open {
             // On repart d'une page propre : ni formulaire de caméra ni saisie de clé à moitié faits.
@@ -665,13 +694,9 @@ impl App {
         match action {
             Action::Fix => {
                 let tab = self.overview.fix.as_ref().map_or(Tab::Overview, |f| f.tab);
-                self.open_tab(tab);
-                self.show_window(ctx);
+                self.open_from_menu(ctx, tab);
             }
-            Action::Open(tab) => {
-                self.open_tab(tab);
-                self.show_window(ctx);
-            }
+            Action::Open(tab) => self.open_from_menu(ctx, tab),
             Action::Quit => self.ask_quit(),
             Action::Mode(mode) => {
                 self.set_mode(st, mode);
@@ -910,6 +935,26 @@ mod tests {
             entries.push(Entry::Separator);
         }
         assert_eq!(plan_menu(&with, &longer), MenuPlan::Rebuild);
+    }
+
+    #[test]
+    fn the_menu_never_discards_a_form_being_filled() {
+        // Formulaire de caméra ouvert (mot de passe saisi) : « Ouvrir Matter Home Server… » ou
+        // l'action corrective ramènent la fenêtre telle quelle.
+        assert_eq!(menu_target(Tab::Cameras, Tab::Overview, true), Tab::Cameras);
+        assert_eq!(
+            menu_target(Tab::Settings, Tab::Devices, true),
+            Tab::Settings
+        );
+        // Rien en cours : le menu mène où il le dit.
+        assert_eq!(
+            menu_target(Tab::Cameras, Tab::Overview, false),
+            Tab::Overview
+        );
+        assert_eq!(
+            menu_target(Tab::Overview, Tab::Overview, false),
+            Tab::Overview
+        );
     }
 
     #[test]

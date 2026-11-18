@@ -549,14 +549,7 @@ impl App {
                 ui.label("Aucun appareil pour l'instant : ajoutez le premier en suivant les étapes ci-dessous.");
                 return;
             }
-            let reachable = health.total - health.unreachable.len();
-            ui.label(format!(
-                "{} appareil{} sur {} répond{} au serveur.",
-                reachable,
-                if reachable > 1 { "s" } else { "" },
-                health.total,
-                if reachable > 1 { "ent" } else { "" },
-            ));
+            ui.label(overview::devices_sentence(health));
             if !health.unreachable.is_empty() {
                 ui.add_space(6.0);
                 ui.label(RichText::new("Injoignables en ce moment").strong());

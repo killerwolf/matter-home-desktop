@@ -16,7 +16,13 @@ bougé : seule l'application `crates/server-app` est concernée.
 2. **Une seule action quand quelque chose ne va pas**, juste sous le résumé (« Voir l'appareil
    injoignable… », « Terminer l'accès à distance… »). Elle ouvre la fenêtre là où ça se règle.
 3. **Ce qui n'est pas configuré n'est pas une panne.** Pas d'accès à distance, pas de caméra :
-   c'est dit, en gris, et le résumé reste « Tout va bien ».
+   c'est dit, en gris, et le résumé reste « Tout va bien ». De même pour ce qui passe tout seul :
+   une pause de détection de trente secondes (Mac momentanément surchargé) est dite sans alerte,
+   pour que l'icône ne clignote pas ; seule la pause pour cause de chaleur, qui dure, compte comme
+   un point à regarder. Une caméra n'est « en service » que si elle répond : éteinte dans ce mode
+   ou pas encore vérifiée, elle est comptée à part.
+8. **Le menu ne jette jamais une saisie.** Un formulaire en cours dans la fenêtre (caméra, clé,
+   mot de passe) reste tel quel quand on rouvre la fenêtre depuis le menu.
 4. **Les tâches rares sont guidées pas à pas**, dans la fenêtre, où il y a la place d'expliquer :
    première installation, connecter un ordinateur, iPhone hors de la maison, Raccourcis, clé
    Anthropic, ajout d'un appareil. Chaque étape numérotée dit où on en est (faite, à faire
