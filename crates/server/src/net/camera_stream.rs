@@ -30,7 +30,7 @@ use protocol::wire::{self, ApiError, ErrorCode, StreamKind, StreamStatus};
 
 use super::routes::ApiErr;
 use super::AppState;
-use crate::cameras::live::{Event, LiveConfig, LiveRegistry, SubscribeError, Subscription};
+use crate::cameras::live::{Event, LiveRegistry, SubscribeError, Subscription};
 use crate::cameras::snapshot::{SnapshotConfig, SnapshotService};
 use crate::security::sessions::SessionInfo;
 
@@ -43,25 +43,25 @@ struct StreamQuery {
     kind: Option<String>,
 }
 
-/// La route du flux, avec son registre de sessions. À fusionner dans les routes protégées.
-pub fn router() -> Router<AppState> {
-    router_with(LiveConfig::default())
-}
-
-pub fn router_with(config: LiveConfig) -> Router<AppState> {
-    router_with_snapshots(config, SnapshotConfig::default())
+/// La route du flux et de l'image fixe, sur le registre de sessions **partagé** du hub
+/// (`Hub::live`) : la détection (ticket n° 18) s'y abonne aussi, jamais une connexion de plus.
+pub fn router(live: Arc<LiveRegistry>) -> Router<AppState> {
+    router_with_snapshots(live, SnapshotConfig::default())
 }
 
 /// Le flux et l'image fixe (ticket n° 12) partagent le même registre de sessions : une vignette
 /// se joint au direct déjà ouvert au lieu d'ouvrir une connexion de plus.
-pub fn router_with_snapshots(config: LiveConfig, snapshots: SnapshotConfig) -> Router<AppState> {
+pub fn router_with_snapshots(
+    live: Arc<LiveRegistry>,
+    snapshots: SnapshotConfig,
+) -> Router<AppState> {
     Router::new()
         .route(wire::CAMERA_STREAM_PATH, get(upgrade))
         .route(
             wire::CAMERA_SNAPSHOT_PATH,
             get(super::camera_snapshot::snapshot),
         )
-        .layer(Extension(LiveRegistry::new(config)))
+        .layer(Extension(live))
         .layer(Extension(SnapshotService::new(snapshots)))
 }
 

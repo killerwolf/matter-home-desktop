@@ -9,6 +9,7 @@ import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
+import { classesText, deleteEvent, drawSnapshot, loadEvents, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -74,6 +75,12 @@ function applyEvent(e) {
     case "plan_changed": state.plan = e.plan; scheduleRender(true); return;
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
     case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
+    case "detection": {
+      // Un passage terminé : en tête de liste, sans relancer les vidéos de l'onglet.
+      detections.list = [e.event, ...detections.list.filter((x) => x.id !== e.event.id)].slice(0, 60);
+      if (tab === "cameras") renderDetections();
+      return;
+    }
     default: return;
   }
   settleExpect(e.node_id);
@@ -412,6 +419,143 @@ function reconcileCams() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Événements de détection (ticket n° 18), sous les caméras
+// ---------------------------------------------------------------------------
+const detections = { list: [], status: null, loaded: false, error: "", box: null };
+
+async function refreshDetections() {
+  try {
+    const r = await loadEvents();
+    if (r === null) { detections.status = null; detections.error = "absent"; }
+    else { detections.list = r.events ?? []; detections.status = r.detection ?? null; detections.error = ""; }
+  } catch (error) {
+    detections.error = error?.detail || "Événements indisponibles pour l'instant";
+  }
+  detections.loaded = true;
+  if (tab === "cameras") renderDetections();
+}
+
+function renderDetections() {
+  const box = detections.box;
+  if (!box || !document.contains(box)) return;
+  box.replaceChildren();
+  if (detections.error === "absent") return; // serveur sans détection : rien à montrer
+  const h = document.createElement("h2");
+  h.className = "ev-title";
+  h.textContent = "Événements";
+  box.appendChild(h);
+  const st = detections.status;
+  if (st && !st.available) {
+    const p = document.createElement("p");
+    p.className = "ev-note";
+    p.textContent = `Détection ${st.engine || "désactivée"}.`;
+    box.appendChild(p);
+  } else if (st?.paused) {
+    const p = document.createElement("p");
+    p.className = "ev-note";
+    p.textContent = "Détection suspendue : le serveur est surchargé.";
+    box.appendChild(p);
+  }
+  if (detections.error) {
+    const p = document.createElement("p");
+    p.className = "ev-note";
+    p.textContent = detections.error;
+    box.appendChild(p);
+  }
+  if (!detections.list.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = detections.loaded ? "Aucun événement ces 7 derniers jours." : "Chargement…";
+    box.appendChild(p);
+    return;
+  }
+  const ul = document.createElement("ul");
+  ul.className = "ev-list";
+  for (const ev of detections.list) {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ev";
+    b.dataset.event = ev.id;
+    const canvas = document.createElement("canvas");
+    canvas.width = 160; canvas.height = 90;
+    const text = document.createElement("span");
+    text.className = "ev-text";
+    const what = document.createElement("strong");
+    what.textContent = classesText(ev);
+    const where = document.createElement("span");
+    where.textContent = `${ev.camera_name} · ${whenText(ev.start)}`;
+    text.append(what, where);
+    b.append(canvas, text);
+    b.addEventListener("click", () => openEvent(ev));
+    li.appendChild(b);
+    ul.appendChild(li);
+    drawSnapshot(ev.id, canvas).catch(() => {});
+  }
+  box.appendChild(ul);
+}
+
+let releaseClip = null;
+
+function openEvent(ev) {
+  closeSheet();
+  $("#sheet-title").textContent = `${classesText(ev)} · ${ev.camera_name}`;
+  const body = $("#sheet-body");
+  body.replaceChildren();
+  const when = document.createElement("p");
+  when.className = "ev-note";
+  when.textContent = `${whenText(ev.start)} · score ${Math.round((ev.score ?? 0) * 100)} %` + (ev.has_clip ? ` · clip ${Math.round(ev.clip_s ?? 0)} s` : "");
+  const shot = document.createElement("canvas");
+  shot.className = "ev-shot";
+  body.append(when, shot);
+  drawSnapshot(ev.id, shot).catch(() => { shot.hidden = true; });
+  if (ev.has_clip) {
+    const video = document.createElement("video");
+    video.className = "ev-clip";
+    video.controls = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.hidden = true;
+    const load = document.createElement("button");
+    load.type = "button";
+    load.textContent = "Lire le clip";
+    load.addEventListener("click", async () => {
+      load.disabled = true;
+      load.textContent = "Chargement du clip…";
+      try {
+        releaseClip?.();
+        releaseClip = await playClip(ev.id, video);
+        shot.hidden = true;
+        video.hidden = false;
+        load.remove();
+        video.play().catch(() => {});
+      } catch (error) {
+        load.disabled = false;
+        load.textContent = error?.detail ? `Clip indisponible : ${error.detail}` : "Clip indisponible, réessayer";
+      }
+    });
+    body.append(video, load);
+  }
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "ghost danger";
+  del.textContent = "Supprimer l'événement";
+  del.addEventListener("click", async () => {
+    if (!confirm("Supprimer cet événement, sa capture et son clip ?")) return;
+    try {
+      await deleteEvent(ev.id);
+      detections.list = detections.list.filter((x) => x.id !== ev.id);
+      closeSheet();
+      renderDetections();
+    } catch (error) {
+      del.textContent = error?.detail ? `Suppression impossible : ${error.detail}` : "Suppression impossible";
+    }
+  });
+  body.appendChild(del);
+  showSheet();
+}
+
 function renderCameras() {
   view._tab = "cameras";
   stopPlayers();
@@ -422,11 +566,16 @@ function renderCameras() {
     b.textContent = "Ce navigateur ne sait pas décoder la vidéo (WebCodecs). Sur iPhone et iPad, il faut iOS 17 ou plus récent.";
     view.appendChild(b);
   }
+  detections.box = document.createElement("section");
+  detections.box.className = "events";
+  detections.box.setAttribute("aria-label", "Événements de détection");
+  refreshDetections();
   if (!state.cameras.length) {
     const p = document.createElement("p");
     p.className = "empty";
     p.textContent = state.loaded ? "Aucune caméra sur ce serveur." : "Chargement…";
     view.appendChild(p);
+    view.appendChild(detections.box);
     return;
   }
   const grid = document.createElement("div");
@@ -461,6 +610,8 @@ function renderCameras() {
     camCards.push({ el, cam, canvas, msg, fs, playable: true, thumb, player: null, snap: null, visible: false });
   }
   view.appendChild(grid);
+  view.appendChild(detections.box);
+  renderDetections();
   if (!camCards.length || !api.hasToken()) return;
 
   // Seules les vignettes à l'écran sont lues.
@@ -581,6 +732,8 @@ function showSheet() {
   $("#sheet-close").focus();
 }
 function closeSheet() {
+  releaseClip?.();
+  releaseClip = null;
   const wasOpen = !$("#sheet").hidden;
   $("#sheet").hidden = true;
   $("#sheet-backdrop").hidden = true;

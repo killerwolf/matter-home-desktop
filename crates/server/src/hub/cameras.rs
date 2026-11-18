@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use protocol::wire::{CameraBehavior, CameraStatus, CameraView, StreamInfo, WireEvent};
+use protocol::wire::{
+    CameraBehavior, CameraStatus, CameraView, DetectionEventView, DetectionSettings, StreamInfo,
+    WireEvent,
+};
 
 use crate::cameras::{
     self, CameraAdmin, CameraBook, CameraDraft, CameraError, CameraTest, ProbeError, StreamKind,
@@ -67,6 +70,7 @@ impl Hub {
         self.commit_cameras(&mut st, backup)?;
         drop(st);
         self.wake_cameras(Wake::Camera(id));
+        self.detection().wake();
         log::info!("caméra ajoutée : {id:#x}");
         Ok(id)
     }
@@ -79,6 +83,7 @@ impl Hub {
         self.commit_cameras(&mut st, backup)?;
         drop(st);
         self.wake_cameras(Wake::Camera(id));
+        self.detection().wake();
         log::info!("caméra modifiée : {id:#x}");
         Ok(())
     }
@@ -102,6 +107,7 @@ impl Hub {
             let _ = self.persist_and_publish(&mut st, Document::Plan);
         }
         drop(st);
+        self.detection().wake();
         log::info!("caméra supprimée : {id:#x}");
         Ok(())
     }
@@ -147,11 +153,48 @@ impl Hub {
     /// La caméra est-elle éteinte dans le mode actuel (`false` pour une caméra inconnue) ? Le
     /// serveur refuse alors le direct et les images fixes (`Unavailable`, avec le mode en clair).
     ///
-    /// `Surveillance` se comporte comme `Diffusion` pour l'instant : c'est ici (et dans
-    /// `CameraBehavior::is_viewable`) que la détection viendra, dans un ticket ultérieur.
+    /// `Surveillance` se regarde comme `Diffusion` ; en plus, la détection (ticket n° 18) analyse
+    /// la caméra (voir [`Hub::cameras_to_watch`]).
     pub fn camera_is_off(&self, id: u64) -> bool {
         let st = self.lock();
         st.cameras.behavior(id, st.mode) == Some(CameraBehavior::Eteinte)
+    }
+
+    /// Les caméras à analyser maintenant (ticket n° 18) : en **Surveillance** dans le mode actuel,
+    /// avec leur nom et le flux surveillé (le réduit s'il existe).
+    pub fn cameras_to_watch(&self) -> Vec<(u64, String, StreamKind)> {
+        let st = self.lock();
+        st.cameras
+            .cameras()
+            .iter()
+            .filter(|c| c.behavior(st.mode) == CameraBehavior::Surveillance)
+            .map(|c| (c.id, c.name.clone(), c.preferred_kind()))
+            .collect()
+    }
+
+    /// Les réglages de détection d'une caméra et son nom (`None` : caméra inconnue).
+    pub fn camera_detection(&self, id: u64) -> Option<(String, DetectionSettings)> {
+        let st = self.lock();
+        st.cameras
+            .get(id)
+            .map(|c| (c.name.clone(), c.detection.clone()))
+    }
+
+    /// Un passage détecté vient de se terminer (déjà enregistré) : diffusé aux clients
+    /// (`WireEvent::Detection`) et transmis au moteur d'automatisations.
+    pub fn publish_detection(&self, event: &DetectionEventView) {
+        {
+            let mut st = self.lock();
+            self.publish(
+                &mut st,
+                WireEvent::Detection {
+                    event: event.clone(),
+                },
+            );
+        }
+        let _ = self.send(protocol::events::Command::Detection(Box::new(
+            event.clone(),
+        )));
     }
 
     /// La phrase du refus d'une caméra éteinte, avec le mode en cours.
@@ -284,7 +327,8 @@ impl Hub {
         if let Some(id) = editing {
             if self.camera_viewers(id) > 0 {
                 return Err(CameraError(
-                    "Cette caméra est en cours de lecture : fermez le direct avant de la tester."
+                    "Cette caméra est en cours de lecture (direct ou détection) : fermez le direct, \
+                     ou testez-la dans un mode où elle n'est pas en Surveillance."
                         .into(),
                 ));
             }

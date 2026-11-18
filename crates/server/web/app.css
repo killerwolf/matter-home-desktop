@@ -362,3 +362,15 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 }
 
 .toast { position: fixed; z-index: 20; left: var(--web-pad-x); right: var(--web-pad-x); top: calc(env(safe-area-inset-top) + var(--web-pad)); margin: 0; }
+
+/* Événements de détection (ticket n° 18) */
+.events { margin-top: var(--web-pad-x); }
+.ev-title { font-size: var(--font-size-title); font-weight: var(--font-weight-strong); margin: var(--web-pad) 0; }
+.ev-note { color: var(--color-text-secondary); font-size: var(--web-font-small); margin: var(--web-pad) 0; }
+.ev-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--web-pad); }
+.ev { display: flex; align-items: center; gap: var(--web-pad-x); width: 100%; min-height: var(--web-control-h); padding: var(--web-pad); background: var(--color-surface); border: var(--web-line) solid var(--color-line); border-radius: var(--web-radius); color: var(--color-text); text-align: left; font: inherit; cursor: pointer; }
+.ev canvas { width: 96px; height: 54px; flex: none; border-radius: var(--web-radius); background: var(--color-surface-alt); object-fit: cover; }
+.ev-text { display: flex; flex-direction: column; min-width: 0; }
+.ev-text span { color: var(--color-text-secondary); font-size: var(--web-font-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-shot, .ev-clip { width: 100%; max-height: 60vh; display: block; background: var(--color-surface-alt); border-radius: var(--web-radius); margin-bottom: var(--web-pad); }
+.danger { color: var(--color-error); }

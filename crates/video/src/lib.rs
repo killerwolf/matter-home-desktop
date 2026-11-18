@@ -29,7 +29,7 @@ pub mod nal;
 #[cfg(target_os = "macos")]
 mod videotoolbox;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use protocol::wire::{StreamPacket, CODEC_H264};
@@ -50,6 +50,10 @@ pub struct Image {
 pub struct FrameSink {
     latest: Mutex<Option<Image>>,
     frames: AtomicU64,
+    /// Faut-il convertir les images décodées ? `false` : le décodeur les décode (une image P en a
+    /// besoin) sans les convertir en RGB. La détection du serveur n'en regarde que 2 par seconde.
+    wanted: AtomicBool,
+    skipped: AtomicU64,
     notify: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -60,6 +64,8 @@ impl FrameSink {
         Arc::new(FrameSink {
             latest: Mutex::new(None),
             frames: AtomicU64::new(0),
+            wanted: AtomicBool::new(true),
+            skipped: AtomicU64::new(0),
             notify: Box::new(notify),
         })
     }
@@ -76,6 +82,27 @@ impl FrameSink {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
+    }
+
+    /// Convertir (et déposer) les prochaines images décodées, ou seulement les décoder.
+    pub fn set_wanted(&self, wanted: bool) {
+        self.wanted.store(wanted, Ordering::SeqCst);
+    }
+
+    /// Le décodeur doit-il convertir l'image qu'il vient de décoder ? Sinon elle est comptée et
+    /// oubliée.
+    pub fn wants(&self) -> bool {
+        if self.wanted.load(Ordering::SeqCst) {
+            true
+        } else {
+            self.skipped.fetch_add(1, Ordering::SeqCst);
+            false
+        }
+    }
+
+    /// Images décodées mais pas converties ([`FrameSink::set_wanted`]).
+    pub fn skipped(&self) -> u64 {
+        self.skipped.load(Ordering::SeqCst)
     }
 
     /// Nombre d'images décodées depuis le début.

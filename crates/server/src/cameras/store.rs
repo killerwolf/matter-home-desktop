@@ -14,7 +14,8 @@ use url::Url;
 use protocol::mode::HomeMode;
 use protocol::wire::{
     is_camera_id, CameraBehavior, CameraModes, CameraPlacement, CameraProblem, CameraStatus,
-    CameraView, StreamInfo, StreamKind, CAMERA_ID_MAX, CAMERA_ID_MIN, MAX_CAMERAS,
+    CameraView, DetectionSettings, StreamInfo, StreamKind, CAMERA_ID_MAX, CAMERA_ID_MIN,
+    MAX_CAMERAS,
 };
 
 use crate::security::write_secret;
@@ -94,6 +95,10 @@ pub struct StoredCamera {
     /// tableau d'une caméra extérieure (jamais éteinte, comme avant).
     #[serde(default)]
     pub modes: CameraModes,
+    /// Réglages de la détection (ticket n° 18) : classes, score minimal, zones, masques. Sans
+    /// effet tant que la caméra n'est pas en Surveillance.
+    #[serde(default)]
+    pub detection: DetectionSettings,
     // Extension : tout champ ajouté ici doit avoir `#[serde(default)]` (anciens fichiers, et
     // sauvegarde d'un autre Mac) et rester absent de `CameraView` s'il est sensible.
 }
@@ -109,6 +114,7 @@ impl fmt::Debug for StoredCamera {
             .field("password", &self.password.as_ref().map(|_| "…"))
             .field("emplacement", &self.emplacement)
             .field("modes", &self.modes)
+            .field("detection", &self.detection)
             .finish()
     }
 }
@@ -334,6 +340,8 @@ pub struct CameraDraft {
     /// cet emplacement change (et à la création) ; le tableau reste modifiable ensuite.
     pub emplacement: CameraPlacement,
     pub modes: CameraModes,
+    /// Réglages de la détection (ticket n° 18).
+    pub detection: DetectionSettings,
 }
 
 impl fmt::Debug for CameraDraft {
@@ -427,6 +435,7 @@ impl CameraDraft {
         if password.is_some() && username.is_none() {
             return refuse("un mot de passe demande un identifiant");
         }
+        check_detection(&self.detection)?;
         Ok(StoredCamera {
             id,
             name,
@@ -436,8 +445,37 @@ impl CameraDraft {
             password,
             emplacement: self.emplacement,
             modes: self.modes,
+            detection: self.detection.clone(),
         })
     }
+}
+
+/// Au plus tant de zones et de masques par caméra, et de points par polygone.
+pub const MAX_POLYGONS: usize = 8;
+pub const MAX_POINTS: usize = 32;
+
+fn check_detection(settings: &DetectionSettings) -> Result<(), CameraError> {
+    for (list, what) in [(&settings.zones, "zone"), (&settings.masks, "masque")] {
+        if list.len() > MAX_POLYGONS {
+            return refuse(format!("{MAX_POLYGONS} {what}s au plus par caméra"));
+        }
+        if list
+            .iter()
+            .any(|p| !p.is_valid() || p.points.len() > MAX_POINTS)
+        {
+            return refuse(format!(
+                "{what} invalide : de 3 à {MAX_POINTS} points « x,y » entre 0 et 1"
+            ));
+        }
+    }
+    if settings
+        .min_scores
+        .iter()
+        .any(|(_, s)| !(0.05..=0.99).contains(s))
+    {
+        return refuse("score minimal invalide (entre 0,05 et 0,99)");
+    }
+    Ok(())
 }
 
 fn check_text(text: &str, min: usize, max: usize, what: &str) -> Result<(), CameraError> {
@@ -558,6 +596,7 @@ pub struct CameraAdmin {
     pub stream: Option<StreamInfo>,
     pub emplacement: CameraPlacement,
     pub modes: CameraModes,
+    pub detection: DetectionSettings,
 }
 
 /// Les caméras et leur état de joignabilité (qui n'est pas enregistré).
@@ -619,6 +658,7 @@ impl CameraBook {
             sub_url: sub.then(|| format!("rtsp://192.0.2.{}:554/live/ch00_1", 10 + n)),
             username: Some("demo".into()),
             password: Some("demo-camera-mdp".into()),
+            detection: DetectionSettings::default(),
         };
         let mut book = Self::new(vec![
             camera(1, "Entrée", true),
@@ -742,6 +782,7 @@ impl CameraBook {
                     stream: view.stream,
                     emplacement: c.emplacement,
                     modes: c.modes,
+                    detection: c.detection.clone(),
                 })
             })
             .collect()

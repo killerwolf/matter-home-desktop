@@ -297,6 +297,9 @@ unsafe extern "C-unwind" fn on_frame(
         // SAFETY : `refcon` est le `FrameSink` de la session, vivant tant qu'elle existe ; l'image est
         // valide pendant la durée du rappel.
         let (sink, buffer) = unsafe { (&*(refcon as *const FrameSink), image.as_ref()) };
+        if !sink.wants() {
+            return;
+        }
         if let Some(converted) = to_rgba(buffer) {
             sink.put(converted);
         }

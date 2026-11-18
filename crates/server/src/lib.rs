@@ -6,6 +6,7 @@ pub mod automation;
 pub mod backup;
 pub mod cameras;
 pub mod demo;
+pub mod detection;
 pub mod events;
 pub mod export;
 pub mod history_store;

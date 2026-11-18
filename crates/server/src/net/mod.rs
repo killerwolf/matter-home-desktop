@@ -6,6 +6,7 @@
 mod body;
 mod camera_snapshot;
 mod camera_stream;
+mod events;
 mod routes;
 mod webapp;
 mod ws;
@@ -106,6 +107,14 @@ pub fn start(
         .build()
         .context("runtime réseau")?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // La détection (ticket n° 18) vit sur ce runtime, celui des sessions du direct : elle s'abonne
+    // au même registre (`Hub::live`) et s'arrête avec lui.
+    if !hub.is_demo() {
+        runtime.spawn(crate::detection::watcher::supervise(
+            hub.clone(),
+            shutdown_rx.clone(),
+        ));
+    }
     let state = AppState {
         hub,
         auth,

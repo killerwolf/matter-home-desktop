@@ -189,6 +189,39 @@ impl Engine {
             .collect()
     }
 
+    /// Un passage détecté (ticket n° 18) : les règles « Quand … est détecté » qui le couvrent.
+    /// `{appareil}` vaut le nom de la caméra, `{valeur}` la classe (« personne »). Un passage =
+    /// un événement : une règle part une fois par passage (et l'anti-rafale s'applique).
+    pub fn on_detection(
+        &mut self,
+        event: &protocol::wire::DetectionEventView,
+        clock: &Clock,
+    ) -> Vec<Firing> {
+        let rules: Vec<Rule> = self.rules.clone();
+        rules
+            .iter()
+            .filter(|r| r.trigger.matches_detection(event.camera_id, &event.classes))
+            .filter_map(|r| {
+                // La classe qui a fait partir la règle (la plus sûre parmi celles qu'elle suit).
+                let class = match &r.trigger {
+                    Trigger::Detection { classes, .. } if !classes.is_empty() => event
+                        .classes
+                        .iter()
+                        .find(|c| classes.contains(c))
+                        .copied()
+                        .unwrap_or(event.class()),
+                    _ => event.class(),
+                };
+                self.try_fire(
+                    r,
+                    clock,
+                    event.camera_name.clone(),
+                    class.lower().to_string(),
+                )
+            })
+            .collect()
+    }
+
     pub fn rule(&self, id: u64) -> Option<&Rule> {
         self.rules.iter().find(|r| r.id == id)
     }
@@ -621,6 +654,8 @@ pub enum EngineCommand {
     Test(u64),
     /// Le mode de la maison a changé : peut déclencher des règles.
     Mode(HomeMode),
+    /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18).
+    Detection(Box<protocol::wire::DetectionEventView>),
 }
 
 /// Lance le moteur dans le runtime courant.
@@ -647,6 +682,7 @@ pub fn spawn(
                 cmd = commands.recv() => match cmd {
                     Some(EngineCommand::SetRules(rules)) => { engine.set_rules(rules); Vec::new() }
                     Some(EngineCommand::Mode(mode)) => engine.on_mode(mode, &Clock::local()),
+                    Some(EngineCommand::Detection(event)) => engine.on_detection(&event, &Clock::local()),
                     Some(EngineCommand::Test(id)) => engine
                         .rule(id)
                         .cloned()
@@ -1079,6 +1115,86 @@ mod tests {
         assert!(e.on_mode(HomeMode::Nuit, &clock(30.0, 0)).is_empty());
         let back = e.on_mode(HomeMode::Absent, &clock(40.0, 0));
         assert_eq!(back.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn detection_trigger_matches_camera_and_classes_with_the_mode_condition() {
+        use protocol::wire::{DetectedClass, DetectionEventView};
+        let event = |camera: u64, classes: Vec<DetectedClass>| DetectionEventView {
+            id: format!("1-{camera}"),
+            camera_id: camera,
+            camera_name: "Allée".into(),
+            classes,
+            score: 0.9,
+            start: 1.0,
+            end: 2.0,
+            has_clip: true,
+            clip_s: 20.0,
+        };
+        let mut person_on_9 = rule(
+            1,
+            Trigger::Detection {
+                camera_id: Some(9),
+                classes: vec![DetectedClass::Personne],
+            },
+        );
+        person_on_9.conditions = vec![Condition::Mode {
+            is: vec![HomeMode::Absent],
+        }];
+        let any = rule(
+            2,
+            Trigger::Detection {
+                camera_id: None,
+                classes: Vec::new(),
+            },
+        );
+        let mut e = Engine::new(vec![person_on_9, any]);
+        e.init_mode(HomeMode::Absent);
+        // Un chien puis une personne : la règle 1 nomme la classe qu'elle suit.
+        let fired = e.on_detection(
+            &event(9, vec![DetectedClass::Chien, DetectedClass::Personne]),
+            &clock(100.0, 0),
+        );
+        assert_eq!(fired.len(), 2);
+        let one = fired.iter().find(|f| f.rule.id == 1).unwrap();
+        assert_eq!(
+            (one.device.as_str(), one.value.as_str()),
+            ("Allée", "personne")
+        );
+        let two = fired.iter().find(|f| f.rule.id == 2).unwrap();
+        assert_eq!(two.value, "chien", "la classe la plus sûre");
+        // Autre caméra, ou autre classe : seule la règle « toutes » part (après l'anti-rafale).
+        let fired = e.on_detection(&event(8, vec![DetectedClass::Personne]), &clock(500.0, 0));
+        assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
+        let fired = e.on_detection(&event(9, vec![DetectedClass::Chat]), &clock(900.0, 0));
+        assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
+        // Présent : la condition de mode retient la règle 1.
+        e.on_mode(HomeMode::Present, &clock(1000.0, 0));
+        let fired = e.on_detection(&event(9, vec![DetectedClass::Personne]), &clock(2000.0, 0));
+        assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
+        // Le JSON de la règle (identifiant de caméra en texte sur le fil).
+        let text = serde_json::to_string(&protocol::wire::TextIds(RuleSet {
+            version: 1,
+            rules: vec![rule(
+                3,
+                Trigger::Detection {
+                    camera_id: Some(u64::MAX - 5),
+                    classes: vec![DetectedClass::Vehicule],
+                },
+            )],
+        }))
+        .unwrap();
+        assert!(text.contains("\"type\":\"Detection\""), "{text}");
+        assert!(
+            text.contains(&format!("\"camera_id\":\"{}\"", u64::MAX - 5)),
+            "{text}"
+        );
+        assert!(text.contains("\"classes\":[\"vehicule\"]"), "{text}");
+        let back: protocol::wire::TextIds<RuleSet> = serde_json::from_str(&text).unwrap();
+        assert!(matches!(
+            back.0.rules[0].trigger,
+            Trigger::Detection { camera_id: Some(id), .. } if id == u64::MAX - 5
+        ));
     }
 
     #[test]

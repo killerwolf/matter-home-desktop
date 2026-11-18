@@ -76,6 +76,11 @@ static ASSETS: &[Asset] = &[
         "../../web/cameras.js"
     ),
     text!(
+        "events.js",
+        "text/javascript; charset=utf-8",
+        "../../web/events.js"
+    ),
+    text!(
         "plan.js",
         "text/javascript; charset=utf-8",
         "../../web/plan.js"
@@ -104,9 +109,11 @@ static ASSETS: &[Asset] = &[
 ];
 
 /// Politique de sécurité : tout vient de la même origine, aucun script ni style en ligne, aucune
-/// ressource externe (les images des caméras sont dessinées dans un canvas : ni `blob:` ni `media-src`).
+/// ressource externe (les images des caméras sont dessinées dans un canvas : pas de `blob:` en
+/// `img-src`). Seule exception : `media-src blob:`, le clip d'un événement de détection (ticket
+/// n° 18), chargé par `fetch` avec le jeton puis lu par un `<video>` depuis une URL locale.
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-img-src 'self'; connect-src 'self'; manifest-src 'self'; \
+img-src 'self'; media-src blob:; connect-src 'self'; manifest-src 'self'; \
 worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 pub fn router() -> Router<super::AppState> {

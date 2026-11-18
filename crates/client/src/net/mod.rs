@@ -9,6 +9,7 @@
 pub mod addr;
 mod backend;
 pub mod error;
+pub mod events;
 pub mod files;
 pub mod http;
 pub mod snapshot;

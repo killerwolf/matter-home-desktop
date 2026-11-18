@@ -31,6 +31,9 @@ pub enum RulesAction {
 }
 
 pub struct RulesView {
+    /// Les caméras (identifiant, nom), pour le déclencheur « détection » : recopiées par la
+    /// fenêtre avant chaque affichage.
+    pub cameras: Vec<(u64, String)>,
     set: RuleSet,
     selected: Option<u64>,
     confirm_delete: bool,
@@ -287,16 +290,18 @@ fn trigger_kind(t: &Trigger) -> usize {
         Trigger::Unreachable { .. } => 3,
         Trigger::Time { .. } => 4,
         Trigger::Mode { .. } => 5,
+        Trigger::Detection { .. } => 6,
     }
 }
 
-const TRIGGER_KINDS: [&str; 6] = [
+const TRIGGER_KINDS: [&str; 7] = [
     "Une porte / fenêtre change",
     "Une mesure franchit un seuil",
     "Une prise / lampe change",
     "Un appareil reste injoignable",
     "À une heure donnée",
     "Le mode de la maison change",
+    "Une caméra détecte quelqu'un ou quelque chose",
 ];
 
 fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
@@ -323,6 +328,10 @@ fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
         5 => Trigger::Mode {
             to: HomeMode::Absent,
         },
+        6 => Trigger::Detection {
+            camera_id: None,
+            classes: vec![protocol::wire::DetectedClass::Personne],
+        },
         _ => Trigger::Time {
             hour: 7,
             minute: 0,
@@ -341,8 +350,23 @@ fn modes_text(modes: &[HomeMode]) -> String {
     }
 }
 
+/// Les classes suivies, en clair : « personne ou chat », « quelque chose » si aucune.
+fn classes_text(classes: &[protocol::wire::DetectedClass]) -> String {
+    let words: Vec<&str> = classes.iter().map(|c| c.lower()).collect();
+    match words.split_last() {
+        None => "quelque chose".to_string(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} ou {last}", rest.join(", ")),
+    }
+}
+
 /// Résumé d'une ligne d'une règle, pour la liste.
+#[cfg(test)]
 fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
+    summary_with(rule, devices, &[])
+}
+
+fn summary_with(rule: &Rule, devices: &BTreeMap<u64, Device>, cameras: &[(u64, String)]) -> String {
     let name = |id: u64| {
         devices
             .get(&id)
@@ -383,6 +407,16 @@ fn summary(rule: &Rule, devices: &BTreeMap<u64, Device>) -> String {
         }
         Trigger::Time { hour, minute, .. } => format!("à {hour:02}:{minute:02}"),
         Trigger::Mode { to } => format!("le mode devient {}", to.label()),
+        Trigger::Detection { camera_id, classes } => {
+            let camera = match camera_id {
+                None => "une caméra".to_string(),
+                Some(id) => cameras
+                    .iter()
+                    .find(|(c, _)| c == id)
+                    .map_or_else(|| "?".to_string(), |(_, n)| n.clone()),
+            };
+            format!("{camera} détecte {}", classes_text(classes))
+        }
     };
     let then: Vec<String> = rule
         .actions
@@ -457,6 +491,7 @@ impl RulesView {
     /// Aucune règle : les vraies viennent du serveur (état complet à la connexion).
     pub fn new() -> Self {
         Self {
+            cameras: Vec::new(),
             set: RuleSet::default(),
             selected: None,
             confirm_delete: false,
@@ -759,9 +794,13 @@ impl RulesView {
                                             );
                                         });
                                         ui.label(
-                                            RichText::new(summary(rule, devices))
-                                                .small()
-                                                .color(p.text_secondary),
+                                            RichText::new(summary_with(
+                                                rule,
+                                                devices,
+                                                &self.cameras,
+                                            ))
+                                            .small()
+                                            .color(p.text_secondary),
                                         );
                                     })
                             },
@@ -984,6 +1023,43 @@ impl RulesView {
                 changed |= hhmm(ui, ("t_time", rid), hour, minute);
                 for (i, d) in DAYS.iter().enumerate() {
                     changed |= ui.toggle_value(&mut days[i], *d).changed();
+                }
+            }
+            Trigger::Detection { camera_id, classes } => {
+                ui.label("Caméra");
+                let current = match camera_id {
+                    None => "toutes".to_string(),
+                    Some(id) => self
+                        .cameras
+                        .iter()
+                        .find(|(c, _)| c == id)
+                        .map_or_else(|| "?".to_string(), |(_, n)| n.clone()),
+                };
+                egui::ComboBox::from_id_salt(("t_cam", rid))
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        changed |= ui.selectable_value(camera_id, None, "toutes").changed();
+                        for (id, name) in &self.cameras {
+                            changed |= ui
+                                .selectable_value(camera_id, Some(*id), name.as_str())
+                                .changed();
+                        }
+                    });
+                ui.label("détecte");
+                for class in protocol::wire::DetectedClass::ALL {
+                    let mut on = classes.contains(&class);
+                    if ui.toggle_value(&mut on, class.label()).changed() {
+                        if on {
+                            classes.push(class);
+                            classes.sort();
+                        } else {
+                            classes.retain(|c| *c != class);
+                        }
+                        changed = true;
+                    }
+                }
+                if classes.is_empty() {
+                    ui.weak("(aucune case : n'importe quoi)");
                 }
             }
             Trigger::Mode { to } => {
