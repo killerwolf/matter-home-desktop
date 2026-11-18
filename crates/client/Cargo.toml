@@ -48,6 +48,13 @@ matter-home-video = { path = "../video" }
 zune-jpeg = "0.5"
 zune-core = "0.5"
 
+# Barre de menus native de macOS (ticket n° 20) : AppKit via objc2, déjà dans le Cargo.lock
+# (tirés par eframe et rfd) ; aucune caisse de plus.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSPasteboard", "NSEvent", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSObject"] }
+
 [dev-dependencies]
 # Fabrique le JPEG d'essai du décodeur (le serveur utilise la même caisse pour ses images).
 jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }

@@ -8,6 +8,18 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- **Client, macOS : barre de menus du Mac** (ticket n° 20). Le menu **Fichier** (Exporter mes
+  données…, Importer des données…, Se déconnecter) quitte la fenêtre pour la barre de menus en haut
+  de l'écran, avec le menu de l'application (À propos, Masquer, Quitter ⌘Q), **Édition** (Annuler,
+  Couper, Copier, Coller, Tout sélectionner) et **Fenêtre** (Réduire ⌘M, Zoom). Les éléments de
+  Fichier sont grisés comme avant (pas de connexion). Mêmes fonctions qu'avant, déclenchées depuis
+  le menu natif (AppKit via objc2, aucune dépendance nouvelle). Les autres systèmes gardent le menu
+  dans la fenêtre.
+
 ## [1.2.0] - 2026-11-18
 
 ### Ajouté

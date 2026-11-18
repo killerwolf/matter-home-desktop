@@ -139,6 +139,9 @@ fn main() -> eframe::Result {
                 .ok_or("dossier de données de l'utilisateur introuvable")?;
             let (backend, events) = Backend::start(store, notify);
             let mut app = ui::MatterApp::new(backend, events);
+            // Barre de menus du Mac (sans effet ailleurs) : la fenêtre existe, winit a posé son
+            // menu par défaut, on le remplace.
+            app.install_native_menu(&cc.egui_ctx);
             // `--device` d'abord : les options d'onglet qui suivent gardent la main sur l'onglet,
             // l'appareil s'ouvre alors dans le panneau de cet onglet (plan ou appareils).
             if let Some(filter) = device_filter {

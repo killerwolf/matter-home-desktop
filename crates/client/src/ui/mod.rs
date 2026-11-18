@@ -11,6 +11,7 @@ mod connect;
 mod customize;
 mod devices;
 mod events;
+mod native_menu;
 mod notify;
 mod plan;
 mod player;
@@ -217,6 +218,10 @@ pub struct MatterApp {
     /// Courbes calculées, avec la clé qui les a produites.
     temp_cache: Option<(TempCacheKey, Vec<temperatures::Curve>)>,
     export_message: Option<(bool, String)>,
+    /// Barre de menus native (macOS) ; `None` ailleurs, le menu Fichier reste alors dans la fenêtre.
+    native_menu: Option<native_menu::NativeMenu>,
+    /// Événements du menu Édition, injectés dans la prochaine image d'egui.
+    edit_events: Vec<egui::Event>,
     /// Dernière erreur d'une commande, affichée sous la barre du haut.
     error_banner: Option<(Instant, String)>,
     log: VecDeque<String>,
@@ -297,6 +302,8 @@ impl MatterApp {
             data_epoch: 0,
             temp_cache: None,
             export_message: None,
+            native_menu: None,
+            edit_events: Vec::new(),
             error_banner: None,
             log: VecDeque::new(),
             toasts: Vec::new(),
@@ -357,6 +364,57 @@ impl MatterApp {
     pub fn show_plan_editing(&mut self) {
         self.view = View::Plan;
         self.edit_plan_on_arrival = true;
+    }
+
+    /// Installe la barre de menus du Mac (sans effet ailleurs) : à appeler une fois la fenêtre créée.
+    pub fn install_native_menu(&mut self, ctx: &egui::Context) {
+        self.native_menu = native_menu::NativeMenu::install(ctx);
+    }
+
+    /// Une session est ouverte : la barre du haut (et donc le menu Fichier) est affichée.
+    fn session_open(&self) -> bool {
+        !matches!(
+            self.link,
+            Link::LoggedOut { .. } | Link::CertificateChanged { .. } | Link::Incompatible { .. }
+        )
+    }
+
+    /// Menu natif : grise les éléments selon la connexion, puis traite les clics reçus. Mêmes
+    /// fonctions que l'ancien menu de la fenêtre.
+    fn pump_native_menu(&mut self, ctx: &egui::Context) {
+        let state = native_menu::FileMenuState::new(self.connected(), self.session_open());
+        let Some(menu) = self.native_menu.as_mut() else {
+            return;
+        };
+        menu.set_state(state);
+        let mut commands = Vec::new();
+        while let Some(command) = menu.try_recv() {
+            commands.push(command);
+        }
+        for command in commands {
+            // Un clic arrivé juste après le grisage de l'élément est ignoré.
+            if !state.allows(command) {
+                continue;
+            }
+            match command {
+                native_menu::MenuCommand::Export => self.export_data(),
+                native_menu::MenuCommand::Import => self.import_data(),
+                native_menu::MenuCommand::Logout => self.backend.logout(),
+                native_menu::MenuCommand::Quit => {
+                    // Fenêtre visible et au premier plan : la question « modifications non
+                    // envoyées » doit pouvoir s'afficher.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                native_menu::MenuCommand::Edit(edit) => {
+                    let clipboard = self.native_menu.as_ref().and_then(|m| m.clipboard_text());
+                    self.edit_events
+                        .extend(native_menu::edit_events(edit, clipboard));
+                    ctx.request_repaint();
+                }
+            }
+        }
     }
 
     /// Ouvre l'onglet « Plan ».
@@ -2257,8 +2315,11 @@ impl MatterApp {
         let mut menu_import = false;
         let mut logout = false;
         let mut chosen_mode = None;
+        // Sur macOS, Fichier est dans la barre de menus du Mac : pas de rangée dans la fenêtre.
+        let in_window_menu = self.native_menu.is_none();
         egui::Panel::top("top").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
+            if in_window_menu {
+                egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("Fichier", |ui| {
                     let connected = self.connected();
                     if ui
@@ -2283,7 +2344,8 @@ impl MatterApp {
                         ui.close();
                     }
                 });
-            });
+                });
+            }
             ui.horizontal(|ui| {
                 ui.heading("Maison");
                 ui.add_space(8.0);
@@ -2591,6 +2653,7 @@ impl eframe::App for MatterApp {
     /// pas la fenêtre (recouverte ou réduite).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_network();
+        self.pump_native_menu(ctx);
         if ctx.input(|i| i.viewport().close_requested())
             && matches!(self.on_close_requested(), CloseDecision::Ask(_))
         {
@@ -2600,6 +2663,11 @@ impl eframe::App for MatterApp {
         if self.plan_or_rules_pending() {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
+    }
+
+    /// Commandes du menu Édition natif : rejouées comme des touches dans le champ qui a le focus.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.events.append(&mut self.edit_events);
     }
 
     /// Fermeture de la fenêtre : un dernier envoi borné de ce qui n'est pas encore parti.
