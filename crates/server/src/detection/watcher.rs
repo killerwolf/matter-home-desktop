@@ -398,6 +398,9 @@ fn write_job(hub: &Arc<Hub>, job: WriteJob) {
         None => {
             hub.publish_detection(&saved, None, false);
             descriptions.on_close(hub, &saved, jpeg);
+            // Notification web push (ticket n° 17) : un message par passage, maintenant ou avec
+            // sa description si elle est attendue.
+            hub.push_detection_closed(&saved);
         }
     }
 }

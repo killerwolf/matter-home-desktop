@@ -158,6 +158,8 @@ pub struct Hub {
     /// Un verrou par caméra : une seule connexion de vérification à la fois.
     camera_locks: Mutex<std::collections::HashMap<u64, Arc<Mutex<()>>>>,
     scrubber: Scrubber,
+    /// Les notifications web push de l'app web (ticket n° 17, `push/`).
+    push: Arc<crate::push::Push>,
     data_dir: PathBuf,
     history_dir: PathBuf,
     demo: bool,
@@ -228,6 +230,7 @@ impl Hub {
             )),
             camera_locks: Mutex::new(std::collections::HashMap::new()),
             scrubber: Scrubber::new(&config.data_dir),
+            push: Arc::new(crate::push::Push::new(&config.data_dir, config.demo)),
             data_dir: config.data_dir,
             history_dir: config.history_dir,
             demo: config.demo,
@@ -256,6 +259,47 @@ impl Hub {
         self.scrubber.clean(text)
     }
 
+    /// Les notifications web push (ticket n° 17).
+    pub fn push(&self) -> &Arc<crate::push::Push> {
+        &self.push
+    }
+
+    /// Le nettoyage du texte d'une notification : les hôtes, identifiants et mots de passe des
+    /// caméras masqués tels quels, puis adresses, identifiants de nœud et chemins (voir
+    /// `push/content.rs`).
+    pub fn push_cleaner(&self) -> impl Fn(&str) -> String + '_ {
+        let secrets: Vec<String> = {
+            let st = self.lock();
+            st.cameras
+                .cameras()
+                .iter()
+                .flat_map(|c| {
+                    let hosts = [Some(&c.url), c.sub_url.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|u| url::Url::parse(u).ok())
+                        .filter_map(|u| u.host_str().map(str::to_string))
+                        .collect::<Vec<_>>();
+                    hosts
+                        .into_iter()
+                        .chain(c.username.clone())
+                        .chain(c.password.clone())
+                })
+                .collect()
+        };
+        let sanitizer = crate::push::content::Sanitizer::new(secrets);
+        move |text: &str| self.scrubber.clean(&sanitizer.clean(text))
+    }
+
+    /// Un passage détecté vient de se terminer (après `Descriptions::on_close`) : son message part
+    /// maintenant, ou à l'arrivée de sa description si elle est attendue.
+    pub fn push_detection_closed(&self, event: &protocol::wire::DetectionEventView) {
+        let clean = self.push_cleaner();
+        let descriptions = self.detection.descriptions();
+        self.push
+            .detection_closed(event, || descriptions.is_awaiting(&event.id), &clean);
+    }
+
     // -----------------------------------------------------------------------
     // Agrégation des événements du backend
     // -----------------------------------------------------------------------
@@ -271,8 +315,12 @@ impl Hub {
             history.record(event);
         }
         let wire = WireEvent::from_event(event, &|s| self.scrubber.clean(s));
-        {
+        let (retained, name) = {
             let mut st = self.lock();
+            // Le nom avant l'agrégation : un appareil oublié n'en a plus après.
+            let name = event_node(event)
+                .and_then(|id| st.devices.get(&id))
+                .map(|d| d.info.name.clone());
             // Une mesure écartée (plus ancienne que la dernière retenue : historique rejoué au
             // démarrage) n'est pas diffusée non plus : le client ne verrait pas la valeur
             // reculer, alors que l'état complet, lui, ne la contient pas.
@@ -280,6 +328,24 @@ impl Hub {
             if let (true, Some(wire)) = (retained, wire) {
                 self.publish(&mut st, wire);
             }
+            (retained, name)
+        };
+        // Notifications web push (ticket n° 17) : rien n'est envoyé ici, tout passe par la file.
+        if let Event::Notification { title, message, .. } = event {
+            let clean = self.push_cleaner();
+            self.push.notify(
+                crate::push::Category::Rules,
+                crate::push::content::payload(
+                    &clean,
+                    title,
+                    message,
+                    crate::push::content::HOME_URL.into(),
+                    None,
+                ),
+            );
+        } else if crate::push::concerns(event) {
+            let name = name.map(|n| self.push_cleaner()(&n));
+            self.push.observe(event, name.as_deref(), retained);
         }
         if let Event::NodeRemoved(id) = event {
             // Le plan ne garde pas un appareil oublié (c'est l'interface qui le faisait).
@@ -988,6 +1054,17 @@ const RULES_FILE: &str = "regles.json";
 enum Document {
     Plan,
     Rules,
+}
+
+/// L'appareil d'un événement (pour le nom dans une notification).
+fn event_node(event: &Event) -> Option<u64> {
+    match event {
+        Event::Measurement { node_id, .. }
+        | Event::State { node_id, .. }
+        | Event::Status { node_id, .. } => Some(*node_id),
+        Event::NodeRemoved(id) => Some(*id),
+        _ => None,
+    }
 }
 
 fn to_json<T: Serialize>(message: &T) -> Option<Arc<str>> {

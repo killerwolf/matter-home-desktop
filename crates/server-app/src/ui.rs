@@ -1223,6 +1223,53 @@ impl App {
         );
     }
 
+    /// Les notifications web push (ticket n° 17) : le réglage général et les appareils abonnés,
+    /// révocables. L'abonnement lui-même se fait depuis l'app web de l'appareil.
+    fn push_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
+        let p = matter_home_theme::palette(ui);
+        let push = hub.push();
+        let status = push.status();
+        ui.label(RichText::new("Notifications (iPhone, iPad)").strong());
+        let mut enabled = status.enabled;
+        if ui
+            .checkbox(
+                &mut enabled,
+                "Envoyer les notifications aux appareils abonnés",
+            )
+            .changed()
+            && push.set_enabled(enabled).is_err()
+        {
+            self.local_notice = Some(Notice::Err(
+                "Le réglage n'a pas pu être enregistré (voir le journal).".into(),
+            ));
+        }
+        if status.subscriptions.is_empty() {
+            ui.label("Aucun appareil abonné.");
+        }
+        for sub in &status.subscriptions {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} · {}", sub.label, sub.service));
+                if let Some(error) = &sub.last_error {
+                    ui.colored_label(p.error, format!("dernier envoi : {error}"));
+                }
+                if ui.button("Révoquer").clicked() && push.remove(&sub.id).is_err() {
+                    self.local_notice = Some(Notice::Err(
+                        "L'abonnement n'a pas pu être révoqué (voir le journal).".into(),
+                    ));
+                }
+            });
+        }
+        ui.label(
+            RichText::new(
+                "Pour abonner un appareil : app web ajoutée à l'écran d'accueil (iOS 16.4 ou plus), \
+                 Appareils › Notifications. Les messages passent chiffrés par le service de push \
+                 d'Apple. Détails : docs/notifications.md.",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+    }
+
     fn generate_mode_token(&mut self, hub: &Arc<matter_home_server::hub::Hub>) {
         self.mode_token_confirm = false;
         match hub.generate_mode_token() {
@@ -1295,6 +1342,9 @@ impl App {
                 ui.separator();
                 if let Some(hub) = &st.hub {
                     self.mode_section(ui, &hub.0);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    self.push_section(ui, &hub.0);
                     ui.add_space(6.0);
                     ui.separator();
                 }

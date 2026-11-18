@@ -11,6 +11,7 @@ import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
+import * as push from "./push.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -258,6 +259,11 @@ function renderDevices() {
     if (state.loaded) {
       const out = document.createElement("div");
       out.className = "section-title";
+      const notif = document.createElement("button");
+      notif.className = "ghost";
+      notif.id = "notifications";
+      notif.textContent = "Notifications";
+      out.appendChild(notif);
       const button = document.createElement("button");
       button.className = "ghost";
       button.id = "logout";
@@ -771,6 +777,7 @@ function closeSheet() {
   $("#sheet-backdrop").hidden = true;
   $("#app").inert = false;
   sheetId = null;
+  pushUi.open = false;
   if (wasOpen) {
     const target = sheetOpener;
     sheetOpener = null;
@@ -886,6 +893,183 @@ function renderSheet(rebuild) {
 
 function groupTitle(id) {
   return groups(state.devices, state.plan).groups.find((g) => g.ids.includes(id))?.title ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications web push (ticket n° 17) : réglages dans une feuille
+// ---------------------------------------------------------------------------
+const pushUi = { open: false, status: null, mine: null, message: "", busy: false, error: "" };
+
+function pushEnv() {
+  return {
+    ua: navigator.userAgent,
+    touch: navigator.maxTouchPoints > 1,
+    standalone: window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true,
+    hasNotification: "Notification" in window,
+    hasPushManager: "PushManager" in window,
+    hasServiceWorker: "serviceWorker" in navigator,
+    permission: "Notification" in window ? Notification.permission : "default",
+  };
+}
+
+async function pushDeps() {
+  return {
+    Notification: window.Notification,
+    registration: await navigator.serviceWorker.ready,
+    request: api.request,
+    publicKey: pushUi.status?.public_key ?? "",
+    label: push.deviceLabel(navigator.userAgent, navigator.maxTouchPoints > 1),
+  };
+}
+
+/** Ouvre la feuille : la clé du serveur et l'abonnement de cet appareil sont chargés d'abord
+ *  (la demande de permission doit être la première attente du toucher « Activer »). */
+async function openNotifications() {
+  closeSheet();
+  pushUi.open = true;
+  $("#sheet-title").textContent = "Notifications";
+  pushUi.message = "";
+  pushUi.error = "";
+  renderPush();
+  showSheet();
+  try {
+    pushUi.status = await api.request("GET", "/api/push");
+    const support = push.pushSupport(pushEnv());
+    pushUi.mine = support.ok && Notification.permission === "granted"
+      ? await push.currentSubscription(await pushDeps()).catch(() => null)
+      : null;
+    if (pushUi.mine) pushUi.status = await api.request("GET", "/api/push");
+  } catch (error) {
+    pushUi.error = error?.status === 404 ? "Ce serveur ne gère pas encore les notifications : mettez-le à jour." : (error?.detail || "Réglages indisponibles pour l'instant.");
+  }
+  if (pushUi.open) renderPush();
+}
+
+function checkbox(label, checked, onChange) {
+  const row = document.createElement("label");
+  row.className = "push-check";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.addEventListener("change", () => onChange(input.checked, input));
+  row.append(input, document.createTextNode(` ${label}`));
+  return row;
+}
+
+async function pushAction(work) {
+  if (pushUi.busy) return;
+  pushUi.busy = true;
+  pushUi.error = "";
+  pushUi.message = "";
+  renderPush();
+  try {
+    await work();
+    pushUi.status = await api.request("GET", "/api/push");
+  } catch (error) {
+    pushUi.error = error?.detail || error?.message || "Échec, réessayez.";
+  } finally {
+    pushUi.busy = false;
+    if (pushUi.open) renderPush();
+  }
+}
+
+function renderPush() {
+  const body = $("#sheet-body");
+  body.dataset.id = "notifications";
+  body.replaceChildren();
+  const note = (text, cls = "ev-note") => { const p = document.createElement("p"); p.className = cls; p.textContent = text; body.appendChild(p); return p; };
+  note("Recevez les alertes de la maison sur cet appareil même quand l'app est fermée. Le message part chiffré par le service de notifications d'Apple (ou de votre navigateur) : lui ne peut pas le lire.");
+  if (pushUi.error) note(pushUi.error, "error");
+  if (pushUi.message) note(pushUi.message);
+  const st = pushUi.status;
+  if (!st) { if (!pushUi.error) note("Chargement…"); return; }
+
+  body.appendChild(checkbox("Notifications activées sur le serveur", st.enabled, (on) => pushAction(() => api.request("PUT", "/api/push", { enabled: on }))));
+  if (!st.enabled) note("Coupées : rien n'est envoyé, à aucun appareil.");
+
+  const h = document.createElement("h3");
+  h.textContent = "Cet appareil";
+  body.appendChild(h);
+  const support = push.pushSupport(pushEnv());
+  const mine = pushUi.mine && st.subscriptions.find((s) => s.id === pushUi.mine.id);
+  if (!support.ok && !mine) {
+    note(support.text);
+  } else if (!mine) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "primary";
+    b.textContent = "Activer les notifications sur cet appareil";
+    b.disabled = pushUi.busy || !st.public_key;
+    // La permission est la première chose demandée au toucher (exigence de Safari).
+    b.addEventListener("click", () => pushAction(async () => {
+      const result = await push.subscribe(await pushDeps());
+      if (result.status === "denied") throw new Error("Notifications refusées : réautorisez-les dans Réglages › Notifications › Maison.");
+      pushUi.mine = result.view;
+      pushUi.message = "Cet appareil est abonné.";
+    }));
+    body.appendChild(b);
+  } else {
+    for (const c of push.CATEGORIES) {
+      body.appendChild(checkbox(c.label, mine.categories[c.id] !== false, (on) => pushAction(() => api.request("PUT", `/api/push/subscriptions/${mine.id}`, { categories: { ...mine.categories, [c.id]: on } }))));
+    }
+    const row = document.createElement("div");
+    row.className = "controls";
+    row.append(
+      button("Envoyer un essai", () => pushAction(async () => {
+        await api.request("POST", `/api/push/subscriptions/${mine.id}/test`);
+        pushUi.message = "Essai envoyé : il arrive dans quelques secondes.";
+      })),
+      button("Désactiver sur cet appareil", () => pushAction(async () => {
+        await push.unsubscribe(await pushDeps(), mine.id);
+        pushUi.mine = null;
+        pushUi.message = "Cet appareil ne recevra plus rien.";
+      })),
+    );
+    body.appendChild(row);
+  }
+
+  const h2 = document.createElement("h3");
+  h2.textContent = "Appareils abonnés";
+  body.appendChild(h2);
+  if (!st.subscriptions.length) note("Aucun.");
+  const ul = document.createElement("ul");
+  ul.className = "push-list";
+  for (const s of st.subscriptions) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    const parts = [s.label + (pushUi.mine?.id === s.id ? " (cet appareil)" : ""), s.service, `depuis le ${push.dateText(s.created_at)}`];
+    if (s.last_error) parts.push(`dernier envoi : ${s.last_error}`);
+    text.textContent = parts.join(" · ");
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "ghost danger";
+    revoke.textContent = "Révoquer";
+    revoke.addEventListener("click", () => {
+      if (!confirm(`Révoquer « ${s.label} » ? Il ne recevra plus de notifications.`)) return;
+      pushAction(async () => {
+        await api.request("DELETE", `/api/push/subscriptions/${s.id}`);
+        if (pushUi.mine?.id === s.id) pushUi.mine = null;
+      });
+    });
+    li.append(text, revoke);
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
+  note("iPhone et iPad : iOS 16.4 ou plus, app ajoutée à l'écran d'accueil et ouverte par l'adresse .ts.net. Détails : docs/notifications.md.");
+}
+
+/** Le toucher d'une notification : `#evenement=<id>` ouvre la fiche de l'événement. */
+async function openFromUrl(url) {
+  const id = push.eventFromHash(new URL(url, location.href).hash);
+  if (!id) return;
+  history.replaceState(null, "", location.pathname);
+  selectTab("cameras");
+  try {
+    const ev = await api.request("GET", `/api/events/${encodeURIComponent(id)}`);
+    if (ev) openEvent(ev);
+  } catch {
+    toast("Cet événement n'existe plus.");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1216,8 @@ function start() {
     onEvent: applyEvent,
     onStatus: (s) => { state.connection = s; scheduleRender(false); },
   });
+  // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
+  if (location.hash) openFromUrl(location.href);
 }
 
 function loginMessage(error) {
@@ -1108,6 +1294,7 @@ view.addEventListener("contextmenu", (e) => {
 });
 view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
+  if (e.target.closest("#notifications")) { openNotifications(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
     if (fullCam) { if (e.target.closest(".cam-fs")) exitFull(); } else if (cam.classList.contains("ok")) enterFull(cam.dataset.camera);
@@ -1150,6 +1337,10 @@ setInterval(() => { if ((tab === "devices" || tab === "plan") && !document.hidde
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js", { scope: "/app/" }).catch(() => {});
+  // Le toucher d'une notification alors que l'app est déjà ouverte (voir sw.js).
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data?.type === "open" && typeof e.data.url === "string" && api.hasToken()) openFromUrl(e.data.url);
+  });
 }
 
 if (api.hasToken()) start();

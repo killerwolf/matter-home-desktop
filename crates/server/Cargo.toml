@@ -70,6 +70,10 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 # dans l'arbre (tests de la fausse caméra RTSP).
 base64 = "0.22"
 
+# Notifications web push (#17) : VAPID (ES256), ECDH P-256, HKDF et AES-128-GCM du chiffrement
+# aes128gcm. `ring` est déjà dans l'arbre (rustls, rcgen) : aucune caisse nouvelle.
+ring = "0.17"
+
 # Température du Mac (`ProcessInfo.thermalState`) : la détection se suspend s'il chauffe. Déjà dans
 # l'arbre (objc2).
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -81,3 +85,6 @@ tokio-tungstenite = "0.29"
 # dépendance : voir plus haut).
 # Idem : réponse Digest attendue par la fausse caméra.
 md-5 = "0.10"
+# Vecteur de test du RFC 8291 : ECDH avec une clé privée fixée (ring ne sait pas l'importer). La
+# fonction `ecdh` de p256 est déjà compilée pour matc.
+p256 = { version = "0.13", features = ["ecdh"] }

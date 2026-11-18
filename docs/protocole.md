@@ -386,6 +386,29 @@ client qui ne connaît pas l'événement `detection` l'ignore (`Unknown`), une c
   variante de repli (`Unknown`) : un type inconnu est lu sans faire échouer l'état complet, n'est
   jamais exécuté, et le serveur refuse de l'enregistrer.
 
+### Notifications web push
+
+Ticket n° 17 (voir [Notifications](notifications.md)). Routes et types **ajoutés**
+(`protocol::wire::push`) : la version du protocole reste **3**, un client qui ne les connaît pas
+n'en sait rien. Erreurs : `bad_request` (avec `detail`) pour une adresse d'abonnement refusée (seuls
+les services de push connus, en https), des clés invalides ou plus de 20 appareils ; `not_found` pour
+un abonnement inconnu ; `unavailable` pour l'essai quand les notifications sont coupées.
+
+| route | corps | réponse |
+|---|---|---|
+| `GET /api/push` | | `{"enabled", "public_key", "subscriptions": […]}` ; `public_key` : clé VAPID (base64url) pour `pushManager.subscribe` |
+| `PUT /api/push` | `{"enabled": bool}` | comme `GET` |
+| `POST /api/push/subscriptions` | `PushSubscription.toJSON()` (`endpoint`, `keys.p256dh`, `keys.auth`) plus `label` et, facultatif, `categories` | l'abonnement ; la même adresse garde le même `id` |
+| `PUT /api/push/subscriptions/{id}` | `{"categories"?, "label"?}` | l'abonnement |
+| `DELETE /api/push/subscriptions/{id}` | | `202` |
+| `POST /api/push/subscriptions/{id}/test` | | `202` (une notification d'essai part) |
+
+Un abonnement vu par les clients : `id` (16 caractères hexadécimaux), `label`, `user_agent`,
+`service` (`Apple`, `Google`, `Mozilla`, `Microsoft`), `created_at`, `last_sent_at`, `last_error`,
+`categories` (`rules`, `detections`, `battery`, `unreachable`, booléens). L'adresse d'abonnement et
+les clés ne sont jamais renvoyées. Le message reçu par le service worker (chiffré `aes128gcm`) :
+`{"title", "body", "url", "tag"?}`, `url` sous `/app/` (`/app/#evenement=<id>` pour un passage).
+
 ### Porte ou fenêtre sur le plan
 
 Un objet `Device` du plan peut porter `"opening": "Door" | "Window"` : Matter ne distingue pas une

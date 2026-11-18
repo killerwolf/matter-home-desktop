@@ -27,6 +27,8 @@ pas de framework, pas de nouvelle dépendance Rust.
   - Garde-fous : retour visuel immédiat (la tuile montre l'effet attendu et un contour pendant
     l'envoi), pas de double envoi (un nouveau tap est ignoré tant que la commande n'est pas
     acquittée et pendant 400 ms), l'attente cesse à l'événement attendu, au refus, ou après 5 s.
+  - Tout en bas : **Notifications** (alertes sur l'iPhone ou l'iPad même app fermée, catégories,
+    appareils abonnés ; voir [Notifications](notifications.md)) et « Se déconnecter ».
 - **Températures** : **tous les capteurs sur un seul graphique** (SVG dessiné à la main, sans
   bibliothèque), une courbe par capteur, chacune avec sa couleur stable (`--color-series-1` à
   `-8`, selon le rang de l'identifiant ; pointillés au-delà de 8). Un choix de durée (**1 h,
@@ -103,7 +105,7 @@ pas de framework, pas de nouvelle dépendance Rust.
 ## Fichiers
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
-`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
+`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `push.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
 192 et 512). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 

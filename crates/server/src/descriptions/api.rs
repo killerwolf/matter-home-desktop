@@ -214,17 +214,17 @@ fn truncate(text: &str) -> String {
     cut
 }
 
-/// Une réponse HTTP.
+/// Une réponse HTTP (aussi lue par les notifications web push, `push/transport.rs`).
 #[derive(Debug)]
-struct Response {
-    status: u16,
-    retry_after: Option<Duration>,
-    body: String,
+pub(crate) struct Response {
+    pub status: u16,
+    pub retry_after: Option<Duration>,
+    pub body: String,
 }
 
 /// Sépare la sortie de `curl -i` : en-têtes (les réponses intermédiaires 1xx, « 100 Continue », sont
 /// passées) et corps. Pas de proxy (voir `curl_command`) : pas de « Connection established ».
-fn parse_http(output: &[u8]) -> Result<Response, String> {
+pub(crate) fn parse_http(output: &[u8]) -> Result<Response, String> {
     let mut rest = output;
     loop {
         let end = rest
@@ -256,13 +256,25 @@ fn parse_http(output: &[u8]) -> Result<Response, String> {
     }
 }
 
+/// Préfixe des corps de requête des descriptions dans le dossier temporaire.
+pub(crate) const BODY_PREFIX: &str = "mh-description-";
+
 /// Un fichier temporaire 0600, effacé à la fin.
-struct TempBody(PathBuf);
+pub(crate) struct TempBody(PathBuf);
 
 impl TempBody {
     fn write(bytes: &[u8]) -> std::io::Result<TempBody> {
+        Self::write_named(BODY_PREFIX, "json", bytes)
+    }
+
+    /// `prefix` : voir `clean_leftover_bodies`, qui efface ceux qu'un arrêt brutal a laissés.
+    pub(crate) fn write_named(
+        prefix: &str,
+        extension: &str,
+        bytes: &[u8],
+    ) -> std::io::Result<TempBody> {
         let path = std::env::temp_dir().join(format!(
-            "mh-description-{}-{:016x}.json",
+            "{prefix}{}-{:016x}.{extension}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -276,7 +288,7 @@ impl TempBody {
         Ok(guard)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -289,7 +301,7 @@ impl Drop for TempBody {
 
 /// Une valeur entre guillemets pour un fichier de configuration de `curl` (déjà validée : ni
 /// guillemet ni barre oblique inverse, ni caractère de contrôle).
-fn quoted(value: &str) -> Result<String, String> {
+pub(crate) fn quoted(value: &str) -> Result<String, String> {
     if value
         .bytes()
         .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\')
@@ -361,13 +373,13 @@ impl PostError {
 
 /// Codes de sortie de `curl` d'avant l'envoi de la requête : adresse du proxy ou de l'hôte
 /// introuvable (5, 6), connexion refusée ou impossible (7), poignée de main TLS (35).
-const CURL_BEFORE_SEND: [i32; 4] = [5, 6, 7, 35];
+pub(crate) const CURL_BEFORE_SEND: [i32; 4] = [5, 6, 7, 35];
 
 /// Le programme et son environnement : le `curl` du système (pas celui du `PATH`), un
 /// environnement **vide** : ni proxy hérité (`https_proxy`, `ALL_PROXY`…), ni variable de
 /// configuration, et `--noproxy "*"` en plus. Sans proxy, la sortie de `curl -i` ne commence jamais
 /// par « Connection established » (voir `parse_http`).
-fn curl_command() -> Command {
+pub(crate) fn curl_command() -> Command {
     let mut command = Command::new("/usr/bin/curl");
     command.env_clear();
     command

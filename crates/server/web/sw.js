@@ -1,10 +1,10 @@
 // Service worker minimal : garde la coquille (HTML, CSS, JS, icônes) pour que l'app s'ouvre
 // instantanément et hors ligne. Il ne touche jamais à l'API : /api/ passe toujours par le réseau
 // (jeton, état, flux), rien de la maison n'est mis en cache.
-const CACHE = "matter-home-shell-v6";
+const CACHE = "matter-home-shell-v7";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "app.js", "api.js", "tiles.js", "icons.js",
-  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
+  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -35,4 +35,49 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(() => caches.match(event.request).then((hit) => hit || (event.request.mode === "navigate" ? caches.match("index.html") : Response.error()))),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Notifications web push (ticket n° 17). Le message arrive chiffré de bout en bout (RFC 8291) ;
+// le navigateur le déchiffre avant de le donner ici : { title, body, url, tag }.
+// ---------------------------------------------------------------------------
+
+/** Même règle que `clickTarget` (push.js) : même origine, sous /app/, sinon l'accueil. */
+function clickTarget(url) {
+  try {
+    const target = new URL(url || "/app/", self.location.origin);
+    if (target.origin === self.location.origin && target.pathname.startsWith("/app/")) return target.href;
+  } catch { /* adresse illisible */ }
+  return new URL("/app/", self.location.origin).href;
+}
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
+  // Toujours une notification visible : Safari retire l'abonnement après des messages muets.
+  const title = typeof data.title === "string" && data.title ? data.title : "Matter Home";
+  const options = {
+    body: typeof data.body === "string" ? data.body : "",
+    icon: "icon-192.png",
+    badge: "icon-192.png",
+    lang: "fr",
+    data: { url: clickTarget(data.url) },
+  };
+  if (typeof data.tag === "string" && data.tag) options.tag = data.tag;
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = clickTarget(event.notification.data && event.notification.data.url);
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const open = windows.find((c) => new URL(c.url).pathname.startsWith("/app/"));
+    if (open) {
+      // L'app ouverte affiche la page demandée (fiche d'un événement) sans se recharger.
+      open.postMessage({ type: "open", url });
+      return open.focus();
+    }
+    return self.clients.openWindow(url);
+  })());
 });

@@ -223,6 +223,9 @@ impl Hub {
         let _ = self.send(protocol::events::Command::DetectionDescribed {
             event: Box::new(event.clone()),
         });
+        // Le message web push du passage, s'il attendait sa description (ticket n° 17).
+        let clean = self.push_cleaner();
+        self.push().detection_described(event, &clean);
     }
 
     /// Où est la caméra (`None` : inconnue).

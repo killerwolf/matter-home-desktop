@@ -10,6 +10,22 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Ajouté
+
+- **Notifications sur iPhone et iPad** (ticket n° 17) : l'app web ajoutée à l'écran d'accueil
+  (iOS 16.4 ou plus, adresse `.ts.net`) reçoit des alertes **même fermée**, par le web push standard
+  (VAPID, message chiffré de bout en bout `aes128gcm`, RFC 8291 et 8292, avec `ring` déjà présent :
+  aucune dépendance nouvelle). Quatre catégories, à cocher par appareil : actions « Notifier » des
+  règles, **passages détectés** sur une caméra en Surveillance (un message par passage, avec sa
+  description si elle est attendue ; le toucher ouvre la fiche de l'événement), **pile faible**
+  (sous 15 %, une fois jusqu'à 20 %) et **appareil injoignable** depuis 10 minutes. Réglages dans
+  l'app web (Appareils › Notifications : activer, essai, catégories, appareils abonnés révocables)
+  et dans la fenêtre du serveur (interrupteur général, révocation). Envoi par le `curl` du système
+  vers les seuls services de push connus (Apple, Google, Mozilla, Microsoft) ; jamais d'adresse, de
+  mot de passe de caméra ni d'identifiant d'appareil brut dans le texte. Clé VAPID et abonnements
+  dans `serveur/` (0600), jamais exportés. Nouvelles routes `/api/push…` (protocole inchangé,
+  version 3) ; service worker de l'app web en version 7. Voir `docs/notifications.md`.
+
 ### Modifié
 
 - **Client, macOS : barre de menus du Mac** (ticket n° 20). Le menu **Fichier** (Exporter mes

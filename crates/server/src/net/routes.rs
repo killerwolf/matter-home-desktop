@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras", get(get_cameras))
         .merge(super::camera_stream::router(state.hub.live().clone()))
         .merge(super::events::router())
+        .merge(super::push::router())
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))
         .route("/api/rules/{id}/test", post(test_rule))
@@ -185,7 +186,7 @@ impl IntoResponse for ApiErr {
 type ApiResult<T> = Result<T, ApiErr>;
 
 /// Corps JSON dont les erreurs sont des codes du protocole, pas du texte d'axum.
-struct ApiJson<T>(T);
+pub(super) struct ApiJson<T>(pub T);
 
 impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
     type Rejection = ApiErr;
