@@ -1,12 +1,18 @@
 //! Le détecteur ONNX : la caisse `ort` (ONNX Runtime) avec l'exécuteur **CoreML** (GPU de la
 //! Radeon sur le Mac serveur), repli sur le processeur. Voir `docs/detection.md`.
 //!
-//! # Rien n'est lié, rien n'est téléchargé
+//! # Rien n'est lié à la compilation
 //!
 //! `ort` est compilé en `load-dynamic` : la bibliothèque ONNX Runtime (`libonnxruntime.dylib`) est
 //! **chargée au lancement**, pas liée. Les binaires que `ort` sait télécharger n'existent pas pour
-//! les Mac Intel (le serveur), et un binaire universel reste ainsi du seul code Rust. Ni le modèle
-//! ni la bibliothèque ne sont dans le dépôt : on les dépose dans `<données>/models/`.
+//! les Mac Intel (le serveur), et un binaire universel reste ainsi du seul code Rust.
+//!
+//! # Où sont les fichiers
+//!
+//! L'application du serveur les **embarque** (`scripts/bundle-server-app.sh`, empreintes SHA-256
+//! vérifiées) : `Contents/Frameworks/libonnxruntime.dylib` et `Contents/Resources/models/`. Ils
+//! l'emportent. Sans eux (serveur en ligne de commande, version de développement), on prend ceux
+//! de `<données>/models/`, puis `ORT_DYLIB_PATH` pour la bibliothèque.
 //!
 //! | Fichier | Rôle |
 //! |---|---|
@@ -15,12 +21,15 @@
 //! | `detector.json` | réglages facultatifs ([`ModelSpec`]) |
 //! | `libonnxruntime.dylib` | ONNX Runtime (version universelle de Microsoft, avec CoreML) |
 //!
+//! Un fichier qui n'appartient pas à l'utilisateur (ou à root), ou que le groupe ou les autres
+//! peuvent modifier, est **refusé** : c'est du code que le serveur exécute.
+//!
 //! Le gros modèle ne tourne **jamais** sur le processeur (330 ms par image pour YOLOX-s) : sans
 //! CoreML et sans `detector-cpu.onnx`, la détection reste coupée, sauf `"engine": "cpu"` dans
 //! `detector.json` (pour un petit modèle seul).
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use ort::ep::coreml::{ComputeUnits, ModelFormat};
 use ort::session::Session;
@@ -35,41 +44,102 @@ pub const CPU_MODEL: &str = "detector-cpu.onnx";
 pub const SPEC: &str = "detector.json";
 pub const DYLIB: &str = "libonnxruntime.dylib";
 
-/// Où chercher ONNX Runtime : le dossier des modèles, puis à côté du programme (et dans
-/// `Contents/Frameworks` d'une application), puis `ORT_DYLIB_PATH`.
+/// Le dossier `Contents` de l'application, si le programme est dans `Contents/MacOS`.
+fn bundle_contents() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos = exe.parent()?;
+    (macos.file_name()? == "MacOS").then(|| macos.parent().map(Path::to_path_buf))?
+}
+
+/// Les dossiers de modèles, dans l'ordre : celui de l'application, puis `<données>/models/`.
+pub fn model_dirs(models: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(contents) = bundle_contents() {
+        out.push(contents.join("Resources/models"));
+    }
+    out.push(models.to_path_buf());
+    out
+}
+
+/// Où chercher ONNX Runtime : l'application (`Contents/Frameworks`) d'abord, puis à côté du
+/// programme, puis le dossier des modèles, puis `ORT_DYLIB_PATH`.
 pub fn dylib_candidates(models: &Path) -> Vec<PathBuf> {
-    let mut out = vec![models.join(DYLIB)];
+    let mut out = Vec::new();
+    if let Some(contents) = bundle_contents() {
+        out.push(contents.join("Frameworks").join(DYLIB));
+    }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(Path::to_path_buf))
     {
         out.push(exe_dir.join(DYLIB));
-        out.push(exe_dir.join("../Frameworks").join(DYLIB));
     }
+    out.push(models.join(DYLIB));
     if let Some(path) = std::env::var_os("ORT_DYLIB_PATH") {
         out.push(PathBuf::from(path));
     }
     out
 }
 
-/// ONNX Runtime ne se charge qu'une fois par processus.
-fn init_runtime(models: &Path) -> Result<(), String> {
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| {
-        let Some(path) = dylib_candidates(models).into_iter().find(|p| p.is_file()) else {
-            return Err(format!(
-                "ONNX Runtime absent ({DYLIB} introuvable dans le dossier des modèles)"
-            ));
-        };
-        match ort::init_from(&path) {
-            Ok(builder) => {
-                builder.with_name("matter-home").commit();
-                Ok(())
-            }
-            Err(e) => Err(format!("ONNX Runtime illisible : {e}")),
+/// Un fichier qu'on peut charger : à l'utilisateur (ou à root), non modifiable par le groupe ni
+/// par les autres. `Err` : la raison.
+pub fn trusted(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|e| format!("illisible ({})", e.kind()))?;
+        // SAFETY : `getuid` n'a ni argument ni effet de bord.
+        let me = unsafe { libc::getuid() };
+        if meta.uid() != me && meta.uid() != 0 {
+            return Err("n'appartient pas à cet utilisateur".into());
         }
-    })
-    .clone()
+        if meta.mode() & 0o022 != 0 {
+            return Err("modifiable par d'autres comptes (droits trop larges)".into());
+        }
+    }
+    let _ = path;
+    Ok(())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// ONNX Runtime ne se charge qu'une fois par processus ; seul un **succès** est retenu : un
+/// échec (bibliothèque absente) est réessayé au prochain chargement du détecteur.
+fn init_runtime(models: &Path) -> Result<(), String> {
+    static LOADED: Mutex<bool> = Mutex::new(false);
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if *loaded {
+        return Ok(());
+    }
+    let mut refused = Vec::new();
+    let path = dylib_candidates(models)
+        .into_iter()
+        .filter(|p| p.is_file())
+        .find(|p| match trusted(p) {
+            Ok(()) => true,
+            Err(why) => {
+                refused.push(format!("{} refusée : {why}", file_name(p)));
+                false
+            }
+        });
+    let Some(path) = path else {
+        return Err(match refused.first() {
+            Some(why) => format!("ONNX Runtime {why}"),
+            None => format!("ONNX Runtime absent ({DYLIB} introuvable)"),
+        });
+    };
+    match ort::init_from(&path) {
+        Ok(builder) => {
+            builder.with_name("matter-home").commit();
+            *loaded = true;
+            Ok(())
+        }
+        Err(e) => Err(format!("ONNX Runtime illisible : {e}")),
+    }
 }
 
 pub struct OnnxDetector {
@@ -100,7 +170,7 @@ fn open(path: &Path, engine: &Engine, spec: &ModelSpec, models: &Path) -> Result
     let mut builder = match engine {
         Engine::CoreMl => {
             let cache = models.join("coreml-cache");
-            let _ = std::fs::create_dir_all(&cache);
+            let _ = crate::persistence::ensure_private_dir(&cache);
             let ep = ort::ep::CoreML::default()
                 .with_compute_units(ComputeUnits::All)
                 .with_model_format(ModelFormat::MLProgram)
@@ -120,14 +190,22 @@ impl OnnxDetector {
     /// Charge le détecteur depuis le dossier des modèles. `Err` : la raison, en clair (pour le
     /// journal et la fenêtre du serveur) ; la détection reste alors coupée.
     pub fn load(models: &Path) -> Result<OnnxDetector, String> {
-        let main = models.join(MODEL);
-        let light = models.join(CPU_MODEL);
-        if !main.is_file() && !light.is_file() {
-            return Err(format!(
-                "aucun modèle ({MODEL} absent du dossier des modèles)"
-            ));
+        // Le premier dossier qui a un modèle : celui de l'application, sinon `<données>/models/`.
+        let dir = model_dirs(models)
+            .into_iter()
+            .find(|d| d.join(MODEL).is_file() || d.join(CPU_MODEL).is_file())
+            .ok_or_else(|| format!("aucun modèle ({MODEL} absent du dossier des modèles)"))?;
+        let (main, light) = (dir.join(MODEL), dir.join(CPU_MODEL));
+        for path in [&main, &light].into_iter().filter(|p| p.is_file()) {
+            trusted(path).map_err(|why| format!("{} refusé : {why}", file_name(path)))?;
         }
-        let spec = read_spec(models)?;
+        // Les réglages : ceux de `<données>/models/` l'emportent (utilisateur avancé), sinon ceux
+        // du dossier du modèle.
+        let spec = if models.join(SPEC).is_file() {
+            read_spec(models)?
+        } else {
+            read_spec(&dir)?
+        };
         init_runtime(models)?;
         let mut tried = Vec::new();
         let mut attempt = |path: &Path, engine: Engine, label: &str| -> Option<(Session, String)> {

@@ -164,6 +164,44 @@ pub fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>,
     Ok(Some((start, end)))
 }
 
+/// Morceaux lus à la fois : un clip de 48 Mo ne passe jamais tout entier en mémoire.
+const CHUNK: usize = 256 * 1024;
+
+/// Lit `[start, start + len)` de `file` par morceaux, dans un fil bloquant, vers un corps de
+/// réponse en flux.
+fn stream_file(mut file: std::fs::File, start: u64, len: u64) -> axum::body::Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<axum::body::Bytes>>(4);
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = file.seek(SeekFrom::Start(start)) {
+            let _ = tx.blocking_send(Err(e));
+            return;
+        }
+        let mut left = len;
+        while left > 0 {
+            let mut buf = vec![0u8; CHUNK.min(left as usize)];
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.truncate(n);
+                    left -= n as u64;
+                    // Le client est parti : on arrête de lire.
+                    if tx.blocking_send(Ok(buf.into())).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+            }
+        }
+    });
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|chunk| (chunk, rx))
+    });
+    axum::body::Body::from_stream(stream)
+}
+
 async fn serve(
     state: &AppState,
     id: &str,
@@ -177,60 +215,43 @@ async fn serve(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let detection = state.hub.detection().clone();
-    let read = tokio::task::spawn_blocking(move || {
+    let opened = tokio::task::spawn_blocking(move || {
         let path = detection.store().part(&id, part)?;
-        let mut file = std::fs::File::open(path).ok()?;
+        let file = std::fs::File::open(path).ok()?;
         let len = file.metadata().ok()?.len();
-        match parse_range(range.as_deref(), len) {
-            Err(()) => Some(Err(len)),
-            Ok(None) => {
-                let mut body = Vec::with_capacity(len as usize);
-                file.read_to_end(&mut body).ok()?;
-                Some(Ok((body, None, len)))
-            }
-            Ok(Some((start, end))) => {
-                file.seek(SeekFrom::Start(start)).ok()?;
-                let mut body = vec![0u8; (end - start + 1) as usize];
-                file.read_exact(&mut body).ok()?;
-                Some(Ok((body, Some((start, end)), len)))
-            }
-        }
+        Some((file, len))
     })
     .await
     .map_err(|_| ApiErr(ApiError::new(ErrorCode::Internal)))?;
+    let Some((file, len)) = opened else {
+        return Err(not_found());
+    };
     let header_value = |text: String| HeaderValue::from_str(&text).ok();
-    match read {
-        None => Err(not_found()),
-        Some(Err(len)) => {
+    let (status, start, end) = match parse_range(range.as_deref(), len) {
+        Err(()) => {
             let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
             if let Some(v) = header_value(format!("bytes */{len}")) {
                 response.headers_mut().insert(header::CONTENT_RANGE, v);
             }
-            Ok(response)
+            return Ok(response);
         }
-        Some(Ok((body, range, len))) => {
-            let status = if range.is_some() {
-                StatusCode::PARTIAL_CONTENT
-            } else {
-                StatusCode::OK
-            };
-            let mut response = (status, body).into_response();
-            let h = response.headers_mut();
-            h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-            h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-            // Un événement ne change jamais : le navigateur peut le garder (en privé).
-            h.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=86400"),
-            );
-            if let Some((start, end)) = range {
-                if let Some(v) = header_value(format!("bytes {start}-{end}/{len}")) {
-                    h.insert(header::CONTENT_RANGE, v);
-                }
-            }
-            Ok(response)
+        Ok(None) => (StatusCode::OK, 0, len.saturating_sub(1)),
+        Ok(Some((a, b))) => (StatusCode::PARTIAL_CONTENT, a, b),
+    };
+    let count = if len == 0 { 0 } else { end - start + 1 };
+    let mut response = (status, stream_file(file, start, count)).into_response();
+    let h = response.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Some(v) = header_value(count.to_string()) {
+        h.insert(header::CONTENT_LENGTH, v);
+    }
+    if status == StatusCode::PARTIAL_CONTENT {
+        if let Some(v) = header_value(format!("bytes {start}-{end}/{len}")) {
+            h.insert(header::CONTENT_RANGE, v);
         }
     }
+    Ok(response)
 }
 
 #[cfg(test)]

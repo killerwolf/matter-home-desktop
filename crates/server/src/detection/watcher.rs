@@ -145,10 +145,22 @@ async fn prune_loop(detection: Arc<super::Detection>, mut shutdown: watch::Recei
 struct Running {
     stop: watch::Sender<bool>,
     kind: StreamKind,
+    task: tokio::task::JoinHandle<()>,
+    started: Instant,
 }
 
+/// Une veille qui s'est arrêtée seule (décodeur indisponible) : réessayée plus tard.
+struct Backoff {
+    until: Instant,
+    wait: Duration,
+}
+
+const RETRY_FIRST: Duration = Duration::from_secs(10);
+const RETRY_MAX: Duration = Duration::from_secs(300);
+
 /// Démarre et arrête la veille des caméras selon le mode et les caméras (publique à la crate pour
-/// les tests, qui fournissent leur détecteur et leur décodeur).
+/// les tests, qui fournissent leur détecteur et leur décodeur). `watched` dit ce qui tourne
+/// vraiment : une veille arrêtée seule en sort, et revient après une attente croissante.
 pub(crate) async fn run(
     hub: Arc<Hub>,
     detector: SharedDetector,
@@ -156,7 +168,9 @@ pub(crate) async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let detection = hub.detection().clone();
+    let writer = Writer::spawn(hub.clone());
     let mut running: HashMap<u64, Running> = HashMap::new();
+    let mut backoff: HashMap<u64, Backoff> = HashMap::new();
     loop {
         let wanted: HashMap<u64, (String, StreamKind)> = hub
             .cameras_to_watch()
@@ -164,27 +178,59 @@ pub(crate) async fn run(
             .map(|(id, name, kind)| (id, (name, kind)))
             .collect();
         running.retain(|id, r| {
+            if r.task.is_finished() {
+                // Arrêtée sans qu'on le demande : on attendra avant de réessayer.
+                let wait = match backoff.get(id) {
+                    Some(b) if r.started.elapsed() < Duration::from_secs(600) => {
+                        (b.wait * 2).min(RETRY_MAX)
+                    }
+                    _ => RETRY_FIRST,
+                };
+                log::warn!(
+                    "détection de {id:#x} arrêtée ; nouvel essai dans {} s",
+                    wait.as_secs()
+                );
+                backoff.insert(
+                    *id,
+                    Backoff {
+                        until: Instant::now() + wait,
+                        wait,
+                    },
+                );
+                return false;
+            }
             let keep = wanted.get(id).is_some_and(|(_, kind)| *kind == r.kind);
             if !keep {
                 let _ = r.stop.send(true);
             }
             keep
         });
+        backoff.retain(|id, _| wanted.contains_key(id));
         for (id, (name, kind)) in &wanted {
-            if running.contains_key(id) {
+            if running.contains_key(id) || backoff.get(id).is_some_and(|b| Instant::now() < b.until)
+            {
                 continue;
             }
             log::info!("détection : surveillance de « {name} » ({id:#x})");
             let (stop, stopped) = watch::channel(false);
-            tokio::spawn(watch_camera(
+            let task = tokio::spawn(watch_camera(
                 hub.clone(),
                 *id,
                 *kind,
                 detector.clone(),
                 decoders.clone(),
+                writer.clone(),
                 stopped,
             ));
-            running.insert(*id, Running { stop, kind: *kind });
+            running.insert(
+                *id,
+                Running {
+                    stop,
+                    kind: *kind,
+                    task,
+                    started: Instant::now(),
+                },
+            );
         }
         detection.set_watched(&running.keys().copied().collect::<BTreeSet<u64>>());
         tokio::select! {
@@ -199,32 +245,150 @@ pub(crate) async fn run(
     detection.set_watched(&BTreeSet::new());
 }
 
-/// La veille d'une caméra, jusqu'à `stop`.
+// ---------------------------------------------------------------------------
+// L'écriture des événements : un fil à part
+// ---------------------------------------------------------------------------
+
+/// Ce que le fil d'analyse confie à l'écriture : rien de lent (MP4, JPEG sur disque, `fsync`,
+/// nettoyage) ne se fait dans le fil d'analyse, dont la file se remplirait pour rien.
+enum WriteJob {
+    /// Un passage commence : annoncé « en cours », avec sa première capture.
+    Open {
+        event: DetectionEventView,
+        jpeg: Vec<u8>,
+    },
+    /// Il est fini : la capture finale et le clip.
+    Close {
+        event: DetectionEventView,
+        jpeg: Vec<u8>,
+        clip: Option<Clip>,
+    },
+}
+
+#[derive(Clone)]
+struct Writer(std::sync::mpsc::Sender<WriteJob>);
+
+impl Writer {
+    /// Le fil s'arrête quand toutes les veilles (et le superviseur) ont lâché leur `Writer`.
+    fn spawn(hub: Arc<Hub>) -> Writer {
+        let (tx, rx) = std::sync::mpsc::channel::<WriteJob>();
+        let spawned = std::thread::Builder::new()
+            .name("evenements-disque".into())
+            .spawn(move || {
+                for job in rx {
+                    write_job(&hub, job);
+                }
+            });
+        if let Err(e) = spawned {
+            log::error!("fil d'écriture des événements impossible : {e}");
+        }
+        Writer(tx)
+    }
+
+    fn send(&self, job: WriteJob) {
+        let _ = self.0.send(job);
+    }
+}
+
+fn write_job(hub: &Hub, job: WriteJob) {
+    let (event, jpeg, clip, opening) = match job {
+        WriteJob::Open { event, jpeg } => (event, jpeg, None, true),
+        WriteJob::Close { event, jpeg, clip } => (event, jpeg, clip, false),
+    };
+    let mut event = event;
+    let camera = event.camera_id;
+    let mp4 = clip.as_ref().and_then(clip_to_mp4);
+    if !opening {
+        event.has_clip = mp4.is_some();
+        event.clip_s = mp4.as_ref().map_or(0.0, |(_, s)| *s);
+    }
+    let jpeg = Some(jpeg.as_slice()).filter(|j| !j.is_empty());
+    let saved =
+        match hub
+            .detection()
+            .store()
+            .save(event, jpeg, mp4.as_ref().map(|(b, _)| b.as_slice()))
+        {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("événement de {camera:#x} non enregistré : {e}");
+                return;
+            }
+        };
+    if opening {
+        log::info!(
+            "détection sur « {} » ({:#x}) : {} (score {:.2}), en cours",
+            saved.camera_name,
+            saved.camera_id,
+            saved.class().lower(),
+            saved.score
+        );
+    } else {
+        log::info!(
+            "détection sur « {} » ({:#x}) terminée : {} (score {:.2}, clip {:.0} s)",
+            saved.camera_name,
+            saved.camera_id,
+            saved.class().lower(),
+            saved.score,
+            saved.clip_s
+        );
+    }
+    // Les automatisations partent à l'ouverture (on veut être prévenu tout de suite) ; la fin
+    // ne fait que compléter l'événement chez les clients.
+    hub.publish_detection(&saved, opening);
+}
+
+/// L'événement d'un passage (en cours ou fini). L'identifiant vient du début : le même à
+/// l'ouverture et à la fin.
+fn event_of<T>(hub: &Hub, id: u64, passage: &Passage<T>, in_progress: bool) -> DetectionEventView {
+    let name = hub
+        .camera_detection(id)
+        .map(|(name, _)| name)
+        .unwrap_or_default();
+    DetectionEventView {
+        id: format!("{}-{id}", (passage.start * 1000.0).max(0.0) as u64),
+        camera_id: id,
+        camera_name: name,
+        classes: passage.ranked(),
+        score: passage.score(),
+        start: passage.start,
+        end: passage.last,
+        has_clip: false,
+        clip_s: 0.0,
+        in_progress,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// La veille d'une caméra
+// ---------------------------------------------------------------------------
+
+/// La veille d'une caméra, jusqu'à `stop`, ou jusqu'à l'arrêt de son fil d'analyse (pas de
+/// décodeur) : elle lâche alors la session RTSP et le superviseur réessaiera plus tard.
 async fn watch_camera(
     hub: Arc<Hub>,
     id: u64,
     kind: StreamKind,
     detector: SharedDetector,
     decoders: DecoderFactory,
+    writer: Writer,
     mut stop: watch::Receiver<bool>,
 ) {
-    let config = hub.detection().config();
     let recorder = Arc::new(Mutex::new(Recorder::new(PrebufferConfig::default())));
     let (tx, rx) = sync_channel::<StreamPacket>(QUEUE);
     {
         let (hub, recorder) = (hub.clone(), recorder.clone());
-        let config = config.clone();
         let spawned = std::thread::Builder::new()
             .name("detection".into())
-            .spawn(move || analyse_loop(&hub, id, &rx, &recorder, &detector, &decoders, &config));
+            .spawn(move || analyse_loop(&hub, id, &rx, &recorder, &detector, &decoders, &writer));
         if let Err(e) = spawned {
             log::error!("détection de {id:#x} impossible : {e}");
             return;
         }
     }
-    let mut feed = Feed::new(tx, config.pause());
+    let mut feed = Feed::new(tx);
     let mut wait = Duration::from_secs(1);
-    loop {
+    'session: loop {
         if *stop.borrow() {
             break;
         }
@@ -250,37 +414,34 @@ async fn watch_camera(
             match event {
                 Event::Status(_) => {}
                 Event::End(_) => break true,
-                Event::Video(bytes) => match StreamPacket::decode(&bytes) {
-                    Ok(packet) => {
-                        if let StreamPacket::Config {
+                Event::Video(bytes) => {
+                    let Ok(packet) = StreamPacket::decode(&bytes) else {
+                        continue;
+                    };
+                    match &packet {
+                        StreamPacket::Config {
                             width,
                             height,
                             avcc,
                             ..
-                        } = &packet
-                        {
-                            lock(&recorder).set_config(avcc, *width, *height);
-                        }
-                        if let StreamPacket::Frame {
+                        } => lock(&recorder).set_config(avcc, *width, *height),
+                        StreamPacket::Frame {
                             key,
                             timestamp_ms,
                             data,
-                        } = &packet
-                        {
-                            lock(&recorder).push(Frame {
-                                at: Instant::now(),
-                                ts_ms: u64::from(*timestamp_ms),
-                                key: *key,
-                                data: Bytes::copy_from_slice(data),
-                            });
-                        }
-                        // `false` : le fil d'analyse s'est arrêté (pas de décodeur). La session
-                        // reste ouverte quand même : le pré-enregistrement ne sert alors à rien,
-                        // mais l'état de la caméra reste suivi.
-                        let _ = feed.send(packet, &hub);
+                        } => lock(&recorder).push(Frame {
+                            at: Instant::now(),
+                            ts_ms: u64::from(*timestamp_ms),
+                            key: *key,
+                            data: Bytes::copy_from_slice(data),
+                        }),
                     }
-                    Err(_) => continue,
-                },
+                    if !feed.send(packet, &hub, id) {
+                        // Le fil d'analyse s'est arrêté : la session est lâchée (le témoin de
+                        // spectateur part avec elle), le superviseur réessaiera.
+                        break 'session;
+                    }
+                }
             }
         };
         if !ended {
@@ -293,12 +454,17 @@ async fn watch_camera(
     }
     // `feed` (et la file) part ici : le fil d'analyse clôt un passage en cours et s'arrête.
     drop(feed);
-    hub.detection().update_status(|s| s.paused = false);
+    hub.detection().set_paused(id, QUEUE_FULL, None);
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// Les raisons d'une pause (une caméra peut en avoir plusieurs à la fois).
+const QUEUE_FULL: &str = "file";
+const SLOW: &str = "lent";
+const HOT: &str = "chaud";
 
 /// L'envoi des images au fil d'analyse, avec la pause en cas de surcharge.
 struct Feed {
@@ -306,17 +472,15 @@ struct Feed {
     /// Images sautées jusqu'à la prochaine image clé.
     waiting_for_key: bool,
     paused_until: Option<Instant>,
-    pause: Duration,
     alive: bool,
 }
 
 impl Feed {
-    fn new(tx: SyncSender<StreamPacket>, pause: Duration) -> Feed {
+    fn new(tx: SyncSender<StreamPacket>) -> Feed {
         Feed {
             tx,
             waiting_for_key: true,
             paused_until: None,
-            pause,
             alive: true,
         }
     }
@@ -325,8 +489,8 @@ impl Feed {
         self.waiting_for_key = true;
     }
 
-    /// `false` : le fil d'analyse ne reçoit plus rien.
-    fn send(&mut self, packet: StreamPacket, hub: &Hub) -> bool {
+    /// `false` : le fil d'analyse ne reçoit plus rien (il s'est arrêté).
+    fn send(&mut self, packet: StreamPacket, hub: &Hub, id: u64) -> bool {
         if !self.alive {
             return false;
         }
@@ -341,8 +505,8 @@ impl Feed {
             }
             self.paused_until = None;
             self.waiting_for_key = true;
-            log::info!("détection reprise");
-            hub.detection().update_status(|s| s.paused = false);
+            log::info!("détection de {id:#x} reprise");
+            hub.detection().set_paused(id, QUEUE_FULL, None);
         }
         if is_frame && self.waiting_for_key && !is_key {
             return true;
@@ -355,12 +519,17 @@ impl Feed {
                 true
             }
             Err(TrySendError::Full(_)) => {
+                let pause = hub.detection().config().pause();
                 log::warn!(
-                    "détection suspendue {} s : l'analyse ne suit plus (machine surchargée)",
-                    self.pause.as_secs()
+                    "détection de {id:#x} suspendue {} s : l'analyse ne suit plus (machine surchargée)",
+                    pause.as_secs()
                 );
-                hub.detection().update_status(|s| s.paused = true);
-                self.paused_until = Some(Instant::now() + self.pause);
+                hub.detection().set_paused(
+                    id,
+                    QUEUE_FULL,
+                    Some("l'analyse ne suit plus le flux".into()),
+                );
+                self.paused_until = Some(Instant::now() + pause);
                 self.waiting_for_key = true;
                 true
             }
@@ -372,7 +541,91 @@ impl Feed {
     }
 }
 
-/// Le fil d'analyse d'une caméra : jusqu'à la fermeture de la file.
+// ---------------------------------------------------------------------------
+// Le fil d'analyse
+// ---------------------------------------------------------------------------
+
+/// Combien d'images analysées trop lentes d'affilée avant la pause.
+const SLOW_FRAMES: u32 = 10;
+/// La température est relue toutes les…
+const THERMAL_EVERY: Duration = Duration::from_secs(10);
+
+/// La charge du fil d'analyse : le temps passé par image analysée (décodage de l'image voulue,
+/// mouvement, attente et travail du détecteur) comparé au budget (l'intervalle entre deux images
+/// analysées), et la température du Mac.
+struct Load {
+    slow_streak: u32,
+    slow_until: Option<Instant>,
+    hot: bool,
+    thermal_checked: Option<Instant>,
+}
+
+impl Load {
+    fn new() -> Self {
+        Self {
+            slow_streak: 0,
+            slow_until: None,
+            hot: false,
+            thermal_checked: None,
+        }
+    }
+
+    /// `true` : on n'analyse pas en ce moment (trop lent récemment, ou trop chaud).
+    fn paused(&mut self, hub: &Hub, id: u64) -> bool {
+        if self
+            .thermal_checked
+            .is_none_or(|t| t.elapsed() >= THERMAL_EVERY)
+        {
+            self.thermal_checked = Some(Instant::now());
+            let hot = super::too_hot();
+            if hot != self.hot {
+                self.hot = hot;
+                if hot {
+                    log::warn!("détection de {id:#x} suspendue : le Mac est trop chaud");
+                    hub.detection()
+                        .set_paused(id, HOT, Some("le Mac est trop chaud".into()));
+                } else {
+                    log::info!("détection de {id:#x} reprise : le Mac a refroidi");
+                    hub.detection().set_paused(id, HOT, None);
+                }
+            }
+        }
+        if let Some(until) = self.slow_until {
+            if Instant::now() < until {
+                return true;
+            }
+            self.slow_until = None;
+            log::info!("détection de {id:#x} reprise");
+            hub.detection().set_paused(id, SLOW, None);
+        }
+        self.hot
+    }
+
+    fn record(&mut self, hub: &Hub, id: u64, spent: Duration, budget: Duration, pause: Duration) {
+        if spent > budget {
+            self.slow_streak += 1;
+        } else {
+            self.slow_streak = 0;
+        }
+        if self.slow_streak >= SLOW_FRAMES {
+            self.slow_streak = 0;
+            self.slow_until = Some(Instant::now() + pause);
+            log::warn!(
+                "détection de {id:#x} suspendue {} s : {} ms par image analysée pour {} ms de budget",
+                pause.as_secs(),
+                spent.as_millis(),
+                budget.as_millis()
+            );
+            hub.detection().set_paused(
+                id,
+                SLOW,
+                Some("analyse trop lente pour cette machine".into()),
+            );
+        }
+    }
+}
+
+/// Le fil d'analyse d'une caméra : jusqu'à la fermeture de la file, ou un décodeur indisponible.
 fn analyse_loop(
     hub: &Arc<Hub>,
     id: u64,
@@ -380,7 +633,7 @@ fn analyse_loop(
     recorder: &Arc<Mutex<Recorder>>,
     detector: &SharedDetector,
     decoders: &DecoderFactory,
-    config: &DetectionConfig,
+    writer: &Writer,
 ) {
     let mut decoder = match decoders() {
         Ok(d) => d,
@@ -389,36 +642,70 @@ fn analyse_loop(
             return;
         }
     };
-    let interval = config.interval();
+    let tracker_config = |c: &DetectionConfig| TrackerConfig {
+        close_after: c.close_after_s.clamp(2.0, 60.0),
+        max_duration: PrebufferConfig::default().clip_max.as_secs_f64(),
+        ..TrackerConfig::default()
+    };
+    let mut config = hub.detection().config();
     let mut motion = Motion::new(MotionConfig::default());
-    let mut tracker: Tracker<Vec<u8>> = Tracker::new(TrackerConfig {
-        close_after: config.close_after_s.clamp(2.0, 60.0),
-    });
+    let mut tracker: Tracker<Vec<u8>> = Tracker::new(tracker_config(&config));
     let mut settings = hub.camera_detection(id).map(|(_, s)| s);
     let mut next_due = Instant::now();
     let mut errors = 0u32;
+    let mut load = Load::new();
+    let open = |tracker: &Tracker<Vec<u8>>| {
+        lock(recorder).start_clip();
+        if let Some(p) = tracker.current() {
+            writer.send(WriteJob::Open {
+                event: event_of(hub, id, p, true),
+                jpeg: p.best.as_ref().map(|(_, j)| j.clone()).unwrap_or_default(),
+            });
+        }
+    };
+    let close = |passage: Passage<Vec<u8>>| {
+        // Le verrou du tampon n'est tenu que le temps de prendre les images.
+        let clip = lock(recorder).finish_clip();
+        writer.send(WriteJob::Close {
+            event: event_of(hub, id, &passage, false),
+            jpeg: passage.best.map(|(_, j)| j).unwrap_or_default(),
+            clip,
+        });
+    };
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(packet) => {
-                let want =
-                    matches!(packet, StreamPacket::Frame { .. }) && Instant::now() >= next_due;
+                let started = Instant::now();
+                let want = matches!(packet, StreamPacket::Frame { .. }) && started >= next_due;
                 match decoder.push(&packet, want) {
                     Ok(Some(image)) => {
+                        // Réglages relus à chaque image analysée (2 par seconde) : une zone ou un
+                        // réglage général modifiés s'appliquent tout de suite.
+                        let fresh_config = hub.detection().config();
+                        if fresh_config != config {
+                            tracker.set_config(tracker_config(&fresh_config));
+                            config = fresh_config;
+                        }
+                        let interval = config.interval();
                         next_due = Instant::now() + interval;
-                        // Réglages relus à chaque image analysée (2 par seconde) : une zone
-                        // modifiée dans la fenêtre du serveur s'applique tout de suite.
                         let fresh = hub.camera_detection(id).map(|(_, s)| s);
                         if fresh != settings {
                             motion.reset_mask();
                             settings = fresh;
                         }
                         let Some(current) = &settings else { continue };
+                        if load.paused(hub, id) {
+                            continue;
+                        }
                         let (_, moved) = motion.update(&image, current);
-                        // Pendant un passage, on regarde chaque image analysée : une personne
-                        // immobile reste une personne.
-                        let found = if moved || tracker.is_open() {
+                        // Rien ne bouge : le détecteur ne tourne pas. Une boîte où rien n'a bougé
+                        // (voiture garée vue parce qu'une branche bouge ailleurs) ne compte pas.
+                        let found = if moved {
                             match lock(detector).detect(&image) {
-                                Ok(found) => accept(&found, current),
+                                Ok(found) => accept(&found, current)
+                                    .into_iter()
+                                    .filter(|d| motion.moved_in(&d.bbox))
+                                    .collect(),
                                 Err(why) => {
                                     if errors < 3 {
                                         log::warn!("détecteur : {why}");
@@ -440,21 +727,20 @@ fn analyse_loop(
                                 .map(|b| b.to_vec())
                                 .unwrap_or_default()
                         };
-                        let step = tracker.observe(unix_now(), &found, snapshot);
-                        match step {
-                            Step::Opened => lock(recorder).start_clip(),
+                        match tracker.observe(unix_now(), &found, snapshot) {
+                            Step::Opened => open(&tracker),
                             Step::Closed(passage) => {
-                                // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
-                                let clip = lock(recorder).finish_clip();
-                                finish(hub, id, passage, clip);
-                                if !found.is_empty() {
-                                    // L'image qui a clos le passage précédent en ouvre un autre.
-                                    tracker.observe(unix_now(), &found, snapshot);
-                                    lock(recorder).start_clip();
+                                close(passage);
+                                // L'image qui a clos le passage précédent en ouvre un autre.
+                                if !found.is_empty()
+                                    && tracker.observe(unix_now(), &found, snapshot) == Step::Opened
+                                {
+                                    open(&tracker);
                                 }
                             }
                             Step::Nothing | Step::Extended => {}
                         }
+                        load.record(hub, id, started.elapsed(), interval, config.pause());
                     }
                     Ok(None) => {}
                     Err(why) => {
@@ -467,76 +753,45 @@ fn analyse_loop(
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(passage) = tracker.tick(unix_now()) {
-            // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
-            let clip = lock(recorder).finish_clip();
-            finish(hub, id, passage, clip);
+            close(passage);
         }
     }
     // Arrêt de la veille (changement de mode, caméra modifiée) : le passage en cours est gardé.
     if let Some(passage) = tracker.flush() {
-        // Le verrou du tampon est lâché avant le MP4 et l'écriture : la veille y pousse chaque image.
-        let clip = lock(recorder).finish_clip();
-        finish(hub, id, passage, clip);
+        close(passage);
     }
+    hub.detection().set_paused(id, SLOW, None);
+    hub.detection().set_paused(id, HOT, None);
 }
 
-/// Le clip en MP4 : images sans SPS ni PPS (ils sont dans l'`avcC`), depuis une image clé.
+/// Le clip en MP4 : images sans SPS ni PPS, depuis une image clé. L'`avcC` vient des SPS et PPS de
+/// la première image clé quand ils diffèrent de la configuration annoncée (la caméra fait foi).
 pub fn clip_to_mp4(clip: &Clip) -> Option<(Vec<u8>, f64)> {
+    let mut in_band = None;
     let samples: Vec<mp4::Sample> = clip
         .frames
         .iter()
         .filter_map(|f| {
             let sample = nal::prepare_sample(&f.data).ok()?;
+            let key = f.key && sample.idr;
+            if key && in_band.is_none() {
+                in_band = sample.parameters.clone();
+            }
             Some(mp4::Sample {
                 ts_ms: f.ts_ms,
-                key: f.key && sample.idr,
+                key,
                 data: sample.data,
             })
         })
         .skip_while(|s| !s.key)
         .collect();
-    let bytes = mp4::mux(&clip.avcc, clip.width, clip.height, &samples).ok()?;
-    Some((bytes, clip.duration().as_secs_f64()))
-}
-
-/// Enregistre et annonce un passage terminé.
-fn finish(hub: &Hub, id: u64, passage: Passage<Vec<u8>>, clip: Option<Clip>) {
-    let name = hub
-        .camera_detection(id)
-        .map(|(name, _)| name)
-        .unwrap_or_default();
-    let mp4 = clip.as_ref().and_then(clip_to_mp4);
-    let event = DetectionEventView {
-        id: format!("{}-{id}", (passage.start * 1000.0).max(0.0) as u64),
-        camera_id: id,
-        camera_name: name.clone(),
-        classes: passage.ranked(),
-        score: passage.score(),
-        start: passage.start,
-        end: passage.last,
-        has_clip: mp4.is_some(),
-        clip_s: mp4.as_ref().map_or(0.0, |(_, s)| *s),
+    let configured = nal::parse_avcc(&clip.avcc).ok();
+    let avcc = match in_band {
+        Some(ps) if configured.as_ref() != Some(&ps) => nal::build_avcc(&ps.sps, &ps.pps),
+        _ => clip.avcc.clone(),
     };
-    let jpeg = passage
-        .best
-        .as_ref()
-        .map(|(_, j)| j.as_slice())
-        .filter(|j| !j.is_empty());
-    if let Err(e) =
-        hub.detection()
-            .store()
-            .save(&event, jpeg, mp4.as_ref().map(|(b, _)| b.as_slice()))
-    {
-        log::error!("événement de « {name} » non enregistré : {e}");
-        return;
-    }
-    log::info!(
-        "détection sur « {name} » ({id:#x}) : {} (score {:.2}, clip {:.0} s)",
-        event.class().lower(),
-        event.score,
-        event.clip_s
-    );
-    hub.publish_detection(&event);
+    let bytes = mp4::mux(&avcc, clip.width, clip.height, &samples).ok()?;
+    Some((bytes, clip.duration().as_secs_f64()))
 }
 
 #[cfg(test)]

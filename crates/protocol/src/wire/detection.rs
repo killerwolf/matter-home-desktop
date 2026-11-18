@@ -206,6 +206,11 @@ pub struct DetectionEventView {
     /// Durée du clip en secondes (avant + passage + après).
     #[serde(default)]
     pub clip_s: f64,
+    /// Le passage est **en cours** : annoncé dès la première détection (capture, pas encore de
+    /// clip), puis envoyé de nouveau, complet, à sa fin (même `id`). Un client remplace l'ancien
+    /// par le nouveau.
+    #[serde(default)]
+    pub in_progress: bool,
 }
 
 impl DetectionEventView {
@@ -237,9 +242,15 @@ pub struct DetectionStatusView {
     /// Caméras analysées en ce moment.
     #[serde(default, with = "vec_text_id")]
     pub watched: Vec<u64>,
-    /// La détection est suspendue (machine surchargée).
+    /// La détection est suspendue sur au moins une caméra (machine surchargée ou trop chaude).
     #[serde(default)]
     pub paused: bool,
+    /// Les caméras où elle est suspendue.
+    #[serde(default, with = "vec_text_id")]
+    pub paused_cameras: Vec<u64>,
+    /// Pourquoi, en clair (« analyse trop lente », « Mac trop chaud »).
+    #[serde(default)]
+    pub pause_reason: Option<String>,
 }
 
 /// Une liste d'identifiants en texte décimal (comme [`text_id`]).
@@ -334,6 +345,20 @@ mod tests {
             serde_json::to_string(&DetectedClass::Vehicule).unwrap(),
             "\"vehicule\""
         );
+    }
+
+    /// Une règle d'un serveur plus récent ne fait pas échouer la lecture des règles.
+    #[test]
+    fn unknown_rule_parts_are_read_as_unknown() {
+        use crate::automation::{Action, Condition, RuleSet, Trigger};
+        let text = r#"{"version":1,"rules":[{"id":1,"name":"x","enabled":true,
+            "trigger":{"type":"Teleportation","where":"Mars"},
+            "conditions":[{"type":"Lune","phase":3}],
+            "actions":[{"type":"Fusee"}]}]}"#;
+        let set: RuleSet = serde_json::from_str(text).unwrap();
+        assert_eq!(set.rules[0].trigger, Trigger::Unknown);
+        assert_eq!(set.rules[0].conditions, [Condition::Unknown]);
+        assert_eq!(set.rules[0].actions, [Action::Unknown]);
     }
 
     #[test]

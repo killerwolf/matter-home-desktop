@@ -602,7 +602,7 @@ mod tests {
             available: true,
             engine: "CoreML, entrée 640×640".into(),
             watched: vec![1, 2],
-            paused: false,
+            ..Default::default()
         };
         assert_eq!(detection_line(&ready).0, Tone::Good);
         assert!(detection_line(&ready).1.contains("2 caméras analysées"));

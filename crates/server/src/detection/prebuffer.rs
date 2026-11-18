@@ -168,6 +168,12 @@ impl Recorder {
         loop {
             // La deuxième image clé du tampon.
             let Some(next_key) = self.ring.iter().skip(1).position(|f| f.key).map(|p| p + 1) else {
+                // Une seule suite d'images, déjà trop grosse (caméra sans image clé pendant
+                // longtemps, débit énorme) : on vide tout, le tampon reprendra à la prochaine clé.
+                if self.ring_bytes > self.config.max_bytes {
+                    self.ring.clear();
+                    self.ring_bytes = 0;
+                }
                 return;
             };
             let next_at = self.ring[next_key].at;
@@ -261,6 +267,26 @@ mod tests {
         feed(&mut r, base, 25, 200);
         assert!(r.bytes() <= 30_000, "{}", r.bytes());
         assert!(r.ring.front().unwrap().key);
+    }
+
+    /// Pas de deuxième image clé : la taille maximale s'applique quand même.
+    #[test]
+    fn memory_is_bounded_even_without_a_second_key_frame() {
+        let mut r = Recorder::new(PrebufferConfig {
+            max_bytes: 10_000,
+            ..PrebufferConfig::default()
+        });
+        let base = Instant::now();
+        for i in 0..50u64 {
+            r.push(Frame {
+                at: base + Duration::from_millis(i * 100),
+                ts_ms: i * 100,
+                key: i == 0,
+                data: Bytes::from(vec![0u8; 1000]),
+            });
+            assert!(r.bytes() <= 10_000, "{}", r.bytes());
+        }
+        assert!(r.ring.is_empty(), "vidé, en attente d'une image clé");
     }
 
     #[test]

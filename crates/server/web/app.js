@@ -76,7 +76,9 @@ function applyEvent(e) {
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
     case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
     case "detection": {
-      // Un passage terminé : en tête de liste, sans relancer les vidéos de l'onglet.
+      // Un passage commence (« en cours ») ou se termine (même `id`) : en tête de liste, sans
+      // relancer les vidéos de l'onglet. La capture finale remplace celle du début.
+      if (!e.event.in_progress) thumbs.forget(e.event.id);
       detections.list = [e.event, ...detections.list.filter((x) => x.id !== e.event.id)].slice(0, 60);
       if (tab === "cameras") renderDetections();
       return;
@@ -492,7 +494,7 @@ function renderDetections() {
     const text = document.createElement("span");
     text.className = "ev-text";
     const what = document.createElement("strong");
-    what.textContent = classesText(ev);
+    what.textContent = ev.in_progress ? `${classesText(ev)} · en cours` : classesText(ev);
     const where = document.createElement("span");
     where.textContent = `${ev.camera_name} · ${whenText(ev.start)}`;
     text.append(what, where);
@@ -514,7 +516,9 @@ function openEvent(ev) {
   body.replaceChildren();
   const when = document.createElement("p");
   when.className = "ev-note";
-  when.textContent = `${whenText(ev.start)} · score ${Math.round((ev.score ?? 0) * 100)} %` + (ev.has_clip ? ` · clip ${Math.round(ev.clip_s ?? 0)} s` : "");
+  when.textContent = `${whenText(ev.start)} · score ${Math.round((ev.score ?? 0) * 100)} %`
+    + (ev.in_progress ? " · en cours : le clip sera prêt à la fin du passage" : "")
+    + (ev.has_clip ? ` · clip ${Math.round(ev.clip_s ?? 0)} s` : "");
   const shot = document.createElement("canvas");
   shot.className = "ev-shot";
   body.append(when, shot);

@@ -168,6 +168,8 @@ impl Hub {
             .cameras()
             .iter()
             .filter(|c| c.behavior(st.mode) == CameraBehavior::Surveillance)
+            // Aucune classe suivie : rien à détecter, pas de connexion pour rien.
+            .filter(|c| !c.detection.classes.is_empty())
             .map(|c| (c.id, c.name.clone(), c.preferred_kind()))
             .collect()
     }
@@ -180,9 +182,10 @@ impl Hub {
             .map(|c| (c.name.clone(), c.detection.clone()))
     }
 
-    /// Un passage détecté vient de se terminer (déjà enregistré) : diffusé aux clients
-    /// (`WireEvent::Detection`) et transmis au moteur d'automatisations.
-    pub fn publish_detection(&self, event: &DetectionEventView) {
+    /// Un passage détecté (déjà enregistré) : diffusé aux clients (`WireEvent::Detection`, en cours
+    /// à l'ouverture puis complet à la fin, même `id`). `fire_rules` : transmis au moteur
+    /// d'automatisations (à l'ouverture seulement : une règle part une fois par passage).
+    pub fn publish_detection(&self, event: &DetectionEventView, fire_rules: bool) {
         {
             let mut st = self.lock();
             self.publish(
@@ -192,9 +195,11 @@ impl Hub {
                 },
             );
         }
-        let _ = self.send(protocol::events::Command::Detection(Box::new(
-            event.clone(),
-        )));
+        if fire_rules {
+            let _ = self.send(protocol::events::Command::Detection(Box::new(
+                event.clone(),
+            )));
+        }
     }
 
     /// La phrase du refus d'une caméra éteinte, avec le mode en cours.

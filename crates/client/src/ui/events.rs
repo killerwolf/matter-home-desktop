@@ -13,12 +13,14 @@ use matter_home_client::net::events::EventsFeed;
 pub struct EventsView {
     feed: Option<EventsFeed>,
     textures: HashMap<String, egui::TextureHandle>,
-    /// Le dernier événement annoncé par le WebSocket, pour relire la liste quand il change.
-    last_seen: Option<String>,
+    /// Le dernier événement annoncé par le WebSocket (et s'il était en cours), pour relire la
+    /// liste quand il change.
+    last_seen: Option<(String, bool)>,
 }
 
 impl EventsView {
     pub fn new() -> Self {
+        matter_home_client::net::events::purge_old_clips();
         Self {
             feed: None,
             textures: HashMap::new(),
@@ -45,7 +47,10 @@ impl EventsView {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, model: &Model) {
-        let newest = model.detections.front().map(|e| e.id.clone());
+        let newest = model
+            .detections
+            .front()
+            .map(|e| (e.id.clone(), e.in_progress));
         let feed = self.feed(ui.ctx()).clone();
         if newest.is_some() && newest != self.last_seen {
             self.last_seen = newest;
@@ -66,7 +71,14 @@ impl EventsView {
             let line = if !status.available {
                 format!("Détection {}", status.engine)
             } else if status.paused {
-                "Détection suspendue (serveur surchargé)".to_string()
+                format!(
+                    "Détection suspendue sur {} caméra(s) : {}",
+                    status.paused_cameras.len(),
+                    status
+                        .pause_reason
+                        .as_deref()
+                        .unwrap_or("serveur surchargé")
+                )
             } else {
                 format!("Détection : {} caméra(s) analysée(s)", status.watched.len())
             };
@@ -94,18 +106,18 @@ impl EventsView {
                         let size = egui::vec2(112.0, 63.0);
                         match &item.thumb {
                             Some(image) => {
-                                let texture =
-                                    self.textures.entry(ev.id.clone()).or_insert_with(|| {
-                                        let color = egui::ColorImage::from_rgb(
-                                            [image.width as usize, image.height as usize],
-                                            &image.rgb,
-                                        );
-                                        ui.ctx().load_texture(
-                                            format!("event-{}", ev.id),
-                                            color,
-                                            egui::TextureOptions::LINEAR,
-                                        )
-                                    });
+                                let key = texture_key(ev);
+                                let texture = self.textures.entry(key).or_insert_with(|| {
+                                    let color = egui::ColorImage::from_rgb(
+                                        [image.width as usize, image.height as usize],
+                                        &image.rgb,
+                                    );
+                                    ui.ctx().load_texture(
+                                        format!("event-{}", ev.id),
+                                        color,
+                                        egui::TextureOptions::LINEAR,
+                                    )
+                                });
                                 ui.add(egui::Image::new((texture.id(), size)));
                             }
                             None => {
@@ -114,7 +126,11 @@ impl EventsView {
                         }
                         ui.vertical(|ui| {
                             let classes: Vec<&str> = ev.classes.iter().map(|c| c.label()).collect();
-                            ui.label(RichText::new(classes.join(", ")).strong());
+                            let mut title = classes.join(", ");
+                            if ev.in_progress {
+                                title.push_str(" · en cours");
+                            }
+                            ui.label(RichText::new(title).strong());
                             ui.label(
                                 RichText::new(format!(
                                     "{} · {}",
@@ -134,8 +150,13 @@ impl EventsView {
             });
         // Les textures des événements disparus de la liste sont lâchées.
         self.textures
-            .retain(|id, _| state.items.iter().any(|i| &i.event.id == id));
+            .retain(|key, _| state.items.iter().any(|i| &texture_key(&i.event) == key));
     }
+}
+
+/// La capture d'un passage en cours n'est pas la finale : clé différente.
+fn texture_key(ev: &protocol::wire::DetectionEventView) -> String {
+    format!("{}{}", ev.id, if ev.in_progress { "-encours" } else { "" })
 }
 
 /// « 14:05 » aujourd'hui, sinon « 03/11 14:05 » (heure locale).

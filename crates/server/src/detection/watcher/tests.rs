@@ -73,7 +73,9 @@ impl FrameDecoder for Synthetic {
         }
         self.n += 1;
         let (w, h) = (160u32, 90u32);
-        let mut rgb = vec![30u8; (w * h * 3) as usize];
+        // Le fond change de luminosité à chaque image : du mouvement partout (dans la boîte du
+        // détecteur factice aussi).
+        let mut rgb = vec![if self.n.is_multiple_of(2) { 30u8 } else { 120 }; (w * h * 3) as usize];
         let x0 = (self.n * 17) % (w - 20);
         for y in 30..60 {
             for x in x0..x0 + 20 {
@@ -146,8 +148,10 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
 
     // Le passage : 6 images avec une personne, puis 2 s sans rien → un seul événement.
     let store = hub.detection().store();
-    until("l'événement est enregistré", 15, || {
-        !store.all().is_empty()
+    // Annoncé « en cours » dès la première détection, puis complet à la fin.
+    until("l'événement est annoncé", 15, || !store.all().is_empty()).await;
+    until("l'événement est terminé", 15, || {
+        store.all().first().is_some_and(|e| !e.in_progress)
     })
     .await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -171,8 +175,8 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
         .part(&event.id, crate::detection::Part::Snapshot)
         .is_some());
 
-    // Diffusé aux clients.
-    let mut announced = false;
+    // Diffusé aux clients : en cours, puis complet, sous le même identifiant.
+    let mut announced = Vec::new();
     while let Ok(text) = events.rx.try_recv() {
         if text.contains("\"detection\"") {
             let message: protocol::wire::ServerMessage = serde_json::from_str(&text).unwrap();
@@ -182,11 +186,11 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
             } = message
             {
                 assert_eq!(e.id, event.id);
-                announced = true;
+                announced.push(e.in_progress);
             }
         }
     }
-    assert!(announced, "WireEvent::Detection diffusé");
+    assert_eq!(announced, [true, false], "en cours puis terminé");
 
     // Retour en Présent : la veille lâche la session, le spectateur la garde.
     hub.set_mode(HomeMode::Present).unwrap();
@@ -247,4 +251,27 @@ fn a_clip_becomes_an_mp4_without_parameter_sets_in_the_samples() {
     assert_eq!(count, 10);
     let first = u32::from_be_bytes(mp4[stsz + 16..stsz + 20].try_into().unwrap());
     assert_eq!(first, 7);
+}
+
+/// Sans décodeur, la veille s'arrête et lâche la session RTSP ; `watched` le dit, et le
+/// superviseur réessaiera plus tard (pas aussitôt).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_analysis_thread_releases_the_camera() {
+    let camera = fake_camera::start(Options::default()).await;
+    let (hub, id, dir) = hub_with("dead", camera.port);
+    let (detector, _) = person_for(0);
+    let broken: DecoderFactory = Arc::new(|| Err("pas de décodeur ici".into()));
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(run(hub.clone(), detector, broken, stop));
+    hub.set_mode(HomeMode::Absent).unwrap();
+    until("la caméra n'est plus surveillée", 10, || {
+        hub.detection().status().watched.is_empty() && hub.camera_viewers(id) == 0
+    })
+    .await;
+    // Pendant l'attente avant un nouvel essai : ni veille ni connexion.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(hub.detection().status().watched.is_empty());
+    until("plus de connexion", 10, || camera.open() == 0).await;
+    let _ = stop_tx.send(true);
+    let _ = std::fs::remove_dir_all(dir);
 }

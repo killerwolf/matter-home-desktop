@@ -263,6 +263,8 @@ impl Engine {
                 .and_then(|n| n.values.get(measure))
                 .is_some_and(|v| compare(*v, *above, *value)),
             Condition::Mode { is } => is.contains(&self.mode),
+            // Refusée par la validation ; jamais vraie si elle arrivait quand même.
+            Condition::Unknown => false,
         })
     }
 
@@ -621,6 +623,7 @@ async fn run(
                 ui.send(Event::HomeModeRequested(*mode));
                 Ok(format!("mode : {}", mode.label()))
             }
+            Action::Unknown => Err(anyhow::anyhow!("action inconnue de ce serveur")),
             Action::Delay { seconds } => {
                 let s = (*seconds).min(MAX_DELAY_S);
                 tokio::time::sleep(Duration::from_secs(s)).await;
@@ -1130,6 +1133,7 @@ mod tests {
             end: 2.0,
             has_clip: true,
             clip_s: 20.0,
+            in_progress: false,
         };
         let mut person_on_9 = rule(
             1,

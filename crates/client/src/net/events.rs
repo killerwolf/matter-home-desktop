@@ -137,7 +137,10 @@ impl EventsFeed {
                 .map(|event| {
                     let thumb = old
                         .iter()
-                        .find(|i| i.event.id == event.id)
+                        // La capture d'un passage en cours est remplacée par la finale.
+                        .find(|i| {
+                            i.event.id == event.id && i.event.in_progress == event.in_progress
+                        })
                         .and_then(|i| i.thumb.clone());
                     Item { event, thumb }
                 })
@@ -200,6 +203,28 @@ impl EventsFeed {
                 });
                 (feed.notify)();
             });
+    }
+}
+
+/// Les clips téléchargés de plus d'un jour : effacés au lancement du client.
+pub const CLIPS_KEPT: Duration = Duration::from_secs(24 * 3600);
+
+/// Efface les clips téléchargés depuis plus de [`CLIPS_KEPT`].
+pub fn purge_old_clips() {
+    let Ok(entries) = std::fs::read_dir(clips_dir()) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > CLIPS_KEPT);
+        let mp4 = entry.path().extension().is_some_and(|x| x == "mp4");
+        if old && mp4 {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 

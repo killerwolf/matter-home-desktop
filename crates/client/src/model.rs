@@ -380,6 +380,11 @@ impl Model {
                 Change::CamerasChanged
             }
             WireEvent::Detection { event } => {
+                // Le même passage revient complet à sa fin : il remplace la version « en cours ».
+                if let Some(known) = self.detections.iter_mut().find(|e| e.id == event.id) {
+                    *known = event;
+                    return Change::Nothing;
+                }
                 let line = format!(
                     "Détection ({}) : {}",
                     event.class().lower(),

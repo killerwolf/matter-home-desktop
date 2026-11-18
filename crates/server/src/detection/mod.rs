@@ -103,7 +103,22 @@ pub struct Detection {
     store: EventStore,
     config: Mutex<DetectionConfig>,
     status: Mutex<DetectionStatusView>,
+    /// Caméras où la détection est suspendue, et pourquoi.
+    paused: Mutex<std::collections::BTreeMap<(u64, &'static str), String>>,
     wake: Notify,
+}
+
+/// La température du Mac telle que macOS la juge (`ProcessInfo.thermalState`) : `true` quand elle
+/// est « sérieuse » ou « critique ». Le serveur est un portable : la détection se suspend alors.
+#[cfg(target_os = "macos")]
+pub fn too_hot() -> bool {
+    use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
+    NSProcessInfo::processInfo().thermalState() >= NSProcessInfoThermalState::Serious
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn too_hot() -> bool {
+    false
 }
 
 impl Detection {
@@ -127,9 +142,9 @@ impl Detection {
                 } else {
                     "pas encore démarrée".into()
                 },
-                watched: Vec::new(),
-                paused: false,
+                ..DetectionStatusView::default()
             }),
+            paused: Mutex::new(std::collections::BTreeMap::new()),
             wake: Notify::new(),
         }
     }
@@ -165,10 +180,35 @@ impl Detection {
     }
 
     pub fn status(&self) -> DetectionStatusView {
-        self.status
+        let mut status = self
+            .status
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .clone();
+        let paused = self.paused.lock().unwrap_or_else(|e| e.into_inner());
+        status.paused_cameras = paused
+            .keys()
+            .map(|(id, _)| *id)
+            .collect::<BTreeSet<u64>>()
+            .into_iter()
+            .collect();
+        status.paused = !paused.is_empty();
+        status.pause_reason = paused.values().next().cloned();
+        status
+    }
+
+    /// Suspend (`Some(raison)`) ou reprend (`None`) la détection d'une caméra, pour une cause
+    /// (`source`) : file pleine, analyse trop lente, Mac trop chaud.
+    pub(crate) fn set_paused(&self, id: u64, source: &'static str, reason: Option<String>) {
+        let mut paused = self.paused.lock().unwrap_or_else(|e| e.into_inner());
+        match reason {
+            Some(why) => {
+                paused.insert((id, source), why);
+            }
+            None => {
+                paused.remove(&(id, source));
+            }
+        }
     }
 
     pub(crate) fn update_status(&self, change: impl FnOnce(&mut DetectionStatusView)) {

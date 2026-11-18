@@ -31,8 +31,15 @@ pub struct Detection {
 impl Detection {
     /// Le bas de la boîte, au milieu : là où sont les pieds (ou les roues). C'est ce point qui doit
     /// être dans une zone, et hors des masques.
+    ///
+    /// Ramené juste à l'intérieur de l'image : des pieds sur le bord du bas (`y = 1`) sont dans une
+    /// zone qui va jusqu'au bord.
     pub fn anchor(&self) -> (f32, f32) {
-        ((self.bbox[0] + self.bbox[2]) / 2.0, self.bbox[3])
+        const INSIDE: f32 = 1.0 - 1e-4;
+        (
+            ((self.bbox[0] + self.bbox[2]) / 2.0).clamp(0.0, INSIDE),
+            self.bbox[3].clamp(0.0, INSIDE),
+        )
     }
 }
 
@@ -287,15 +294,18 @@ pub fn decode_output(
         if objectness < floor {
             continue;
         }
+        // La meilleure des 80 classes, puis seulement si c'est l'une des nôtres (comme
+        // `yolox_decode.py`) : une chaise ou un ours en peluche ne devient pas une personne parce
+        // que « personne » arrive en deuxième.
         let mut best = (0usize, f32::MIN);
         for k in 0..(c - first_class) {
-            if coco_class(k).is_none() {
-                continue;
-            }
             let s = at(i, first_class + k);
             if s > best.1 {
                 best = (k, s);
             }
+        }
+        if coco_class(best.0).is_none() {
+            continue;
         }
         let score = best.1 * objectness;
         if score < floor {
@@ -331,7 +341,7 @@ fn grid_cells((w, h): (usize, usize), strides: &[usize]) -> Vec<(usize, usize, u
     cells
 }
 
-fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+pub(crate) fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let w = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
     let h = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
     let inter = w * h;
@@ -544,6 +554,22 @@ mod tests {
         assert!((f.score - 0.72).abs() < 1e-5, "objectness × classe");
         // cx = (0,5 + 2) × 16 = 40, cy = (0,5 + 1) × 16 = 24.
         assert_eq!(f.bbox, [32.0, 8.0, 48.0, 40.0]);
+    }
+
+    /// Une chaise (classe 56) à 0,8 avec « personne » à 0,6 en deuxième : ignorée.
+    #[test]
+    fn the_best_class_wins_even_when_it_is_not_ours() {
+        let c = 4 + NC;
+        // Deux boîtes, la seconde vide : rangées par boîte (`1 × 2 × 84`).
+        let mut data = vec![0.0f32; 2 * c];
+        data[..4].copy_from_slice(&[100.0, 100.0, 20.0, 40.0]);
+        data[4 + 56] = 0.8;
+        data[4] = 0.6;
+        let s = spec();
+        let layout = s.layout(&[1, 2, c], (640, 640)).unwrap();
+        assert!(decode_output(&data, &layout, (640, 640), 0.25).is_empty());
+        data[4 + 56] = 0.1;
+        assert_eq!(decode_output(&data, &layout, (640, 640), 0.25).len(), 1);
     }
 
     #[test]

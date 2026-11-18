@@ -47,6 +47,18 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
         if rule.conditions.len() > MAX_PARTS || rule.actions.len() > MAX_PARTS {
             return Err(bad("trop de conditions ou d'actions"));
         }
+        // Un type inconnu (client plus récent que ce serveur) : refusé, jamais enregistré.
+        if matches!(rule.trigger, Trigger::Unknown)
+            || rule
+                .conditions
+                .iter()
+                .any(|c| matches!(c, Condition::Unknown))
+            || rule.actions.iter().any(|a| matches!(a, Action::Unknown))
+        {
+            return Err(bad(
+                "déclencheur, condition ou action inconnus de ce serveur",
+            ));
+        }
         if let Trigger::Time { hour, minute, .. } = rule.trigger {
             if hour > 23 || minute > 59 {
                 return Err(bad("heure invalide"));
@@ -235,6 +247,8 @@ mod tests {
         }];
         assert!(rules(&set).is_err());
         set.rules[0].enabled = true;
+        set.rules[0].actions = vec![Action::Unknown];
+        assert!(rules(&set).is_err(), "action inconnue refusée");
         set.rules[0].actions = vec![Action::Delay { seconds: 99_999 }];
         assert!(rules(&set).is_err());
         let mut p = HomePlan::default();

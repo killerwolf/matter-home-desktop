@@ -39,6 +39,7 @@ fn events_are_listed_served_with_ranges_and_deleted_under_the_session() {
         end: 1_763_500_012.0,
         has_clip: true,
         clip_s: 30.0,
+        in_progress: false,
     };
     common::runtime().block_on(async {
         // Sans jeton : refusé.
@@ -65,7 +66,7 @@ fn events_are_listed_served_with_ranges_and_deleted_under_the_session() {
         rig.hub
             .detection()
             .store()
-            .save(&event, Some(b"\xff\xd8jpeg"), Some(&clip))
+            .save(event.clone(), Some(b"\xff\xd8jpeg"), Some(&clip))
             .unwrap();
         let body = client.get("/api/events?limit=10", &token).await.json();
         let events = body["events"].as_array().unwrap();

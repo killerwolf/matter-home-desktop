@@ -291,10 +291,11 @@ fn trigger_kind(t: &Trigger) -> usize {
         Trigger::Time { .. } => 4,
         Trigger::Mode { .. } => 5,
         Trigger::Detection { .. } => 6,
+        Trigger::Unknown => 7,
     }
 }
 
-const TRIGGER_KINDS: [&str; 7] = [
+const TRIGGER_KINDS: [&str; 8] = [
     "Une porte / fenêtre change",
     "Une mesure franchit un seuil",
     "Une prise / lampe change",
@@ -302,6 +303,7 @@ const TRIGGER_KINDS: [&str; 7] = [
     "À une heure donnée",
     "Le mode de la maison change",
     "Une caméra détecte quelqu'un ou quelque chose",
+    "Inconnu (version plus récente du serveur)",
 ];
 
 fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
@@ -328,6 +330,7 @@ fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
         5 => Trigger::Mode {
             to: HomeMode::Absent,
         },
+        7 => Trigger::Unknown,
         6 => Trigger::Detection {
             camera_id: None,
             classes: vec![protocol::wire::DetectedClass::Personne],
@@ -373,6 +376,7 @@ fn summary_with(rule: &Rule, devices: &BTreeMap<u64, Device>, cameras: &[(u64, S
             .map_or_else(|| "?".to_string(), |d| d.info.name.clone())
     };
     let when = match &rule.trigger {
+        Trigger::Unknown => "un déclencheur inconnu".to_string(),
         Trigger::Contact { node_id, open } => format!(
             "{} {}",
             name(*node_id),
@@ -422,6 +426,7 @@ fn summary_with(rule: &Rule, devices: &BTreeMap<u64, Device>, cameras: &[(u64, S
         .actions
         .iter()
         .map(|a| match a {
+            Action::Unknown => "une action inconnue".to_string(),
             Action::Notify { .. } => "envoyer une notification".to_string(),
             Action::SetOnOff { node_id, command } => {
                 format!("{} {}", command.label().to_lowercase(), name(*node_id))
@@ -438,6 +443,7 @@ fn summary_with(rule: &Rule, devices: &BTreeMap<u64, Device>, cameras: &[(u64, S
         .conditions
         .iter()
         .map(|c| match c {
+            Condition::Unknown => "une condition inconnue".to_string(),
             Condition::TimeBetween { from, to } => format!(
                 "il est entre {:02}:{:02} et {:02}:{:02}",
                 from.0, from.1, to.0, to.1
@@ -958,6 +964,11 @@ impl RulesView {
             changed = true;
         }
         ui.horizontal_wrapped(|ui| match &mut rule.trigger {
+            Trigger::Unknown => {
+                ui.label(
+                    "Déclencheur d'une version plus récente du serveur : choisissez-en un autre.",
+                );
+            }
             Trigger::Contact { node_id, open } => {
                 changed |= device_picker(ui, ("t_dev", rid), node_id, Need::Contact, devices);
                 changed |= bool_picker(ui, ("t_open", rid), open, "s'ouvre", "se ferme");
@@ -1081,6 +1092,9 @@ impl RulesView {
         for (i, cond) in rule.conditions.iter_mut().enumerate() {
             ui.horizontal_wrapped(|ui| {
                 match cond {
+                    Condition::Unknown => {
+                        ui.label("Condition d'une version plus récente du serveur");
+                    }
                     Condition::TimeBetween { from, to } => {
                         ui.label("entre");
                         changed |= hhmm(ui, ("c_from", rid, i), &mut from.0, &mut from.1);
@@ -1208,6 +1222,9 @@ impl RulesView {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     match act {
+                        Action::Unknown => {
+                            ui.label("Action d'une version plus récente du serveur");
+                        }
                         Action::Notify { title, message } => {
                             ui.label("Notifier :");
                             changed |= ui

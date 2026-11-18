@@ -5,14 +5,20 @@
 //! - `<id>.mp4` : le clip (avant + passage + après), sans réencodage.
 //!
 //! Rétention comme l'historique (`history_store.rs`) : 7 jours, et un plafond de taille **total**
-//! (2 Go par défaut, [`DetectionConfig::max_total_bytes`]) au-delà duquel les plus anciens partent,
-//! appliqués au démarrage puis toutes les heures. L'identifiant (`<début en ms>-<caméra>`) est le
-//! seul texte qui entre dans un nom de fichier, et il est vérifié (`wire::is_event_id`).
+//! (2 Go par défaut, `DetectionConfig::max_total_bytes`) au-delà duquel les plus anciens partent :
+//! au démarrage, toutes les heures, et dès qu'un enregistrement fait passer le total au-dessus.
+//! Aucun clip n'est écrit quand le disque est presque plein ([`MIN_FREE_BYTES`]).
+//!
+//! Un **index en mémoire** (lu une fois sur le disque) sert les listes sans relire les fiches.
+//! Une fiche illisible n'est jamais supprimée : elle est ignorée (et ses fichiers gardés).
+//! L'identifiant (`<début en ms>-<caméra>`) est le seul texte qui entre dans un nom de fichier, et
+//! il est vérifié (`wire::is_event_id`).
 
+use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use protocol::wire::{is_event_id, DetectionEventView};
@@ -23,6 +29,11 @@ pub const RETENTION: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 pub const DIR: &str = "events";
+/// Pas de clip écrit avec moins d'espace libre que ça (2 Go), ou 5 % d'un petit disque.
+pub const MIN_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MIN_FREE_RATIO: f64 = 0.05;
+/// Un événement resté « en cours » (serveur arrêté pendant un passage) est clos à la relecture.
+const STALE_IN_PROGRESS_S: f64 = 600.0;
 
 /// Ce qu'on peut lire d'un événement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +58,29 @@ pub struct PruneReport {
     pub bytes: u64,
 }
 
+#[derive(Default)]
+struct Index {
+    loaded: bool,
+    /// Fiche et taille de ses trois fichiers.
+    events: BTreeMap<String, (DetectionEventView, u64)>,
+    /// Fiches illisibles (gardées sur le disque, jamais listées ni supprimées).
+    unreadable: HashSet<String>,
+}
+
+impl Index {
+    fn total(&self) -> u64 {
+        self.events.values().map(|(_, b)| *b).sum()
+    }
+}
+
 /// Le dossier des événements. Les écritures sont sérialisées (un seul fil écrit à la fois).
 pub struct EventStore {
     dir: PathBuf,
     retention: Duration,
     max_total_bytes: Mutex<u64>,
-    write: Mutex<()>,
+    index: Mutex<Index>,
+    /// Seuil d'espace libre imposé (tests) ; sinon [`free_threshold`].
+    min_free: Mutex<Option<u64>>,
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -67,6 +95,30 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(tmp, path)
 }
 
+/// Espace libre et taille du disque qui porte `dir` (`statvfs`).
+#[cfg(unix)]
+pub fn disk_space(dir: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY : `statvfs` remplit la structure fournie ; le chemin est une chaîne C valable.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let block = stat.f_frsize as u64;
+    Some((stat.f_bavail as u64 * block, stat.f_blocks as u64 * block))
+}
+
+#[cfg(not(unix))]
+pub fn disk_space(_dir: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// Le seuil effectif : 2 Go, ou 5 % d'un disque plus petit que 40 Go.
+pub fn free_threshold(total: u64, min_free: u64) -> u64 {
+    min_free.min((total as f64 * MIN_FREE_RATIO) as u64)
+}
+
 impl EventStore {
     pub fn new(dir: PathBuf, max_total_bytes: u64) -> Self {
         Self::with_retention(dir, RETENTION, max_total_bytes)
@@ -77,7 +129,8 @@ impl EventStore {
             dir,
             retention,
             max_total_bytes: Mutex::new(max_total_bytes),
-            write: Mutex::new(()),
+            index: Mutex::new(Index::default()),
+            min_free: Mutex::new(None),
         }
     }
 
@@ -99,66 +152,151 @@ impl EventStore {
             .unwrap_or_else(|e| e.into_inner()) = bytes;
     }
 
+    #[cfg(test)]
+    pub fn set_min_free(&self, bytes: u64) {
+        *self.min_free.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
+    }
+
     fn path(&self, id: &str, extension: &str) -> PathBuf {
         self.dir.join(format!("{id}.{extension}"))
     }
 
-    /// Enregistre un événement : capture et clip d'abord, la fiche en dernier (une fiche présente
-    /// a ses fichiers).
+    fn size(&self, id: &str) -> u64 {
+        ["json", "jpg", "mp4"]
+            .iter()
+            .filter_map(|ext| std::fs::metadata(self.path(id, ext)).ok())
+            .map(|m| m.len())
+            .sum()
+    }
+
+    /// L'index, lu sur le disque la première fois.
+    fn index(&self) -> MutexGuard<'_, Index> {
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        if !index.loaded {
+            index.loaded = true;
+            self.load(&mut index);
+        }
+        index
+    }
+
+    fn load(&self, index: &mut Index) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp() as f64;
+        for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+            if path.extension().is_none_or(|x| x != "json") {
+                continue;
+            }
+            let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let parsed = std::fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<DetectionEventView>(&b).ok())
+                .filter(|e| is_event_id(&e.id) && e.id == stem);
+            match parsed {
+                Some(mut event) => {
+                    if event.in_progress && now - event.end > STALE_IN_PROGRESS_S {
+                        // Le serveur s'est arrêté pendant le passage : clos tel quel.
+                        event.in_progress = false;
+                        if let Ok(json) = serde_json::to_vec_pretty(&event) {
+                            let _ = write_private(&path, &json);
+                        }
+                    }
+                    let bytes = self.size(&stem);
+                    index.events.insert(stem, (event, bytes));
+                }
+                None => {
+                    log::warn!("événement illisible ignoré : events/{stem}.json");
+                    index.unreadable.insert(stem);
+                }
+            }
+        }
+    }
+
+    /// Enregistre un événement (en cours ou terminé) : capture et clip d'abord, la fiche en
+    /// dernier (une fiche présente a ses fichiers). Le clip n'est pas écrit si le disque est presque
+    /// plein (`has_clip` devient faux). Rend la fiche enregistrée. Le plafond total est appliqué.
     pub fn save(
         &self,
-        event: &DetectionEventView,
+        mut event: DetectionEventView,
         jpeg: Option<&[u8]>,
         clip: Option<&[u8]>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<DetectionEventView> {
         if !is_event_id(&event.id) {
             return Err(std::io::Error::other("identifiant d'événement invalide"));
         }
-        let _write = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.index();
         crate::persistence::ensure_private_dir(&self.dir).map_err(std::io::Error::other)?;
         if let Some(jpeg) = jpeg {
             write_private(&self.path(&event.id, "jpg"), jpeg)?;
         }
-        if let Some(clip) = clip {
-            write_private(&self.path(&event.id, "mp4"), clip)?;
+        match clip {
+            Some(clip) => {
+                let forced = *self.min_free.lock().unwrap_or_else(|e| e.into_inner());
+                let room = disk_space(&self.dir).is_none_or(|(free, total)| {
+                    let threshold = forced.unwrap_or_else(|| free_threshold(total, MIN_FREE_BYTES));
+                    free.saturating_sub(clip.len() as u64) >= threshold
+                });
+                if room {
+                    write_private(&self.path(&event.id, "mp4"), clip)?;
+                } else {
+                    log::warn!(
+                        "disque presque plein : clip de l'événement {} non enregistré",
+                        event.id
+                    );
+                    event.has_clip = false;
+                    event.clip_s = 0.0;
+                }
+            }
+            None => {
+                if !self.path(&event.id, "mp4").is_file() {
+                    event.has_clip = false;
+                }
+            }
         }
-        let json = serde_json::to_vec_pretty(event).map_err(std::io::Error::other)?;
-        write_private(&self.path(&event.id, "json"), &json)
+        let json = serde_json::to_vec_pretty(&event).map_err(std::io::Error::other)?;
+        write_private(&self.path(&event.id, "json"), &json)?;
+        let bytes = self.size(&event.id);
+        index
+            .events
+            .insert(event.id.clone(), (event.clone(), bytes));
+        if index.total() > self.max_total_bytes() {
+            let now = chrono::Utc::now().timestamp() as f64;
+            self.prune_locked(&mut index, now, Some(&event.id));
+        }
+        Ok(event)
     }
 
-    /// Toutes les fiches lisibles, les plus récentes d'abord.
+    /// Toutes les fiches, les plus récentes d'abord.
     pub fn all(&self) -> Vec<DetectionEventView> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        let mut events: Vec<DetectionEventView> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter_map(|p| std::fs::read(&p).ok())
-            .filter_map(|b| serde_json::from_slice::<DetectionEventView>(&b).ok())
-            .filter(|e| is_event_id(&e.id))
-            .collect();
-        events.sort_by(|a, b| b.start.total_cmp(&a.start).then(b.id.cmp(&a.id)));
-        events
+        self.list(f64::NEG_INFINITY, None, usize::MAX)
     }
 
     /// Les événements terminés après `since`, de cette caméra, au plus `limit`.
     pub fn list(&self, since: f64, camera: Option<u64>, limit: usize) -> Vec<DetectionEventView> {
-        self.all()
-            .into_iter()
+        let index = self.index();
+        let mut events: Vec<&DetectionEventView> = index
+            .events
+            .values()
+            .map(|(e, _)| e)
             .filter(|e| e.end >= since)
             .filter(|e| camera.is_none_or(|c| c == e.camera_id))
-            .take(limit)
-            .collect()
+            .collect();
+        events.sort_by(|a, b| b.start.total_cmp(&a.start).then(b.id.cmp(&a.id)));
+        events.into_iter().take(limit).cloned().collect()
     }
 
     pub fn get(&self, id: &str) -> Option<DetectionEventView> {
         if !is_event_id(id) {
             return None;
         }
-        let bytes = std::fs::read(self.path(id, "json")).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        self.index().events.get(id).map(|(e, _)| e.clone())
     }
 
     /// Le chemin de la capture ou du clip, s'il existe.
@@ -175,55 +313,69 @@ impl EventStore {
         if !is_event_id(id) {
             return false;
         }
-        let _write = self.write.lock().unwrap_or_else(|e| e.into_inner());
-        self.remove_files(id)
-    }
-
-    fn remove_files(&self, id: &str) -> bool {
-        // La fiche d'abord : un événement sans fiche n'est plus listé.
-        let existed = std::fs::remove_file(self.path(id, "json")).is_ok();
-        for ext in ["jpg", "mp4", "tmp"] {
-            let _ = std::fs::remove_file(self.path(id, ext));
+        let mut index = self.index();
+        let existed = index.events.remove(id).is_some();
+        if existed {
+            self.remove_files(id);
         }
         existed
     }
 
+    fn remove_files(&self, id: &str) {
+        // La fiche d'abord : un événement sans fiche n'est plus listé.
+        let _ = std::fs::remove_file(self.path(id, "json"));
+        for ext in ["jpg", "mp4", "tmp"] {
+            let _ = std::fs::remove_file(self.path(id, ext));
+        }
+    }
+
     /// Rétention par âge, puis plafond de taille : les plus anciens partent d'abord. Les fichiers
-    /// orphelins (sans fiche, écriture interrompue) partent aussi.
+    /// sans fiche (écriture interrompue) partent aussi ; ceux d'une fiche illisible restent.
     pub fn prune(&self, now: f64) -> PruneReport {
-        let _write = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.index();
+        self.prune_locked(&mut index, now, None)
+    }
+
+    /// `keep` : l'événement qu'on vient d'écrire, jamais retiré par le plafond.
+    fn prune_locked(&self, index: &mut Index, now: f64, keep: Option<&str>) -> PruneReport {
         let since = now - self.retention.as_secs_f64();
-        let mut events = self.all();
-        let mut report = PruneReport::default();
-        let size = |id: &str| -> u64 {
-            ["json", "jpg", "mp4"]
-                .iter()
-                .filter_map(|ext| std::fs::metadata(self.path(id, ext)).ok())
-                .map(|m| m.len())
-                .sum()
-        };
-        // Les plus récents d'abord : on garde tant que le plafond le permet.
         let max = self.max_total_bytes();
-        let mut kept_ids = std::collections::HashSet::new();
+        let mut report = PruneReport::default();
+        let mut order: Vec<(String, f64, f64, u64)> = index
+            .events
+            .iter()
+            .map(|(id, (e, b))| (id.clone(), e.start, e.end, *b))
+            .collect();
+        // Les plus récents d'abord : on garde tant que le plafond le permet.
+        order.sort_by(|a, b| b.1.total_cmp(&a.1));
+        if let Some(k) = keep {
+            if let Some(pos) = order.iter().position(|o| o.0 == k) {
+                let item = order.remove(pos);
+                order.insert(0, item);
+            }
+        }
         let mut total = 0u64;
-        for e in events.drain(..) {
-            let bytes = size(&e.id);
-            if e.end < since || total + bytes > max {
-                self.remove_files(&e.id);
+        for (id, _, end, bytes) in order {
+            let pinned = keep == Some(id.as_str());
+            if (end < since || total + bytes > max) && !pinned {
+                index.events.remove(&id);
+                self.remove_files(&id);
                 report.removed += 1;
             } else {
                 total += bytes;
                 report.kept += 1;
-                kept_ids.insert(e.id);
             }
         }
-        // Orphelins.
+        // Fichiers orphelins : sans fiche du tout (ni lisible, ni illisible).
         if let Ok(entries) = std::fs::read_dir(&self.dir) {
             for path in entries.filter_map(Result::ok).map(|e| e.path()) {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if !kept_ids.contains(stem) {
+                if !index.events.contains_key(stem)
+                    && !index.unreadable.contains(stem)
+                    && !self.path(stem, "json").is_file()
+                {
                     let _ = std::fs::remove_file(&path);
                 }
             }
@@ -259,6 +411,7 @@ mod tests {
             end: start + 5.0,
             has_clip: true,
             clip_s: 20.0,
+            in_progress: false,
         }
     }
 
@@ -266,9 +419,10 @@ mod tests {
     fn save_list_get_delete() {
         let dir = temp();
         let store = EventStore::new(dir.join("events"), DEFAULT_MAX_TOTAL_BYTES);
+        store.set_min_free(0);
         for (i, cam) in [(0, 1u64), (1, 2), (2, 1)] {
             let e = event(1000.0 + f64::from(i) * 100.0, cam);
-            store.save(&e, Some(b"jpeg"), Some(b"mp4")).unwrap();
+            store.save(e, Some(b"jpeg"), Some(b"mp4")).unwrap();
         }
         let all = store.list(0.0, None, 10);
         assert_eq!(all.len(), 3);
@@ -293,29 +447,76 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // Relu par un autre magasin (redémarrage) : la même liste.
+        let again = EventStore::new(dir.join("events"), DEFAULT_MAX_TOTAL_BYTES);
+        assert_eq!(again.all(), store.all());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn prune_by_age_then_by_size() {
+    fn prune_by_age_then_by_size_and_on_save() {
         let dir = temp();
         let store = EventStore::with_retention(dir.clone(), Duration::from_secs(1000), u64::MAX);
+        store.set_min_free(0);
         let clip = vec![0u8; 10_000];
         for i in 0..5 {
             store
-                .save(&event(f64::from(i) * 400.0, 7), None, Some(&clip))
+                .save(event(f64::from(i) * 400.0, 7), None, Some(&clip))
                 .unwrap();
         }
         std::fs::write(dir.join("123-4.mp4"), b"orphelin").unwrap();
+        // Une fiche illisible : ni listée, ni supprimée, ses fichiers restent.
+        std::fs::write(dir.join("999-4.json"), b"{pas du json").unwrap();
+        std::fs::write(dir.join("999-4.mp4"), b"clip").unwrap();
+        let store = EventStore::with_retention(dir.clone(), Duration::from_secs(1000), u64::MAX);
+        store.set_min_free(0);
         // now = 2000 : garde ceux finis après 1000 (débuts 1200 et 1600).
         let report = store.prune(2000.0);
         assert_eq!((report.kept, report.removed), (2, 3));
         assert!(!dir.join("123-4.mp4").exists());
+        assert!(dir.join("999-4.json").exists() && dir.join("999-4.mp4").exists());
         // Plafond : un seul tient.
         store.set_max_total_bytes(15_000);
         let report = store.prune(2000.0);
         assert_eq!(report.kept, 1);
         assert_eq!(store.all()[0].start, 1600.0, "le plus récent reste");
+        // Un nouvel enregistrement qui dépasse le plafond fait partir le plus ancien aussitôt.
+        let now = chrono::Utc::now().timestamp() as f64;
+        store.set_max_total_bytes(25_000);
+        store.save(event(now, 7), None, Some(&clip)).unwrap();
+        store.save(event(now + 1.0, 7), None, Some(&clip)).unwrap();
+        let ids: Vec<f64> = store.all().iter().map(|e| e.start).collect();
+        assert_eq!(ids, [now + 1.0, now], "{ids:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn no_clip_on_a_full_disk() {
+        let dir = temp();
+        let store = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        store.set_min_free(u64::MAX);
+        let saved = store
+            .save(event(1000.0, 3), Some(b"jpeg"), Some(b"mp4"))
+            .unwrap();
+        assert!(!saved.has_clip, "pas de place : pas de clip");
+        assert!(store.part(&saved.id, Part::Clip).is_none());
+        assert!(disk_space(&dir).is_some());
+        assert_eq!(free_threshold(1000, u64::MAX), 50);
+        assert_eq!(free_threshold(1 << 40, 2 << 30), 2 << 30);
+        assert!(store.part(&saved.id, Part::Snapshot).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stale_in_progress_event_is_closed_on_reload() {
+        let dir = temp();
+        let store = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        let mut e = event(1000.0, 3);
+        e.in_progress = true;
+        e.has_clip = false;
+        store.save(e, Some(b"jpeg"), None).unwrap();
+        let again = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        assert!(!again.all()[0].in_progress);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

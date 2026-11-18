@@ -8,6 +8,9 @@ use protocol::wire::DetectionSettings;
 
 use matter_home_video::Image;
 
+/// Part minimale des pixels d'une boîte qui doivent avoir changé pour qu'elle « bouge ».
+pub const MOTION_IN_BOX: f32 = 0.02;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionConfig {
     /// Largeur de l'image grise (la hauteur suit les proportions).
@@ -82,6 +85,8 @@ pub struct Motion {
     previous: Option<Grey>,
     /// Masque calculé pour cette taille et ces réglages (`true` : ignoré).
     mask: Option<(usize, usize, Vec<bool>)>,
+    /// Les pixels (de l'image grise) qui ont changé à la dernière image : largeur, hauteur, pixels.
+    changed: (usize, usize, Vec<bool>),
 }
 
 impl Motion {
@@ -90,12 +95,34 @@ impl Motion {
             config,
             previous: None,
             mask: None,
+            changed: (0, 0, Vec::new()),
         }
     }
 
     /// Les réglages de la caméra ont changé : le masque est à recalculer.
     pub fn reset_mask(&mut self) {
         self.mask = None;
+    }
+
+    /// Y a-t-il eu du mouvement dans cette boîte (normalisée) à la dernière image ? Au moins
+    /// [`MOTION_IN_BOX`] de ses pixels, et au moins un. Sert à écarter un objet immobile que le
+    /// détecteur voit parce que quelque chose bouge ailleurs dans l'image.
+    pub fn moved_in(&self, bbox: &[f32; 4]) -> bool {
+        let (w, h, cells) = &self.changed;
+        if *w == 0 || *h == 0 {
+            return false;
+        }
+        let px = |v: f32, n: usize| ((v.clamp(0.0, 1.0) * n as f32) as usize).min(n - 1);
+        let (x0, x1) = (px(bbox[0], *w), px(bbox[2], *w));
+        let (y0, y1) = (px(bbox[1], *h), px(bbox[3], *h));
+        let (mut n, mut moved) = (0usize, 0usize);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                n += 1;
+                moved += usize::from(cells[y * w + x]);
+            }
+        }
+        moved > 0 && moved as f32 >= n as f32 * MOTION_IN_BOX
     }
 
     /// La part de l'image (hors masques) qui a changé depuis l'image précédente, et s'il y a
@@ -128,15 +155,24 @@ impl Motion {
         }
         let mask = &self.mask.as_ref().expect("masque calculé").2;
         let (mut changed, mut counted) = (0u32, 0u32);
-        for ((a, b), masked) in previous.pixels.iter().zip(&grey.pixels).zip(mask) {
+        let mut cells = vec![false; w * h];
+        for (i, ((a, b), masked)) in previous
+            .pixels
+            .iter()
+            .zip(&grey.pixels)
+            .zip(mask)
+            .enumerate()
+        {
             if *masked {
                 continue;
             }
             counted += 1;
             if a.abs_diff(*b) > self.config.threshold {
                 changed += 1;
+                cells[i] = true;
             }
         }
+        self.changed = (w, h, cells);
         self.previous = Some(grey);
         let part = if counted == 0 {
             0.0
@@ -193,6 +229,17 @@ mod tests {
         );
         let (part, moved) = motion.update(&with_square(200, 100), &settings);
         assert!(moved, "le carré a bougé ({part})");
+    }
+
+    #[test]
+    fn motion_is_located_in_boxes() {
+        let settings = DetectionSettings::default();
+        let mut motion = Motion::new(MotionConfig::default());
+        motion.update(&with_square(10, 10), &settings);
+        assert!(motion.update(&with_square(10, 120), &settings).1);
+        // Le carré est passé de (10, 10) à (10, 120) sur 320 × 180 : rien à droite.
+        assert!(motion.moved_in(&[0.0, 0.0, 0.2, 1.0]));
+        assert!(!motion.moved_in(&[0.6, 0.0, 1.0, 1.0]));
     }
 
     #[test]

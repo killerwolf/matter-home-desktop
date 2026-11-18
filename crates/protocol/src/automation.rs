@@ -131,6 +131,10 @@ pub enum Trigger {
         #[serde(default)]
         classes: Vec<DetectedClass>,
     },
+    /// Un déclencheur d'un serveur plus récent : lu sans faire échouer tout l'état complet, jamais
+    /// exécuté, et refusé par la validation du serveur (`PUT /api/rules`).
+    #[serde(other)]
+    Unknown,
 }
 
 impl Trigger {
@@ -176,6 +180,9 @@ pub enum Condition {
     Mode {
         is: Vec<HomeMode>,
     },
+    /// Une condition d'un serveur plus récent (voir `Trigger::Unknown`) : jamais vraie.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,6 +217,9 @@ pub enum Action {
     SetMode {
         mode: HomeMode,
     },
+    /// Une action d'un serveur plus récent (voir `Trigger::Unknown`) : jamais exécutée.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Délai minimal d'une règle qui change le mode quand le mode change : sans lui, deux règles
