@@ -8,6 +8,15 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Corrigé
+
+- **Éditeur de règles** : le menu « Quand » ne propose plus « Inconnu (version plus récente du
+  serveur) », que le serveur refusait avec un message vague. Une règle qui contient déjà un
+  déclencheur, une condition ou une action d'une version plus récente du serveur reste un brouillon
+  local, avec un message clair, au lieu d'être envoyée.
+
 ## [1.2.0] - 2026-11-18
 
 ### Ajouté
