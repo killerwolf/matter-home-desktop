@@ -401,7 +401,11 @@ impl MatterApp {
                 native_menu::MenuCommand::Import => self.import_data(),
                 native_menu::MenuCommand::Logout => self.backend.logout(),
                 native_menu::MenuCommand::Quit => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+                    // Fenêtre visible et au premier plan : la question « modifications non
+                    // envoyées » doit pouvoir s'afficher.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 native_menu::MenuCommand::Edit(edit) => {
                     let clipboard = self.native_menu.as_ref().and_then(|m| m.clipboard_text());

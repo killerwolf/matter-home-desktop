@@ -52,7 +52,7 @@ zune-core = "0.5"
 # (tirés par eframe et rfd) ; aucune caisse de plus.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSPasteboard", "NSEvent"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSPasteboard", "NSEvent", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSObject"] }
 
 [dev-dependencies]

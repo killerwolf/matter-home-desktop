@@ -71,23 +71,24 @@ impl FileMenuState {
 /// Événements egui qui reproduisent une commande d'Édition. `clipboard` est le texte du
 /// presse-papiers, lu au moment du clic (utile pour Coller seulement).
 pub fn edit_events(command: EditCommand, clipboard: Option<String>) -> Vec<egui::Event> {
+    // Touche enfoncée puis relâchée, comme au clavier.
     let key = |key| {
         let modifiers = egui::Modifiers {
             command: true,
             mac_cmd: true,
             ..Default::default()
         };
-        egui::Event::Key {
+        [true, false].map(|pressed| egui::Event::Key {
             key,
             physical_key: Some(key),
-            pressed: true,
+            pressed,
             repeat: false,
             modifiers,
-        }
+        })
     };
     match command {
-        EditCommand::Undo => vec![key(egui::Key::Z)],
-        EditCommand::SelectAll => vec![key(egui::Key::A)],
+        EditCommand::Undo => key(egui::Key::Z).to_vec(),
+        EditCommand::SelectAll => key(egui::Key::A).to_vec(),
         EditCommand::Cut => vec![egui::Event::Cut],
         EditCommand::Copy => vec![egui::Event::Copy],
         EditCommand::Paste => clipboard
@@ -241,6 +242,25 @@ mod appkit {
         }
 
         fn send(&self, command: MenuCommand) {
+            // Édition : seule la fenêtre egui, au premier plan, reçoit la commande. Une fenêtre
+            // modale (sélecteur de fichier) ou une autre fenêtre (À propos) garde l'action
+            // standard (`copy:`, `paste:`…), envoyée à la chaîne des répondeurs.
+            if let MenuCommand::Edit(edit) = command {
+                let app = NSApplication::sharedApplication(self.mtm());
+                let egui_is_key = app.modalWindow().is_none()
+                    && matches!((app.keyWindow(), app.mainWindow()), (Some(k), Some(m)) if k == m);
+                if !egui_is_key {
+                    let action = match edit {
+                        EditCommand::Undo => sel!(undo:),
+                        EditCommand::Cut => sel!(cut:),
+                        EditCommand::Copy => sel!(copy:),
+                        EditCommand::Paste => sel!(paste:),
+                        EditCommand::SelectAll => sel!(selectAll:),
+                    };
+                    unsafe { app.sendAction_to_from(action, None, None) };
+                    return;
+                }
+            }
             let ivars = self.ivars();
             // Le récepteur n'existe plus quand l'application se ferme : rien à faire alors.
             if ivars.tx.send(command).is_ok() {
@@ -408,7 +428,8 @@ mod appkit {
     pub fn clipboard_text() -> Option<String> {
         let board = NSPasteboard::generalPasteboard();
         let text = unsafe { board.stringForType(NSPasteboardTypeString) }?;
-        Some(text.to_string())
+        // Le presse-papiers peut contenir des fins de ligne CRLF : egui attend « \n ».
+        Some(text.to_string().replace("\r\n", "\n"))
     }
 }
 
@@ -457,8 +478,13 @@ mod tests {
                     pressed: true,
                     modifiers,
                     ..
+                }, egui::Event::Key {
+                    key: released,
+                    pressed: false,
+                    ..
                 }] => {
                     assert_eq!(*key, expected);
+                    assert_eq!(*released, expected);
                     assert!(modifiers.command);
                 }
                 other => panic!("événement inattendu : {other:?}"),
