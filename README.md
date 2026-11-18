@@ -172,8 +172,8 @@ réseau local ; seul le client change d'adresse.
    seul en quittant le Wi-Fi de la maison. Hors de chez vous, la barre d'état indique « à
    distance » et les caméras restent sur le flux réduit (« Fluide ») ; « Haute » reste possible
    mais est lourde en 4G.
-4. **App web (iPhone, iPad)** : dans le menu de l'app serveur, cochez **« Accès web
-   (Tailscale) »**. Le serveur est alors publié sur votre tailnet seulement (jamais sur Internet)
+4. **App web (iPhone, iPad)** : dans la fenêtre de l'app serveur, onglet Connexion,
+   cliquez **« Activer l'accès à distance »**. Le serveur est alors publié sur votre tailnet seulement (jamais sur Internet)
    à l'adresse `https://mon-mac.tailnet-xxxx.ts.net/app/`, avec un certificat reconnu par
    Safari. Ouvrez-la, connectez-vous, puis « Sur l'écran d'accueil ». Détails :
    [docs/web-app.md](docs/web-app.md).
@@ -181,7 +181,7 @@ réseau local ; seul le client change d'adresse.
 **Certificat.** Le certificat auto-signé du serveur ne porte pas le nom `….ts.net`. Le client
 ne s'en soucie pas : il compare l'**empreinte** du certificat, la même par n'importe quelle
 adresse, donc `mon-mac.tailnet-xxxx.ts.net:8443` fonctionne. Seule exception : l'adresse
-publiée par la case « Accès web » (`https://mon-mac.tailnet-xxxx.ts.net/`, port 443) présente
+publiée par l'accès à distance (`https://mon-mac.tailnet-xxxx.ts.net/`, port 443) présente
 le certificat Let's Encrypt de Tailscale ; le client le valide alors par la chaîne de confiance
 publique, comme un navigateur (nom et dates contrôlés), **sans épinglage** : il ne vérifie plus
 que le serveur est bien le vôtre par son empreinte, seulement que le nom `….ts.net` est le bon.

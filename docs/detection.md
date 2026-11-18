@@ -15,7 +15,7 @@ contient ce ticket) : les modèles **YOLOX-s 640** (CoreML) et **YOLOX-nano 416*
 **ONNX Runtime 1.23.2** (avec CoreML), tiré des roues officielles publiées par Microsoft sur PyPI
 (`onnxruntime`, une par architecture, réunies en une bibliothèque universelle ; **macOS 13**
 minimum : sur un système plus ancien, la détection reste désactivée et le dit). Au lancement, le
-journal dit `détection prête : CoreML, entrée 640×640` ; la fenêtre du serveur (« Caméras… »,
+journal dit `détection prête : CoreML, entrée 640×640` ; la fenêtre du serveur (onglet Caméras,
 section « Détection ») affiche le moteur et les caméras analysées.
 
 | Dans l'application | Contenu | Licence |

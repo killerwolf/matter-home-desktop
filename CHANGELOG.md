@@ -8,6 +8,23 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- **Serveur : l'application de la barre de menus est réorganisée** (ticket n° 21). Le menu répond
+  d'abord à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à regarder »,
+  « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection, accès à
+  distance) et une seule action quand quelque chose ne va pas. L'icône gagne une forme « un point
+  est à regarder » (maison avec une pastille). La fenêtre passe à cinq onglets, **Vue d'ensemble**,
+  **Appareils**, **Caméras**, **Connexion**, **Réglages**, avec le même aspect que le client
+  (tokens partagés). Les tâches rares sont guidées pas à pas : première installation en trois
+  étapes, connecter un ordinateur, iPhone hors de la maison (Tailscale), changement de mode par
+  Raccourcis, clé Anthropic, ajout d'un appareil. Vocabulaire revu (« accès à distance », « code de
+  vérification », « code secret »). Rien n'est supprimé : copier l'adresse et l'empreinte, l'accès
+  web, le journal, le lancement à l'ouverture de session et la version quittent le menu pour la
+  fenêtre. Le comportement du serveur ne change pas. Détail : `docs/ux-serveur.md`.
+
 ## [1.2.1] - 2026-11-18
 
 ### Modifié

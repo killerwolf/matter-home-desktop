@@ -33,7 +33,7 @@ L'appel est fait par `/usr/bin/curl` (celui de macOS, comme pour les webhooks), 
 
 ## Activer
 
-Fenêtre du serveur → **« Descriptions des événements… »** :
+Fenêtre du serveur → onglet **Caméras** → « Décrire les événements par IA » → **« Configurer… »** :
 
 1. **Clé d'API** : créez-la dans la [console Anthropic](https://console.anthropic.com) et collez-la. Elle
    est enregistrée une fois et **n'est plus jamais réaffichée** (la fenêtre dit seulement qu'une clé est
