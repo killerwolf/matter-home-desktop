@@ -1,11 +1,13 @@
 //! Les événements de détection (ticket n° 18), à droite de la mosaïque des caméras : capture,
-//! classe, caméra, heure ; « Lire le clip » l'ouvre dans le lecteur du Mac.
+//! classe, caméra, heure ; « Lire le clip » le lit dans le panneau (ticket n° 22), « Ouvrir dans
+//! QuickTime » dans le lecteur du Mac.
 
 use std::collections::HashMap;
 
 use eframe::egui::{self, RichText};
 
 use super::theme;
+use matter_home_client::clip::{format_time, ClipPlayer};
 use matter_home_client::model::Model;
 use matter_home_client::net::events::EventsFeed;
 
@@ -16,6 +18,22 @@ pub struct EventsView {
     /// Ce que le WebSocket a annoncé (voir [`signature`]), pour relire la liste quand un événement
     /// apparaît, passe à « terminé », reçoit une capture plus récente ou sa description.
     last_seen: Vec<Signature>,
+    /// Le clip en cours de lecture dans le panneau (un seul à la fois).
+    clip: Option<ClipView>,
+}
+
+/// Le lecteur d'un clip et la texture de son image courante.
+struct ClipView {
+    player: ClipPlayer,
+    texture: Option<egui::TextureHandle>,
+    /// Valeur de la barre pendant qu'on la déplace (le clip n'est déplacé qu'au relâchement).
+    dragging: Option<f64>,
+}
+
+/// Ce que l'utilisateur a demandé dans la liste, à faire une fois la liste dessinée.
+enum Action {
+    Play(String),
+    Close,
 }
 
 impl EventsView {
@@ -25,6 +43,7 @@ impl EventsView {
             feed: None,
             textures: HashMap::new(),
             last_seen: Vec::new(),
+            clip: None,
         }
     }
 
@@ -35,6 +54,7 @@ impl EventsView {
         }
         self.textures.clear();
         self.last_seen.clear();
+        self.clip = None;
     }
 
     fn feed(&mut self, ctx: &egui::Context) -> &EventsFeed {
@@ -93,6 +113,16 @@ impl EventsView {
             });
             return;
         }
+        // L'événement a disparu de la liste (purge, rafraîchissement) : son clip se ferme.
+        if self
+            .clip
+            .as_ref()
+            .is_some_and(|c| !state.items.iter().any(|i| i.event.id == c.player.id))
+        {
+            self.clip = None;
+        }
+        let mut action: Option<Action> = None;
+        let playing_id = self.clip.as_ref().map(|c| c.player.id.clone());
         egui::ScrollArea::vertical()
             .id_salt("events-list")
             .auto_shrink([false, false])
@@ -149,17 +179,137 @@ impl EventsView {
                                         .wrap(),
                                 );
                             }
-                            if ev.has_clip && ui.small_button("Lire le clip").clicked() {
-                                feed.open_clip(&ev.id);
+                            if ev.has_clip {
+                                ui.horizontal(|ui| {
+                                    if playing_id.as_deref() == Some(ev.id.as_str()) {
+                                        if ui.small_button("Fermer le clip").clicked() {
+                                            action = Some(Action::Close);
+                                        }
+                                    } else if ui.small_button("Lire le clip").clicked() {
+                                        action = Some(Action::Play(ev.id.clone()));
+                                    }
+                                    if ui.small_button("Ouvrir dans QuickTime").clicked() {
+                                        feed.open_clip(&ev.id);
+                                    }
+                                });
                             }
                         });
                     });
+                    if let Some(view) = self.clip.as_mut().filter(|c| c.player.id == ev.id) {
+                        clip_panel(ui, view);
+                    }
                     ui.separator();
                 }
             });
+        match action {
+            Some(Action::Play(id)) => {
+                let ctx = ui.ctx().clone();
+                self.clip = Some(ClipView {
+                    player: ClipPlayer::open(&id, move || ctx.request_repaint()),
+                    texture: None,
+                    dragging: None,
+                });
+            }
+            Some(Action::Close) => self.clip = None,
+            None => {}
+        }
         // Les textures des événements disparus de la liste sont lâchées.
         self.textures
             .retain(|key, _| state.items.iter().any(|i| &texture_key(&i.event) == key));
+    }
+}
+
+/// Le lecteur sous l'événement : image à la largeur du panneau, puis lecture / pause, barre de
+/// progression, temps écoulé et total, boucle ; un message en français si le clip ne se lit pas.
+fn clip_panel(ui: &mut egui::Ui, view: &mut ClipView) {
+    let ctx = ui.ctx().clone();
+    if let Some(image) = view.player.update() {
+        let color =
+            egui::ColorImage::from_rgb([image.width as usize, image.height as usize], &image.rgb);
+        match &mut view.texture {
+            Some(texture) => texture.set(color, egui::TextureOptions::LINEAR),
+            None => {
+                view.texture =
+                    Some(ctx.load_texture("clip-courant", color, egui::TextureOptions::LINEAR));
+            }
+        }
+    }
+    let p = theme::palette(ui);
+    if let Some(error) = view.player.error() {
+        ui.label(RichText::new(error).color(p.error));
+        return;
+    }
+    let width = ui.available_width();
+    match &view.texture {
+        Some(texture) => {
+            let size = texture.size_vec2();
+            let height = if size.x > 0.0 {
+                width * size.y / size.x
+            } else {
+                width * 0.5625
+            };
+            ui.add(egui::Image::new((texture.id(), egui::vec2(width, height))));
+        }
+        None => {
+            let text = if view.player.loading() {
+                "Téléchargement du clip…"
+            } else {
+                "Décodage…"
+            };
+            ui.label(RichText::new(text).small().color(p.text_secondary));
+        }
+    }
+    let duration = view.player.duration_ms();
+    if duration == 0 {
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        return;
+    }
+    ui.horizontal(|ui| {
+        let label = if view.player.playing() { "⏸" } else { "▶" };
+        if ui
+            .button(label)
+            .on_hover_text(if view.player.playing() {
+                "Pause"
+            } else {
+                "Lecture"
+            })
+            .clicked()
+        {
+            view.player.toggle_play();
+        }
+        let mut value = view.dragging.unwrap_or(view.player.position_ms() as f64);
+        ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(60.0);
+        let response = ui.add(
+            egui::Slider::new(&mut value, 0.0..=duration as f64)
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        if response.dragged() {
+            view.dragging = Some(value);
+        }
+        if response.drag_stopped() || (response.changed() && !response.dragged()) {
+            view.dragging = None;
+            view.player.seek(value as u64);
+        }
+        let shown = view
+            .dragging
+            .map_or_else(|| view.player.position_ms(), |v| v as u64);
+        ui.label(
+            RichText::new(format!(
+                "{} / {}",
+                format_time(shown),
+                format_time(duration)
+            ))
+            .small()
+            .monospace(),
+        );
+        let mut looping = view.player.looping;
+        if ui.checkbox(&mut looping, "Boucle").changed() {
+            view.player.looping = looping;
+        }
+    });
+    if view.player.playing() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 }
 
