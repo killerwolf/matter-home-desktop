@@ -246,7 +246,7 @@ pub(crate) async fn run(
     }
     detection.set_watched(&BTreeSet::new());
     drain(running, writer, writer_thread).await;
-    detection.descriptions().shutdown();
+    detection.descriptions().shutdown(&hub);
 }
 
 /// Attente (bornée, [`SHUTDOWN_WAIT`] au total) de la fin des veilles, de la clôture de leurs
@@ -337,6 +337,7 @@ fn write_job(hub: &Arc<Hub>, job: WriteJob) {
     let opening = rules.is_some();
     let mut event = event;
     let camera = event.camera_id;
+    let id = event.id.clone();
     let mp4 = clip.as_ref().and_then(clip_to_mp4);
     if !opening {
         event.has_clip = mp4.is_some();
@@ -352,6 +353,8 @@ fn write_job(hub: &Arc<Hub>, job: WriteJob) {
             Ok(saved) => saved,
             Err(e) => {
                 log::error!("événement de {camera:#x} non enregistré : {e}");
+                // Les règles qui attendaient sa description ne l'attendront pas pour rien.
+                hub.detection().descriptions().resolve(hub, &id);
                 return;
             }
         };
@@ -389,7 +392,7 @@ fn write_job(hub: &Arc<Hub>, job: WriteJob) {
         // Une classe nouvelle en cours de passage : les règles qui emploient la description
         // attendent aussi (elles partent à l'arrivée de la description, une seule fois).
         Some((false, _)) => {
-            let awaiting = descriptions.is_awaiting(&saved.id);
+            let awaiting = descriptions.on_update(hub, &saved, jpeg);
             hub.publish_detection(&saved, rules, awaiting);
         }
         None => {

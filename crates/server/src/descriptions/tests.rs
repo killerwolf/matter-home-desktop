@@ -52,6 +52,7 @@ impl Fixture {
         d.set_endpoint(Endpoint {
             base_url: mock.url(),
             retry_default: Duration::from_millis(20),
+            ..Endpoint::default()
         });
         d.set_api_key(Some(KEY)).unwrap();
         let mut settings = Settings {
@@ -117,7 +118,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.descriptions().shutdown();
+        self.descriptions().shutdown(&self.hub);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -457,4 +458,128 @@ fn settings_and_key_are_stored_privately_and_the_key_is_never_shown() {
     assert!(!demo_dir.join("serveur").exists());
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(demo_dir);
+}
+
+#[test]
+fn waiting_rules_never_wait_forever_and_start_without_a_description() {
+    // Pas de fin de passage (fil d'analyse mort) : l'échéance depuis l'ouverture.
+    let mut f = fixture("deadline-open");
+    let mock = Mock::start(vec![Reply::described("Jamais lue.", 0)]);
+    f.enable(&mock, |_| {});
+    f.descriptions()
+        .set_limits(Duration::from_secs(30), Duration::from_millis(600));
+    let opened = f.save(&f.event(1, true));
+    assert!(f.descriptions().on_open(&f.hub, &opened, &jpeg(64, 48)));
+    let resolved = f.wait_described(1);
+    assert!(resolved[0].description.is_none());
+    assert_eq!(mock.count(), 0);
+
+    // L'API est lente : échéance après la fin du passage, la description arrive plus tard.
+    let mock = Mock::start(vec![
+        Reply::described("Arrivée en retard.", 0).with_delay(Duration::from_millis(2500))
+    ]);
+    f.enable(&mock, |_| {});
+    f.descriptions()
+        .set_limits(Duration::from_millis(500), Duration::from_secs(30));
+    let opened = f.save(&f.event(2, true));
+    assert!(f.descriptions().on_open(&f.hub, &opened, &jpeg(64, 48)));
+    let closed = f.save(&f.event(2, false));
+    let started = std::time::Instant::now();
+    f.descriptions().on_close(&f.hub, &closed, &jpeg(64, 48));
+    let resolved = f.wait_described(1);
+    assert!(
+        started.elapsed() < Duration::from_millis(2200),
+        "avant la réponse de l'API"
+    );
+    assert!(resolved[0].description.is_none());
+    wait("la description tardive est enregistrée", || {
+        f.hub
+            .detection()
+            .store()
+            .get(&closed.id)
+            .is_some_and(|e| e.description.is_some())
+    });
+    assert!(f.commands().is_empty(), "la règle n'est pas relancée");
+}
+
+#[test]
+fn a_deleted_event_still_releases_its_waiting_rule_and_shutdown_releases_all() {
+    let mut f = fixture("deleted");
+    let mock = Mock::start(vec![Reply::described("Trop tard.", 0)]);
+    f.enable(&mock, |_| {});
+    let opened = f.save(&f.event(1, true));
+    assert!(f.descriptions().on_open(&f.hub, &opened, &jpeg(64, 48)));
+    let closed = f.save(&f.event(1, false));
+    assert!(f.hub.detection().store().delete(&closed.id));
+    f.descriptions().on_close(&f.hub, &closed, &jpeg(64, 48));
+    let resolved = f.wait_described(1);
+    assert_eq!(resolved[0].id, closed.id, "la dernière fiche connue");
+    assert!(resolved[0].description.is_none());
+    // L'arrêt du serveur : les règles qui attendent partent.
+    let opened = f.save(&f.event(2, true));
+    assert!(f.descriptions().on_open(&f.hub, &opened, &jpeg(64, 48)));
+    f.descriptions().shutdown(&f.hub);
+    assert_eq!(f.wait_described(1)[0].id, opened.id);
+}
+
+#[test]
+fn a_class_that_makes_the_passage_eligible_makes_rules_wait() {
+    let f = fixture("update");
+    let mock = Mock::start(vec![Reply::described("x", 0)]);
+    f.enable(&mock, |s| s.classes = vec![DetectedClass::Personne]);
+    let image = jpeg(64, 48);
+    let mut dog = f.event(1, true);
+    dog.classes = vec![DetectedClass::Chien];
+    assert!(
+        !f.descriptions().on_open(&f.hub, &dog, &image),
+        "un chien : rien"
+    );
+    assert!(!f.descriptions().on_update(&f.hub, &dog, &image));
+    dog.classes = vec![DetectedClass::Chien, DetectedClass::Personne];
+    assert!(
+        f.descriptions().on_update(&f.hub, &dog, &image),
+        "une personne apparaît"
+    );
+    assert!(f.descriptions().is_awaiting_for_test(&dog.id));
+}
+
+#[test]
+fn the_daily_count_survives_a_restart_and_old_bodies_are_cleaned() {
+    let dir = crate::hub::tests::temp("descr-usage");
+    let d = Descriptions::new(&dir, false);
+    assert!(d.take_slot(5) && d.take_slot(5) && d.take_slot(5));
+    let usage = dir.join("serveur").join("descriptions-usage.json");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&usage).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let again = Descriptions::new(&dir, false);
+    assert!(again.take_slot(4), "4e");
+    assert!(
+        !again.take_slot(4),
+        "plafond de 4 atteint après redémarrage"
+    );
+    // Le compte d'un autre jour est ignoré.
+    std::fs::write(&usage, r#"{"date":"2000-01-01","count":99}"#).unwrap();
+    assert!(Descriptions::new(&dir, false).take_slot(1));
+    // Corps de requête oubliés : le vieux part, le récent reste.
+    let old = std::env::temp_dir().join(format!("mh-description-test-old-{}", std::process::id()));
+    let fresh =
+        std::env::temp_dir().join(format!("mh-description-test-new-{}", std::process::id()));
+    std::fs::write(&old, b"x").unwrap();
+    std::fs::write(&fresh, b"x").unwrap();
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    let _ = Descriptions::new(&dir, false);
+    assert!(!old.exists() && fresh.exists());
+    let _ = std::fs::remove_file(fresh);
+    let _ = std::fs::remove_dir_all(dir);
 }

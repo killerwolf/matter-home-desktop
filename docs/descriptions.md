@@ -25,7 +25,8 @@ connexion, l'adresse du serveur, le plan ou les appareils de la maison. La captu
 personnes et le lieu : c'est ce que vous confiez à Anthropic en activant la fonction (voir leurs
 conditions et leur politique de conservation des données pour l'API).
 
-L'appel est fait par `curl` (celui de macOS, comme pour les webhooks) : la clé passe par l'entrée standard de
+L'appel est fait par `/usr/bin/curl` (celui de macOS, comme pour les webhooks), avec un environnement vide
+(pas de proxy hérité) : la clé passe par l'entrée standard de
 `curl`, jamais en argument (un `ps` la montrerait) ; le corps de la requête est un fichier temporaire en
 0600, effacé aussitôt. Aucun journal ne contient la clé, ni l'image, ni la phrase (seulement
 « description de l'événement … : niveau 1 »).
@@ -85,7 +86,12 @@ Exemple : notifier « {niveau} : {description} ({appareil}, {heure}) ».
 dirait « {description} » à vide. Par défaut (une description, à la fin du passage), elle part donc **à la
 fin du passage**, quelques secondes après la dernière détection, au lieu de partir à l'ouverture ; avec
 « Décrire dès l'ouverture », dès que la première description arrive. Si la description ne vient pas
-(plafond atteint, erreur, refus), la règle part quand même, avec des variables vides. Les règles qui
+(plafond atteint, erreur, refus), la règle part quand même, avec des variables vides. **Attente
+maximale** : la règle part sans description **45 s après la fin du passage**, et au plus **3 minutes après
+son ouverture** (si la fin n'arrive pas) ; la description, si elle arrive plus tard, est quand même
+enregistrée et affichée, mais ne relance pas la règle. Au pire, une notification avec `{description}`
+arrive donc 45 s après la fin du passage. À l'arrêt du serveur, les règles en attente partent sans
+description. Les règles qui
 n'emploient pas ces variables partent comme avant, à l'ouverture. Le délai anti-rafale s'applique au
 départ réel de la règle.
 
@@ -97,16 +103,17 @@ d'autre moyen pour l'instant que de lire `{niveau}` dans le texte.
 - **Un fil à part** : ni l'analyse des caméras ni l'écriture des événements ne font d'appel réseau. Les
   descriptions passent par une file de 8 tâches et un fil dédié, un appel à la fois ; si la file est
   pleine (l'API est lente), la **plus ancienne** est abandonnée, avec une ligne au journal.
-- **Délais** : 30 s par appel ; un seul nouvel essai sur un 429, une erreur 5xx ou une erreur réseau,
-  après le délai `retry-after` de la réponse s'il y en a un (30 s au plus). Les autres erreurs (clé
-  refusée, 400) ne sont pas réessayées : le journal dit le code et le type d'erreur de l'API.
+- **Délais** : 30 s par appel ; un seul nouvel essai sur un 429, une erreur 5xx, ou une connexion
+  impossible (avant l'envoi), après le délai `retry-after` de la réponse s'il y en a un (30 s au plus).
+  **Jamais de nouvel essai après un délai dépassé** ou une coupure en cours de réponse (l'API a pu
+  facturer l'appel). Les autres erreurs (clé refusée, 400) ne sont pas réessayées : le journal dit le code et le type d'erreur de l'API.
 - **Refus du modèle** (`stop_reason: refusal`) : la fiche porte « description indisponible », sans nouvel
   essai. Réponse tronquée (`max_tokens`) : échec, sans description. Pour Opus 5.5 et Sonnet 5.5, la
   reprise côté Anthropic en cas de refus (`server-side-fallback`) est demandée.
 - **Format** : sortie structurée `{"description": …, "niveau": 0 | 1 | 2}` ; la phrase est coupée à
   200 caractères si besoin.
-- **Plafond** : compté par jour (heure locale) depuis le démarrage du serveur : un redémarrage remet le
-  compte à zéro.
+- **Plafond** : compté par jour (heure locale) dans `serveur/descriptions-usage.json` (0600) : un
+  redémarrage ne remet pas le compte à zéro.
 - La description est écrite dans la fiche de l'événement (`<données>/events/<id>.json`, champs
   `description` et `niveau`), **diffusée** aux clients (même événement, nouvel envoi), et s'efface avec lui
   au bout de 7 jours. Le protocole reste le 3 (voir [Protocole](protocole.md)).

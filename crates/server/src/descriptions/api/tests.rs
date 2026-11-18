@@ -14,6 +14,7 @@ fn endpoint(mock: &Mock) -> Endpoint {
     Endpoint {
         base_url: mock.url(),
         retry_default: Duration::from_millis(20),
+        ..Endpoint::default()
     }
 }
 
@@ -23,7 +24,7 @@ fn the_body_has_the_image_the_schema_and_no_sampling_parameters() {
     for model in Model::ALL {
         let body = build_body(model, &context(), &image);
         assert_eq!(body["model"], model.id());
-        assert_eq!(body["max_tokens"], 1024);
+        assert_eq!(body["max_tokens"], 4096);
         for forbidden in ["temperature", "top_p", "top_k", "thinking"] {
             assert!(
                 body.get(forbidden).is_none(),
@@ -164,7 +165,7 @@ fn the_request_carries_the_headers_and_never_the_key_in_the_arguments() {
     assert!(haiku.header("anthropic-beta").is_none());
     assert!(haiku.json().get("fallbacks").is_none());
     // Les arguments de `curl` ne contiennent que le chemin du corps.
-    let args = curl_args(Path::new("/tmp/corps.json")).join(" ");
+    let args = curl_args(Path::new("/tmp/corps.json"), Duration::from_secs(30)).join(" ");
     assert!(!args.contains(KEY) && args.starts_with("-q "), "{args}");
 }
 
@@ -192,6 +193,42 @@ fn a_429_or_a_5xx_is_retried_once_honouring_retry_after() {
     let err = describe(&endpoint(&mock), KEY, Model::Haiku, &context(), &image).unwrap_err();
     assert_eq!(mock.count(), 2);
     assert!(err.contains("503") && !err.contains(KEY), "{err}");
+}
+
+#[test]
+fn a_timeout_is_never_retried_and_curl_gets_an_empty_environment() {
+    // Le serveur répond trop tard : l'appel a pu être facturé, une seule requête part.
+    let mock = Mock::start(vec![
+        Reply::described("Trop tard.", 0).with_delay(Duration::from_millis(2500))
+    ]);
+    let slow = Endpoint {
+        timeout: Duration::from_secs(1),
+        ..endpoint(&mock)
+    };
+    let started = std::time::Instant::now();
+    let err = describe(&slow, KEY, Model::Haiku, &context(), &jpeg(64, 48)).unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(2400), "{err}");
+    std::thread::sleep(Duration::from_millis(2000));
+    assert_eq!(
+        mock.count(),
+        1,
+        "pas de nouvel essai après un délai dépassé"
+    );
+    let command = curl_command();
+    assert_eq!(command.get_program(), "/usr/bin/curl");
+    assert!(command.get_envs().next().is_none());
+    let args = curl_args(Path::new("/x"), Duration::from_secs(30));
+    assert!(args.windows(2).any(|w| w == ["--noproxy", "*"]));
+}
+
+#[test]
+fn http_output_skips_continue_preambles() {
+    let out = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 429 X\r\nRetry-After: 7\r\n\r\n{}";
+    let r = parse_http(out).unwrap();
+    assert_eq!(
+        (r.status, r.retry_after, r.body.as_str()),
+        (429, Some(Duration::from_secs(7)), "{}")
+    );
 }
 
 #[test]
@@ -232,6 +269,7 @@ fn an_unreachable_server_fails_after_one_retry_and_a_huge_image_is_never_sent() 
     let dead = Endpoint {
         base_url: format!("http://127.0.0.1:{port}"),
         retry_default: Duration::from_millis(10),
+        ..Endpoint::default()
     };
     let err = describe(&dead, KEY, Model::Haiku, &context(), &jpeg(64, 48)).unwrap_err();
     assert!(!err.contains(KEY), "{err}");

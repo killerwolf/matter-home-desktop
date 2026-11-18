@@ -28,7 +28,6 @@ const BETA_FALLBACK: &str = "server-side-fallback-2026-07-01";
 pub const MAX_SIDE: u32 = 1024;
 /// Taille maximale de la capture envoyée (une capture 1024 px fait ~100 Ko).
 const MAX_JPEG_BYTES: usize = 4 * 1024 * 1024;
-const TIMEOUT_S: &str = "30";
 /// Attente maximale entre deux essais, même si `retry-after` demande plus.
 const MAX_WAIT: Duration = Duration::from_secs(30);
 pub const UNAVAILABLE: &str = "description indisponible";
@@ -41,6 +40,8 @@ pub struct Endpoint {
     pub base_url: String,
     /// Attente avant le nouvel essai quand la réponse ne dit pas `retry-after`.
     pub retry_default: Duration,
+    /// Délai d'un appel (les tests le raccourcissent).
+    pub timeout: Duration,
 }
 
 impl Default for Endpoint {
@@ -48,6 +49,7 @@ impl Default for Endpoint {
         Self {
             base_url: DEFAULT_BASE_URL.into(),
             retry_default: Duration::from_secs(2),
+            timeout: Duration::from_secs(30),
         }
     }
 }
@@ -112,7 +114,7 @@ fn schema() -> Value {
 pub fn build_body(model: Model, context: &Context, jpeg: &[u8]) -> Value {
     let mut body = json!({
         "model": model.id(),
-        "max_tokens": 1024,
+        "max_tokens": 4096,
         "messages": [{
             "role": "user",
             "content": [
@@ -220,8 +222,8 @@ struct Response {
     body: String,
 }
 
-/// Sépare la sortie de `curl -i` : en-têtes (les réponses intermédiaires « 100 Continue » sont
-/// passées) et corps.
+/// Sépare la sortie de `curl -i` : en-têtes (les réponses intermédiaires 1xx, « 100 Continue », sont
+/// passées) et corps. Pas de proxy (voir `curl_command`) : pas de « Connection established ».
 fn parse_http(output: &[u8]) -> Result<Response, String> {
     let mut rest = output;
     loop {
@@ -299,23 +301,25 @@ fn quoted(value: &str) -> Result<String, String> {
 
 /// Les arguments de `curl` : `-q` en premier ignore `~/.curlrc`, seuls http et https (y compris
 /// après redirection, qui n'est de toute façon pas suivie), `-g` désactive les `{}` et `[]`.
-fn curl_args(body: &Path) -> Vec<String> {
+fn curl_args(body: &Path, timeout: Duration) -> Vec<String> {
     [
         "-q",
         "-sS",
         "-i",
         "-m",
-        TIMEOUT_S,
+        "{timeout}",
         "--proto",
         "=http,https",
         "--proto-redir",
         "=http,https",
         "-g",
+        "--noproxy",
+        "*",
         "-X",
         "POST",
         "--data-binary",
     ]
-    .map(String::from)
+    .map(|a| a.replace("{timeout}", &timeout.as_secs().max(1).to_string()))
     .into_iter()
     .chain([format!("@{}", body.display()), "-K".into(), "-".into()])
     .collect()
@@ -338,41 +342,81 @@ fn curl_config(base_url: &str, key: &str, model: Model) -> Result<String, String
     Ok(config)
 }
 
-/// Une tentative. `Err` : échec réseau ou de `curl` (texte sans clé).
+/// Un échec d'une tentative : `retryable` seulement quand la requête n'a sûrement pas été traitée
+/// (connexion impossible), jamais après un délai dépassé ou une coupure en cours de réponse
+/// (l'API a pu la facturer : pas de double facturation).
+struct PostError {
+    retryable: bool,
+    why: String,
+}
+
+impl PostError {
+    fn local(why: impl Into<String>) -> Self {
+        Self {
+            retryable: false,
+            why: why.into(),
+        }
+    }
+}
+
+/// Codes de sortie de `curl` d'avant l'envoi de la requête : adresse du proxy ou de l'hôte
+/// introuvable (5, 6), connexion refusée ou impossible (7), poignée de main TLS (35).
+const CURL_BEFORE_SEND: [i32; 4] = [5, 6, 7, 35];
+
+/// Le programme et son environnement : le `curl` du système (pas celui du `PATH`), un
+/// environnement **vide** : ni proxy hérité (`https_proxy`, `ALL_PROXY`…), ni variable de
+/// configuration, et `--noproxy "*"` en plus. Sans proxy, la sortie de `curl -i` ne commence jamais
+/// par « Connection established » (voir `parse_http`).
+fn curl_command() -> Command {
+    let mut command = Command::new("/usr/bin/curl");
+    command.env_clear();
+    command
+}
+
+/// Une tentative.
 fn post_once(
     endpoint: &Endpoint,
     key: &str,
     model: Model,
     body: &[u8],
-) -> Result<Response, String> {
+) -> Result<Response, PostError> {
     if !protocol::automation::is_webhook_url(&endpoint.base_url) {
-        return Err("adresse de l'API invalide".into());
+        return Err(PostError::local("adresse de l'API invalide"));
     }
-    let temp = TempBody::write(body).map_err(|e| format!("fichier temporaire : {}", e.kind()))?;
-    let config = curl_config(&endpoint.base_url, key, model)?;
-    let mut child = Command::new("curl")
-        .args(curl_args(temp.path()))
+    let temp = TempBody::write(body)
+        .map_err(|e| PostError::local(format!("fichier temporaire : {}", e.kind())))?;
+    let config = curl_config(&endpoint.base_url, key, model).map_err(PostError::local)?;
+    let mut child = curl_command()
+        .args(curl_args(temp.path(), endpoint.timeout))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("curl : {}", e.kind()))?;
+        .map_err(|e| PostError::local(format!("curl : {}", e.kind())))?;
     if let Some(mut stdin) = child.stdin.take() {
         // La configuration est courte : elle tient dans le tube sans attendre `curl`.
-        stdin
-            .write_all(config.as_bytes())
-            .map_err(|e| format!("curl : {}", e.kind()))?;
+        if let Err(e) = stdin.write_all(config.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(PostError::local(format!("curl : {}", e.kind())));
+        }
     }
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("curl : {}", e.kind()))?;
+        .map_err(|e| PostError::local(format!("curl : {}", e.kind())))?;
     if !output.status.success() {
         // `curl -sS` écrit une ligne sans la clé (« Could not resolve host… »).
         let why = String::from_utf8_lossy(&output.stderr);
         let why = why.lines().next().unwrap_or("échec réseau").trim();
-        return Err(why.chars().take(160).collect());
+        return Err(PostError {
+            retryable: output
+                .status
+                .code()
+                .is_some_and(|c| CURL_BEFORE_SEND.contains(&c)),
+            why: why.chars().take(160).collect(),
+        });
     }
-    parse_http(&output.stdout)
+    parse_http(&output.stdout).map_err(PostError::local)
 }
 
 /// Le message d'erreur de l'API, court (sans rien d'autre de la réponse).
@@ -418,7 +462,8 @@ pub fn describe(
                 r.retry_after.unwrap_or(endpoint.retry_default),
             ),
             Ok(r) => return Err(format!("HTTP {} {}", r.status, api_error(&r.body))),
-            Err(why) => (why, endpoint.retry_default),
+            Err(e) if e.retryable => (e.why, endpoint.retry_default),
+            Err(e) => return Err(e.why.trim().to_string()),
         };
         if attempt >= 2 {
             return Err(why.trim().to_string());

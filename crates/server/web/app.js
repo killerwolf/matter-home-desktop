@@ -81,7 +81,9 @@ function applyEvent(e) {
       // capture change à chaque mise à jour d'un passage en cours et à sa fin (pas quand seule
       // la description arrive) : on l'oublie, sinon la vignette resterait périmée.
       const before = detections.list.find((x) => x.id === e.event.id);
-      if (!before || before.in_progress || e.event.in_progress || before.end !== e.event.end) thumbs.forget(e.event.id);
+      // Même comparaison que le client de bureau : l'état « en cours » ou la fin du passage ont
+      // changé.
+      if (!before || before.in_progress !== e.event.in_progress || before.end !== e.event.end) thumbs.forget(e.event.id);
       detections.list = [e.event, ...detections.list.filter((x) => x.id !== e.event.id)].slice(0, 60);
       if (tab === "cameras") renderDetections();
       return;

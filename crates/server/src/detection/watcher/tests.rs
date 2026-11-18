@@ -289,6 +289,7 @@ async fn a_passage_gets_its_description_through_the_watcher() {
     descriptions.set_endpoint(crate::descriptions::api::Endpoint {
         base_url: mock.url(),
         retry_default: Duration::from_millis(20),
+        ..Default::default()
     });
     descriptions
         .set_api_key(Some("sk-ant-test-0123456789abcdef"))
