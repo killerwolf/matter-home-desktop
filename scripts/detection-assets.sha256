@@ -5,7 +5,7 @@
 #
 # YOLOX (Apache-2.0), version officielle 0.1.1rc0 de Megvii-BaseDetection/YOLOX.
 c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  yolox_s.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
-A_EPINGLER  yolox_nano.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d  yolox_nano.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
 # ONNX Runtime 1.23.2 (MIT), roues officielles publiées par Microsoft sur PyPI (`onnxruntime`),
 # macOS 13 minimum : la bibliothèque C (`onnxruntime/capi/libonnxruntime.1.23.2.dylib`, avec CoreML)
 # de chaque architecture est réunie en une bibliothèque universelle. Empreintes : champ

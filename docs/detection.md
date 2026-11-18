@@ -38,7 +38,7 @@ remplir : `scripts/fetch-detection-assets.sh --pin` télécharge les fichiers da
 temporaire et affiche leurs empreintes ; vérifiez-les (par exemple avec celles publiées par le
 projet : `digests.sha256` de `https://pypi.org/pypi/onnxruntime/1.23.2/json` pour les roues ONNX
 Runtime, `gh release view <version> -R <dépôt> --json assets` pour GitHub), puis recopiez-les dans
-le fichier. `yolox_nano.onnx` reste à épingler (la version de YOLOX ne publie pas d'empreinte).
+le fichier. La version de YOLOX ne publie pas d'empreinte : celles de `yolox_s.onnx` et `yolox_nano.onnx` ont été relevées au téléchargement.
 
 ### Utilisateurs avancés : `<données>/models/`
 
