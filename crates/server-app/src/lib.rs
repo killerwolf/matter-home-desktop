@@ -10,6 +10,7 @@ pub mod controller;
 pub mod descriptions;
 pub mod icon;
 pub mod menu;
+pub mod overview;
 pub mod signals;
 pub mod sleep;
 pub mod startup;
