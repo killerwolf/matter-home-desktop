@@ -163,26 +163,26 @@ fn the_mode_token_changes_the_mode_and_can_do_nothing_else() {
 }
 
 #[test]
-fn mode_token_failures_are_limited_without_locking_the_login_out() {
+fn mode_token_failures_never_block_a_valid_token_nor_the_login() {
     let rig = rig("mode-limit");
     let client = client(&rig);
     let token = rig.hub.generate_mode_token().unwrap();
     common::runtime().block_on(async {
-        for _ in 0..5 {
+        // Derrière `tailscale serve`, tout le monde vient de 127.0.0.1 : des échecs en rafale ne
+        // doivent jamais bloquer le bon jeton (ni la connexion par mot de passe).
+        for _ in 0..8 {
             let r = put_mode(&client, Some("un-mauvais-jeton"), "nuit").await;
-            assert_eq!(r.code(), "unauthorized");
+            assert_eq!((r.status, r.code().as_str()), (401, "unauthorized"));
+            assert!(r.json()["error"]["retry_after_s"].is_null());
         }
-        // L'adresse est en attente pour le jeton de mode : même le bon jeton est refusé...
-        let locked = put_mode(&client, Some(&token), "nuit").await;
-        assert_eq!(
-            (locked.status, locked.code().as_str()),
-            (429, "too_many_attempts")
-        );
-        assert!(locked.headers.contains_key("retry-after"));
-        assert_eq!(rig.hub.mode(), protocol::mode::HomeMode::Present);
-        // ...mais la connexion par mot de passe, elle, n'est pas touchée.
+        let valid = put_mode(&client, Some(&token), "nuit").await;
+        assert_eq!(valid.status, 200, "{}", valid.text());
+        assert_eq!(rig.hub.mode(), protocol::mode::HomeMode::Nuit);
         let session = login(&client).await;
-        assert_eq!(put_mode(&client, Some(&session), "nuit").await.status, 200);
+        assert_eq!(
+            put_mode(&client, Some(&session), "present").await.status,
+            200
+        );
     });
 }
 

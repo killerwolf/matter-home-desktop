@@ -582,6 +582,12 @@ async fn run(
                 .await
                 .map(|code| format!("webhook : HTTP {code}"))
                 .context("webhook"),
+            // Même chemin qu'une demande d'API (`app::pump_events` → `Hub::set_mode`) : le même mode
+            // ne fait rien ; le délai anti-rafale des règles borne les allers-retours.
+            Action::SetMode { mode } => {
+                ui.send(Event::HomeModeRequested(*mode));
+                Ok(format!("mode : {}", mode.label()))
+            }
             Action::Delay { seconds } => {
                 let s = (*seconds).min(MAX_DELAY_S);
                 tokio::time::sleep(Duration::from_secs(s)).await;
@@ -615,14 +621,13 @@ pub enum EngineCommand {
     Test(u64),
     /// Le mode de la maison a changé : peut déclencher des règles.
     Mode(HomeMode),
-    /// Le mode au démarrage : retenu sans rien déclencher.
-    InitMode(HomeMode),
 }
 
 /// Lance le moteur dans le runtime courant.
 /// `events` : copie des événements du backend ; `ui` : envoi vers l'interface, sans copie.
 pub fn spawn(
     rules: Vec<Rule>,
+    mode: HomeMode,
     mut events: mpsc::UnboundedReceiver<Event>,
     mut commands: mpsc::UnboundedReceiver<EngineCommand>,
     ui: EventSink,
@@ -630,6 +635,8 @@ pub fn spawn(
 ) {
     tokio::spawn(async move {
         let mut engine = Engine::new(rules);
+        // Le mode enregistré, tel que le hub l'a lu : retenu sans rien déclencher.
+        engine.init_mode(mode);
         let mut tick = tokio::time::interval(TICK);
         loop {
             let firings = tokio::select! {
@@ -639,7 +646,6 @@ pub fn spawn(
                 },
                 cmd = commands.recv() => match cmd {
                     Some(EngineCommand::SetRules(rules)) => { engine.set_rules(rules); Vec::new() }
-                    Some(EngineCommand::InitMode(mode)) => { engine.init_mode(mode); Vec::new() }
                     Some(EngineCommand::Mode(mode)) => engine.on_mode(mode, &Clock::local()),
                     Some(EngineCommand::Test(id)) => engine
                         .rule(id)
@@ -1101,6 +1107,82 @@ mod tests {
         assert!(fire(&mut e, 500.0).is_empty());
         e.on_mode(HomeMode::Absent, &clock(600.0, 0));
         assert_eq!(fire(&mut e, 700.0).len(), 1);
+    }
+
+    struct NoActuator;
+
+    impl Actuator for NoActuator {
+        fn set_on_off(&self, _: u64, _: OnOffCommand) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn set_cover(&self, _: u64, _: CoverCommand) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// « Changer le mode » : l'action demande le mode au serveur (même chemin qu'une demande
+    /// d'API) et le journal des règles le dit.
+    #[tokio::test]
+    async fn the_set_mode_action_asks_the_server_for_that_mode() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut rule = Rule::new(1);
+        rule.trigger = Trigger::Time {
+            hour: 23,
+            minute: 0,
+            days: [true; 7],
+        };
+        rule.actions = vec![Action::SetMode {
+            mode: HomeMode::Nuit,
+        }];
+        let firing = Firing {
+            rule,
+            device: String::new(),
+            value: String::new(),
+            time: "23:00".into(),
+        };
+        run(
+            firing,
+            Arc::new(NoActuator),
+            EventSink::new(tx),
+            HashMap::new(),
+        )
+        .await;
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::HomeModeRequested(HomeMode::Nuit))));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::RuleRun { ok: true, detail, .. } if detail == "mode : Nuit")
+        ));
+    }
+
+    /// Deux règles qui se renvoient le mode : la seconde est arrêtée par le délai anti-rafale de la
+    /// première (60 s par défaut), pas de boucle.
+    #[test]
+    fn two_rules_bouncing_the_mode_are_stopped_by_the_cooldown() {
+        let mut to_nuit = Rule::new(1);
+        to_nuit.trigger = Trigger::Mode { to: HomeMode::Nuit };
+        to_nuit.actions = vec![Action::SetMode {
+            mode: HomeMode::Absent,
+        }];
+        let mut to_absent = Rule::new(2);
+        to_absent.trigger = Trigger::Mode {
+            to: HomeMode::Absent,
+        };
+        to_absent.actions = vec![Action::SetMode {
+            mode: HomeMode::Nuit,
+        }];
+        let mut e = Engine::new(vec![to_nuit, to_absent]);
+        // Présent → Nuit : la règle 1 part (et demandera Absent).
+        let first = e.on_mode(HomeMode::Nuit, &clock(100.0, 0));
+        assert_eq!(first.len(), 1);
+        // Le serveur applique Absent : la règle 2 part (et demandera Nuit).
+        let second = e.on_mode(HomeMode::Absent, &clock(100.5, 0));
+        assert_eq!(second.len(), 1);
+        // Nuit de nouveau : la règle 1 est encore dans son délai, rien ne part.
+        assert!(e.on_mode(HomeMode::Nuit, &clock(101.0, 0)).is_empty());
+        // Après le délai, elle repart (une fois, jamais en rafale).
+        assert_eq!(e.on_mode(HomeMode::Absent, &clock(200.0, 0)).len(), 1);
     }
 
     #[test]

@@ -43,7 +43,19 @@ impl ModeTokenStore {
     /// Ouvre `dir/jeton-mode.json` (absent : aucun jeton, donc aucun accès par jeton).
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let path = dir.join(FILE_NAME);
-        let stored = persistence::load_json::<Stored>(&path)?;
+        // Un fichier illisible est mis de côté (comme `mode.json`) : pas de jeton, on repart de zéro.
+        let stored = match persistence::load_json::<Stored>(&path) {
+            Ok(stored) => stored,
+            Err(e) => {
+                let aside = path.with_extension("json.illisible");
+                log::error!(
+                    "jeton de mode illisible, aucun jeton ({e:#}) ; fichier conservé sous {}",
+                    aside.display()
+                );
+                std::fs::rename(&path, &aside)?;
+                None
+            }
+        };
         Ok(Self {
             path: Some(path),
             stored: Mutex::new(stored),
@@ -176,6 +188,19 @@ mod tests {
         let reopened = ModeTokenStore::open(&dir).unwrap();
         assert!(reopened.verify(&token));
         assert!(!format!("{reopened:?}").contains(&token));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_aside_and_the_server_starts_without_a_token() {
+        let dir = temp("broken");
+        std::fs::write(dir.join(FILE_NAME), "{pas du json").unwrap();
+        let store = ModeTokenStore::open(&dir).unwrap();
+        assert!(!store.exists());
+        assert!(dir.join("jeton-mode.json.illisible").exists());
+        // On peut en générer un tout de suite, et il survit au redémarrage.
+        let token = store.generate().unwrap();
+        assert!(ModeTokenStore::open(&dir).unwrap().verify(&token));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

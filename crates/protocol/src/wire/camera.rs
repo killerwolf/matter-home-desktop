@@ -138,6 +138,9 @@ pub enum CameraStatus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
     },
+    /// Éteinte dans le mode actuel de la maison (ticket n° 8) : aucune connexion n'est ouverte vers
+    /// elle, on ne sait donc rien de sa joignabilité. Un client plus ancien le lit `unknown`.
+    Off,
     /// Pas encore vérifiée (ajout ou démarrage récent). Aussi lu quand un serveur plus récent
     /// envoie un état que ce client ne connaît pas : il l'affiche comme « inconnu ».
     #[serde(other)]

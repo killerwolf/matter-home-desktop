@@ -194,7 +194,9 @@ impl Hub {
         let mode_token = crate::security::server_dir(&config.data_dir)
             .and_then(|dir| ModeTokenStore::open(&dir))
             .unwrap_or_else(|e| {
-                log::error!("jeton de mode inutilisable, conservé en mémoire seulement : {e:#}");
+                log::error!(
+                    "dossier du jeton de mode inutilisable, jeton en mémoire seulement : {e:#}"
+                );
                 ModeTokenStore::in_memory()
             });
         Self {
@@ -350,6 +352,7 @@ impl Hub {
             Event::PairingDone { .. } | Event::PairingFailed(_) => st.pairing_busy = false,
             // Le hub le publie lui-même (`set_mode`) : un événement venu du backend ne change rien.
             Event::HomeModeChanged(_)
+            | Event::HomeModeRequested(_)
             | Event::PairingProgress(_)
             | Event::Notification { .. }
             | Event::Info(_)
@@ -385,8 +388,8 @@ impl Hub {
             rules: TextIds(st.rules.clone()),
             rule_runs: st.runs.iter().cloned().collect(),
             pairing_busy: st.pairing_busy,
-            cameras: st.cameras.views(),
-            mode: st.mode,
+            cameras: st.cameras.views_in(Some(st.mode)),
+            mode: Some(st.mode),
         }
     }
 
@@ -421,12 +424,6 @@ impl Hub {
         self.lock().mode
     }
 
-    /// Apprend au moteur d'automatisations le mode enregistré, sans que ce soit un changement :
-    /// il ne déclenche rien (`Command::InitHomeMode`). `Server::start` l'appelle une fois.
-    pub fn announce_mode(&self) {
-        let _ = self.send(Command::InitHomeMode(self.mode()));
-    }
-
     /// Change le mode : l'enregistre (`mode.json`), le diffuse (`mode_changed`), prévient le moteur
     /// d'automatisations (règles « Quand le mode devient… ») ; les lectures de caméras que le
     /// nouveau mode éteint se ferment d'elles-mêmes (voir `camera_target`). `Ok(false)` : c'était
@@ -434,17 +431,21 @@ impl Hub {
     /// mode ne change pas (il commande les caméras : on ne l'annonce pas sans pouvoir le retenir).
     pub fn set_mode(&self, mode: HomeMode) -> ApiResult<bool> {
         let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = self.lock();
-        if st.mode == mode {
+        if self.mode() == mode {
             return Ok(false);
         }
+        // L'écriture (fsync) se fait sans le verrou de l'état : les lectures des clients et du
+        // moteur ne l'attendent pas. `write_lock` empêche toute autre modification du mode.
         if !self.demo {
             if let Err(e) = home_mode::save(&self.data_dir, mode) {
                 return Err(internal("enregistrement du mode", &e));
             }
         }
+        let mut st = self.lock();
         let previous = std::mem::replace(&mut st.mode, mode);
         self.publish(&mut st, WireEvent::ModeChanged { mode });
+        // Les caméras éteintes changent d'état affiché (`Off`) avec le mode.
+        self.publish_cameras(&mut st);
         drop(st);
         log::info!("mode : {} → {}", previous.label(), mode.label());
         // Le moteur peut avoir disparu (arrêt en cours) : le mode est enregistré, c'est l'essentiel.
@@ -1269,12 +1270,12 @@ pub(crate) mod tests {
         let (hub, mut commands) = hub_with(&dir, 16);
         let mut sub = hub.subscribe();
         assert_eq!(hub.mode(), HomeMode::Present);
-        assert_eq!(hub.current_snapshot().mode, HomeMode::Present);
+        assert_eq!(hub.current_snapshot().mode, Some(HomeMode::Present));
 
         assert!(hub.set_mode(HomeMode::Absent).unwrap());
         // Le même mode redemandé (Raccourcis, à l'arrivée) : rien n'est écrit, diffusé ni lancé.
         assert!(!hub.set_mode(HomeMode::Absent).unwrap());
-        assert_eq!(hub.current_snapshot().mode, HomeMode::Absent);
+        assert_eq!(hub.current_snapshot().mode, Some(HomeMode::Absent));
         assert_eq!(home_mode::load(&dir), HomeMode::Absent);
         assert!(matches!(
             commands.try_recv(),
@@ -1293,15 +1294,14 @@ pub(crate) mod tests {
         }
         assert_eq!(changes, 1);
 
-        // Au redémarrage, le mode enregistré revient et le moteur l'apprend sans déclencher.
+        // Au redémarrage, le mode enregistré revient (le moteur le reçoit par `automation::spawn`).
         drop(hub);
         let (again, mut commands) = hub_with(&dir, 16);
         assert_eq!(again.mode(), HomeMode::Absent);
-        again.announce_mode();
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::InitHomeMode(HomeMode::Absent))
-        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "rien n'est envoyé au démarrage"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

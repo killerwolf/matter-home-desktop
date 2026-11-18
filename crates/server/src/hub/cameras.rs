@@ -29,12 +29,14 @@ use super::{Document, Hub, HubState};
 impl Hub {
     /// Les caméras vues par les clients : sans adresse ni mot de passe.
     pub fn cameras(&self) -> Vec<CameraView> {
-        self.lock().cameras.views()
+        let st = self.lock();
+        st.cameras.views_in(Some(st.mode))
     }
 
     /// Les caméras pour la fenêtre du serveur (adresses et identifiant, jamais le mot de passe).
     pub fn camera_admin_list(&self) -> Vec<CameraAdmin> {
-        self.lock().cameras.admin_list()
+        let st = self.lock();
+        st.cameras.admin_list_in(Some(st.mode))
     }
 
     pub fn camera_ids(&self) -> Vec<u64> {
@@ -122,8 +124,8 @@ impl Hub {
         Ok(())
     }
 
-    fn publish_cameras(&self, st: &mut HubState) {
-        let cameras = st.cameras.views();
+    pub(super) fn publish_cameras(&self, st: &mut HubState) {
+        let cameras = st.cameras.views_in(Some(st.mode));
         self.publish(st, WireEvent::CamerasChanged { cameras });
     }
 
@@ -196,10 +198,15 @@ impl Hub {
     // Surveillance
     // -----------------------------------------------------------------------
 
-    /// Le flux à vérifier d'une caméra : le réduit s'il existe, sinon le principal.
+    /// Le flux à vérifier d'une caméra : le réduit s'il existe, sinon le principal. `None` aussi
+    /// pour une caméra **éteinte** dans le mode actuel : éteinte veut dire aucune connexion, pas
+    /// même la vérification d'une minute (les clients voient alors l'état `Off`).
     pub(crate) fn camera_probe_target(&self, id: u64) -> Option<(StreamKind, Target)> {
         let st = self.lock();
         let camera = st.cameras.get(id)?;
+        if camera.behavior(st.mode) == CameraBehavior::Eteinte {
+            return None;
+        }
         let kind = camera.preferred_kind();
         Some((kind, camera.target(kind)?))
     }

@@ -93,6 +93,16 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
                         ));
                     }
                 }
+                // Anti-boucle : une règle « quand le mode devient X » qui change le mode garde un
+                // délai minimal (deux règles se renvoyant la balle sont bornées par ce délai).
+                Action::SetMode { .. }
+                    if matches!(rule.trigger, Trigger::Mode { .. })
+                        && rule.cooldown_s < protocol::automation::MIN_MODE_COOLDOWN_S =>
+                {
+                    return Err(bad(
+                        "une règle qui change le mode quand le mode change doit attendre au moins 10 s entre deux exécutions",
+                    ));
+                }
                 Action::Delay { seconds } if *seconds > MAX_DELAY_S => {
                     return Err(bad("attente trop longue (une heure au plus)"));
                 }
@@ -257,6 +267,30 @@ mod tests {
             is: vec![HomeMode::Nuit, HomeMode::Nuit],
         }];
         assert!(rules(&set).is_err());
+    }
+
+    #[test]
+    fn a_mode_rule_that_sets_the_mode_needs_a_cooldown() {
+        use protocol::mode::HomeMode;
+        let mut set = RuleSet::default();
+        let mut rule = Rule::new(1);
+        rule.trigger = Trigger::Mode { to: HomeMode::Nuit };
+        rule.actions = vec![Action::SetMode {
+            mode: HomeMode::Absent,
+        }];
+        rule.cooldown_s = 0;
+        set.rules.push(rule);
+        assert!(rules(&set).is_err());
+        set.rules[0].cooldown_s = 10;
+        assert!(rules(&set).is_ok());
+        // Une règle horaire qui change le mode n'a pas cette contrainte.
+        set.rules[0].trigger = Trigger::Time {
+            hour: 23,
+            minute: 0,
+            days: [true; 7],
+        };
+        set.rules[0].cooldown_s = 0;
+        assert!(rules(&set).is_ok());
     }
 
     #[test]

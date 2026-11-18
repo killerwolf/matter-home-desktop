@@ -629,7 +629,9 @@ async fn run(
         events.send(Event::Info(e));
     }
     let actuator: Arc<dyn Actuator> = Arc::new(MatterActuator(ctx.clone()));
-    automation::spawn(rules.rules, tap_rx, engine_rx, ui, actuator.clone());
+    // Le mode enregistré (lu comme le hub le lit), retenu par le moteur sans rien déclencher.
+    let mode = crate::home_mode::load(&persistence::data_dir());
+    automation::spawn(rules.rules, mode, tap_rx, engine_rx, ui, actuator.clone());
 
     let mut handles: HashMap<u64, NodeHandle> = HashMap::new();
     for n in &nodes {
@@ -672,9 +674,6 @@ async fn run(
                     }
                     Command::SetHomeMode(mode) => {
                         let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
-                    }
-                    Command::InitHomeMode(mode) => {
-                        let _ = engine_tx.send(automation::EngineCommand::InitMode(mode));
                     }
                     Command::Customize { node_id, name, icon } => {
                         let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());

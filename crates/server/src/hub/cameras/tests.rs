@@ -472,11 +472,35 @@ fn an_off_camera_is_refused_in_that_mode_only() {
     hub.set_mode(HomeMode::Nuit).unwrap();
     assert!(hub.camera_is_off(indoor));
     assert!(!hub.camera_is_off(indoor + 1));
+    // Éteinte : aucune vérification (ni connexion) et l'état affiché est `Off`, pas l'ancien.
+    assert!(hub.camera_probe_target(indoor).is_none());
+    assert!(hub.camera_probe_target(outdoor).is_some());
+    let status = |id: u64| {
+        hub.cameras()
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .status
+    };
+    assert_eq!(status(indoor), CameraStatus::Off);
+    assert_ne!(status(outdoor), CameraStatus::Off);
+    hub.set_mode(HomeMode::Absent).unwrap();
+    assert!(hub.camera_probe_target(indoor).is_some());
+    assert_ne!(status(indoor), CameraStatus::Off);
+    hub.set_mode(HomeMode::Nuit).unwrap();
     // Le moteur a été prévenu de chaque vrai changement, et d'eux seuls.
     let mut sent = Vec::new();
     while let Ok(c) = rx.try_recv() {
         sent.push(format!("{c:?}"));
     }
-    assert_eq!(sent, ["SetHomeMode(Absent)", "SetHomeMode(Nuit)"]);
+    assert_eq!(
+        sent,
+        [
+            "SetHomeMode(Absent)",
+            "SetHomeMode(Nuit)",
+            "SetHomeMode(Absent)",
+            "SetHomeMode(Nuit)"
+        ]
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -40,7 +40,10 @@ pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 /// - 2 : caméras RTSP (#4) : `cameras` dans l'état complet et l'événement `cameras_changed`.
 ///   Un client de version 1 ne connaît pas cet événement (les énumérations serde refusent les
 ///   variantes inconnues) : client et serveur sortent ensemble.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// - 3 : mode global de la maison (#8) : `Trigger::Mode`, `Condition::Mode` et `Action::SetMode`
+///   dans les règles n'ont pas de variante de repli : un client de version 2 qui recevrait de telles
+///   règles ne saurait plus lire l'état complet. Il est refusé d'emblée (426, `version_incompatible`).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Fenêtre maximale d'une lecture d'historique (la rétention du serveur : 7 jours).
 pub const HISTORY_MAX_WINDOW_S: u64 = 7 * 24 * 3600;
@@ -270,7 +273,7 @@ mod tests {
                 emplacement: CameraPlacement::Interieure,
                 modes: CameraModes::for_placement(CameraPlacement::Interieure),
             }],
-            mode: crate::mode::HomeMode::Nuit,
+            mode: Some(crate::mode::HomeMode::Nuit),
         };
         let message = ServerMessage::Snapshot(Box::new(snapshot));
         let json = serde_json::to_value(&message).unwrap();
@@ -519,7 +522,7 @@ mod tests {
             rule_runs: vec![],
             pairing_busy: false,
             cameras: vec![camera(CAMERA_ID_MIN, CameraStatus::Online)],
-            mode: crate::mode::HomeMode::default(),
+            mode: Some(crate::mode::HomeMode::default()),
         };
         let mut json = serde_json::to_value(&snapshot).unwrap();
         json.as_object_mut().unwrap().remove("cameras");
@@ -620,7 +623,7 @@ mod tests {
             rule_runs: vec![],
             pairing_busy: false,
             cameras: vec![camera(CAMERA_ID_MIN, CameraStatus::Online)],
-            mode: HomeMode::Absent,
+            mode: Some(HomeMode::Absent),
         };
         let full = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(full["mode"], "absent");
@@ -634,8 +637,8 @@ mod tests {
             .remove("emplacement");
         old["cameras"][0].as_object_mut().unwrap().remove("modes");
         let parsed: Snapshot = serde_json::from_value(old).unwrap();
-        snapshot.mode = HomeMode::Present;
-        assert_eq!(parsed, snapshot, "lu comme Présent, caméra extérieure");
+        snapshot.mode = None;
+        assert_eq!(parsed, snapshot, "pas de mode : un serveur sans modes");
 
         let event = WireEvent::ModeChanged {
             mode: HomeMode::Nuit,

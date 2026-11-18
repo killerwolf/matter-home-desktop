@@ -274,9 +274,9 @@ pub struct Snapshot {
     /// version 1 (lu comme vide).
     #[serde(default)]
     pub cameras: Vec<CameraView>,
-    /// Le mode global de la maison. Absent d'un serveur plus ancien : lu comme « Présent ».
+    /// Le mode global de la maison. `None` : un serveur sans modes (le client cache son sélecteur).
     #[serde(default)]
-    pub mode: HomeMode,
+    pub mode: Option<HomeMode>,
 }
 
 /// Message envoyé sur le WebSocket.

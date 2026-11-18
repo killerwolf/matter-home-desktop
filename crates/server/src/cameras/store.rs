@@ -678,8 +678,14 @@ impl CameraBook {
         self.cameras.iter().map(|c| c.id).collect()
     }
 
-    /// Ce que voient les clients, trié par nom (puis par identifiant).
+    /// Ce que voient les clients, trié par nom (puis par identifiant), sans tenir compte du mode.
     pub fn views(&self) -> Vec<CameraView> {
+        self.views_in(None)
+    }
+
+    /// Comme `views`, avec le mode de la maison : une caméra éteinte dans ce mode montre l'état
+    /// neutre `Off` (aucune connexion n'est ouverte vers elle, on ne sait rien de sa joignabilité).
+    pub fn views_in(&self, mode: Option<HomeMode>) -> Vec<CameraView> {
         let mut views: Vec<CameraView> = self
             .cameras
             .iter()
@@ -689,10 +695,15 @@ impl CameraBook {
                     .get(&c.id)
                     .cloned()
                     .unwrap_or_else(Health::unknown);
+                let off = mode.is_some_and(|m| c.behavior(m) == CameraBehavior::Eteinte);
                 CameraView {
                     id: c.id,
                     name: c.name.clone(),
-                    status: health.status,
+                    status: if off {
+                        CameraStatus::Off
+                    } else {
+                        health.status
+                    },
                     has_sub_stream: c.has_sub_stream(),
                     stream: health.stream,
                     emplacement: c.emplacement,
@@ -711,7 +722,12 @@ impl CameraBook {
 
     /// La liste pour la fenêtre du serveur (sans mot de passe), triée comme celle des clients.
     pub fn admin_list(&self) -> Vec<CameraAdmin> {
-        self.views()
+        self.admin_list_in(None)
+    }
+
+    /// Comme `admin_list`, avec le mode de la maison (voir `views_in`).
+    pub fn admin_list_in(&self, mode: Option<HomeMode>) -> Vec<CameraAdmin> {
+        self.views_in(mode)
             .into_iter()
             .filter_map(|view| {
                 let c = self.get(view.id)?;

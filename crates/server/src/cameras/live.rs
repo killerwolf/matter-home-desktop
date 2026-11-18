@@ -476,10 +476,11 @@ impl LiveRegistry {
         id: u64,
         kind: StreamKind,
     ) -> Result<Subscription, SubscribeError> {
+        let mut map = self.map();
+        // Sous le verrou du registre : une caméra éteinte ne rejoint ni n'ouvre aucune session.
         if hub.camera_is_off(id) {
             return Err(SubscribeError::Off);
         }
-        let mut map = self.map();
         if let Some(session) = map.get(&(id, kind)) {
             if !session.ended() {
                 return Ok(session.join());
@@ -487,9 +488,14 @@ impl LiveRegistry {
             map.remove(&(id, kind));
         }
         // Le témoin dit aussi si la caméra existe.
-        let lease = hub
-            .acquire_camera_viewer(id)
-            .ok_or(SubscribeError::UnknownCamera)?;
+        let lease = hub.acquire_camera_viewer(id).ok_or_else(|| {
+            // Éteinte entre-temps (le mode vient de changer) : un refus clair, pas un 404.
+            if hub.camera_is_off(id) {
+                SubscribeError::Off
+            } else {
+                SubscribeError::UnknownCamera
+            }
+        })?;
         let target = hub
             .camera_target(id, kind)
             .ok_or(SubscribeError::NoSuchStream)?;

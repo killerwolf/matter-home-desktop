@@ -239,7 +239,14 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
         lamps: lamps.clone(),
         shutters: shutters.clone(),
     });
-    automation::spawn(rules.rules, tap_rx, engine_rx, ui, actuator.clone());
+    automation::spawn(
+        rules.rules,
+        protocol::mode::HomeMode::default(),
+        tap_rx,
+        engine_rx,
+        ui,
+        actuator.clone(),
+    );
 
     let mut rng = rand::thread_rng();
     let measure = |node_id, kind, value, at| {
@@ -586,9 +593,6 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                     }
                     Command::SetHomeMode(mode) => {
                         let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
-                    }
-                    Command::InitHomeMode(mode) => {
-                        let _ = engine_tx.send(automation::EngineCommand::InitMode(mode));
                     }
                     Command::Customize { node_id, name, icon } => {
                         if let Some(info) = infos.get_mut(&node_id) {
@@ -1001,7 +1005,14 @@ mod tests {
                 lamps: Lamps::default(),
                 shutters: shutters.clone(),
             };
-            automation::spawn(vec![rule], tap_rx, engine_rx, ui, Arc::new(actuator));
+            automation::spawn(
+                vec![rule],
+                protocol::mode::HomeMode::default(),
+                tap_rx,
+                engine_rx,
+                ui,
+                Arc::new(actuator),
+            );
             engine_tx.send(automation::EngineCommand::Test(9)).unwrap();
 
             let mut report = None;

@@ -115,8 +115,6 @@ impl Server {
             commands: backend.sender(),
         }));
 
-        hub.announce_mode();
-
         let stop_pump = Arc::new(AtomicBool::new(false));
         let fatal = Arc::new(AtomicBool::new(false));
         let pump = {
@@ -243,6 +241,13 @@ fn pump_events(rx: mpsc::Receiver<Event>, hub: &Hub, stop: &AtomicBool, fatal: &
         if matches!(event, Event::Fatal(_)) {
             fatal.store(true, Ordering::SeqCst);
         }
+        // Une règle demande un mode (`Action::SetMode`) : même chemin qu'une demande d'API.
+        if let Event::HomeModeRequested(mode) = &event {
+            if let Err(e) = hub.set_mode(*mode) {
+                log::warn!("mode demandé par une règle non appliqué : {e:?}");
+            }
+            return;
+        }
         hub.apply(&event);
     };
     loop {
@@ -270,7 +275,6 @@ fn log_event(event: &Event) {
         Event::NodeRemoved(id) => log::info!("appareil {id:#x} oublié"),
         Event::Status { node_id, status } => log::info!("appareil {node_id:#x} : {status:?}"),
         Event::RuleRun { .. } => log::info!("{event:?}"),
-        Event::HomeModeChanged(mode) => log::info!("mode : {}", mode.label()),
         Event::PairingProgress(m) | Event::Info(m) => log::info!("{m}"),
         Event::PairingDone { node_id, name } => log::info!("appairage : {name} ({node_id:#x})"),
         Event::PairingFailed(m) => log::warn!("appairage échoué : {m}"),

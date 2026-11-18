@@ -147,21 +147,15 @@ impl SnapshotService {
         hub: &Arc<Hub>,
         id: u64,
     ) -> Result<Snapshot, SnapshotError> {
-        if hub.camera_probe_target(id).is_none() {
-            // Une caméra supprimée n'a plus d'image, même gardée.
-            self.slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
-            return Err(SnapshotError::UnknownCamera);
-        }
         if hub.camera_is_off(id) {
             // Pas d'image gardée avant le changement de mode : elle ne doit plus sortir.
-            self.slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
+            self.forget(id);
             return Err(SnapshotError::Off);
+        }
+        if hub.camera_probe_target(id).is_none() {
+            // Une caméra supprimée n'a plus d'image, même gardée.
+            self.forget(id);
+            return Err(SnapshotError::UnknownCamera);
         }
         let slot = self.slot(id);
         let whole = async {
@@ -190,10 +184,24 @@ impl SnapshotService {
                 age: started.elapsed(),
             })
         };
-        match tokio::time::timeout(self.config.timeout, whole).await {
+        let result = match tokio::time::timeout(self.config.timeout, whole).await {
             Ok(result) => result,
             Err(_) => Err(SnapshotError::NoImage),
+        };
+        // Le mode a pu changer pendant la capture (ou l'image sort du cache) : une caméra éteinte
+        // ne rend jamais d'image, même celle qu'on vient de prendre.
+        if result.is_ok() && hub.camera_is_off(id) {
+            self.forget(id);
+            return Err(SnapshotError::Off);
         }
+        result
+    }
+
+    fn forget(&self, id: u64) {
+        self.slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
 
     /// `Ok(Some)` : une image assez récente. `Err` : un échec récent gardé. `Ok(None)` : il faut

@@ -182,7 +182,16 @@ pub enum Action {
     Delay {
         seconds: u64,
     },
+    /// Change le mode de la maison (ticket n° 8). Le même mode : sans effet. Une règle de mode qui
+    /// change le mode doit garder un délai anti-rafale d'au moins `MIN_MODE_COOLDOWN_S` (refusé sinon).
+    SetMode {
+        mode: HomeMode,
+    },
 }
+
+/// Délai minimal d'une règle qui change le mode quand le mode change : sans lui, deux règles
+/// « devient Nuit → Absent » et « devient Absent → Nuit » se relanceraient sans fin.
+pub const MIN_MODE_COOLDOWN_S: u64 = 10;
 
 fn default_cooldown() -> u64 {
     60

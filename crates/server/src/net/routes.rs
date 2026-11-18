@@ -450,8 +450,10 @@ async fn require_session(
 /// `PUT /api/mode` : change le mode de la maison. Accepte un jeton de session (clients) **ou** le
 /// jeton de mode (Raccourcis de l'iPhone), qui ne vaut que pour cette route. L'authentification
 /// passe avant la lecture du corps. Le jeton de mode est lu dans `Authorization` seulement, jamais
-/// dans l'URL ; ses échecs sont limités par adresse comme ceux de la connexion, avec leur propre
-/// compteur ; il n'est jamais journalisé.
+/// dans l'URL ; il n'est jamais journalisé. Le jeton est vérifié **d'abord** : un bon jeton n'est
+/// jamais refusé, même derrière `tailscale serve` où toutes les connexions viennent de 127.0.0.1 et
+/// où un compteur d'échecs par adresse serait partagé par tout le monde. Un échec n'est que compté
+/// au journal et retardé de 250 ms (le jeton fait 256 bits : l'essai en force est sans espoir).
 async fn put_mode(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -467,20 +469,10 @@ async fn put_mode(
         .account_id()
         .and_then(|account_id| state.auth.sessions.validate(&token, &account_id))
         .is_some();
-    if !is_session {
-        if let Err(wait) = state.auth.mode_limiter.check(ip) {
-            log::warn!("jeton de mode refusé pour {ip} : trop de tentatives");
-            return Err(too_many(wait.as_secs().max(1)).into());
-        }
-        if !state.hub.verify_mode_token(&token) {
-            let wait = state.auth.mode_limiter.record_failure(ip);
-            log::warn!("changement de mode refusé pour {ip} : jeton invalide");
-            tokio::time::sleep(FAILURE_PAUSE).await;
-            let mut error = ApiError::new(ErrorCode::Unauthorized);
-            error.retry_after_s = wait.map(|w| w.as_secs().max(1));
-            return Err(error.into());
-        }
-        state.auth.mode_limiter.record_success(ip);
+    if !is_session && !state.hub.verify_mode_token(&token) {
+        log::warn!("changement de mode refusé pour {ip} : jeton invalide");
+        tokio::time::sleep(FAILURE_PAUSE).await;
+        return Err(ApiError::new(ErrorCode::Unauthorized).into());
     }
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let ModeRequest { mode } = serde_json::from_slice(&bytes).map_err(|_| {

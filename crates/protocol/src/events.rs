@@ -29,8 +29,6 @@ pub enum Command {
     /// Le mode de la maison vient de changer (déjà enregistré par le serveur) : le moteur
     /// d'automatisations le retient et déclenche les règles « Quand le mode devient… ».
     SetHomeMode(HomeMode),
-    /// Le mode enregistré au démarrage : le moteur le retient **sans** rien déclencher.
-    InitHomeMode(HomeMode),
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {
         node_id: u64,
@@ -204,8 +202,11 @@ pub enum Event {
         message: String,
         at: f64,
     },
-    /// Le mode global de la maison a changé (apparaît dans le journal).
+    /// Le mode global de la maison a changé (le client le met à son journal).
     HomeModeChanged(HomeMode),
+    /// Une règle demande ce mode (`Action::SetMode`) : le serveur le prend en compte comme une
+    /// demande d'API (rien ne part vers les clients sous cette forme).
+    HomeModeRequested(HomeMode),
     PairingProgress(String),
     PairingDone {
         node_id: u64,

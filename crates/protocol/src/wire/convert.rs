@@ -199,7 +199,7 @@ impl WireEvent {
             },
             Event::HomeModeChanged(mode) => WireEvent::ModeChanged { mode: *mode },
             Event::Info(text) => WireEvent::Notice { text: clean(text) },
-            Event::Fatal(_) => return None,
+            Event::Fatal(_) | Event::HomeModeRequested(_) => return None,
         })
     }
 

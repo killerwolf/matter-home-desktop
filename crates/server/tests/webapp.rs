@@ -231,7 +231,7 @@ fn api_still_needs_a_token_and_the_shell_carries_no_house_data() {
             ("GET", "/api/devices/1/history"),
             ("POST", "/api/devices/1/on-off"),
             ("POST", "/api/devices/1/cover"),
-            ("GET", "/api/ws?protocol=2"),
+            ("GET", "/api/ws?protocol=3"),
             ("GET", "/api/cameras/18446744073709551615/stream"),
         ] {
             let r = client.request(method, path, None, Some(b"{}")).await;
@@ -304,7 +304,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         // `matter-home.v1`, jamais avec l'entrée qui porte le jeton.
         let (chosen, hello) = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             &format!("matter-home.v1, bearer.{token}"),
             None,
             None,
@@ -318,7 +318,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         // Un mauvais jeton : refusé.
         let refused = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             &format!("matter-home.v1, bearer.{}", "1".repeat(64)),
             None,
             None,
@@ -400,7 +400,7 @@ fn subprotocol_token_is_only_for_the_two_websocket_routes_with_a_real_upgrade() 
         ] {
             let mut headers = extra.clone();
             headers.push(("Sec-WebSocket-Protocol", &bearer));
-            let (status, _) = raw_get(&client, "/api/ws?protocol=2", &headers).await;
+            let (status, _) = raw_get(&client, "/api/ws?protocol=3", &headers).await;
             assert_eq!(status, 401, "{extra:?}");
         }
     });
@@ -417,7 +417,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         let same = format!("https://localhost:{}", client.addr.port());
         // Même origine que l'hôte : accepté.
         assert!(
-            ws_with_protocols(&client, "/api/ws?protocol=2", &protocols, None, Some(&same))
+            ws_with_protocols(&client, "/api/ws?protocol=3", &protocols, None, Some(&same))
                 .await
                 .is_ok()
         );
@@ -425,7 +425,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         for origin in ["https://evil.example", "http://localhost", "null"] {
             let refused = ws_with_protocols(
                 &client,
-                "/api/ws?protocol=2",
+                "/api/ws?protocol=3",
                 &protocols,
                 None,
                 Some(origin),
@@ -438,7 +438,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         let bearer = format!("Bearer {token}");
         let refused = ws_with_protocols(
             &client,
-            "/api/ws?protocol=2",
+            "/api/ws?protocol=3",
             "matter-home.v1",
             Some(&bearer),
             Some("https://evil.example"),

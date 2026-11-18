@@ -69,9 +69,6 @@ pub struct Auth {
     pub accounts: AccountStore,
     pub sessions: SessionStore,
     pub limiter: LoginLimiter,
-    /// Échecs du jeton de mode : un compteur à part, pour qu'un Raccourci resté sur un ancien
-    /// jeton ne bloque pas la connexion (mot de passe) depuis la même adresse.
-    pub mode_limiter: LoginLimiter,
     /// Vérifications de mot de passe simultanées : une seule (argon2 consomme du temps et de la
     /// mémoire ; c'est aussi le débit maximal d'une attaque répartie).
     pub hash_slots: Semaphore,
@@ -83,7 +80,6 @@ impl Auth {
             accounts,
             sessions,
             limiter: LoginLimiter::new(),
-            mode_limiter: LoginLimiter::new(),
             hash_slots: Semaphore::new(1),
         }
     }
