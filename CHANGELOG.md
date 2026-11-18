@@ -12,6 +12,21 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Descriptions des événements** (ticket n° 19) : une phrase en français (200 caractères au plus) et
+  un niveau de menace (0 normal, 1 suspect, 2 critique) par événement de détection, comme la revue GenAI
+  de Frigate, avec l'API Anthropic et la clé de l'utilisateur. **Désactivé par défaut.** Seule la capture
+  JPEG (côté long 1 024 px au plus) part, avec le nom de la caméra et les classes : jamais le flux. Modèle
+  au choix (Haiku 5.5, Sonnet 5.5, **Opus 5.5** par défaut, coût indiqué), caméras (toutes, extérieures,
+  liste), classes, plafond quotidien (200 par défaut), « dès l'ouverture » facultatif (fenêtre du serveur,
+  « Descriptions des événements… »). Appel HTTPS par `curl` (clé par l'entrée standard, jamais en
+  argument), sortie structurée, un nouvel essai sur 429 / 5xx / réseau (`retry-after`), refus du modèle
+  enregistré comme « description indisponible », file bornée et fil dédié (rien ne bloque l'analyse). La clé
+  est dans `serveur/descriptions.json` (0600), jamais réaffichée ni journalisée, **jamais exportée** dans
+  une sauvegarde. Champs facultatifs `description` et `niveau` de l'événement `detection` (protocole 3,
+  nouvel envoi à l'arrivée), affichés dans l'app web et le client de bureau ; variables `{description}` et
+  `{niveau}` des notifications et webhooks (la règle attend la description). Voir
+  [docs/descriptions.md](docs/descriptions.md) (ce qui part, coûts, limite de dépense, désactivation).
+
 - **Détection de personnes, d'animaux et de véhicules** (ticket n° 18) sur les caméras en **Surveillance**
   dans le mode actuel, sans enregistrement continu. Une seule session RTSP par caméra, **partagée** avec
   le direct et les vignettes (le registre des sessions est maintenant tenu par le hub) ; aucune connexion
@@ -78,6 +93,15 @@ Les téléchargements de chaque version sont sur la
   (`Condition::Mode`, un ou plusieurs modes) et action « Changer le mode de la maison » (`Action::SetMode`, par
   exemple « à 23:00, passer en Nuit »). Une règle de mode qui change le mode garde un délai d'au moins 10 s :
   deux règles qui se renvoient le mode ne bouclent pas.
+
+### Corrigé
+
+- **Détection** : à l'arrêt propre du serveur, les passages en cours sont clos et écrits (attente de 3 s
+  au plus) au lieu de rester « en cours » ; au démarrage, tout événement resté « en cours » est clos quel
+  que soit son âge ; la vignette d'un passage en cours est rafraîchie à chaque mise à jour (client de
+  bureau et app web, cache du service worker en `v6`) ; `models/detector.json` ne s'applique plus qu'à un
+  modèle pris dans `<données>/models/` (jamais à un modèle embarqué) et le journal dit quelle
+  configuration est prise.
 
 ## [1.1.0] - 2026-11-17
 

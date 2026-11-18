@@ -210,9 +210,10 @@ impl Engine {
         awaiting: bool,
         clock: &Clock,
     ) -> Vec<Firing> {
-        self.detection_firings(event, opening, clock, |r| {
-            !(opening && awaiting && r.uses_description())
-        })
+        let firings = self.detection_firings(event, opening, clock, |r| {
+            !(awaiting && r.uses_description())
+        });
+        with_description(firings, event)
     }
 
     /// La description d'un passage est arrivée (ou ne viendra pas : `event.description` est alors
@@ -222,15 +223,8 @@ impl Engine {
         event: &protocol::wire::DetectionEventView,
         clock: &Clock,
     ) -> Vec<Firing> {
-        let mut firings = self.detection_firings(event, true, clock, Rule::uses_description);
-        for f in &mut firings {
-            f.description = event.description.clone().unwrap_or_default();
-            f.niveau = event
-                .niveau
-                .map(|n| protocol::wire::niveau_label(n).to_string())
-                .unwrap_or_default();
-        }
-        firings
+        let firings = self.detection_firings(event, true, clock, Rule::uses_description);
+        with_description(firings, event)
     }
 
     fn detection_firings(
@@ -540,6 +534,21 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait Actuator: Send + Sync + 'static {
     fn set_on_off(&self, node_id: u64, command: OnOffCommand) -> BoxFuture<'_, Result<()>>;
     fn set_cover(&self, node_id: u64, command: CoverCommand) -> BoxFuture<'_, Result<()>>;
+}
+
+/// `{description}` et `{niveau}` des règles qui partent : ceux de l'événement s'il en a (vides sinon).
+fn with_description(
+    mut firings: Vec<Firing>,
+    event: &protocol::wire::DetectionEventView,
+) -> Vec<Firing> {
+    for f in &mut firings {
+        f.description = event.description.clone().unwrap_or_default();
+        f.niveau = event
+            .niveau
+            .map(|n| protocol::wire::niveau_label(n).to_string())
+            .unwrap_or_default();
+    }
+    firings
 }
 
 pub fn render(template: &str, f: &Firing) -> String {
@@ -1221,7 +1230,8 @@ mod tests {
         // Un chien puis une personne : la règle 1 nomme la classe qu'elle suit.
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Chien, DetectedClass::Personne]),
-            true, false,
+            true,
+            false,
             &clock(100.0, 0),
         );
         assert_eq!(fired.len(), 2);
@@ -1235,18 +1245,25 @@ mod tests {
         // Autre caméra, ou autre classe : seule la règle « toutes » part (après l'anti-rafale).
         let fired = e.on_detection(
             &event(8, vec![DetectedClass::Personne]),
-            true, false,
+            true,
+            false,
             &clock(500.0, 0),
         );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
-        let fired = e.on_detection(&event(9, vec![DetectedClass::Chat]), true, false, &clock(900.0, 0));
+        let fired = e.on_detection(
+            &event(9, vec![DetectedClass::Chat]),
+            true,
+            false,
+            &clock(900.0, 0),
+        );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
         // En cours de passage, une classe nouvelle (la personne après le chien) : seules les règles
         // qui la suivent partent, pas la règle « toutes classes » (déjà partie à l'ouverture).
         e.on_mode(HomeMode::Absent, &clock(950.0, 0));
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Personne]),
-            false, false,
+            false,
+            false,
             &clock(1500.0, 0),
         );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
@@ -1254,7 +1271,8 @@ mod tests {
         e.on_mode(HomeMode::Present, &clock(1000.0, 0));
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Personne]),
-            true, false,
+            true,
+            false,
             &clock(2000.0, 0),
         );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
@@ -1335,12 +1353,53 @@ mod tests {
         }];
         event.description = None;
         event.niveau = None;
-        assert!(e.on_detection(&event, true, true, &clock(10.0, 0)).is_empty());
+        assert!(e
+            .on_detection(&event, true, true, &clock(10.0, 0))
+            .is_empty());
         let fired = e.on_described(&event, &clock(30.0, 0));
         assert_eq!((fired.len(), fired[0].description.as_str()), (1, ""));
+        // Une classe nouvelle en cours de passage (la règle suit la personne, le passage a commencé
+        // par un chien) : elle attend aussi la description, et ne part qu'une fois.
+        let mut follows_person = rule(
+            4,
+            Trigger::Detection {
+                camera_id: None,
+                classes: vec![DetectedClass::Personne],
+            },
+        );
+        follows_person.actions = vec![Action::Notify {
+            title: "t".into(),
+            message: "{description}".into(),
+        }];
+        let mut e = Engine::new(vec![follows_person]);
+        let mut dog = event.clone();
+        dog.classes = vec![DetectedClass::Chien];
+        assert!(e.on_detection(&dog, true, true, &clock(10.0, 0)).is_empty());
+        let mut person = event.clone();
+        person.classes = vec![DetectedClass::Personne];
+        assert!(e
+            .on_detection(&person, false, true, &clock(15.0, 0))
+            .is_empty());
+        let mut done = event.clone();
+        done.classes = vec![DetectedClass::Chien, DetectedClass::Personne];
+        done.description = Some("Un chien puis son maître.".into());
+        done.niveau = Some(0);
+        let fired = e.on_described(&done, &clock(20.0, 0));
+        assert_eq!(fired.len(), 1, "une seule fois");
+        assert_eq!(fired[0].description, "Un chien puis son maître.");
+        assert_eq!(fired[0].niveau, "normal");
+        // Sans description attendue, la classe nouvelle fait partir la règle tout de suite.
+        let mut e = Engine::new(vec![e.rules[0].clone()]);
+        assert_eq!(
+            e.on_detection(&person, false, false, &clock(10.0, 0)).len(),
+            1
+        );
         // Aucune description attendue : la règle part tout de suite, comme avant.
         let mut e = Engine::new(vec![e.rules[0].clone()]);
-        assert_eq!(e.on_detection(&event, true, false, &clock(10.0, 0)).len(), 1);
+        assert_eq!(
+            e.on_detection(&event, true, false, &clock(10.0, 0)).len(),
+            1
+        );
     }
 
     #[test]

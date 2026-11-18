@@ -25,14 +25,19 @@ fn the_body_has_the_image_the_schema_and_no_sampling_parameters() {
         assert_eq!(body["model"], model.id());
         assert_eq!(body["max_tokens"], 1024);
         for forbidden in ["temperature", "top_p", "top_k", "thinking"] {
-            assert!(body.get(forbidden).is_none(), "{forbidden} ne doit pas être envoyé");
+            assert!(
+                body.get(forbidden).is_none(),
+                "{forbidden} ne doit pas être envoyé"
+            );
         }
         let content = &body["messages"][0]["content"];
         assert_eq!(content[0]["type"], "image");
         assert_eq!(content[0]["source"]["type"], "base64");
         assert_eq!(content[0]["source"]["media_type"], "image/jpeg");
         let data = content[0]["source"]["data"].as_str().unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
         assert_eq!(decoded, image, "la capture, rien d'autre");
         assert_eq!(content[1]["type"], "text");
         let text = content[1]["text"].as_str().unwrap();
@@ -133,10 +138,20 @@ fn the_request_carries_the_headers_and_never_the_key_in_the_arguments() {
     );
     assert_eq!(mock.count(), 1);
     let request = mock.request(0);
-    assert!(request.head.starts_with("post /v1/messages "), "{}", request.head);
+    assert!(
+        request.head.starts_with("post /v1/messages "),
+        "{}",
+        request.head
+    );
     assert_eq!(request.header("x-api-key").as_deref(), Some(KEY));
-    assert_eq!(request.header("anthropic-version").as_deref(), Some("2023-06-01"));
-    assert_eq!(request.header("content-type").as_deref(), Some("application/json"));
+    assert_eq!(
+        request.header("anthropic-version").as_deref(),
+        Some("2023-06-01")
+    );
+    assert_eq!(
+        request.header("content-type").as_deref(),
+        Some("application/json")
+    );
     assert_eq!(
         request.header("anthropic-beta").as_deref(),
         Some("server-side-fallback-2026-07-01")
@@ -186,12 +201,16 @@ fn other_errors_and_refusals_are_not_retried() {
         status: 401,
         delay: Duration::ZERO,
         headers: vec![],
-        body: r#"{"type":"error","error":{"type":"authentication_error","message":"clé invalide"}}"#
-            .into(),
+        body:
+            r#"{"type":"error","error":{"type":"authentication_error","message":"clé invalide"}}"#
+                .into(),
     }]);
     let err = describe(&endpoint(&mock), KEY, Model::Haiku, &context(), &image).unwrap_err();
     assert_eq!(mock.count(), 1);
-    assert!(err.contains("401") && err.contains("authentication_error"), "{err}");
+    assert!(
+        err.contains("401") && err.contains("authentication_error"),
+        "{err}"
+    );
     assert!(!err.contains(KEY));
     let mock = Mock::start(vec![Reply::message("refusal", "")]);
     assert_eq!(
@@ -217,7 +236,13 @@ fn an_unreachable_server_fails_after_one_retry_and_a_huge_image_is_never_sent() 
     let err = describe(&dead, KEY, Model::Haiku, &context(), &jpeg(64, 48)).unwrap_err();
     assert!(!err.contains(KEY), "{err}");
     let mock = Mock::start(vec![Reply::described("x", 0)]);
-    let err = describe(&endpoint(&mock), KEY, Model::Haiku, &context(), &jpeg(1100, 100));
+    let err = describe(
+        &endpoint(&mock),
+        KEY,
+        Model::Haiku,
+        &context(),
+        &jpeg(1100, 100),
+    );
     assert!(err.unwrap_err().contains("trop grande"));
     assert!(describe(&endpoint(&mock), KEY, Model::Haiku, &context(), b"texte").is_err());
     assert_eq!(mock.count(), 0);

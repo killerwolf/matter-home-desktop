@@ -197,6 +197,11 @@ impl Descriptions {
         true
     }
 
+    /// Les règles de cet événement attendent-elles encore sa description ?
+    pub(crate) fn is_awaiting(&self, id: &str) -> bool {
+        lock(&self.awaiting).contains(id)
+    }
+
     /// Après la publication de l'ouverture : la description de la première capture, si le réglage
     /// « dès l'ouverture » est actif (sinon, une seule description, à la fin du passage).
     pub fn describe_opening(&self, hub: &Arc<Hub>, event: &DetectionEventView, jpeg: &[u8]) {
@@ -328,7 +333,10 @@ impl Descriptions {
         let endpoint = lock(&self.endpoint).clone();
         let store = hub.detection().store();
         let saved = match api::describe(&endpoint, &key, settings.model, &context, &job.jpeg) {
-            Ok(Outcome::Described { description, niveau }) => {
+            Ok(Outcome::Described {
+                description,
+                niveau,
+            }) => {
                 log::info!("description de l'événement {id} : niveau {niveau}");
                 store.set_description(id, description, Some(niveau))
             }
@@ -360,10 +368,7 @@ fn worker(shared: &Shared, hub: &Weak<Hub>) {
                 if let Some(job) = queue.jobs.pop_front() {
                     break job;
                 }
-                queue = shared
-                    .wake
-                    .wait(queue)
-                    .unwrap_or_else(|e| e.into_inner());
+                queue = shared.wake.wait(queue).unwrap_or_else(|e| e.into_inner());
             }
         };
         let Some(hub) = hub.upgrade() else { return };

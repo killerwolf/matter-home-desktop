@@ -171,7 +171,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("matter-home-shell-v5") && sw.contains("\"events.js\""),
+            sw.contains("matter-home-shell-v6") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.

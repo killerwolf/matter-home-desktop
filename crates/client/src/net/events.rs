@@ -137,9 +137,14 @@ impl EventsFeed {
                 .map(|event| {
                     let thumb = old
                         .iter()
-                        // La capture d'un passage en cours est remplacée par la finale.
+                        // La capture d'un passage en cours est remplacée par la finale, et par
+                        // celle de chaque mise à jour du passage (sa fin avance) : elle n'est
+                        // gardée que si rien de tout cela n'a changé (la description, elle,
+                        // n'y change rien).
                         .find(|i| {
-                            i.event.id == event.id && i.event.in_progress == event.in_progress
+                            i.event.id == event.id
+                                && i.event.in_progress == event.in_progress
+                                && i.event.end == event.end
                         })
                         .and_then(|i| i.thumb.clone());
                     Item { event, thumb }

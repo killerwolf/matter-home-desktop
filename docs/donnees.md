@@ -42,6 +42,7 @@ est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tour
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
 | `events/<id>.json`, `.jpg`, `.mp4` | événements de détection (ticket n° 18) : fiche, capture, clip ; 7 jours et 2 Go au plus ; **pas** dans la sauvegarde `.matterhome` (voir [Détection](detection.md)) |
 | `models/` | facultatif (utilisateurs avancés) : modèle de détection et ONNX Runtime pris quand l'application n'embarque pas les siens ; `coreml-cache/` (modèle compilé par CoreML, 0700) ; pas dans la sauvegarde |
+| `serveur/descriptions.json` | réglages des [descriptions](descriptions.md) (ticket n° 19) **et clé d'API Anthropic**, en clair, droits 0600 ; propre à ce Mac, **jamais exportée** dans la sauvegarde (la clé se ressaisit sur un autre Mac) |
 | `detection.json` | facultatif : plafond des événements, images analysées par seconde |
 
 En mode démo, l'application utilise `maison-demo.json` et `regles-demo.json`, et n'écrit
@@ -52,7 +53,9 @@ d'ouverture des portes renseignent sur la présence dans la maison : ne partagez
 dossier.
 
 Le client ne parle qu'à votre serveur, sur votre réseau. Seuls les webhooks que vous configurez dans vos
-automatisations envoient des données vers les adresses que vous avez choisies.
+automatisations envoient des données vers les adresses que vous avez choisies, et, si vous activez les
+[descriptions](descriptions.md), la capture des événements choisis part vers l'API d'Anthropic (rien
+d'autre, jamais le flux).
 
 ## Historique des mesures
 

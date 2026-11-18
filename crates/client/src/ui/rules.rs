@@ -1391,7 +1391,7 @@ impl RulesView {
                 ui.close();
             }
         });
-        ui.small("Variables dans les textes : {appareil}, {valeur}, {heure}, {regle}.");
+        ui.small("Variables dans les textes : {appareil}, {valeur}, {heure}, {regle} ; pour une détection aussi {description} et {niveau} (la règle attend alors la description).");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Pas plus d'une exécution toutes les");

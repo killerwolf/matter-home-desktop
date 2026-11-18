@@ -9,7 +9,7 @@ import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
-import { classesText, createThumbCache, deleteEvent, loadEvents, playClip, whenText } from "./events.js";
+import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -76,9 +76,12 @@ function applyEvent(e) {
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
     case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
     case "detection": {
-      // Un passage commence (« en cours ») ou se termine (même `id`) : en tête de liste, sans
-      // relancer les vidéos de l'onglet. La capture finale remplace celle du début.
-      if (!e.event.in_progress) thumbs.forget(e.event.id);
+      // Un passage commence (« en cours »), se met à jour, se termine, ou reçoit sa description
+      // (même `id` à chaque fois) : en tête de liste, sans relancer les vidéos de l'onglet. La
+      // capture change à chaque mise à jour d'un passage en cours et à sa fin (pas quand seule
+      // la description arrive) : on l'oublie, sinon la vignette resterait périmée.
+      const before = detections.list.find((x) => x.id === e.event.id);
+      if (!before || before.in_progress || e.event.in_progress || before.end !== e.event.end) thumbs.forget(e.event.id);
       detections.list = [e.event, ...detections.list.filter((x) => x.id !== e.event.id)].slice(0, 60);
       if (tab === "cameras") renderDetections();
       return;
@@ -498,6 +501,12 @@ function renderDetections() {
     const where = document.createElement("span");
     where.textContent = `${ev.camera_name} · ${whenText(ev.start)}`;
     text.append(what, where);
+    if (ev.description) {
+      const desc = document.createElement("span");
+      desc.className = `ev-desc${niveauLabel(ev.niveau) ? ` niv-${ev.niveau}` : ""}`;
+      desc.textContent = descriptionText(ev);
+      text.append(desc);
+    }
     b.append(canvas, text);
     b.addEventListener("click", () => openEvent(ev));
     li.appendChild(b);
@@ -522,6 +531,13 @@ function openEvent(ev) {
   const shot = document.createElement("canvas");
   shot.className = "ev-shot";
   body.append(when, shot);
+  if (ev.description) {
+    const desc = document.createElement("p");
+    desc.className = `ev-description${niveauLabel(ev.niveau) ? ` niv-${ev.niveau}` : ""}`;
+    const niveau = niveauLabel(ev.niveau);
+    desc.textContent = niveau ? `${descriptionText(ev)} (menace : ${niveau})` : descriptionText(ev);
+    body.append(desc);
+  }
   thumbs.draw(ev.id, shot).then((ok) => { if (!ok) shot.hidden = true; });
   if (ev.has_clip) {
     const video = document.createElement("video");

@@ -110,7 +110,12 @@ impl Default for Settings {
 
 impl Settings {
     /// L'événement d'une caméra est-il à décrire (hors clé et plafond) ?
-    pub fn wants(&self, camera_id: u64, placement: Option<CameraPlacement>, classes: &[DetectedClass]) -> bool {
+    pub fn wants(
+        &self,
+        camera_id: u64,
+        placement: Option<CameraPlacement>,
+        classes: &[DetectedClass],
+    ) -> bool {
         if !self.enabled || !classes.iter().any(|c| self.classes.contains(c)) {
             return false;
         }
@@ -244,7 +249,11 @@ mod tests {
         assert!(!valid_key("sk-ant-é-xxxxxxxxxxxx"));
         let s = Settings {
             daily_cap: u32::MAX,
-            classes: vec![DetectedClass::Chat, DetectedClass::Chat, DetectedClass::Unknown],
+            classes: vec![
+                DetectedClass::Chat,
+                DetectedClass::Chat,
+                DetectedClass::Unknown,
+            ],
             cameras: CameraFilter::List(vec![5, 3, 5]),
             ..Settings::default()
         }

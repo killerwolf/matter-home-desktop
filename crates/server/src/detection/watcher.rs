@@ -386,7 +386,12 @@ fn write_job(hub: &Arc<Hub>, job: WriteJob) {
             hub.publish_detection(&saved, rules, awaiting);
             descriptions.describe_opening(hub, &saved, jpeg);
         }
-        Some((false, _)) => hub.publish_detection(&saved, rules, false),
+        // Une classe nouvelle en cours de passage : les règles qui emploient la description
+        // attendent aussi (elles partent à l'arrivée de la description, une seule fois).
+        Some((false, _)) => {
+            let awaiting = descriptions.is_awaiting(&saved.id);
+            hub.publish_detection(&saved, rules, awaiting);
+        }
         None => {
             hub.publish_detection(&saved, None, false);
             descriptions.on_close(hub, &saved, jpeg);
@@ -784,7 +789,7 @@ fn analyse_loop(
                                 max_width: 960.min(
                                     (u64::from(max_side) * u64::from(image.width)
                                         / u64::from(image.height.max(1)))
-                                        .clamp(16, 960) as u32,
+                                    .clamp(16, 960) as u32,
                                 ),
                                 quality: 80,
                                 ..SnapshotConfig::default()

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cameras_ui::CamerasUi;
+use crate::descriptions_ui::DescriptionsUi;
 use eframe::egui::{self, RichText};
 use matter_home_server::backup;
 use matter_home_server::setup::{self, IdentityComparison, IdentityState};
@@ -390,6 +391,9 @@ struct App {
     /// La page « Caméras » remplace les réglages (menu « Caméras… »).
     cameras_open: bool,
     cameras: CamerasUi,
+    /// La page « Descriptions » (ticket n° 19) remplace aussi les réglages.
+    descriptions_open: bool,
+    descriptions: DescriptionsUi,
     /// La confirmation « Quitter » est à l'écran : un second clic n'en ouvre pas une autre.
     quit_dialog_open: Arc<AtomicBool>,
     /// L'accès web par Tailscale, tel que Tailscale le dit (rien n'est gardé sur disque).
@@ -433,6 +437,8 @@ impl App {
             login_defaulted: false,
             picking: None,
             cameras_open: false,
+            descriptions_open: false,
+            descriptions: DescriptionsUi::default(),
             cameras: CamerasUi::default(),
             quit_dialog_open: Arc::new(AtomicBool::new(false)),
             web: WebAccess::Checking,
@@ -653,12 +659,14 @@ impl App {
             }
             Action::Cameras => {
                 if st.hub.is_some() {
+                    self.descriptions_open = false;
                     self.cameras_open = true;
                     self.show_window(ctx);
                 }
             }
             Action::Settings => {
                 self.cameras_open = false;
+                self.descriptions_open = false;
                 self.show_window(ctx);
             }
             Action::Quit => self.ask_quit(),
@@ -867,6 +875,14 @@ impl App {
             }
             (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st, false),
             (Phase::Running, _) if self.show_done => self.done_page(ui, ctx, st),
+            (Phase::Running, _) if self.descriptions_open && st.hub.is_some() => {
+                if let Some(hub) = &st.hub {
+                    if self.descriptions.show(ui, &hub.0) {
+                        self.descriptions_open = false;
+                        self.descriptions.reset();
+                    }
+                }
+            }
             (Phase::Running, _) if self.cameras_open && st.hub.is_some() => {
                 if let Some(hub) = &st.hub {
                     if self.cameras.show(ui, ctx, &hub.0) {
@@ -1263,7 +1279,17 @@ impl App {
                 ui.separator();
                 ui.label(RichText::new("Caméras").strong());
                 if st.hub.is_some() && ui.button("Caméras…").clicked() {
+                    self.descriptions_open = false;
                     self.cameras_open = true;
+                }
+                if st.hub.is_some()
+                    && ui
+                        .button("Descriptions des événements…")
+                        .on_hover_text("Décrire les événements de détection avec l'API Anthropic")
+                        .clicked()
+                {
+                    self.cameras_open = false;
+                    self.descriptions_open = true;
                 }
                 ui.add_space(6.0);
                 ui.separator();

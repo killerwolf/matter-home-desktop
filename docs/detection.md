@@ -46,7 +46,9 @@ Sans fichiers embarqués (serveur en ligne de commande, version de développemen
 prend ceux de `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/models/` (ou
 `<dossier>/models/` avec `--data-dir`) : `detector.onnx`, `detector-cpu.onnx`, `detector.json`,
 `libonnxruntime.dylib` (cherchée aussi à côté du programme, puis dans `ORT_DYLIB_PATH`). Ceux de
-l'application **l'emportent** ; seul `models/detector.json` s'applique en plus (réglages).
+l'application **l'emportent**, et `models/detector.json` ne s'applique **que si le modèle utilisé vient
+lui aussi de `<données>/models/`** : il ne change jamais les réglages d'un modèle embarqué (le journal dit
+quel `detector.json` est pris, ou que celui de `models/` est ignoré).
 
 - Un fichier qui n'appartient pas à votre compte (ou à root), ou modifiable par le groupe ou les
   autres comptes, est **refusé** (c'est du code que le serveur exécute) : `chmod 644` (`755` pour la
@@ -139,7 +141,7 @@ Dossier `<données>/events/` (droits 0600), trois fichiers par passage :
 
 | Fichier | Contenu |
 |---|---|
-| `<id>.json` | caméra, classes, meilleur score, début, fin, durée du clip |
+| `<id>.json` | caméra, classes, meilleur score, début, fin, durée du clip, et la description et son niveau si [elles existent](descriptions.md) |
 | `<id>.jpg` | la meilleure image du passage |
 | `<id>.mp4` | le clip (avant + passage + après) |
 
@@ -150,7 +152,8 @@ Dossier `<données>/events/` (droits 0600), trois fichiers par passage :
 - **Disque presque plein** : moins de 2 Go libres (ou 5 % d'un disque de moins de 40 Go) après
   écriture, le clip n'est **pas** enregistré (la fiche et la capture, si) et le journal le dit.
 - Une fiche illisible est ignorée, jamais effacée ; un événement resté « en cours » (serveur arrêté
-  pendant un passage) est clos au redémarrage suivant.
+  brutalement pendant un passage) est clos au démarrage suivant, **quel que soit son âge**. À l'arrêt
+  propre du serveur, les passages en cours sont clos et écrits (attente de 3 s au plus).
 - Les événements **ne sont pas** dans les sauvegardes `.matterhome` (ni les modèles) ; à
   l'import d'une sauvegarde, ceux de ce Mac sont gardés (`events/`, `models/` et `detection.json`
   sont recopiés dans le nouveau dossier de données, comme `serveur/`).
@@ -178,8 +181,10 @@ Ces réglages sont relus à chaud (sans redémarrer la surveillance).
 
 ## Vie privée
 
-- Tout reste sur le Mac du serveur : aucune image ne part vers un service extérieur, l'analyse est
-  locale (CoreML ou processeur).
+- Tout reste sur le Mac du serveur : l'analyse est locale (CoreML ou processeur) et **aucune image ne
+  part vers un service extérieur**, sauf si vous activez les [descriptions](descriptions.md) (ticket
+  n° 19, désactivées par défaut) : la capture d'un événement, et elle seule, est alors envoyée à l'API
+  d'Anthropic avec votre clé.
 - Seules les caméras en **Surveillance** dans le mode actuel sont analysées. Une caméra **Éteinte**
   n'a aucune connexion, et une caméra en Diffusion n'est pas analysée.
 - Les clips et captures sont lisibles par les clients connectés au compte du serveur, comme le

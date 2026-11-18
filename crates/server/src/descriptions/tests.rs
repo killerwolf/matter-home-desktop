@@ -135,7 +135,10 @@ fn wait(what: &str, mut condition: impl FnMut() -> bool) {
 #[test]
 fn a_passage_is_described_once_at_its_end_and_the_waiting_rules_then_start() {
     let mut f = fixture("close");
-    let mock = Mock::start(vec![Reply::described("Une personne et un chien dans l'allée.", 1)]);
+    let mock = Mock::start(vec![Reply::described(
+        "Une personne et un chien dans l'allée.",
+        1,
+    )]);
     f.enable(&mock, |_| {});
     let image = jpeg(64, 48);
     let mut wire = f.hub.subscribe();
@@ -249,15 +252,25 @@ fn filters_keep_events_out_without_sending_anything() {
     // Désactivé, ou sans clé : rien.
     assert!(!ask(&f, f.camera, vec![DetectedClass::Personne]));
     f.descriptions().set_api_key(Some(KEY)).unwrap();
-    assert!(!ask(&f, f.camera, vec![DetectedClass::Personne]), "désactivé");
+    assert!(
+        !ask(&f, f.camera, vec![DetectedClass::Personne]),
+        "désactivé"
+    );
     f.enable(&mock, |s| s.cameras = CameraFilter::Exterior);
     assert!(ask(&f, f.camera, vec![DetectedClass::Personne]));
-    assert!(!ask(&f, outside, vec![DetectedClass::Personne]), "intérieure");
+    assert!(
+        !ask(&f, outside, vec![DetectedClass::Personne]),
+        "intérieure"
+    );
     f.enable(&mock, |s| s.cameras = CameraFilter::List(vec![outside]));
     assert!(!ask(&f, f.camera, vec![DetectedClass::Personne]));
     assert!(ask(&f, outside, vec![DetectedClass::Personne]));
     f.enable(&mock, |s| s.classes = vec![DetectedClass::Vehicule]);
-    assert!(!ask(&f, f.camera, vec![DetectedClass::Personne, DetectedClass::Chat]));
+    assert!(!ask(
+        &f,
+        f.camera,
+        vec![DetectedClass::Personne, DetectedClass::Chat]
+    ));
     assert!(ask(&f, f.camera, vec![DetectedClass::Vehicule]));
     // Sans capture : rien à envoyer.
     let e = f.event(6, true);
@@ -290,7 +303,11 @@ fn the_daily_cap_skips_the_rest_and_the_waiting_rules_still_start() {
         f.descriptions().on_close(&f.hub, &closed, &image);
         f.wait_described(1);
     }
-    assert_eq!(mock.count(), 2, "plafond de 2 : la troisième reste sans description");
+    assert_eq!(
+        mock.count(),
+        2,
+        "plafond de 2 : la troisième reste sans description"
+    );
     let store = f.hub.detection().store();
     let described = (1..=3)
         .filter(|n| {
@@ -329,7 +346,10 @@ fn a_refusal_stores_unavailable_and_an_error_stores_nothing() {
     assert_eq!(mock.count(), 2, "ni le refus ni la 401 ne sont réessayés");
     let store = f.hub.detection().store();
     let refused = store.get(&format!("1000001-{}", f.camera)).unwrap();
-    assert_eq!(refused.description.as_deref(), Some("description indisponible"));
+    assert_eq!(
+        refused.description.as_deref(),
+        Some("description indisponible")
+    );
     assert_eq!(refused.niveau, None);
     let failed = store.get(&format!("1000002-{}", f.camera)).unwrap();
     assert!(failed.description.is_none() && failed.niveau.is_none());
@@ -365,8 +385,7 @@ fn a_full_queue_drops_the_oldest_and_never_blocks_the_caller() {
     // de la 11e, les deux plus anciennes en attente (2 et 3) sont abandonnées. Aucun n'est « attendu » ici
     // (pas d'ouverture) : rien à résoudre, mais la file reste bornée.
     wait("la file se vide", || {
-        mock.count() as u64 >= total - 2
-            && lock(&f.descriptions().shared.queue).jobs.is_empty()
+        mock.count() as u64 >= total - 2 && lock(&f.descriptions().shared.queue).jobs.is_empty()
     });
     wait_for_count(&mock, total as usize - 2);
     let store = f.hub.detection().store();
@@ -376,7 +395,10 @@ fn a_full_queue_drops_the_oldest_and_never_blocks_the_caller() {
             .is_some_and(|e| e.description.is_some())
     };
     assert!(has(1));
-    assert!(!has(2) && !has(3), "les plus anciens de la file sont partis");
+    assert!(
+        !has(2) && !has(3),
+        "les plus anciens de la file sont partis"
+    );
     assert!((4..=total).all(has));
     let _ = f.commands();
 }
@@ -416,7 +438,10 @@ fn settings_and_key_are_stored_privately_and_the_key_is_never_shown() {
     assert_eq!(again.settings().daily_cap, 50);
     assert_eq!(again.settings().cameras, CameraFilter::Exterior);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains(KEY) && !text.contains("  sk-"), "clé nettoyée");
+    assert!(
+        text.contains(KEY) && !text.contains("  sk-"),
+        "clé nettoyée"
+    );
     again.update(Settings::default()).unwrap();
     assert!(again.has_key());
     again.set_api_key(None).unwrap();

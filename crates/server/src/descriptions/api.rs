@@ -62,7 +62,10 @@ pub struct Context {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    Described { description: String, niveau: u8 },
+    Described {
+        description: String,
+        niveau: u8,
+    },
     /// Le modèle a refusé : « description indisponible », sans nouvel essai.
     Refused,
 }
@@ -285,7 +288,10 @@ impl Drop for TempBody {
 /// Une valeur entre guillemets pour un fichier de configuration de `curl` (déjà validée : ni
 /// guillemet ni barre oblique inverse, ni caractère de contrôle).
 fn quoted(value: &str) -> Result<String, String> {
-    if value.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\') {
+    if value
+        .bytes()
+        .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\')
+    {
         return Err("valeur refusée".into());
     }
     Ok(format!("\"{value}\""))
@@ -393,7 +399,12 @@ pub fn describe(
 ) -> Result<Outcome, String> {
     match jpeg_long_side(jpeg) {
         Some(side) if side <= MAX_SIDE && jpeg.len() <= MAX_JPEG_BYTES => {}
-        Some(side) => return Err(format!("capture trop grande ({side} px, {} octets)", jpeg.len())),
+        Some(side) => {
+            return Err(format!(
+                "capture trop grande ({side} px, {} octets)",
+                jpeg.len()
+            ))
+        }
         None => return Err("capture illisible (pas un JPEG)".into()),
     }
     let body = serde_json::to_vec(&build_body(model, context, jpeg)).map_err(|e| e.to_string())?;

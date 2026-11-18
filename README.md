@@ -241,6 +241,7 @@ session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous
 | [Modes de la maison](docs/modes.md) | Présent, Absent, Nuit, Vacances ; caméras selon le mode ; changer de mode avec Raccourcis sur iPhone |
 | [Automatisations](docs/automatisations.md) | déclencheurs, conditions, actions, variables |
 | [Détection](docs/detection.md) | personnes, animaux, véhicules sur les caméras en Surveillance ; événements, clips, rétention, vie privée |
+| [Descriptions des événements](docs/descriptions.md) | une phrase et un niveau de menace par événement, avec l'API Anthropic (clé de l'utilisateur, désactivé par défaut) ; ce qui est envoyé, coûts, limite de dépense |
 | [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
 | [Accès à distance](docs/acces-distant.md) | Tailscale, adresses multiples, certificats, flux caméra |
 | [Dépannage](docs/depannage.md) | problèmes connus, diagnostic réseau |
