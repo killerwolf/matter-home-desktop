@@ -641,7 +641,8 @@ async fn run(
     for action in &firing.rule.actions {
         let result: Result<String> = match action {
             // Pas de notification du système : le serveur n'a pas d'écran. Elle part vers les
-            // clients connectés (un client fermé ne la reçoit pas).
+            // clients connectés, et en web push vers les appareils abonnés (ticket n° 17 : le
+            // hub la reçoit comme les clients, `Hub::apply`).
             Action::Notify { title, message } => {
                 ui.send(Event::Notification {
                     title: render(title, &firing),

@@ -378,3 +378,9 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .ev-description { margin: var(--web-pad) 0; }
 .ev-shot, .ev-clip { width: 100%; max-height: 60vh; display: block; background: var(--color-surface-alt); border-radius: var(--web-radius); margin-bottom: var(--web-pad); }
 .danger { color: var(--color-error); }
+
+/* Notifications (ticket n° 17) : réglages dans la feuille. */
+.push-check { display: flex; align-items: center; gap: var(--web-pad-x); margin: var(--web-pad-x) 0; min-height: 44px; }
+.push-check input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--color-accent); }
+.push-list { list-style: none; margin: 0; padding: 0; }
+.push-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--web-pad-x); padding: var(--web-pad-x) 0; border-bottom: var(--web-line) solid var(--color-line); font-size: var(--web-font-small); }

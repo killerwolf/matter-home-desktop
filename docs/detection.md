@@ -178,6 +178,9 @@ Ces réglages sont relus à chaud (sans redémarrer la surveillance).
   `DELETE /api/events/{id}`, et l'événement `detection` du WebSocket (voir [Protocole](protocole.md)).
 - **Automatisations** : « Quand une caméra détecte… » (voir [Automatisations](automatisations.md)),
   au **début** du passage, ou quand une classe suivie par la règle apparaît en cours de passage.
+- **Notifications** sur l'iPhone ou l'iPad, même app fermée : un message par passage, à sa fin
+  (avec sa description si elle est attendue) ; le toucher ouvre la fiche (voir
+  [Notifications](notifications.md)).
 
 ## Vie privée
 

@@ -22,6 +22,7 @@ mod convert;
 mod detection;
 mod error;
 mod message;
+mod push;
 mod stream;
 mod text_ids;
 
@@ -30,6 +31,7 @@ pub use camera::*;
 pub use detection::*;
 pub use error::*;
 pub use message::*;
+pub use push::*;
 pub use stream::*;
 pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 
