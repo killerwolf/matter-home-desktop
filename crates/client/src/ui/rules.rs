@@ -53,6 +53,11 @@ pub struct RulesView {
 /// Une règle **désactivée** peut garder une adresse incomplète (le serveur l'accepte, c'est ce que
 /// l'import d'une sauvegarde de la v0.2.1 produit) : elle ne bloque pas l'envoi des autres.
 fn rules_problem(set: &RuleSet) -> Option<String> {
+    // Un élément d'une version plus récente du serveur (`Unknown`) n'est jamais envoyé : ce
+    // serveur le refuserait. Vaut pour toute règle, activée ou non.
+    if let Some(why) = set.rules.iter().find_map(unknown_part_problem) {
+        return Some(why);
+    }
     set.rules
         .iter()
         .filter(|rule| rule.enabled)
@@ -77,6 +82,27 @@ fn rules_problem(set: &RuleSet) -> Option<String> {
                 _ => None,
             })
         })
+}
+
+/// La règle contient un déclencheur, une condition ou une action `Unknown` : on dit lequel.
+fn unknown_part_problem(rule: &Rule) -> Option<String> {
+    let (what, other) = if matches!(rule.trigger, Trigger::Unknown) {
+        ("un déclencheur", "choisissez-en un autre")
+    } else if rule
+        .conditions
+        .iter()
+        .any(|c| matches!(c, Condition::Unknown))
+    {
+        ("une condition", "choisissez-en une autre")
+    } else if rule.actions.iter().any(|a| matches!(a, Action::Unknown)) {
+        ("une action", "choisissez-en une autre")
+    } else {
+        return None;
+    };
+    Some(format!(
+        "la règle « {} » a {what} d'une version plus récente du serveur : {other}",
+        rule.name
+    ))
 }
 
 /// Quel genre d'appareil un sélecteur doit proposer.
@@ -291,11 +317,13 @@ fn trigger_kind(t: &Trigger) -> usize {
         Trigger::Time { .. } => 4,
         Trigger::Mode { .. } => 5,
         Trigger::Detection { .. } => 6,
-        Trigger::Unknown => 7,
+        Trigger::Unknown => UNKNOWN_TRIGGER_KIND,
     }
 }
 
-const TRIGGER_KINDS: [&str; 8] = [
+/// Les déclencheurs qu'on peut choisir. `Trigger::Unknown` (indice `UNKNOWN_TRIGGER_KIND` de
+/// `trigger_kind`) n'en fait jamais partie : il ne vient que d'un serveur plus récent.
+const TRIGGER_KINDS: [&str; 7] = [
     "Une porte / fenêtre change",
     "Une mesure franchit un seuil",
     "Une prise / lampe change",
@@ -303,8 +331,18 @@ const TRIGGER_KINDS: [&str; 8] = [
     "À une heure donnée",
     "Le mode de la maison change",
     "Une caméra détecte quelqu'un ou quelque chose",
-    "Inconnu (version plus récente du serveur)",
 ];
+
+/// Indice de `Trigger::Unknown` pour `trigger_kind` : hors de `TRIGGER_KINDS`.
+const UNKNOWN_TRIGGER_KIND: usize = TRIGGER_KINDS.len();
+const UNKNOWN_TRIGGER_LABEL: &str = "Inconnu (version plus récente du serveur)";
+
+fn trigger_kind_label(kind: usize) -> &'static str {
+    TRIGGER_KINDS
+        .get(kind)
+        .copied()
+        .unwrap_or(UNKNOWN_TRIGGER_LABEL)
+}
 
 fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
     match kind {
@@ -330,7 +368,6 @@ fn default_trigger(kind: usize, devices: &BTreeMap<u64, Device>) -> Trigger {
         5 => Trigger::Mode {
             to: HomeMode::Absent,
         },
-        7 => Trigger::Unknown,
         6 => Trigger::Detection {
             camera_id: None,
             classes: vec![protocol::wire::DetectedClass::Personne],
@@ -952,7 +989,7 @@ impl RulesView {
         ui.heading("Quand");
         let mut kind = trigger_kind(&rule.trigger);
         egui::ComboBox::from_id_salt(("trig_kind", rid))
-            .selected_text(TRIGGER_KINDS[kind])
+            .selected_text(trigger_kind_label(kind))
             .width(260.0)
             .show_ui(ui, |ui| {
                 for (i, label) in TRIGGER_KINDS.iter().enumerate() {
@@ -1518,6 +1555,54 @@ mod tests {
         set.rules[1].enabled = true;
         let why = rules_problem(&set).expect("une règle activée doit être complète");
         assert!(why.contains(&set.rules[1].name), "{why}");
+    }
+
+    /// Le menu « Quand » ne propose jamais « Inconnu » ; il ne s'affiche que si la règle l'a déjà.
+    #[test]
+    fn unknown_trigger_is_never_selectable() {
+        assert_eq!(TRIGGER_KINDS.len(), 7);
+        assert!(TRIGGER_KINDS.iter().all(|l| !l.contains("Inconnu")));
+        for kind in 0..TRIGGER_KINDS.len() {
+            let t = default_trigger(kind, &BTreeMap::new());
+            assert!(!matches!(t, Trigger::Unknown), "{kind}");
+            assert_eq!(trigger_kind(&t), kind);
+        }
+        assert_eq!(trigger_kind(&Trigger::Unknown), UNKNOWN_TRIGGER_KIND);
+        assert_eq!(
+            trigger_kind_label(UNKNOWN_TRIGGER_KIND),
+            UNKNOWN_TRIGGER_LABEL
+        );
+    }
+
+    /// Un déclencheur, une condition ou une action `Unknown` garde l'ensemble en brouillon.
+    #[test]
+    fn unknown_parts_keep_the_set_a_local_draft() {
+        let mut bad = Vec::new();
+        let mut r = Rule::new(1);
+        r.trigger = Trigger::Unknown;
+        bad.push((r, "déclencheur"));
+        let mut r = Rule::new(2);
+        r.conditions.push(Condition::Unknown);
+        bad.push((r, "condition"));
+        let mut r = Rule::new(3);
+        r.actions.push(Action::Unknown);
+        bad.push((r, "action"));
+        for (rule, word) in bad {
+            let name = rule.name.clone();
+            let set = RuleSet {
+                version: 1,
+                rules: vec![rule],
+            };
+            let why = rules_problem(&set).expect("Unknown doit bloquer");
+            assert!(why.contains(word) && why.contains(&name), "{why}");
+            let mut view = RulesView::new();
+            view.on_server(RuleSet::default());
+            view.set = set;
+            view.sync.mark_changed(Instant::now());
+            assert!(view.poll_save_now().is_none());
+            let later = Instant::now() + std::time::Duration::from_secs(60);
+            assert!(view.poll_save(later, false).is_none());
+        }
     }
 
     /// Ticket n° 8 : une règle « quand le mode devient… » et sa condition de mode se lisent en

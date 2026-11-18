@@ -20,6 +20,13 @@ Les téléchargements de chaque version sont sur la
   le menu natif (AppKit via objc2, aucune dépendance nouvelle). Les autres systèmes gardent le menu
   dans la fenêtre.
 
+### Corrigé
+
+- **Éditeur de règles** : le menu « Quand » ne propose plus « Inconnu (version plus récente du
+  serveur) », que le serveur refusait avec un message vague. Une règle qui contient déjà un
+  déclencheur, une condition ou une action d'une version plus récente du serveur reste un brouillon
+  local, avec un message clair, au lieu d'être envoyée.
+
 ## [1.2.0] - 2026-11-18
 
 ### Ajouté
