@@ -58,6 +58,9 @@ pub struct Stored {
     pub subscriptions: Vec<Subscription>,
     /// Appareils déjà signalés pour leur pile faible (réarmés au-dessus de 20 %).
     pub battery_alerted: BTreeSet<u64>,
+    /// Appareils dont un pourcentage de pile a déjà été lu : pour eux, seul le pourcentage
+    /// annonce (sous 15 %) et réarme (20 % ou plus), jamais le drapeau « pile faible ».
+    pub battery_percent: BTreeSet<u64>,
 }
 
 impl Default for Stored {
@@ -66,6 +69,7 @@ impl Default for Stored {
             enabled: true,
             subscriptions: Vec::new(),
             battery_alerted: BTreeSet::new(),
+            battery_percent: BTreeSet::new(),
         }
     }
 }

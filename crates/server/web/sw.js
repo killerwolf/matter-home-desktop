@@ -53,7 +53,7 @@ function clickTarget(url) {
 
 self.addEventListener("push", (event) => {
   let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
+  try { data = (event.data ? event.data.json() : {}) || {}; } catch { data = {}; }
   // Toujours une notification visible : Safari retire l'abonnement après des messages muets.
   const title = typeof data.title === "string" && data.title ? data.title : "Matter Home";
   const options = {
@@ -65,6 +65,17 @@ self.addEventListener("push", (event) => {
   };
   if (typeof data.tag === "string" && data.tag) options.tag = data.tag;
   event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Le service de push a renouvelé l'abonnement : on se réabonne avec la même clé du serveur. Le
+// service worker n'a pas le jeton de session ; l'app renvoie le nouvel abonnement au serveur à son
+// prochain démarrage (`syncOnStart`, push.js).
+self.addEventListener("pushsubscriptionchange", (event) => {
+  const key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
+  if (!key) return;
+  event.waitUntil(
+    self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }).catch(() => {}),
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {

@@ -42,15 +42,47 @@ impl Sanitizer {
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         for secret in &self.secrets {
-            out = out.replace(secret.as_str(), "•••");
+            out = replace_ci(&out, secret);
         }
-        let words: Vec<String> = out.split(' ').map(mask_word).collect();
-        words
-            .join(" ")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        // Des mots séparés par toute espace (y compris insécable) ou par `=` (`motdepasse=…`).
+        let mut masked = String::with_capacity(out.len());
+        let mut word = String::new();
+        for c in out.chars() {
+            if c.is_whitespace() || c == '=' {
+                masked.push_str(&mask_word(&word));
+                word.clear();
+                masked.push(if c == '=' { '=' } else { ' ' });
+            } else {
+                word.push(c);
+            }
+        }
+        masked.push_str(&mask_word(&word));
+        masked.split_whitespace().collect::<Vec<_>>().join(" ")
     }
+}
+
+/// Remplace `needle` par « ••• » sans tenir compte de la casse (`Admin`, `ADMIN`…).
+fn replace_ci(text: &str, needle: &str) -> String {
+    let needle: Vec<char> = needle.chars().collect();
+    let chars: Vec<char> = text.chars().collect();
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if i + needle.len() <= chars.len()
+            && chars[i..i + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(a, b)| same(*a, *b))
+        {
+            out.push_str("•••");
+            i += needle.len();
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn mask_word(word: &str) -> String {

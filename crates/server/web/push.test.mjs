@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   bytesToUrlBase64, clickTarget, currentSubscription, deviceLabel, eventFromHash, iosVersion, pushSupport,
-  sameKey, subscribe, subscriptionBody, unsubscribe, urlBase64ToUint8Array,
+  sameKey, subscribe, subscriptionBody, syncOnStart, unsubscribe, urlBase64ToUint8Array,
 } from "./push.js";
 
 const IPHONE_17 = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
@@ -118,6 +118,23 @@ test("l'abonnement actuel est retrouvé sans rien demander ; le désabonnement p
   assert.ok(!calls.includes("permission"), "aucune demande de permission");
   await unsubscribe(deps, view.id);
   assert.deepEqual(calls.slice(-2), [["DELETE", "/api/push/subscriptions/0123456789abcdef", undefined], "unsubscribe"]);
+});
+
+test("au démarrage, un abonnement renouvelé est renvoyé au serveur, seulement si c'est autorisé", async () => {
+  let loaded = 0;
+  const load = async () => { loaded += 1; return null; };
+  assert.equal(await syncOnStart("default", load), null);
+  assert.equal(await syncOnStart("denied", load), null);
+  assert.equal(loaded, 0, "rien n'est chargé sans autorisation");
+  assert.equal(await syncOnStart("granted", load), null);
+  assert.equal(loaded, 1);
+  // Le service worker s'est réabonné (nouvelle adresse) : elle part au serveur, sans permission.
+  const { deps, calls, make } = fakeBrowser();
+  const renewed = make(urlBase64ToUint8Array(KEY).buffer);
+  deps.registration.pushManager.getSubscription = async () => renewed;
+  const view = await syncOnStart("granted", async () => deps);
+  assert.equal(view.id, "0123456789abcdef");
+  assert.deepEqual(calls.map((c) => (Array.isArray(c) ? c.slice(0, 2) : c)), [["POST", "/api/push/subscriptions"]]);
 });
 
 test("le corps de l'abonnement et les catégories", () => {

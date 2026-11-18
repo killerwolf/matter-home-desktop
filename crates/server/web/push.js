@@ -122,6 +122,19 @@ export async function currentSubscription(deps) {
   return deps.request("POST", SUBSCRIPTIONS_PATH, subscriptionBody(subscription, deps.label));
 }
 
+/**
+ * Au démarrage de l'app : si les notifications sont autorisées, l'abonnement du navigateur est
+ * renvoyé au serveur (il a pu changer : le service de push le renouvelle, et le service worker se
+ * réabonne seul, `pushsubscriptionchange`, sans pouvoir prévenir le serveur faute de jeton).
+ * `loadDeps` n'est appelé que dans ce cas ; `null` : rien à faire. Jamais de demande à l'utilisateur.
+ */
+export async function syncOnStart(permission, loadDeps) {
+  if (permission !== "granted") return null;
+  const deps = await loadDeps();
+  if (!deps) return null;
+  return currentSubscription(deps);
+}
+
 /** Désabonne cet appareil : sur le serveur d'abord, puis dans le navigateur. */
 export async function unsubscribe(deps, id) {
   if (id) await deps.request("DELETE", `${SUBSCRIPTIONS_PATH}/${encodeURIComponent(id)}`);

@@ -34,7 +34,7 @@ Chaque appareil choisit ses catégories (toutes cochées au départ) :
 |---|---|---|
 | **Règles « Notifier »** | une règle d'automatisation exécute « Notifier » | le titre et le message de la règle (variables remplacées) |
 | **Détections caméra** | un passage détecté sur une caméra en **Surveillance** ([Détection](detection.md)) : **un seul message par passage**, à sa fin ; si une [description](descriptions.md) est attendue, avec elle (45 s au plus après la fin) | « Personne · Entrée » ; la description et le niveau de menace, ou « Passage détecté à 14:05. » ; le toucher ouvre la fiche de l'événement |
-| **Pile faible** | une pile passe sous **15 %** (ou l'appareil signale « pile faible ») ; un seul message, jusqu'à ce qu'elle remonte à 20 % ou plus (retenu même après un redémarrage du serveur) | « Capteur salon : pile à 12 %. » |
+| **Pile faible** | une pile passe sous **15 %** ; un seul message, jusqu'à ce qu'elle remonte à 20 % ou plus (retenu même après un redémarrage du serveur). Un appareil qui ne donne pas de pourcentage : son signal « pile faible » (un message, jusqu'à ce qu'il redevienne correct). Dès qu'un pourcentage a été lu, c'est lui qui fait foi | « Capteur salon : pile à 12 %. » |
 | **Appareil injoignable** | un appareil ne répond plus depuis **10 minutes** ; un message par panne | « Prise du four ne répond plus depuis 10 minutes. » |
 
 - Pour une alerte plus fine (seulement en mode Absent, seulement la porte d'entrée…), décochez
@@ -46,6 +46,10 @@ Chaque appareil choisit ses catégories (toutes cochées au départ) :
   identifiant d'appareil brut, une adresse `rtsp://` ou IP, un chemin du Mac. Le serveur masque ce
   qui y ressemble (« <adresse> », « <appareil> », « ••• ») avant l'envoi, y compris dans les textes
   des règles. Un appareil sans nom s'appelle « Un appareil ».
+
+Le service de push renouvelle parfois un abonnement : le service worker se réabonne de lui-même,
+et l'app web renvoie l'abonnement au serveur **à chaque démarrage** (sans rien demander). Le nom
+d'un appareil abonné n'est donné qu'à la création : un renvoi ne l'écrase pas.
 
 ## Ce qui sort du serveur
 

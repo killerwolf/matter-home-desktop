@@ -612,6 +612,146 @@ fn low_battery_is_announced_once_until_it_recovers() {
     assert!(fake.last().body.starts_with("Un appareil : pile à 9 %"));
 }
 
+/// Le pourcentage et le drapeau « pile faible » d'un même appareil se contredisent : une seule
+/// annonce, même après un redémarrage, et pas d'écriture du fichier à chaque mesure.
+#[test]
+fn a_battery_percentage_and_a_contradicting_low_flag_never_repeat_the_alert() {
+    let (push, fake, dir) = rig("pile-sources");
+    push.subscribe(request(APPLE), "").unwrap();
+    let now = crate::events::now_unix();
+    let percent = |node_id: u64, value: f64| Event::Measurement {
+        node_id,
+        kind: MeasureKind::Battery,
+        value,
+        at: now,
+    };
+    let flag = |node_id: u64, value: bool| Event::State {
+        node_id,
+        kind: crate::events::StateKind::BatteryLow,
+        value,
+        at: now,
+    };
+    // 12 % alors que l'appareil dit « pile correcte » : une annonce, jamais réarmée par le drapeau.
+    for _ in 0..3 {
+        push.observe(&percent(1, 12.0), Some("Capteur A"), true);
+        push.observe(&flag(1, false), Some("Capteur A"), true);
+    }
+    // 25 % alors que l'appareil dit « pile faible » : le pourcentage fait foi, rien.
+    for _ in 0..3 {
+        push.observe(&percent(2, 25.0), Some("Capteur B"), true);
+        push.observe(&flag(2, true), Some("Capteur B"), true);
+    }
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+    assert!(fake.last().body.starts_with("Capteur A : pile à 12 %"));
+    // Le fichier n'est plus réécrit par les mesures qui ne changent rien.
+    let file = dir.join(crate::persistence::SERVER_DIR).join(store::FILE);
+    let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    push.observe(&percent(1, 11.0), None, true);
+    push.observe(&flag(1, false), None, true);
+    push.observe(&percent(2, 30.0), None, true);
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().modified().unwrap(),
+        before
+    );
+    // Après un redémarrage, le drapeau arrive le premier : il ne réarme toujours pas.
+    let reloaded = Arc::new(Push::new(&dir, false));
+    reloaded.set_transport(fake.clone());
+    reloaded.manual();
+    reloaded.observe(&flag(1, false), None, true);
+    reloaded.observe(&percent(1, 12.0), Some("Capteur A"), true);
+    reloaded.observe(&flag(2, true), None, true);
+    reloaded.run_pending();
+    assert_eq!(fake.count(), 1);
+    // Un appareil sans pourcentage : le drapeau annonce et réarme.
+    reloaded.observe(&flag(3, true), Some("Capteur C"), true);
+    reloaded.observe(&flag(3, true), Some("Capteur C"), true);
+    reloaded.observe(&flag(3, false), None, true);
+    reloaded.observe(&flag(3, true), Some("Capteur C"), true);
+    reloaded.run_pending();
+    assert_eq!(fake.count(), 3);
+    assert_eq!(
+        fake.last().body,
+        "Capteur C : pile faible. Pensez à la remplacer."
+    );
+}
+
+/// Sans destinataire, une pile faible n'est pas retenue comme « annoncée » : elle le sera quand
+/// un appareil voudra la recevoir.
+#[test]
+fn a_low_battery_nobody_receives_is_not_marked_as_announced() {
+    let (push, fake, _dir) = rig("pile-personne");
+    let now = crate::events::now_unix();
+    let low = Event::Measurement {
+        node_id: 4,
+        kind: MeasureKind::Battery,
+        value: 8.0,
+        at: now,
+    };
+    push.observe(&low, Some("Capteur"), true);
+    let v = push.subscribe(request(APPLE), "").unwrap();
+    push.set_enabled(false).unwrap();
+    push.observe(&low, Some("Capteur"), true);
+    push.set_enabled(true).unwrap();
+    push.update(
+        &v.id,
+        PushUpdateRequest {
+            categories: Some(PushCategories {
+                battery: false,
+                ..PushCategories::default()
+            }),
+            label: None,
+        },
+    )
+    .unwrap();
+    push.observe(&low, Some("Capteur"), true);
+    push.run_pending();
+    assert_eq!(fake.count(), 0);
+    push.update(
+        &v.id,
+        PushUpdateRequest {
+            categories: Some(PushCategories::default()),
+            label: None,
+        },
+    )
+    .unwrap();
+    push.observe(&low, Some("Capteur"), true);
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+}
+
+#[test]
+fn the_subscription_address_is_stored_normalised() {
+    let (push, fake, _dir) = rig("normalise");
+    let v = push
+        .subscribe(request("https://WEB.Push.Apple.com/abc"), "")
+        .unwrap();
+    let again = push
+        .subscribe(request("https://web.push.apple.com/abc"), "")
+        .unwrap();
+    assert_eq!(v.id, again.id);
+    // Un nom choisi survit au renvoi de l'abonnement (démarrage de l'app web).
+    push.update(
+        &v.id,
+        PushUpdateRequest {
+            categories: None,
+            label: Some("iPhone du salon".into()),
+        },
+    )
+    .unwrap();
+    let resent = push
+        .subscribe(request("https://web.push.apple.com/abc"), "")
+        .unwrap();
+    assert_eq!(resent.label, "iPhone du salon");
+    push.send_test(&v.id).unwrap();
+    push.run_pending();
+    assert_eq!(
+        fake.sent.lock().unwrap()[0].endpoint,
+        "https://web.push.apple.com/abc"
+    );
+}
+
 #[test]
 fn an_unreachable_device_is_announced_once_per_outage() {
     let (push, fake, _dir) = rig("panne");
@@ -714,6 +854,12 @@ fn notification_text_never_carries_addresses_passwords_or_raw_ids() {
     // Le nom d'un appareil qui n'est qu'un identifiant ne s'affiche pas.
     let b = content::battery(&|t| t.to_string(), Some("00000000DEADBEEF"), None);
     assert_eq!(b.body, "Un appareil : pile faible. Pensez à la remplacer.");
+    // Sans tenir compte de la casse, et des mots coupés aussi par `=` et l'espace insécable.
+    let other = s.clean("ADMIN Motdepasse!42 hote=10.0.0.9\u{a0}0x1F2E url=rtsp://x/y");
+    for leak in ["ADMIN", "Motdepasse", "10.0.0.9", "0x1F2E", "rtsp"] {
+        assert!(!other.contains(leak), "{leak} dans « {other} »");
+    }
+    assert!(other.contains("hote=<adresse>"));
     // L'adresse d'un événement ne garde que des caractères sûrs.
     assert_eq!(content::event_url("17-ab\"<x>"), "/app/#evenement=17-abx");
 }

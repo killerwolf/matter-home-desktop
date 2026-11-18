@@ -925,6 +925,31 @@ function pushDeps() {
   };
 }
 
+/** L'inscription du service worker, gardée. Au plus 5 s : sans service worker actif, `ready` ne
+ *  se résout jamais. */
+async function loadRegistration() {
+  if (!pushUi.registration) {
+    pushUi.registration = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => { setTimeout(() => resolve(null), 5000); }),
+    ]);
+  }
+  return pushUi.registration;
+}
+
+/** Au démarrage : l'abonnement de cet appareil, s'il a été renouvelé, repart au serveur. */
+async function syncPush() {
+  try {
+    const permission = "Notification" in window ? Notification.permission : "default";
+    const view = await push.syncOnStart(permission, async () => {
+      if (!push.pushSupport(pushEnv()).ok) return null;
+      pushUi.status = await api.request("GET", "/api/push");
+      return (await loadRegistration()) ? pushDeps() : null;
+    });
+    if (view) pushUi.mine = view;
+  } catch { /* serveur ancien ou hors ligne : réessayé au prochain démarrage */ }
+}
+
 /** Ouvre la feuille : la clé du serveur et l'abonnement de cet appareil sont chargés d'abord
  *  (la demande de permission doit être la première attente du toucher « Activer »). */
 async function openNotifications() {
@@ -938,13 +963,7 @@ async function openNotifications() {
   try {
     pushUi.status = await api.request("GET", "/api/push");
     const support = push.pushSupport(pushEnv());
-    if (support.ok && !pushUi.registration) {
-      // Au plus 5 s : sans service worker actif, `ready` ne se résout jamais.
-      pushUi.registration = await Promise.race([
-        navigator.serviceWorker.ready,
-        new Promise((resolve) => { setTimeout(() => resolve(null), 5000); }),
-      ]);
-    }
+    if (support.ok) await loadRegistration();
     pushUi.mine = support.ok && pushUi.registration && Notification.permission === "granted"
       ? await push.currentSubscription(pushDeps()).catch(() => null)
       : null;
@@ -1228,6 +1247,7 @@ function start() {
   });
   // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
   if (location.hash) openFromUrl(location.href);
+  syncPush();
 }
 
 function loginMessage(error) {

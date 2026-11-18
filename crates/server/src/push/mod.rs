@@ -286,11 +286,18 @@ impl Push {
         request: PushSubscribeRequest,
         user_agent: &str,
     ) -> Result<PushSubscriptionView, PushError> {
-        let endpoint = request.endpoint.trim().to_string();
+        let refused = PushError::Invalid("adresse d'abonnement refusée (service de push inconnu)");
+        let raw = request.endpoint.trim();
+        if transport::service_of(raw).is_none() {
+            return Err(refused);
+        }
+        // L'adresse normalisée (hôte en minuscules…) : c'est elle qui est gardée, comparée et
+        // envoyée, et elle est vérifiée de nouveau.
+        let endpoint = url::Url::parse(raw)
+            .map(|u| u.as_str().to_string())
+            .map_err(|_| refused.clone())?;
         if transport::service_of(&endpoint).is_none() {
-            return Err(PushError::Invalid(
-                "adresse d'abonnement refusée (service de push inconnu)",
-            ));
+            return Err(refused);
         }
         let p256dh = crypto::b64url_decode(&request.keys.p256dh)
             .filter(|k| k.len() == crypto::PUBLIC_KEY_LEN && k[0] == 0x04)
@@ -312,7 +319,9 @@ impl Push {
             if let Some(existing) = s.subscriptions.iter_mut().find(|x| x.endpoint == endpoint) {
                 existing.p256dh = crypto::b64url(&p256dh);
                 existing.auth = crypto::b64url(&auth);
-                existing.label = label.clone();
+                // Le nom n'est donné qu'à la création : l'app web renvoie son abonnement à chaque
+                // démarrage avec un nom générique, qui ne doit pas écraser un nom choisi
+                // (`PUT …/{id}` le change).
                 existing.user_agent = user_agent.clone();
                 existing.last_error = None;
                 if let Some(c) = request.categories {
@@ -459,6 +468,10 @@ impl Push {
                 det.pending.insert(event.id.clone());
                 // Borné : une description attendue arrive toujours (ou son échéance).
                 if det.pending.len() > SENT_KEPT {
+                    log::warn!(
+                        "notifications : {} passages attendaient leur description, oubliés",
+                        det.pending.len()
+                    );
                     det.pending.clear();
                 }
                 return;
@@ -502,6 +515,11 @@ impl Push {
                 value,
                 at,
             } if retained && recent(*at) => {
+                // Le pourcentage fait foi dès qu'il a été vu une fois (retenu sur disque) : le
+                // drapeau « pile faible » de l'appareil, qui peut le contredire, n'est plus lu.
+                if !lock(&self.stored).battery_percent.contains(node_id) {
+                    let _ = self.update_stored(|s| s.battery_percent.insert(*node_id));
+                }
                 if *value < BATTERY_LOW {
                     self.battery_low(*node_id, name, Some(*value));
                 } else if *value >= BATTERY_REARM {
@@ -514,6 +532,9 @@ impl Push {
                 value,
                 at,
             } if retained && recent(*at) => {
+                if lock(&self.stored).battery_percent.contains(node_id) {
+                    return;
+                }
                 if *value {
                     self.battery_low(*node_id, name, None);
                 } else {
@@ -538,13 +559,30 @@ impl Push {
             },
             Event::NodeRemoved(id) => {
                 lock(&self.outages).remove(id);
-                self.battery_ok(*id);
+                let _ = self.update_stored(|s| {
+                    s.battery_alerted.remove(id);
+                    s.battery_percent.remove(id);
+                });
             }
             _ => {}
         }
     }
 
     fn battery_low(self: &Arc<Self>, node_id: u64, name: Option<&str>, percent: Option<f64>) {
+        // Personne pour la recevoir (coupé, ou aucun appareil ne veut les piles) : rien n'est
+        // retenu, l'alerte partira à la prochaine mesure quand quelqu'un la voudra.
+        {
+            let stored = lock(&self.stored);
+            if !stored.enabled
+                || stored.battery_alerted.contains(&node_id)
+                || !stored
+                    .subscriptions
+                    .iter()
+                    .any(|s| Category::Battery.wanted_by(&s.categories))
+            {
+                return;
+            }
+        }
         match self.update_stored(|s| s.battery_alerted.insert(node_id)) {
             Ok(true) => {}
             Ok(false) => return,
@@ -558,6 +596,10 @@ impl Push {
     }
 
     fn battery_ok(&self, node_id: u64) {
+        // Pas de copie ni d'écriture quand rien ne change (cas courant : à chaque mesure).
+        if !lock(&self.stored).battery_alerted.contains(&node_id) {
+            return;
+        }
         let _ = self.update_stored(|s| s.battery_alerted.remove(&node_id));
     }
 
