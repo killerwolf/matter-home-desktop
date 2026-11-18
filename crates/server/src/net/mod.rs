@@ -92,6 +92,9 @@ pub struct NetServer {
     runtime: Option<tokio::runtime::Runtime>,
     shutdown: watch::Sender<bool>,
     connections: Arc<Semaphore>,
+    /// Le superviseur de la détection : attendu (3 s au plus) à l'arrêt, pour que les passages en
+    /// cours soient clos et écrits.
+    detection: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub fn start(
@@ -109,12 +112,12 @@ pub fn start(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     // La détection (ticket n° 18) vit sur ce runtime, celui des sessions du direct : elle s'abonne
     // au même registre (`Hub::live`) et s'arrête avec lui.
-    if !hub.is_demo() {
+    let detection = (!hub.is_demo()).then(|| {
         runtime.spawn(crate::detection::watcher::supervise(
             hub.clone(),
             shutdown_rx.clone(),
-        ));
-    }
+        ))
+    });
     let state = AppState {
         hub,
         auth,
@@ -143,6 +146,7 @@ pub fn start(
         runtime: Some(runtime),
         shutdown: shutdown_tx,
         connections,
+        detection,
     })
 }
 
@@ -268,6 +272,15 @@ impl NetServer {
                 )
                 .await;
             });
+            if let Some(detection) = self.detection.take() {
+                runtime.block_on(async {
+                    let _ = tokio::time::timeout(
+                        crate::detection::watcher::SHUTDOWN_WAIT + Duration::from_secs(1),
+                        detection,
+                    )
+                    .await;
+                });
+            }
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
     }

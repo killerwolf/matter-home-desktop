@@ -34,9 +34,18 @@ pub enum Command {
     /// `opening` : le passage commence (toutes les règles qui le couvrent) ; sinon, une classe
     /// **nouvelle** dans un passage en cours (`event.classes` ne porte qu'elle) : seules les règles
     /// qui suivent cette classe partent.
+    ///
+    /// `awaiting` : une description (ticket n° 19) va arriver pour ce passage : les règles dont le
+    /// texte emploie `{description}` ou `{niveau}` attendent [`Command::DetectionDescribed`].
     Detection {
         event: Box<crate::wire::DetectionEventView>,
         opening: bool,
+        awaiting: bool,
+    },
+    /// La description d'un passage est arrivée (ou ne viendra pas : refus, plafond, erreur) : les
+    /// règles qui l'attendaient partent maintenant, avec `event.description` si elle existe.
+    DetectionDescribed {
+        event: Box<crate::wire::DetectionEventView>,
     },
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {

@@ -103,6 +103,8 @@ pub struct Detection {
     store: EventStore,
     config: Mutex<DetectionConfig>,
     status: Mutex<DetectionStatusView>,
+    /// Description des événements par l'API Anthropic (ticket n° 19).
+    descriptions: crate::descriptions::Descriptions,
     /// Caméras où la détection est suspendue, et pourquoi.
     paused: Mutex<std::collections::BTreeMap<(u64, &'static str), String>>,
     wake: Notify,
@@ -135,6 +137,7 @@ impl Detection {
             demo,
             store: EventStore::new(events, config.max_total_bytes),
             config: Mutex::new(config),
+            descriptions: crate::descriptions::Descriptions::new(data_dir, demo),
             status: Mutex::new(DetectionStatusView {
                 available: false,
                 engine: if demo {
@@ -151,6 +154,10 @@ impl Detection {
 
     pub fn store(&self) -> &EventStore {
         &self.store
+    }
+
+    pub fn descriptions(&self) -> &crate::descriptions::Descriptions {
+        &self.descriptions
     }
 
     pub fn models_dir(&self) -> &Path {

@@ -40,6 +40,8 @@ fn events_are_listed_served_with_ranges_and_deleted_under_the_session() {
         has_clip: true,
         clip_s: 30.0,
         in_progress: false,
+        description: None,
+        niveau: None,
     };
     common::runtime().block_on(async {
         // Sans jeton : refusé.

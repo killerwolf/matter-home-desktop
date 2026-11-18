@@ -594,8 +594,11 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                     Command::SetHomeMode(mode) => {
                         let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
                     }
-                    Command::Detection { event, opening } => {
-                        let _ = engine_tx.send(automation::EngineCommand::Detection(event, opening));
+                    Command::Detection { event, opening, awaiting } => {
+                        let _ = engine_tx.send(automation::EngineCommand::Detection(event, opening, awaiting));
+                    }
+                    Command::DetectionDescribed { event } => {
+                        let _ = engine_tx.send(automation::EngineCommand::Described(event));
                     }
                     Command::Customize { node_id, name, icon } => {
                         if let Some(info) = infos.get_mut(&node_id) {

@@ -1229,6 +1229,8 @@ mod tests {
             ("tls-key.pem", "CLE PRIVEE DU SERVEUR"),
             ("tls-cert.pem", "CERTIFICAT"),
             ("compte.json", "{\"username\":\"hamdi\"}"),
+            // La clé d'API des descriptions (ticket n° 19) : jamais exportée.
+            ("descriptions.json", "{\"api_key\":\"CLE API ANTHROPIC\"}"),
         ] {
             std::fs::write(secret.join(name), text).unwrap();
             std::fs::set_permissions(secret.join(name), std::fs::Permissions::from_mode(0o600))
@@ -1741,6 +1743,7 @@ mod tests {
         // Export : le dossier du serveur n'y figure pas.
         let (text, _) = export_to_string(&dir).unwrap();
         assert!(!text.contains("CLE PRIVEE DU SERVEUR") && !text.contains("compte.json"));
+        assert!(!text.contains("CLE API ANTHROPIC") && !text.contains("descriptions.json"));
         assert!(!text.contains(SERVER_DIR));
 
         // Une sauvegarde qui prétend en fournir un est refusée.

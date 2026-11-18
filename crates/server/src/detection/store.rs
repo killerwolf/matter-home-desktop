@@ -32,8 +32,6 @@ pub const DIR: &str = "events";
 /// Pas de clip écrit avec moins d'espace libre que ça (2 Go), ou 5 % d'un petit disque.
 pub const MIN_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MIN_FREE_RATIO: f64 = 0.05;
-/// Un événement resté « en cours » (serveur arrêté pendant un passage) est clos à la relecture.
-const STALE_IN_PROGRESS_S: f64 = 600.0;
 
 /// Ce qu'on peut lire d'un événement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +181,6 @@ impl EventStore {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
         };
-        let now = chrono::Utc::now().timestamp() as f64;
         for path in entries.filter_map(Result::ok).map(|e| e.path()) {
             if path.extension().is_none_or(|x| x != "json") {
                 continue;
@@ -201,8 +198,10 @@ impl EventStore {
                 .filter(|e| is_event_id(&e.id) && e.id == stem);
             match parsed {
                 Some(mut event) => {
-                    if event.in_progress && now - event.end > STALE_IN_PROGRESS_S {
-                        // Le serveur s'est arrêté pendant le passage : clos tel quel.
+                    if event.in_progress {
+                        // La fiche est lue une seule fois, avant que cette exécution n'en écrive
+                        // une : un événement encore « en cours » vient d'une exécution précédente
+                        // (serveur arrêté pendant le passage), quel que soit son âge : clos tel quel.
                         event.in_progress = false;
                         if let Ok(json) = serde_json::to_vec_pretty(&event) {
                             let _ = write_private(&path, &json);
@@ -260,6 +259,14 @@ impl EventStore {
                 }
             }
         }
+        // La description (ticket n° 19) arrive à part et peut précéder la fin du passage : une
+        // fiche qui n'en porte pas garde celle déjà enregistrée.
+        if event.description.is_none() {
+            if let Some((old, _)) = index.events.get(&event.id) {
+                event.description.clone_from(&old.description);
+                event.niveau = old.niveau;
+            }
+        }
         let json = serde_json::to_vec_pretty(&event).map_err(std::io::Error::other)?;
         write_private(&self.path(&event.id, "json"), &json)?;
         let bytes = self.size(&event.id);
@@ -271,6 +278,29 @@ impl EventStore {
             self.prune_locked(&mut index, now, Some(&event.id));
         }
         Ok(event)
+    }
+
+    /// Enregistre la description d'un événement (ticket n° 19) et rend la fiche à jour (`None` :
+    /// l'événement n'existe plus). Seule la fiche est réécrite.
+    pub fn set_description(
+        &self,
+        id: &str,
+        description: String,
+        niveau: Option<u8>,
+    ) -> Option<DetectionEventView> {
+        if !is_event_id(id) {
+            return None;
+        }
+        let mut index = self.index();
+        let entry = index.events.get_mut(id)?;
+        entry.0.description = Some(description);
+        entry.0.niveau = niveau;
+        let event = entry.0.clone();
+        let json = serde_json::to_vec_pretty(&event).ok()?;
+        if let Err(e) = write_private(&self.path(id, "json"), &json) {
+            log::warn!("description de l'événement {id} non enregistrée : {e}");
+        }
+        Some(event)
     }
 
     /// Toutes les fiches, les plus récentes d'abord.
@@ -412,6 +442,8 @@ mod tests {
             has_clip: true,
             clip_s: 20.0,
             in_progress: false,
+            description: None,
+            niveau: None,
         }
     }
 
@@ -504,6 +536,50 @@ mod tests {
         assert_eq!(free_threshold(1000, u64::MAX), 50);
         assert_eq!(free_threshold(1 << 40, 2 << 30), 2 << 30);
         assert!(store.part(&saved.id, Part::Snapshot).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_description_survives_the_closing_of_the_passage() {
+        let dir = temp();
+        let store = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        let mut e = event(1000.0, 3);
+        e.in_progress = true;
+        e.has_clip = false;
+        let id = e.id.clone();
+        store.save(e.clone(), Some(b"jpeg"), None).unwrap();
+        let described = store
+            .set_description(&id, "Une personne devant la porte.".into(), Some(1))
+            .unwrap();
+        assert_eq!(described.niveau, Some(1));
+        // La fin du passage arrive sans description : celle d'avant est gardée.
+        e.in_progress = false;
+        let closed = store.save(e, Some(b"jpeg"), None).unwrap();
+        assert_eq!(
+            closed.description.as_deref(),
+            Some("Une personne devant la porte.")
+        );
+        assert_eq!(closed.niveau, Some(1));
+        // Relue sur le disque, et un événement supprimé n'en reçoit plus.
+        let again = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        assert_eq!(again.get(&id).unwrap().niveau, Some(1));
+        assert!(store.delete(&id));
+        assert!(store.set_description(&id, "x".into(), None).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fresh_in_progress_event_is_also_closed_at_startup() {
+        let dir = temp();
+        let store = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        let now = chrono::Utc::now().timestamp() as f64;
+        let mut e = event(now - 1.0, 3);
+        e.in_progress = true;
+        e.has_clip = false;
+        store.save(e, Some(b"jpeg"), None).unwrap();
+        // Une nouvelle exécution : le passage récent ne peut pas être celui de cette exécution.
+        let again = EventStore::new(dir.clone(), DEFAULT_MAX_TOTAL_BYTES);
+        assert!(!again.all()[0].in_progress);
         let _ = std::fs::remove_dir_all(dir);
     }
 

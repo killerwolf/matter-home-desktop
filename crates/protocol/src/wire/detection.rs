@@ -211,6 +211,23 @@ pub struct DetectionEventView {
     /// par le nouveau.
     #[serde(default)]
     pub in_progress: bool,
+    /// Description en une phrase (ticket n° 19, API Anthropic), quand le serveur en produit : elle
+    /// arrive **après** l'événement (même `id`, nouvel envoi). Absente sinon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Niveau de menace donné avec la description : 0 normal, 1 suspect, 2 critique. Absent quand
+    /// la description est « indisponible » (refus du modèle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub niveau: Option<u8>,
+}
+
+/// Les mots des niveaux de menace (`{niveau}` dans les textes des règles, affichage).
+pub fn niveau_label(niveau: u8) -> &'static str {
+    match niveau {
+        0 => "normal",
+        1 => "suspect",
+        _ => "critique",
+    }
 }
 
 impl DetectionEventView {

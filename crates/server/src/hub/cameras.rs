@@ -186,10 +186,14 @@ impl Hub {
     /// à l'ouverture puis complet à la fin, même `id`). `rules` : transmis au moteur
     /// d'automatisations : `Some((true, _))` à l'ouverture, `Some((false, classes))` quand des
     /// classes nouvelles apparaissent en cours de passage, `None` à la fin.
+    ///
+    /// `awaiting` (ticket n° 19) : une description va arriver ; les règles qui l'emploient
+    /// attendent [`Hub::detection_described`].
     pub fn publish_detection(
         &self,
         event: &DetectionEventView,
         rules: Option<(bool, Vec<protocol::wire::DetectedClass>)>,
+        awaiting: bool,
     ) {
         {
             let mut st = self.lock();
@@ -208,8 +212,22 @@ impl Hub {
             let _ = self.send(protocol::events::Command::Detection {
                 event: Box::new(for_rules),
                 opening,
+                awaiting,
             });
         }
+    }
+
+    /// La description d'un passage est arrivée (déjà enregistrée et diffusée), ou ne viendra pas :
+    /// les règles qui l'attendaient partent.
+    pub fn detection_described(&self, event: &DetectionEventView) {
+        let _ = self.send(protocol::events::Command::DetectionDescribed {
+            event: Box::new(event.clone()),
+        });
+    }
+
+    /// Où est la caméra (`None` : inconnue).
+    pub fn camera_placement(&self, id: u64) -> Option<protocol::wire::CameraPlacement> {
+        self.lock().cameras.get(id).map(|c| c.emplacement)
     }
 
     /// La phrase du refus d'une caméra éteinte, avec le mode en cours.

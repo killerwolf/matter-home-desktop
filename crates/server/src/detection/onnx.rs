@@ -199,13 +199,27 @@ impl OnnxDetector {
         for path in [&main, &light].into_iter().filter(|p| p.is_file()) {
             trusted(path).map_err(|why| format!("{} refusé : {why}", file_name(path)))?;
         }
-        // Les réglages : ceux de `<données>/models/` l'emportent (utilisateur avancé), sinon ceux
-        // du dossier du modèle.
-        let spec = if models.join(SPEC).is_file() {
-            read_spec(models)?
-        } else {
-            read_spec(&dir)?
-        };
+        // Les réglages : `<données>/models/detector.json` ne s'applique que si le modèle utilisé
+        // vient lui aussi de `<données>/models/` ; il ne change jamais la configuration d'un
+        // modèle embarqué (qui a ses propres réglages, ou les valeurs par défaut).
+        let spec_dir = dir.as_path();
+        let ignored = dir != models && models.join(SPEC).is_file();
+        let spec = read_spec(spec_dir)?;
+        if ignored {
+            log::warn!(
+                "{} ignoré : le modèle utilisé est celui de l'application, pas un de {}",
+                models.join(SPEC).display(),
+                models.display()
+            );
+        }
+        log::info!(
+            "détection : réglages du modèle pris dans {}",
+            if spec_dir.join(SPEC).is_file() {
+                spec_dir.join(SPEC).display().to_string()
+            } else {
+                "les valeurs par défaut (pas de detector.json)".to_string()
+            }
+        );
         init_runtime(models)?;
         let mut tried = Vec::new();
         let mut attempt = |path: &Path, engine: Engine, label: &str| -> Option<(Session, String)> {

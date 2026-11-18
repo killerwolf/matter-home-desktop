@@ -189,7 +189,8 @@ pub enum Condition {
 #[serde(tag = "type")]
 pub enum Action {
     /// Notification envoyée aux clients connectés (pas au Mac du serveur, où personne ne
-    /// la verrait). Variables : {appareil}, {valeur}, {heure}, {regle}.
+    /// la verrait). Variables : {appareil}, {valeur}, {heure}, {regle}, et pour une détection
+    /// {description}, {niveau} (ticket n° 19).
     Notify {
         title: String,
         message: String,
@@ -245,7 +246,21 @@ pub struct Rule {
     pub cooldown_s: u64,
 }
 
+/// Les variables qui viennent de la description d'un événement de détection (ticket n° 19).
+pub const DESCRIPTION_VARIABLES: [&str; 2] = ["{description}", "{niveau}"];
+
 impl Rule {
+    /// Un texte de la règle (notification, adresse ou corps d'un webhook) emploie `{description}`
+    /// ou `{niveau}` : le serveur attend alors la description avant de l'exécuter.
+    pub fn uses_description(&self) -> bool {
+        let has = |t: &str| DESCRIPTION_VARIABLES.iter().any(|v| t.contains(v));
+        self.actions.iter().any(|a| match a {
+            Action::Notify { title, message } => has(title) || has(message),
+            Action::Webhook { url, body } => has(url) || has(body),
+            _ => false,
+        })
+    }
+
     pub fn new(id: u64) -> Self {
         Self {
             id,
