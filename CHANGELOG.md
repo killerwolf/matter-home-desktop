@@ -12,6 +12,43 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Détection de personnes, d'animaux et de véhicules** (ticket n° 18) sur les caméras en **Surveillance**
+  dans le mode actuel, sans enregistrement continu. Une seule session RTSP par caméra, **partagée** avec
+  le direct et les vignettes (le registre des sessions est maintenant tenu par le hub) ; aucune connexion
+  pour une caméra Éteinte ou en Diffusion. Pré-enregistrement des ~10 dernières secondes de H.264 brut en
+  mémoire ; mouvement sur 2 images décodées par seconde (VideoToolbox décode tout mais ne convertit que
+  celles-là) ; puis le modèle sur les images en mouvement : **ONNX Runtime + CoreML** par la caisse `ort`
+  en chargement dynamique (rien de lié à la compilation ; `libonnxruntime.dylib` et les modèles sont
+  embarqués dans l'application du serveur, `<données>/models/` reste un recours pour les utilisateurs
+  avancés, voir [docs/detection.md](docs/detection.md)), YOLOX (sortie brute de la grille)
+  et YOLOv8/YOLO11 reconnus, repli sur un petit modèle processeur (`detector-cpu.onnx`). Sans modèle : la
+  détection est désactivée et le dit. Un passage = un événement (8 s sans détection le ferment) : fiche,
+  capture JPEG et clip **MP4 sans réencodage** (avant + passage + après), dans `<données>/events/`, 7 jours
+  et 2 Go au plus (réglable, `detection.json`), nettoyés au démarrage et toutes les heures ; pas dans la
+  sauvegarde `.matterhome` (gardés à l'import). Classes, score minimal, zones et masques par caméra
+  (fenêtre « Caméras… » du serveur, section « Détection », qui montre aussi le moteur et les caméras
+  analysées). Pause de 30 s avec une ligne au journal si l'analyse ne suit plus.
+- **Événements dans les clients** : `WireEvent::Detection` (`detection`) et les routes
+  `GET /api/events`, `GET|DELETE /api/events/{id}`, `GET /api/events/{id}/snapshot`,
+  `GET /api/events/{id}/clip` (avec `Range`), ajoutés **dans le protocole 3**. App web : liste
+  « Événements » sous les caméras, capture et lecture du clip (cache du service worker en `v5`, la politique
+  de sécurité autorise `media-src blob:` pour ce seul usage). Client de bureau : colonne « Événements » à
+  côté de la mosaïque, le clip s'ouvre dans le lecteur du Mac.
+- **Détection embarquée** : `Matter Home Server.app` contient les modèles YOLOX-s et YOLOX-nano
+  (Apache-2.0) et ONNX Runtime 1.23.2 (MIT, roues PyPI officielles x86_64 et arm64 réunies, macOS 13
+  minimum pour la détection), avec leurs licences (`Contents/Resources/licences`) :
+  rien à installer. Ils sont téléchargés à la construction (`scripts/bundle-server-app.sh
+  --with-detection`) et vérifiés par empreinte SHA-256 épinglée (`scripts/detection-assets.sha256`).
+  Objets suivis d'une image à l'autre (un objet immobile depuis 10 s ne compte plus), détecteur
+  lancé seulement s'il y a du mouvement, passage coupé à 2 minutes, événement annoncé « en cours »
+  dès la première détection puis complété ; pause par caméra si l'analyse ne suit plus ou si le Mac
+  chauffe ; pas de clip sur un disque presque plein.
+- **Règles d'un serveur plus récent** : `Trigger`, `Condition` et `Action` ont une variante de repli
+  (`Unknown`), refusée à l'enregistrement.
+- **Automatisations** : « Quand une caméra détecte… » (`Trigger::Detection`, une caméra ou toutes, une ou
+  plusieurs classes), avec `{appareil}` = la caméra et `{valeur}` = la classe ; utilisable avec « Seulement
+  si le mode est… ».
+
 - **Mode global de la maison** (ticket n° 8) : **Présent**, **Absent**, **Nuit** ou **Vacances** (Présent
   par défaut), tenu par le serveur (`mode.json`, atomique, droits 0600, inclus dans la sauvegarde
   `.matterhome`) et le même pour tous les clients. **Protocole en version 3** (les règles de mode n'ont pas

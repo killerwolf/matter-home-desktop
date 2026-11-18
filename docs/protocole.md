@@ -139,7 +139,7 @@ Aucun message ne part du client (ses commandes passent par l'API). Le serveur en
 Événements (`event.type`) : `device_updated`, `device_removed`, `status`, `seen`, `mode`,
 `reading` (mesure ou état), `cover_motion`, `rule_run`, `pairing_progress`, `pairing_done`,
 `pairing_failed`, `notice`, `notification`, `plan_changed`, `rules_changed`, `cameras_changed`,
-`mode_changed`.
+`mode_changed`, `detection`.
 
 Le `seq` croît de 1 à chaque événement : un client qui voit un trou rouvre une connexion.
 **Client lent** : le serveur ne l'attend jamais. S'il prend du retard, il reçoit un nouveau
@@ -351,6 +351,33 @@ d'erreur nouveau (`wire::CAMERA_SNAPSHOT_PATH`, `wire::camera_snapshot_path(id)`
   caché.
 - **Compatibilité** : un client récent face à un serveur ancien reçoit le 404 sans `detail` et garde
   son texte « ouvrez la caméra » ; un client ancien ne connaît pas la route et ne l'appelle pas.
+
+### Les événements de détection
+
+Ticket n° 18 (voir [Détection](detection.md)). Ajouté **dans le protocole 3**, sans le relever : un
+client qui ne connaît pas l'événement `detection` l'ignore (`Unknown`), une classe inconnue se lit
+`unknown`.
+
+- **WebSocket** : `{"type": "detection", "event": {…}}` au **début** d'un passage (`in_progress:
+  true`, capture seulement), puis de nouveau, complet, à sa **fin** (`in_progress: false`, même `id` :
+  le client remplace l'ancien). Un passage = un événement. `event` : `id` (texte opaque), `camera_id` (texte), `camera_name`, `classes`
+  (`personne`, `chat`, `chien`, `vehicule`, la plus sûre d'abord), `score` (0 à 1), `start` et `end`
+  (s Unix), `has_clip`, `clip_s`.
+- **Routes** (jeton de session) :
+
+  | route | réponse |
+  |---|---|
+  | `GET /api/events?since=&camera=&limit=` | `{"events": […], "detection": {"available", "engine", "watched", "paused", "paused_cameras", "pause_reason"}}`, les plus récents d'abord ; `limit` 100 par défaut, 1000 au plus |
+  | `GET /api/events/{id}` | l'événement |
+  | `DELETE /api/events/{id}` | `202` ; `404` (`detail`) s'il n'existe pas |
+  | `GET /api/events/{id}/snapshot` | la meilleure image, `image/jpeg` |
+  | `GET /api/events/{id}/clip` | le clip, `video/mp4` (`moov` en tête), `Range: bytes=…` → `206` |
+
+- **Règles** : `Trigger::Detection { camera_id, classes }` (`{"type": "Detection", "camera_id":
+  "…" | null, "classes": ["personne"]}`). Comme pour les règles de mode, un client plus ancien ne
+  sait pas lire une règle qui l'utilise. Depuis ce ticket, `Trigger`, `Condition` et `Action` ont une
+  variante de repli (`Unknown`) : un type inconnu est lu sans faire échouer l'état complet, n'est
+  jamais exécuté, et le serveur refuse de l'enregistrer.
 
 ### Porte ou fenêtre sur le plan
 

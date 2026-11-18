@@ -58,6 +58,19 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 matter-home-video = { path = "../video" }
 jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
 
+# Détection (#18) : ONNX Runtime par `ort` (MIT ou Apache-2.0), en `load-dynamic` : rien n'est lié
+# ni téléchargé à la compilation (les binaires que `ort` sait télécharger n'existent pas pour les
+# Mac Intel), la bibliothèque `libonnxruntime.dylib` est chargée au lancement depuis le dossier des
+# modèles. Le binaire universel reste du seul code Rust. Voir docs/detection.md.
+# Espace libre du disque avant d'écrire un clip (`statvfs`) ; déjà dans l'arbre.
+libc = "0.2"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "coreml", "api-20"] }
+
+# Température du Mac (`ProcessInfo.thermalState`) : la détection se suspend s'il chauffe. Déjà dans
+# l'arbre (objc2).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo"] }
+
 [dev-dependencies]
 tokio-tungstenite = "0.29"
 # Fausse caméra RTSP des tests : en-tête d'authentification Basic.

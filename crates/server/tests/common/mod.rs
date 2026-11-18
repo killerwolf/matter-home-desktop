@@ -350,11 +350,26 @@ impl Client {
         token: Option<&str>,
         body: Option<&[u8]>,
     ) -> Resp {
+        self.request_with(method, path, token, body, &[]).await
+    }
+
+    /// Même chose, avec des en-têtes de plus (`Range`…).
+    pub async fn request_with(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&[u8]>,
+        headers: &[(&str, &str)],
+    ) -> Resp {
         let mut stream = self.connect().await;
         let mut head =
             format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
         if let Some(t) = token {
             head.push_str(&format!("Authorization: Bearer {t}\r\n"));
+        }
+        for (name, value) in headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
         }
         if let Some(b) = body {
             head.push_str(&format!(

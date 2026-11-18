@@ -9,7 +9,7 @@ de la règle sélectionnée et le journal des dernières exécutions.
 
 | | Possibilités |
 |---|---|
-| **Quand** | le mode de la maison devient Présent, Absent, Nuit ou Vacances (voir [Modes](modes.md)) ; une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
+| **Quand** | le mode de la maison devient Présent, Absent, Nuit ou Vacances (voir [Modes](modes.md)) ; une caméra (ou n'importe laquelle) détecte une personne, un chat, un chien ou un véhicule (voir [Détection](detection.md)) ; une porte / fenêtre s'ouvre ou se ferme ; une mesure (température, humidité, puissance, pile, ouverture d'un volet) dépasse ou descend sous un seuil, éventuellement pendant N minutes ; une prise / lampe s'allume ou s'éteint ; un appareil reste injoignable N minutes ; à une heure donnée, certains jours |
 | **Si** (toutes les conditions) | plage horaire (elle peut passer minuit : 22:00 → 07:00) ; le mode de la maison est l'un des modes cochés (« Absent ou Vacances ») ; porte ouverte / fermée ; prise allumée / éteinte ; mesure au-dessus / en dessous d'une valeur |
 | **Alors** (dans l'ordre) | notification macOS ; allumer / éteindre / inverser une prise ou lampe ; ouvrir / fermer / arrêter un volet ou l'amener à N % d'ouverture ; appeler une URL (webhook) ; attendre N secondes ; changer le mode de la maison (voir [Modes](modes.md)) |
 
@@ -30,6 +30,8 @@ de la règle sélectionnée et le journal des dernières exécutions.
 - **Alerte de porte selon le mode** — Quand : la porte d'entrée s'ouvre. Si : le mode est Absent
   ou Vacances. Alors : notifier « {appareil} ouverte à {heure} ».
 - **Accueil** — Quand : le mode devient Présent. Alors : allumer la lampe de l'entrée.
+- **Quelqu'un dans l'allée** — Quand : la caméra « Allée » détecte une personne. Si : le mode est
+  Absent ou Vacances. Alors : notifier « {valeur} détectée sur {appareil} à {heure} ».
 
 ## Textes et variables
 
@@ -37,8 +39,8 @@ Les textes des notifications et des webhooks acceptent :
 
 | Variable | Remplacée par |
 |---|---|
-| `{appareil}` | nom de l'appareil qui a déclenché la règle |
-| `{valeur}` | valeur ou état (« ouverte », « 26,40 °C », « allumée »…, ou le nom du mode pour « Quand le mode devient… ») |
+| `{appareil}` | nom de l'appareil qui a déclenché la règle (de la caméra pour une détection) |
+| `{valeur}` | valeur ou état (« ouverte », « 26,40 °C », « allumée »…, le nom du mode pour « Quand le mode devient… », la classe pour une détection : « personne », « chat », « chien », « véhicule ») |
 | `{heure}` | heure du déclenchement (HH:MM) |
 | `{regle}` | nom de la règle |
 
@@ -64,6 +66,10 @@ ce que fait l'import d'une sauvegarde de la v0.2.1 pour ses brouillons (voir
 - **Mode** : une règle « Quand le mode devient X » ne se lance que sur un **changement** : redemander
   le mode actuel, ou le mode lu au démarrage du serveur, ne déclenche rien. Dans « Seulement si », au
   moins un mode doit être coché (le serveur refuse une condition sans mode).
+- **Détection** : une règle part **une fois par passage**, pas à chaque image : à son début (dès la
+  première détection), ou, pour une règle qui suit une classe précise, quand cette classe **apparaît**
+  en cours de passage (une personne sort de la voiture, le maître suit le chien). L'anti-rafale
+  s'applique en plus. Sans case cochée, n'importe quelle classe compte (une fois, à l'ouverture).
 - **Changements uniquement** : au démarrage ou à la reconnexion, la première valeur connue
   d'un appareil ne déclenche rien, pas plus que les mesures relues de l'historique.
 - **Commandes** : une prise, une lampe ou un volet ne peut être commandé que si l'appareil

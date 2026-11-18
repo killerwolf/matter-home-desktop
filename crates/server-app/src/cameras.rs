@@ -9,7 +9,7 @@
 use matter_home_server::cameras::{
     describe_stream, split_credentials, CameraAdmin, CameraDraft, StreamKind, StreamTest,
 };
-use protocol::wire::{CameraModes, CameraPlacement, CameraStatus};
+use protocol::wire::{CameraModes, CameraPlacement, CameraStatus, DetectionSettings, Polygon};
 
 /// Ce que la fenêtre dit des sauvegardes (demandé par le ticket #4 : « à dire dans l'interface »).
 pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
@@ -122,7 +122,65 @@ pub struct Form {
     pub emplacement: CameraPlacement,
     /// Ce que fait la caméra dans chaque mode de la maison, modifiable à la main.
     pub modes: CameraModes,
+    /// Détection (ticket n° 18) : classes suivies et scores minimaux.
+    pub detection: DetectionSettings,
+    /// Zones, un polygone par ligne (`x,y x,y x,y`, de 0 à 1).
+    pub zones: String,
+    /// Masques, même écriture.
+    pub masks: String,
 }
+
+/// Les polygones d'un champ texte, un par ligne ; une ligne illisible donne un polygone vide, que
+/// le serveur refuse avec un message clair (rien n'est perdu en silence).
+pub fn parse_polygons(text: &str) -> Vec<Polygon> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| Polygon::parse(l).unwrap_or_default())
+        .collect()
+}
+
+pub fn polygons_text(polygons: &[Polygon]) -> String {
+    polygons
+        .iter()
+        .map(Polygon::to_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// L'état de la détection, en une ligne (fenêtre « Caméras… »).
+pub fn detection_line(status: &protocol::wire::DetectionStatusView) -> (Tone, String) {
+    if !status.available {
+        return (Tone::Bad, format!("Détection {}", status.engine));
+    }
+    let watched = match status.watched.len() {
+        0 => "aucune caméra analysée".to_string(),
+        1 => "1 caméra analysée".to_string(),
+        n => format!("{n} caméras analysées"),
+    };
+    if status.paused {
+        (
+            Tone::Bad,
+            format!(
+                "Détection suspendue sur {} caméra(s) : {} · {}",
+                status.paused_cameras.len(),
+                status
+                    .pause_reason
+                    .as_deref()
+                    .unwrap_or("machine surchargée"),
+                status.engine
+            ),
+        )
+    } else {
+        (
+            Tone::Good,
+            format!("Détection prête · {} · {watched}", status.engine),
+        )
+    }
+}
+
+/// Aide des zones et des masques.
+pub const ZONES_HINT: &str = "Un polygone par ligne, en points « x,y » de 0 à 1 (0,0 en haut à gauche, 1,1 en bas à droite). Exemple pour la moitié basse : 0,0.5 1,0.5 1,1 0,1. Zones : si vous en mettez, seul ce qui a les pieds dedans compte. Masques : le mouvement et les objets dedans sont ignorés (arbre, rue, reflet).";
 
 impl Form {
     pub fn new() -> Self {
@@ -142,6 +200,9 @@ impl Form {
             change_password: false,
             emplacement: camera.emplacement,
             modes: camera.modes,
+            detection: camera.detection.clone(),
+            zones: polygons_text(&camera.detection.zones),
+            masks: polygons_text(&camera.detection.masks),
         }
     }
 
@@ -199,6 +260,11 @@ impl Form {
             password,
             emplacement: self.emplacement,
             modes: self.modes,
+            detection: DetectionSettings {
+                zones: parse_polygons(&self.zones),
+                masks: parse_polygons(&self.masks),
+                ..self.detection.clone()
+            },
         }
     }
 
@@ -508,5 +574,42 @@ mod tests {
         assert!(AQARA_HINT.contains("à vérifier"));
         // Typographie : espace insécable avant « : », « » et « ? ».
         assert!(!BACKUP_NOTE.contains(" :") && BACKUP_NOTE.contains(" :"));
+    }
+
+    #[test]
+    fn detection_settings_round_trip_through_the_form() {
+        use protocol::wire::{DetectedClass, DetectionStatusView};
+        let mut form = Form::new();
+        form.name = "Allée".into();
+        form.url = "rtsp://192.0.2.1/x".into();
+        form.zones = "0,0.5 1,0.5 1,1 0,1\n\n".into();
+        form.masks = "pas un polygone".into();
+        form.detection.set_min_score(DetectedClass::Chat, 0.7);
+        let draft = form.draft();
+        assert_eq!(draft.detection.zones.len(), 1);
+        assert_eq!(draft.detection.masks.len(), 1);
+        assert!(
+            !draft.detection.masks[0].is_valid(),
+            "le serveur refusera, rien de perdu"
+        );
+        assert_eq!(draft.detection.min_score(DetectedClass::Chat), 0.7);
+        assert_eq!(polygons_text(&draft.detection.zones), "0,0.5 1,0.5 1,1 0,1");
+        let off = DetectionStatusView {
+            available: false,
+            engine: "désactivée : aucun modèle".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            detection_line(&off),
+            (Tone::Bad, "Détection désactivée : aucun modèle".into())
+        );
+        let ready = DetectionStatusView {
+            available: true,
+            engine: "CoreML, entrée 640×640".into(),
+            watched: vec![1, 2],
+            ..Default::default()
+        };
+        assert_eq!(detection_line(&ready).0, Tone::Good);
+        assert!(detection_line(&ready).1.contains("2 caméras analysées"));
     }
 }

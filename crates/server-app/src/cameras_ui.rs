@@ -12,11 +12,11 @@ use matter_home_server::cameras::{CameraAdmin, CameraTest, StreamKind};
 use matter_home_server::hub::Hub;
 use matter_home_server_app::cameras::{
     dot_tone, problem_text, status_line, test_lines, test_lines_by_stream, Form, Tone, AQARA_HINT,
-    AQARA_TITLE, BACKUP_NOTE, NO_SUB_NOTE,
+    AQARA_TITLE, BACKUP_NOTE, NO_SUB_NOTE, ZONES_HINT,
 };
 use matter_home_theme as theme;
 use protocol::mode::HomeMode;
-use protocol::wire::{CameraBehavior, CameraPlacement};
+use protocol::wire::{CameraBehavior, CameraPlacement, DetectedClass};
 
 #[derive(Default)]
 pub struct CamerasUi {
@@ -264,6 +264,8 @@ impl CamerasUi {
         ui.add_space(6.0);
         modes_ui(ui, form);
         ui.add_space(6.0);
+        detection_ui(ui, form, hub);
+        ui.add_space(6.0);
         egui::CollapsingHeader::new(AQARA_TITLE).show(ui, |ui| {
             ui.label(RichText::new(AQARA_HINT).color(p.text_secondary));
         });
@@ -396,11 +398,72 @@ fn modes_ui(ui: &mut egui::Ui, form: &mut Form) {
     ui.label(
         RichText::new(
             "Éteinte : ni direct ni image dans ce mode. Diffusion : on peut la regarder. \
-             Surveillance : comme Diffusion pour l'instant (la détection viendra plus tard).",
+             Surveillance : comme Diffusion, et le serveur cherche personnes, animaux et \
+             véhicules (événements avec capture et clip, voir « Détection » ci-dessous).",
         )
         .small()
         .color(p.text_secondary),
     );
+}
+
+/// La détection de la caméra (ticket n° 18) : l'état du moteur, les classes suivies et leur score
+/// minimal, les zones et les masques (un polygone par ligne).
+fn detection_ui(ui: &mut egui::Ui, form: &mut Form, hub: &Arc<Hub>) {
+    let p = theme::palette(ui);
+    egui::CollapsingHeader::new(RichText::new("Détection").strong())
+        .id_salt("camera_detection")
+        .show(ui, |ui| {
+            let status = hub.detection().status();
+            let (tone, line) = matter_home_server_app::cameras::detection_line(&status);
+            ui.colored_label(tone_color(ui, tone), line);
+            if let Some(id) = form.editing {
+                if status.watched.contains(&id) {
+                    ui.colored_label(
+                        tone_color(ui, Tone::Good),
+                        "Cette caméra est analysée en ce moment.",
+                    );
+                }
+            }
+            ui.add_space(4.0);
+            egui::Grid::new("camera_detection_classes")
+                .num_columns(3)
+                .show(ui, |ui| {
+                    for class in DetectedClass::ALL {
+                        let mut on = form.detection.classes.contains(&class);
+                        if ui.checkbox(&mut on, class.label()).changed() {
+                            if on {
+                                form.detection.classes.push(class);
+                                form.detection.classes.sort();
+                            } else {
+                                form.detection.classes.retain(|c| *c != class);
+                            }
+                        }
+                        ui.label("score minimal");
+                        let mut score = form.detection.min_score(class);
+                        if ui
+                            .add(egui::Slider::new(&mut score, 0.2..=0.95).step_by(0.05))
+                            .changed()
+                        {
+                            form.detection.set_min_score(class, score);
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(4.0);
+            ui.label("Zones (un polygone par ligne)");
+            ui.add(
+                egui::TextEdit::multiline(&mut form.zones)
+                    .desired_rows(2)
+                    .hint_text("0,0.5 1,0.5 1,1 0,1"),
+            );
+            ui.label("Masques (un polygone par ligne)");
+            ui.add(
+                egui::TextEdit::multiline(&mut form.masks)
+                    .desired_rows(2)
+                    .hint_text("0,0 1,0 1,0.2 0,0.2"),
+            );
+            ui.label(RichText::new(ZONES_HINT).small().color(p.text_secondary));
+        });
 }
 
 /// Le résultat du test d'un flux, sous son adresse.

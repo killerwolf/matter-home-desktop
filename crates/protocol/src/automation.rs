@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::MeasureKind;
 use crate::mode::HomeMode;
+use crate::wire::DetectedClass;
 
 /// Une adresse de webhook acceptable : http(s) seulement, sans espace ni caractère de contrôle.
 /// Le serveur refuse les autres (`PUT /api/rules`) ; le client s'en sert pour ne pas envoyer
@@ -121,6 +122,32 @@ pub enum Trigger {
     /// Le mode de la maison devient `to` (un changement seulement : redemander le mode actuel
     /// ne déclenche rien).
     Mode { to: HomeMode },
+    /// Une détection sur une caméra en Surveillance (ticket n° 18) : à la **fin** d'un passage
+    /// (un passage = un événement). `camera_id` : `None` pour toutes les caméras ; `classes` vide :
+    /// n'importe quelle classe. Variables : `{appareil}` = nom de la caméra, `{valeur}` = la classe.
+    Detection {
+        #[serde(default)]
+        camera_id: Option<u64>,
+        #[serde(default)]
+        classes: Vec<DetectedClass>,
+    },
+    /// Un déclencheur d'un serveur plus récent : lu sans faire échouer tout l'état complet, jamais
+    /// exécuté, et refusé par la validation du serveur (`PUT /api/rules`).
+    #[serde(other)]
+    Unknown,
+}
+
+impl Trigger {
+    /// Une détection de ces classes sur cette caméra fait-elle partir le déclencheur ?
+    pub fn matches_detection(&self, camera: u64, seen: &[DetectedClass]) -> bool {
+        match self {
+            Trigger::Detection { camera_id, classes } => {
+                camera_id.is_none_or(|c| c == camera)
+                    && (classes.is_empty() || seen.iter().any(|s| classes.contains(s)))
+            }
+            _ => false,
+        }
+    }
 }
 
 fn all_days() -> [bool; 7] {
@@ -153,6 +180,9 @@ pub enum Condition {
     Mode {
         is: Vec<HomeMode>,
     },
+    /// Une condition d'un serveur plus récent (voir `Trigger::Unknown`) : jamais vraie.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,6 +217,9 @@ pub enum Action {
     SetMode {
         mode: HomeMode,
     },
+    /// Une action d'un serveur plus récent (voir `Trigger::Unknown`) : jamais exécutée.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Délai minimal d'une règle qui change le mode quand le mode change : sans lui, deux règles

@@ -175,6 +175,9 @@ impl Device {
     }
 }
 
+/// Passages détectés gardés en mémoire par le client.
+pub const DETECTIONS_KEPT: usize = 100;
+
 /// Ce qu'un événement a changé et que l'interface doit savoir (journal, plan, règles,
 /// appairage, notification). Les changements de simples valeurs n'ont pas besoin d'être
 /// rapportés : l'interface relit le modèle à chaque image.
@@ -209,6 +212,8 @@ pub enum Change {
     RuleRun(RuleRunView),
     PlanChanged(Box<HomePlan>),
     RulesChanged(Box<RuleSet>),
+    /// Un passage détecté (ticket n° 18) : ligne de journal ; la liste est dans `Model::detections`.
+    Detection(String),
     /// La liste des caméras (`Model::cameras`) vient de changer.
     CamerasChanged,
     /// Le mode de la maison a changé (`Model::mode` est déjà à jour) : une ligne au journal.
@@ -223,6 +228,9 @@ pub struct Model {
     /// Les caméras (sans adresse ni mot de passe : le serveur ne les envoie jamais), triées par
     /// nom. Remplacées d'un bloc à chaque `cameras_changed` (voir `docs/protocole.md`).
     pub cameras: Vec<CameraView>,
+    /// Les derniers passages détectés annoncés pendant la connexion (ticket n° 18), le plus récent
+    /// d'abord. La liste complète se lit à la demande (`GET /api/events`).
+    pub detections: std::collections::VecDeque<protocol::wire::DetectionEventView>,
     /// Le mode global de la maison, tenu par le serveur (Présent tant qu'il n'a rien dit).
     pub mode: HomeMode,
     /// Le serveur a annoncé un mode (état complet) : sinon le sélecteur reste caché.
@@ -370,6 +378,21 @@ impl Model {
             WireEvent::CamerasChanged { cameras } => {
                 self.cameras = cameras;
                 Change::CamerasChanged
+            }
+            WireEvent::Detection { event } => {
+                // Le même passage revient complet à sa fin : il remplace la version « en cours ».
+                if let Some(known) = self.detections.iter_mut().find(|e| e.id == event.id) {
+                    *known = event;
+                    return Change::Nothing;
+                }
+                let line = format!(
+                    "Détection ({}) : {}",
+                    event.class().lower(),
+                    event.camera_name
+                );
+                self.detections.push_front(event);
+                self.detections.truncate(DETECTIONS_KEPT);
+                Change::Detection(line)
             }
             WireEvent::ModeChanged { mode } => {
                 self.mode = mode;

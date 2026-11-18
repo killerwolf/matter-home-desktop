@@ -19,6 +19,7 @@
 mod api;
 mod camera;
 mod convert;
+mod detection;
 mod error;
 mod message;
 mod stream;
@@ -26,6 +27,7 @@ mod text_ids;
 
 pub use api::*;
 pub use camera::*;
+pub use detection::*;
 pub use error::*;
 pub use message::*;
 pub use stream::*;

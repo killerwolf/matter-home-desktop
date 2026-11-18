@@ -23,7 +23,7 @@ Chaque caméra a un **emplacement** (Intérieure ou Extérieure) et un **comport
 |---|---|
 | **Éteinte** | le serveur **refuse** le direct et l'image fixe (erreur 503 « caméra éteinte en mode … ») et **ferme** une lecture en cours dans les 2 s qui suivent le changement de mode |
 | **Diffusion** | on peut la regarder (direct et image fixe) |
-| **Surveillance** | se regarde comme en Diffusion pour l'instant ; la détection (mouvement, personne) viendra dans un ticket ultérieur |
+| **Surveillance** | se regarde comme en Diffusion, **et** le serveur l'analyse : personnes, animaux et véhicules deviennent des événements avec capture et clip (voir [Détection](detection.md)). Sans modèle installé : comme Diffusion |
 
 Choisir l'emplacement **pré-remplit** le tableau, qui reste modifiable ligne par ligne :
 

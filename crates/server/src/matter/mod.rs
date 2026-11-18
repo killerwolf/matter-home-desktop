@@ -675,6 +675,9 @@ async fn run(
                     Command::SetHomeMode(mode) => {
                         let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
                     }
+                    Command::Detection { event, opening } => {
+                        let _ = engine_tx.send(automation::EngineCommand::Detection(event, opening));
+                    }
                     Command::Customize { node_id, name, icon } => {
                         let name = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                         if let Some(info) = ctx.customize(node_id, name, icon) {

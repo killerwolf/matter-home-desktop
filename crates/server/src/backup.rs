@@ -607,6 +607,20 @@ fn prepare(
     if old_server.is_dir() {
         copy_tree(&old_server, &partial.join(SERVER_DIR)).map_err(ApplyError::Transient)?;
     }
+    // La détection (ticket n° 18) : modèles, événements et réglages de ce Mac, hors sauvegarde,
+    // suivent le nouveau dossier comme `serveur/`.
+    for local in [crate::detection::MODELS_DIR, crate::detection::store::DIR] {
+        let from = dir.join(local);
+        if from.is_dir() {
+            copy_tree(&from, &partial.join(local)).map_err(ApplyError::Transient)?;
+        }
+    }
+    let config = dir.join(crate::detection::CONFIG_FILE);
+    if config.is_file() {
+        let bytes = std::fs::read(&config).map_err(|e| ApplyError::Transient(e.into()))?;
+        write_new_private(&partial.join(crate::detection::CONFIG_FILE), &bytes)
+            .map_err(ApplyError::Transient)?;
+    }
     checkpoint(hook, "serveur")?;
     sync_dir(partial).map_err(ApplyError::Transient)?;
     checkpoint(hook, "construit")?;

@@ -20,6 +20,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/charts.js", "text/javascript"),
     ("/app/temps.js", "text/javascript"),
     ("/app/cameras.js", "text/javascript"),
+    ("/app/events.js", "text/javascript"),
     ("/app/plan.js", "text/javascript"),
     ("/app/mode.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
@@ -170,7 +171,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("matter-home-shell-v4"),
+            sw.contains("matter-home-shell-v5") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.
@@ -466,11 +467,11 @@ fn api_responses_carry_a_locked_down_csp() {
         let r = client.request("GET", "/api/state", None, None).await;
         assert_eq!(r.status, 401);
         assert!(r.headers["content-security-policy"].contains("default-src 'none'"));
-        // La coquille garde sa propre politique, sans media-src ni blob:.
+        // La coquille garde sa propre politique : pas de `blob:` pour les images, seulement
+        // `media-src blob:` pour le clip d'un événement de détection (ticket n° 18).
         let r = client.request("GET", "/app/", None, None).await;
         let csp = &r.headers["content-security-policy"];
-        assert!(
-            csp.contains("img-src 'self';") && !csp.contains("media-src") && !csp.contains("blob:")
-        );
+        assert!(csp.contains("img-src 'self';") && csp.contains("media-src blob:;"));
+        assert_eq!(csp.matches("blob:").count(), 1, "{csp}");
     });
 }

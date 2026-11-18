@@ -152,6 +152,9 @@ crates/server/src/     serveur (Matter, règles, historique) : aucune dépendanc
   history_store.rs     historique sur disque : ajout, relecture, rétention (+ tests)
   automation.rs        moteur de règles, actions (+ tests)
   backup.rs            export / import des données
+  detection/           détection sur les caméras en Surveillance (ticket n° 18, docs/detection.md) :
+                       veille et superviseur, pré-enregistrement, mouvement, détecteur (trait +
+                       ONNX/CoreML), passages, MP4 sans réencodage, événements sur disque (+ tests)
   demo.rs              backend simulé (--demo) (+ tests)
   matter/mod.rs        démarrage du backend, appairage, commandes (+ tests)
   matter/node.rs       supervision d'un nœud : CASE, description, souscription
@@ -185,6 +188,8 @@ crates/client/tests/   couche connexion contre le vrai matter-home-server --demo
 vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md
+scripts/fetch-detection-assets.sh  modèles YOLOX et ONNX Runtime à embarquer, empreintes vérifiées
+                       (scripts/detection-assets.sha256)
 scripts/make-icon.*    génération de l'icône (assets/icon.png, assets/icon.icns)
 scripts/dmg-settings.py           mise en page de la fenêtre du DMG (dmgbuild)
 scripts/make-dmg-background.swift fond du DMG (assets/dmg/background*.png)

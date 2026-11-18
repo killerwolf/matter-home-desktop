@@ -421,6 +421,7 @@ fn invalid_duplicate_and_out_of_range_cameras_are_dropped_on_load() {
         password: None,
         emplacement: Default::default(),
         modes: Default::default(),
+        detection: Default::default(),
     };
     let dup = StoredCamera {
         name: "Double".into(),

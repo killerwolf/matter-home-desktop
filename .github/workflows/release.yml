@@ -116,8 +116,11 @@ jobs:
       # Matter Home Server : l'application de la barre de menus, universelle (macOS 10.15
       # minimum côté Intel, 11.0 côté Apple Silicon), signée « ad hoc » :
       # dist/MatterHomeServer-<version>-universal.dmg.
+      # --with-detection : modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT) embarqués, téléchargés
+      # depuis leurs versions officielles et vérifiés par empreinte SHA-256 épinglée
+      # (scripts/detection-assets.sha256 ; la construction échoue sinon).
       - name: Build the server app DMG
-        run: scripts/bundle-server-app.sh --dmg
+        run: scripts/bundle-server-app.sh --dmg --with-detection
 
       # Binaire universel (les deux cibles sont installées), macOS 10.15 minimum côté Intel,
       # signature ad hoc : dist/matter-home-server-<version>-macos.tar.gz.

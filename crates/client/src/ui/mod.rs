@@ -10,6 +10,7 @@ mod cameras;
 mod connect;
 mod customize;
 mod devices;
+mod events;
 mod notify;
 mod plan;
 mod player;
@@ -223,6 +224,8 @@ pub struct MatterApp {
     view: View,
     plan: plan::PlanView,
     rules: rules::RulesView,
+    /// Événements de détection (ticket n° 18), à côté de la mosaïque des caméras.
+    events_view: events::EventsView,
     /// Appareil dont l'effacement d'historique attend confirmation.
     confirm_clear: Option<u64>,
     /// Appareil dont l'oubli attend une confirmation.
@@ -300,6 +303,7 @@ impl MatterApp {
             view: View::Plan,
             plan: plan::PlanView::new(),
             rules: rules::RulesView::new(),
+            events_view: events::EventsView::new(),
             confirm_clear: None,
             confirm_forget: None,
             device_edit: None,
@@ -1013,6 +1017,7 @@ impl MatterApp {
     /// partent jamais vers un autre serveur.
     fn clear_data(&mut self, keep_drafts: bool, wipe_texts: bool) {
         self.model.clear();
+        self.events_view.clear();
         self.series.clear();
         self.temp_series.clear();
         self.pending.clear();
@@ -1217,7 +1222,7 @@ impl MatterApp {
                     }
                 }
             }
-            Change::Journal(line) => self.push_log(line),
+            Change::Journal(line) | Change::Detection(line) => self.push_log(line),
             Change::PairingProgress(m) => self.pairing = Pairing::InProgress(m),
             Change::PairingDone { name, .. } => {
                 self.push_log(format!("Appairé : {name}"));
@@ -2701,8 +2706,21 @@ impl eframe::App for MatterApp {
                     plan::PlanAction::None => {}
                 },
                 View::Temperatures => self.temperatures_page(ui),
-                View::Cameras => cameras::show(ui, &self.model, self.plan.plan()),
+                View::Cameras => {
+                    // Les événements à droite, la mosaïque (ou la caméra ouverte) à gauche.
+                    egui::Panel::right("events-panel")
+                        .resizable(false)
+                        .exact_size(300.0)
+                        .show(ui, |ui| self.events_view.show(ui, &self.model));
+                    cameras::show(ui, &self.model, self.plan.plan());
+                }
                 View::Rules => {
+                    self.rules.cameras = self
+                        .model
+                        .cameras
+                        .iter()
+                        .map(|c| (c.id, c.name.clone()))
+                        .collect();
                     if let rules::RulesAction::Test(id) =
                         self.rules
                             .show(ui, &self.model.devices, &self.model.rule_runs)

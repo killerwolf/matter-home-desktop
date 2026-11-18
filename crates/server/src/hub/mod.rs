@@ -150,6 +150,11 @@ pub struct Hub {
     camera_wake: Mutex<Option<mpsc::UnboundedSender<Wake>>>,
     /// Spectateurs de chaque caméra (voir `hub/cameras.rs`).
     viewers: Arc<ViewerRegistry>,
+    /// Les sessions du direct, une par caméra et par flux, partagées par les spectateurs, les
+    /// vignettes et la détection (ticket n° 18).
+    live: Arc<crate::cameras::live::LiveRegistry>,
+    /// La détection : événements sur disque, état, réveil du superviseur (`detection/`).
+    detection: Arc<crate::detection::Detection>,
     /// Un verrou par caméra : une seule connexion de vérification à la fois.
     camera_locks: Mutex<std::collections::HashMap<u64, Arc<Mutex<()>>>>,
     scrubber: Scrubber,
@@ -216,6 +221,11 @@ impl Hub {
             write_lock: Mutex::new(()),
             camera_wake: Mutex::new(None),
             viewers: Arc::new(ViewerRegistry::default()),
+            live: crate::cameras::live::LiveRegistry::new(Default::default()),
+            detection: Arc::new(crate::detection::Detection::new(
+                &config.data_dir,
+                config.demo,
+            )),
             camera_locks: Mutex::new(std::collections::HashMap::new()),
             scrubber: Scrubber::new(&config.data_dir),
             data_dir: config.data_dir,
@@ -226,6 +236,16 @@ impl Hub {
             stopping: AtomicBool::new(false),
             import_staged: AtomicBool::new(false),
         }
+    }
+
+    /// Le registre des sessions du direct (voir `cameras/live.rs`).
+    pub fn live(&self) -> &Arc<crate::cameras::live::LiveRegistry> {
+        &self.live
+    }
+
+    /// La détection (ticket n° 18) : événements, état, réglages.
+    pub fn detection(&self) -> &Arc<crate::detection::Detection> {
+        &self.detection
     }
 
     fn lock(&self) -> MutexGuard<'_, HubState> {
@@ -448,6 +468,8 @@ impl Hub {
         self.publish_cameras(&mut st);
         drop(st);
         log::info!("mode : {} → {}", previous.label(), mode.label());
+        // Les caméras en Surveillance changent avec le mode : le superviseur revoit sa liste.
+        self.detection.wake();
         // Le moteur peut avoir disparu (arrêt en cours) : le mode est enregistré, c'est l'essentiel.
         let _ = self.send(Command::SetHomeMode(mode));
         Ok(true)

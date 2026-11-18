@@ -29,6 +29,15 @@ pub enum Command {
     /// Le mode de la maison vient de changer (déjà enregistré par le serveur) : le moteur
     /// d'automatisations le retient et déclenche les règles « Quand le mode devient… ».
     SetHomeMode(HomeMode),
+    /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18) : le moteur
+    /// d'automatisations déclenche les règles « Quand … est détecté ».
+    /// `opening` : le passage commence (toutes les règles qui le couvrent) ; sinon, une classe
+    /// **nouvelle** dans un passage en cours (`event.classes` ne porte qu'elle) : seules les règles
+    /// qui suivent cette classe partent.
+    Detection {
+        event: Box<crate::wire::DetectionEventView>,
+        opening: bool,
+    },
     /// Nom et icône choisis par l'utilisateur ; `None` = revenir à l'automatique.
     Customize {
         node_id: u64,

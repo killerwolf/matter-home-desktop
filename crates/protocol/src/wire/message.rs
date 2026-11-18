@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::camera::CameraView;
+use super::detection::DetectionEventView;
 use super::error::ErrorCode;
 use super::text_ids::{text_id, TextIds};
 use crate::automation::RuleSet;
@@ -250,6 +251,12 @@ pub enum WireEvent {
     /// (une trentaine d'entrées au plus), à appliquer en remplaçant la précédente.
     CamerasChanged {
         cameras: Vec<CameraView>,
+    },
+    /// Détection terminée sur une caméra en Surveillance (ticket n° 18) : un passage complet, avec
+    /// sa capture et son clip. Ajouté dans le protocole 3 : un client qui ne le connaît pas
+    /// l'ignore (`Unknown`).
+    Detection {
+        event: DetectionEventView,
     },
     /// Un événement d'un type que ce client ne connaît pas (serveur plus récent). À **ignorer** ;
     /// son `seq` compte quand même (voir `ServerMessage::Event`). Ne s'envoie jamais.

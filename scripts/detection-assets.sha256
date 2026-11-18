@@ -1,0 +1,14 @@
+# Empreintes SHA-256 des fichiers de la détection (ticket n° 18) embarqués dans « Matter Home
+# Server.app » par scripts/fetch-detection-assets.sh. Une ligne par fichier : empreinte, nom, adresse.
+# Le script refuse tout fichier dont l'empreinte diffère, et tout fichier sans empreinte (ligne
+# « A_EPINGLER ») : voir docs/detection.md, « Épingler une empreinte ».
+#
+# YOLOX (Apache-2.0), version officielle 0.1.1rc0 de Megvii-BaseDetection/YOLOX.
+c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  yolox_s.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+A_EPINGLER  yolox_nano.onnx  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+# ONNX Runtime 1.23.2 (MIT), roues officielles publiées par Microsoft sur PyPI (`onnxruntime`),
+# macOS 13 minimum : la bibliothèque C (`onnxruntime/capi/libonnxruntime.1.23.2.dylib`, avec CoreML)
+# de chaque architecture est réunie en une bibliothèque universelle. Empreintes : champ
+# `digests.sha256` de https://pypi.org/pypi/onnxruntime/1.23.2/json.
+218295a8acae83905f6f1aed8cacb8e3eb3bd7513a13fe4ba3b2664a19fc4a6b  onnxruntime-1.23.2-cp312-cp312-macosx_13_0_x86_64.whl  https://files.pythonhosted.org/packages/91/9d/a81aafd899b900101988ead7fb14974c8a58695338ab6a0f3d6b0100f30b/onnxruntime-1.23.2-cp312-cp312-macosx_13_0_x86_64.whl
+b8f029a6b98d3cf5be564d52802bb50a8489ab73409fa9db0bf583eabb7c2321  onnxruntime-1.23.2-cp312-cp312-macosx_13_0_arm64.whl  https://files.pythonhosted.org/packages/1b/9e/f748cd64161213adeef83d0cb16cb8ace1e62fa501033acdd9f9341fff57/onnxruntime-1.23.2-cp312-cp312-macosx_13_0_arm64.whl
