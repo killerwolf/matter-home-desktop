@@ -155,6 +155,8 @@ struct Backoff {
     wait: Duration,
 }
 
+/// Attente maximale, à l'arrêt du serveur, de l'écriture des événements en cours.
+pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 const RETRY_FIRST: Duration = Duration::from_secs(10);
 const RETRY_MAX: Duration = Duration::from_secs(300);
 
@@ -168,7 +170,7 @@ pub(crate) async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let detection = hub.detection().clone();
-    let writer = Writer::spawn(hub.clone());
+    let (writer, writer_thread) = Writer::spawn(hub.clone());
     let mut running: HashMap<u64, Running> = HashMap::new();
     let mut backoff: HashMap<u64, Backoff> = HashMap::new();
     loop {
@@ -243,6 +245,31 @@ pub(crate) async fn run(
         let _ = r.stop.send(true);
     }
     detection.set_watched(&BTreeSet::new());
+    drain(running, writer, writer_thread).await;
+    detection.descriptions().shutdown(&hub);
+}
+
+/// Attente (bornée, [`SHUTDOWN_WAIT`] au total) de la fin des veilles, de la clôture de leurs
+/// passages en cours et de l'écriture de leurs fiches : sans elle, un passage fermé par l'arrêt du
+/// serveur serait perdu et son événement resterait « en cours » jusqu'au redémarrage.
+async fn drain(
+    running: HashMap<u64, Running>,
+    writer: Writer,
+    writer_thread: Option<std::thread::JoinHandle<()>>,
+) {
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_WAIT;
+    for (_, r) in running {
+        let _ = tokio::time::timeout_at(deadline, r.task).await;
+    }
+    // Le fil d'écriture s'arrête quand tous les `Writer` sont lâchés : celui-ci, puis ceux des fils
+    // d'analyse, qui clôturent leur passage en cours avant de s'arrêter.
+    drop(writer);
+    if let Some(thread) = writer_thread {
+        let joined = tokio::task::spawn_blocking(move || thread.join());
+        if tokio::time::timeout_at(deadline, joined).await.is_err() {
+            log::warn!("détection : l'écriture des événements n'a pas fini à l'arrêt");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +304,7 @@ struct Writer(std::sync::mpsc::Sender<WriteJob>);
 
 impl Writer {
     /// Le fil s'arrête quand toutes les veilles (et le superviseur) ont lâché leur `Writer`.
-    fn spawn(hub: Arc<Hub>) -> Writer {
+    fn spawn(hub: Arc<Hub>) -> (Writer, Option<std::thread::JoinHandle<()>>) {
         let (tx, rx) = std::sync::mpsc::channel::<WriteJob>();
         let spawned = std::thread::Builder::new()
             .name("evenements-disque".into())
@@ -286,10 +313,10 @@ impl Writer {
                     write_job(&hub, job);
                 }
             });
-        if let Err(e) = spawned {
+        if let Err(e) = &spawned {
             log::error!("fil d'écriture des événements impossible : {e}");
         }
-        Writer(tx)
+        (Writer(tx), spawned.ok())
     }
 
     fn send(&self, job: WriteJob) {
@@ -297,7 +324,7 @@ impl Writer {
     }
 }
 
-fn write_job(hub: &Hub, job: WriteJob) {
+fn write_job(hub: &Arc<Hub>, job: WriteJob) {
     let (event, jpeg, clip, rules) = match job {
         WriteJob::Open { event, jpeg } => (event, jpeg, None, Some((true, Vec::new()))),
         WriteJob::Update {
@@ -310,6 +337,7 @@ fn write_job(hub: &Hub, job: WriteJob) {
     let opening = rules.is_some();
     let mut event = event;
     let camera = event.camera_id;
+    let id = event.id.clone();
     let mp4 = clip.as_ref().and_then(clip_to_mp4);
     if !opening {
         event.has_clip = mp4.is_some();
@@ -325,6 +353,8 @@ fn write_job(hub: &Hub, job: WriteJob) {
             Ok(saved) => saved,
             Err(e) => {
                 log::error!("événement de {camera:#x} non enregistré : {e}");
+                // Les règles qui attendaient sa description ne l'attendront pas pour rien.
+                hub.detection().descriptions().resolve(hub, &id);
                 return;
             }
         };
@@ -348,7 +378,28 @@ fn write_job(hub: &Hub, job: WriteJob) {
     }
     // Les automatisations partent à l'ouverture (on veut être prévenu tout de suite), et pour une
     // classe nouvelle en cours de passage ; la fin ne fait que compléter l'événement.
-    hub.publish_detection(&saved, rules);
+    // Description (ticket n° 19) : à l'ouverture, on dit aux règles d'attendre si elle va venir
+    // (avant de publier : la description ne doit pas arriver avant l'annonce) ; la demande à l'API
+    // ne part qu'après la publication. À la fin du passage, la meilleure capture est envoyée.
+    let descriptions = hub.detection().descriptions();
+    let jpeg = jpeg.unwrap_or_default();
+    match &rules {
+        Some((true, _)) => {
+            let awaiting = descriptions.on_open(hub, &saved, jpeg);
+            hub.publish_detection(&saved, rules, awaiting);
+            descriptions.describe_opening(hub, &saved, jpeg);
+        }
+        // Une classe nouvelle en cours de passage : les règles qui emploient la description
+        // attendent aussi (elles partent à l'arrivée de la description, une seule fois).
+        Some((false, _)) => {
+            let awaiting = descriptions.on_update(hub, &saved, jpeg);
+            hub.publish_detection(&saved, rules, awaiting);
+        }
+        None => {
+            hub.publish_detection(&saved, None, false);
+            descriptions.on_close(hub, &saved, jpeg);
+        }
+    }
 }
 
 /// L'événement d'un passage (en cours ou fini). L'identifiant vient du début : le même à
@@ -369,6 +420,8 @@ fn event_of<T>(hub: &Hub, id: u64, passage: &Passage<T>, in_progress: bool) -> D
         has_clip: false,
         clip_s: 0.0,
         in_progress,
+        description: None,
+        niveau: None,
     }
 }
 
@@ -731,8 +784,16 @@ fn analyse_loop(
                             Vec::new()
                         };
                         let snapshot = || {
+                            // 960 px de large, et jamais plus de 1024 px de côté long (une
+                            // image en portrait) : la capture part telle quelle vers l'API de
+                            // description (ticket n° 19).
+                            let max_side = crate::descriptions::api::MAX_SIDE;
                             let config = SnapshotConfig {
-                                max_width: 960,
+                                max_width: 960.min(
+                                    (u64::from(max_side) * u64::from(image.width)
+                                        / u64::from(image.height.max(1)))
+                                    .clamp(16, 960) as u32,
+                                ),
                                 quality: 80,
                                 ..SnapshotConfig::default()
                             };

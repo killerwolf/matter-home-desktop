@@ -211,6 +211,23 @@ pub struct DetectionEventView {
     /// par le nouveau.
     #[serde(default)]
     pub in_progress: bool,
+    /// Description en une phrase (ticket n° 19, API Anthropic), quand le serveur en produit : elle
+    /// arrive **après** l'événement (même `id`, nouvel envoi). Absente sinon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Niveau de menace donné avec la description : 0 normal, 1 suspect, 2 critique. Absent quand
+    /// la description est « indisponible » (refus du modèle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub niveau: Option<u8>,
+}
+
+/// Les mots des niveaux de menace (`{niveau}` dans les textes des règles, affichage).
+pub fn niveau_label(niveau: u8) -> &'static str {
+    match niveau {
+        0 => "normal",
+        1 => "suspect",
+        _ => "critique",
+    }
 }
 
 impl DetectionEventView {
@@ -295,6 +312,28 @@ mod tests {
         Polygon {
             points: vec![(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)],
         }
+    }
+
+    #[test]
+    fn the_description_is_optional_on_the_wire() {
+        // Un événement du ticket n° 18 (sans description) se lit toujours, et ne l'écrit pas.
+        let old = r#"{"id":"1-2","camera_id":"2","camera_name":"Allée","classes":["personne"],
+            "score":0.8,"start":1.0,"end":2.0}"#;
+        let mut event: DetectionEventView = serde_json::from_str(old).unwrap();
+        assert!(event.description.is_none() && event.niveau.is_none());
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(
+            !text.contains("description") && !text.contains("niveau"),
+            "{text}"
+        );
+        event.description = Some("Un livreur dépose un colis.".into());
+        event.niveau = Some(1);
+        let back: DetectionEventView =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        assert_eq!(back, event);
+        assert_eq!(niveau_label(0), "normal");
+        assert_eq!(niveau_label(1), "suspect");
+        assert_eq!(niveau_label(2), "critique");
     }
 
     #[test]

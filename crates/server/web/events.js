@@ -14,6 +14,14 @@ export const classLabel = (c) => CLASS_LABELS[c] ?? "Objet";
 /** « Personne, chien » : les classes d'un événement, la plus sûre d'abord. */
 export const classesText = (event) => (event.classes?.length ? event.classes.map(classLabel).join(", ") : "Objet");
 
+const NIVEAUX = ["normal", "suspect", "critique"];
+
+/** Le niveau de menace en mots (0 normal, 1 suspect, 2 critique) ; `null` : pas de niveau. */
+export const niveauLabel = (n) => (Number.isInteger(n) && n >= 0 && n <= 2 ? NIVEAUX[n] : null);
+
+/** La description d'un événement, avec son niveau si l'on veut : « Un livreur dépose un colis. » */
+export const descriptionText = (event) => (event.description ? event.description : "");
+
 /** « aujourd'hui 14:05 », « hier 09:12 », « 3 nov. 22:40 ». */
 export function whenText(at, now = Date.now()) {
   const d = new Date(at * 1000);
@@ -50,7 +58,8 @@ export function drawBitmap(bitmap, canvas) {
 }
 
 /**
- * Les captures déjà chargées, par événement (un événement ne change jamais) : la liste se redessine
+ * Les captures déjà chargées, par événement (la capture d'un passage en cours change à chaque mise à jour,
+ * d'où `forget`) : la liste se redessine
  * sans rien redemander au serveur. Au plus `max` captures gardées, au plus `perRender` chargées à
  * chaque affichage de la liste.
  */

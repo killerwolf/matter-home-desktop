@@ -363,6 +363,13 @@ client qui ne connaît pas l'événement `detection` l'ignore (`Unknown`), une c
   le client remplace l'ancien). Un passage = un événement. `event` : `id` (texte opaque), `camera_id` (texte), `camera_name`, `classes`
   (`personne`, `chat`, `chien`, `vehicule`, la plus sûre d'abord), `score` (0 à 1), `start` et `end`
   (s Unix), `has_clip`, `clip_s`.
+- **Description** (ticket n° 19, voir [Descriptions](descriptions.md)) : `description` (texte, 200
+  caractères au plus, « description indisponible » si le modèle a refusé) et `niveau` (0 normal, 1
+  suspect, 2 critique ; absent si la description est indisponible) sont **facultatifs** (absents de la
+  fiche tant qu'il n'y en a pas, `#[serde(default)]` côté Rust, ignorés par un client plus ancien) : le
+  même événement (même `id`) est **envoyé de nouveau** quand la description arrive, avec ou sans
+  `in_progress`. Un client qui n'en tient pas compte voit simplement l'événement sans description. La
+  version du protocole reste **3**.
 - **Routes** (jeton de session) :
 
   | route | réponse |

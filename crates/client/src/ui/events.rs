@@ -13,9 +13,9 @@ use matter_home_client::net::events::EventsFeed;
 pub struct EventsView {
     feed: Option<EventsFeed>,
     textures: HashMap<String, egui::TextureHandle>,
-    /// Le dernier événement annoncé par le WebSocket (et s'il était en cours), pour relire la
-    /// liste quand il change.
-    last_seen: Option<(String, bool)>,
+    /// Ce que le WebSocket a annoncé (voir [`signature`]), pour relire la liste quand un événement
+    /// apparaît, passe à « terminé », reçoit une capture plus récente ou sa description.
+    last_seen: Vec<Signature>,
 }
 
 impl EventsView {
@@ -24,7 +24,7 @@ impl EventsView {
         Self {
             feed: None,
             textures: HashMap::new(),
-            last_seen: None,
+            last_seen: Vec::new(),
         }
     }
 
@@ -34,7 +34,7 @@ impl EventsView {
             feed.clear();
         }
         self.textures.clear();
-        self.last_seen = None;
+        self.last_seen.clear();
     }
 
     fn feed(&mut self, ctx: &egui::Context) -> &EventsFeed {
@@ -47,13 +47,10 @@ impl EventsView {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, model: &Model) {
-        let newest = model
-            .detections
-            .front()
-            .map(|e| (e.id.clone(), e.in_progress));
+        let seen: Vec<Signature> = model.detections.iter().map(signature).collect();
         let feed = self.feed(ui.ctx()).clone();
-        if newest.is_some() && newest != self.last_seen {
-            self.last_seen = newest;
+        if !seen.is_empty() && seen != self.last_seen {
+            self.last_seen = seen;
             feed.refresh();
         }
         let state = feed.state();
@@ -140,6 +137,18 @@ impl EventsView {
                                 .small()
                                 .color(secondary),
                             );
+                            if let Some((text, niveau)) = description_line(ev) {
+                                let p = theme::palette(ui);
+                                let color = match niveau {
+                                    Some(2) => p.error,
+                                    Some(1) => p.warn,
+                                    _ => p.text,
+                                };
+                                ui.add(
+                                    egui::Label::new(RichText::new(text).small().color(color))
+                                        .wrap(),
+                                );
+                            }
                             if ev.has_clip && ui.small_button("Lire le clip").clicked() {
                                 feed.open_clip(&ev.id);
                             }
@@ -154,9 +163,41 @@ impl EventsView {
     }
 }
 
-/// La capture d'un passage en cours n'est pas la finale : clé différente.
+/// Ce qui change dans un événement quand il faut relire la liste : identifiant, « en cours », fin du
+/// passage (une capture plus récente à chaque mise à jour d'un passage en cours), description.
+type Signature = (String, bool, u64, bool);
+
+fn signature(ev: &protocol::wire::DetectionEventView) -> Signature {
+    (
+        ev.id.clone(),
+        ev.in_progress,
+        ev.end.to_bits(),
+        ev.description.is_some(),
+    )
+}
+
+/// La capture d'un passage en cours n'est pas la finale, et change à chaque mise à jour du passage :
+/// clé différente (sinon la vignette resterait périmée).
 fn texture_key(ev: &protocol::wire::DetectionEventView) -> String {
-    format!("{}{}", ev.id, if ev.in_progress { "-encours" } else { "" })
+    format!(
+        "{}-{:x}{}",
+        ev.id,
+        ev.end.to_bits(),
+        if ev.in_progress { "-encours" } else { "" }
+    )
+}
+
+/// La description (ticket n° 19) et son niveau : « Un livreur dépose un colis. », avec « (menace :
+/// suspect) » pour un niveau non nul.
+fn description_line(ev: &protocol::wire::DetectionEventView) -> Option<(String, Option<u8>)> {
+    let text = ev.description.as_deref().filter(|d| !d.is_empty())?;
+    Some(match ev.niveau {
+        Some(n @ 1..) => (
+            format!("{text} (menace : {})", protocol::wire::niveau_label(n)),
+            Some(n),
+        ),
+        other => (text.to_string(), other),
+    })
 }
 
 /// « 14:05 » aujourd'hui, sinon « 03/11 14:05 » (heure locale).
@@ -169,5 +210,71 @@ fn when_text(at: f64) -> String {
         t.format("%H:%M").to_string()
     } else {
         t.format("%d/%m %H:%M").to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::wire::{DetectedClass, DetectionEventView};
+
+    fn event() -> DetectionEventView {
+        DetectionEventView {
+            id: "1000-7".into(),
+            camera_id: 7,
+            camera_name: "Allée".into(),
+            classes: vec![DetectedClass::Personne],
+            score: 0.8,
+            start: 1000.0,
+            end: 1005.0,
+            has_clip: false,
+            clip_s: 0.0,
+            in_progress: true,
+            description: None,
+            niveau: None,
+        }
+    }
+
+    #[test]
+    fn an_update_of_a_passage_in_progress_changes_the_texture_and_the_signature() {
+        let first = event();
+        let mut update = event();
+        update.end = 1012.0;
+        assert_ne!(texture_key(&first), texture_key(&update));
+        assert_ne!(signature(&first), signature(&update));
+        // La description seule change la signature (la liste est relue) mais pas la capture.
+        let mut described = update.clone();
+        described.description = Some("Une personne.".into());
+        assert_ne!(signature(&update), signature(&described));
+        assert_eq!(texture_key(&update), texture_key(&described));
+        let mut closed = described.clone();
+        closed.in_progress = false;
+        assert_ne!(texture_key(&described), texture_key(&closed));
+    }
+
+    #[test]
+    fn the_description_line_shows_the_threat_level_when_not_normal() {
+        assert_eq!(description_line(&event()), None);
+        let mut ev = event();
+        ev.description = Some("Un livreur dépose un colis.".into());
+        ev.niveau = Some(0);
+        assert_eq!(
+            description_line(&ev),
+            Some(("Un livreur dépose un colis.".into(), Some(0)))
+        );
+        ev.niveau = Some(2);
+        assert_eq!(
+            description_line(&ev),
+            Some((
+                "Un livreur dépose un colis. (menace : critique)".into(),
+                Some(2)
+            ))
+        );
+        ev.description = Some("description indisponible".into());
+        ev.niveau = None;
+        assert_eq!(
+            description_line(&ev),
+            Some(("description indisponible".into(), None))
+        );
     }
 }

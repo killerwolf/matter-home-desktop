@@ -43,6 +43,13 @@ Les textes des notifications et des webhooks acceptent :
 | `{valeur}` | valeur ou état (« ouverte », « 26,40 °C », « allumée »…, le nom du mode pour « Quand le mode devient… », la classe pour une détection : « personne », « chat », « chien », « véhicule ») |
 | `{heure}` | heure du déclenchement (HH:MM) |
 | `{regle}` | nom de la règle |
+| `{description}` | pour une détection : la phrase qui décrit l'événement (voir [Descriptions](descriptions.md)) ; vide sans description |
+| `{niveau}` | pour une détection : `normal`, `suspect` ou `critique` ; vide sans description |
+
+Une règle dont le texte emploie `{description}` ou `{niveau}` **attend la description** de l'événement
+(à la fin du passage, ou dès la première description si « Décrire dès l'ouverture » est coché) avant de
+partir ; sans description (fonction désactivée, plafond atteint, erreur), elle part avec ces variables
+vides. Voir [Descriptions](descriptions.md).
 
 ## Webhooks
 

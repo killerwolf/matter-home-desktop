@@ -275,3 +275,88 @@ async fn a_dead_analysis_thread_releases_the_camera() {
     let _ = stop_tx.send(true);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Un passage décrit de bout en bout : la veille écrit l'événement, le fil des descriptions
+/// appelle le faux serveur (jamais la vraie API) et la fiche porte la phrase et le niveau.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_passage_gets_its_description_through_the_watcher() {
+    use crate::descriptions::mock::{Mock, Reply};
+    use crate::descriptions::settings::Settings;
+    let camera = fake_camera::start(Options::default()).await;
+    let (hub, _id, dir) = hub_with("described", camera.port);
+    let mock = Mock::start(vec![Reply::described("Une personne traverse l'allée.", 1)]);
+    let descriptions = hub.detection().descriptions();
+    descriptions.set_endpoint(crate::descriptions::api::Endpoint {
+        base_url: mock.url(),
+        retry_default: Duration::from_millis(20),
+        ..Default::default()
+    });
+    descriptions
+        .set_api_key(Some("sk-ant-test-0123456789abcdef"))
+        .unwrap();
+    descriptions
+        .update(Settings {
+            enabled: true,
+            ..Settings::default()
+        })
+        .unwrap();
+    let (detector, _) = person_for(6);
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(run(hub.clone(), detector, synthetic(), stop));
+    hub.set_mode(HomeMode::Absent).unwrap();
+    let store = hub.detection().store();
+    until("l'événement est décrit", 20, || {
+        store
+            .all()
+            .first()
+            .is_some_and(|e| !e.in_progress && e.description.is_some())
+    })
+    .await;
+    let event = store.all().remove(0);
+    assert_eq!(event.niveau, Some(1));
+    assert_eq!(mock.count(), 1, "une description par passage, à la fin");
+    // Ce qui est parti est la capture JPEG de l'événement, côté long ≤ 1024 px.
+    let sent = mock.request(0).json();
+    let data = sent["messages"][0]["content"][0]["source"]["data"]
+        .as_str()
+        .unwrap();
+    let jpeg = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).unwrap();
+    let snapshot = store
+        .part(&event.id, crate::detection::Part::Snapshot)
+        .unwrap();
+    assert_eq!(jpeg, std::fs::read(snapshot).unwrap());
+    assert!(crate::descriptions::api::jpeg_long_side(&jpeg).unwrap() <= 1024);
+    let _ = stop_tx.send(true);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// À l'arrêt propre, le passage en cours est clos et écrit (attente bornée), au lieu de rester
+/// « en cours » jusqu'au redémarrage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clean_shutdown_closes_and_writes_the_passage_in_progress() {
+    let camera = fake_camera::start(Options::default()).await;
+    let (hub, _id, dir) = hub_with("shutdown", camera.port);
+    let (detector, _) = person_for(10_000);
+    let (stop_tx, stop) = watch::channel(false);
+    let task = tokio::spawn(run(hub.clone(), detector, synthetic(), stop));
+    hub.set_mode(HomeMode::Absent).unwrap();
+    let store = hub.detection().store();
+    until("le passage est en cours", 15, || {
+        store.all().first().is_some_and(|e| e.in_progress)
+    })
+    .await;
+    let started = Instant::now();
+    let _ = stop_tx.send(true);
+    tokio::time::timeout(Duration::from_secs(8), task)
+        .await
+        .expect("l'arrêt est borné")
+        .unwrap();
+    assert!(started.elapsed() <= SHUTDOWN_WAIT + Duration::from_secs(2));
+    let event = store.all().remove(0);
+    assert!(
+        !event.in_progress,
+        "clos à l'arrêt, pas au prochain démarrage"
+    );
+    assert!(event.has_clip);
+    let _ = std::fs::remove_dir_all(dir);
+}
