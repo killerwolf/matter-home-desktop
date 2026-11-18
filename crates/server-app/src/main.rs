@@ -5,6 +5,7 @@
 //! - `--demo-setup`           : comme `--demo`, mais en passant par la fenêtre de configuration
 //! - `--data-dir DOSSIER`     : autre dossier de données (essais)
 //! - `--listen ADRESSE:PORT`  : adresse d'écoute (défaut 0.0.0.0:8443 ; en démo 127.0.0.1:0)
+//! - `--open ONGLET`          : ouvre la fenêtre sur cet onglet au lancement (essais, captures)
 
 mod cameras_ui;
 mod descriptions_ui;
@@ -16,6 +17,7 @@ use std::path::PathBuf;
 use matter_home_server::logfile::RotatingLog;
 use matter_home_server::persistence;
 use matter_home_server_app::controller::{self, Config};
+use matter_home_server_app::overview::Tab;
 use matter_home_server_app::signals;
 use matter_home_server_app::startup::{Holder, LockOutcome};
 
@@ -28,6 +30,8 @@ Usage :
   matter-home-server-app --demo-setup      comme --demo, avec la fenêtre de première configuration
   matter-home-server-app --data-dir DOSSIER  autre dossier de données
   matter-home-server-app --listen ADRESSE:PORT  adresse d'écoute (défaut 0.0.0.0:8443)
+  matter-home-server-app --open ONGLET     ouvre la fenêtre au lancement sur un onglet :
+                                           vue, appareils, cameras, connexion ou reglages
   matter-home-server-app --version | --help";
 
 extern "C" {
@@ -70,6 +74,9 @@ fn main() -> eframe::Result {
     let demo = take_flag(&mut args, "--demo") || demo_setup;
     let data_dir_arg = take_value(&mut args, "--data-dir");
     let listen_arg = take_value(&mut args, "--listen");
+    let open = take_value(&mut args, "--open").map(|key| {
+        Tab::from_key(&key).unwrap_or_else(|| usage(&format!("onglet inconnu : {key}")))
+    });
     if let Some(unknown) = args.first() {
         usage(&format!("Option inconnue : {unknown}"));
     }
@@ -161,7 +168,7 @@ fn main() -> eframe::Result {
     );
     // SIGTERM / SIGINT : arrêt propre, comme « Quitter » (avant l'interface et ses fils).
     signals::watch(&[signals::SIGTERM, signals::SIGINT], handle.tx.clone());
-    ui::run(handle, demo)
+    ui::run(handle, demo, open)
 }
 
 fn init_logging(path: &std::path::Path) {

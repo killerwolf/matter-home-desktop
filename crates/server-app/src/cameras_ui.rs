@@ -1,4 +1,4 @@
-//! Le dessin de la fenêtre « Caméras » : liste, ajout, modification, suppression et bouton
+//! Le dessin de l'onglet « Caméras » : liste, ajout, modification, suppression et bouton
 //! « Tester ». Les textes et le formulaire sont dans `matter_home_server_app::cameras`.
 //!
 //! Tout passe par le hub du serveur qui tourne (`Hub::add_camera` et les autres) : la liste est
@@ -70,26 +70,21 @@ impl CamerasUi {
         *self = Self::default();
     }
 
-    /// Dessine la page. Rend `true` si l'utilisateur veut revenir aux réglages.
-    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hub: &Arc<Hub>) -> bool {
+    /// Un formulaire (ajout ou modification) est ouvert : l'onglet ne montre que lui.
+    pub fn editing(&self) -> bool {
+        self.form.is_some()
+    }
+
+    /// Dessine la liste, ou le formulaire d'une caméra quand il est ouvert.
+    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hub: &Arc<Hub>) {
         self.poll_test();
         self.cameras = hub.camera_admin_list();
-        let mut back = false;
-        ui.horizontal(|ui| {
-            ui.heading("Caméras");
-            if ui.button("Retour aux réglages").clicked() {
-                back = true;
-            }
-        });
-        ui.add_space(8.0);
-
         if self.form.is_some() {
             self.form_ui(ui, ctx, hub);
         } else {
             self.list_ui(ui);
             self.list_actions(ui);
         }
-        back
     }
 
     fn poll_test(&mut self) {
@@ -137,6 +132,14 @@ impl CamerasUi {
         let cameras = self.cameras.clone();
         if cameras.is_empty() {
             ui.label("Aucune caméra pour l'instant.");
+            ui.label(
+                RichText::new(
+                    "Une caméra s'ajoute avec son adresse « rtsp://… », son identifiant et son mot \
+                     de passe : ils se trouvent dans l'application du fabricant de la caméra.",
+                )
+                .small()
+                .color(theme::palette(ui).text_secondary),
+            );
         }
         for camera in &cameras {
             if self.row(ui, camera) {
@@ -185,7 +188,11 @@ impl CamerasUi {
             return;
         };
         let p = theme::palette(ui);
-        ui.label(RichText::new(form.title()).strong());
+        ui.label(
+            RichText::new(form.title())
+                .size(theme::tokens().font.size.title)
+                .strong(),
+        );
         // L'état de la caméra (dont le détail du flux), qui n'est plus dans la liste.
         if let Some(camera) = form
             .editing
@@ -195,7 +202,7 @@ impl CamerasUi {
             let color = tone_color(ui, tone);
             ui.horizontal(|ui| {
                 dot(ui, color);
-                ui.label(RichText::new(text).color(p.text_secondary));
+                ui.add(egui::Label::new(RichText::new(text).color(p.text_secondary)).wrap());
             });
         }
         ui.add_space(4.0);
@@ -204,7 +211,7 @@ impl CamerasUi {
             .labelled_by(label.id);
 
         ui.add_space(4.0);
-        let label = ui.label("Adresse de la caméra");
+        let label = ui.label("Adresse de la caméra (elle commence par rtsp://)");
         let url_changed = ui
             .add(wide(&mut form.url).hint_text("rtsp://192.168.1.20:554/live/ch00_0"))
             .labelled_by(label.id)
@@ -410,60 +417,76 @@ fn modes_ui(ui: &mut egui::Ui, form: &mut Form) {
 /// minimal, les zones et les masques (un polygone par ligne).
 fn detection_ui(ui: &mut egui::Ui, form: &mut Form, hub: &Arc<Hub>) {
     let p = theme::palette(ui);
-    egui::CollapsingHeader::new(RichText::new("Détection").strong())
-        .id_salt("camera_detection")
-        .show(ui, |ui| {
-            let status = hub.detection().status();
-            let (tone, line) = matter_home_server_app::cameras::detection_line(&status);
-            ui.colored_label(tone_color(ui, tone), line);
-            if let Some(id) = form.editing {
-                if status.watched.contains(&id) {
-                    ui.colored_label(
-                        tone_color(ui, Tone::Good),
-                        "Cette caméra est analysée en ce moment.",
-                    );
-                }
+    egui::CollapsingHeader::new(
+        RichText::new("Détection (personnes, animaux, véhicules)").strong(),
+    )
+    .id_salt("camera_detection")
+    .show(ui, |ui| {
+        let status = hub.detection().status();
+        let (tone, line) = matter_home_server_app::cameras::detection_line(&status);
+        ui.colored_label(tone_color(ui, tone), line);
+        if let Some(id) = form.editing {
+            if status.watched.contains(&id) {
+                ui.colored_label(
+                    tone_color(ui, Tone::Good),
+                    "Cette caméra est analysée en ce moment.",
+                );
             }
-            ui.add_space(4.0);
-            egui::Grid::new("camera_detection_classes")
-                .num_columns(3)
-                .show(ui, |ui| {
-                    for class in DetectedClass::ALL {
-                        let mut on = form.detection.classes.contains(&class);
-                        if ui.checkbox(&mut on, class.label()).changed() {
-                            if on {
-                                form.detection.classes.push(class);
-                                form.detection.classes.sort();
-                            } else {
-                                form.detection.classes.retain(|c| *c != class);
-                            }
+        }
+        ui.add_space(4.0);
+        egui::Grid::new("camera_detection_classes")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for class in DetectedClass::ALL {
+                    let mut on = form.detection.classes.contains(&class);
+                    if ui.checkbox(&mut on, class.label()).changed() {
+                        if on {
+                            form.detection.classes.push(class);
+                            form.detection.classes.sort();
+                        } else {
+                            form.detection.classes.retain(|c| *c != class);
                         }
-                        ui.label("score minimal");
-                        let mut score = form.detection.min_score(class);
-                        if ui
-                            .add(egui::Slider::new(&mut score, 0.2..=0.95).step_by(0.05))
-                            .changed()
-                        {
-                            form.detection.set_min_score(class, score);
-                        }
-                        ui.end_row();
                     }
-                });
-            ui.add_space(4.0);
-            ui.label("Zones (un polygone par ligne)");
-            ui.add(
-                egui::TextEdit::multiline(&mut form.zones)
-                    .desired_rows(2)
-                    .hint_text("0,0.5 1,0.5 1,1 0,1"),
-            );
-            ui.label("Masques (un polygone par ligne)");
-            ui.add(
-                egui::TextEdit::multiline(&mut form.masks)
-                    .desired_rows(2)
-                    .hint_text("0,0 1,0 1,0.2 0,0.2"),
-            );
-            ui.label(RichText::new(ZONES_HINT).small().color(p.text_secondary));
-        });
+                    ui.label("certitude minimale");
+                    let mut score = form.detection.min_score(class);
+                    if ui
+                        .add(egui::Slider::new(&mut score, 0.2..=0.95).step_by(0.05))
+                        .changed()
+                    {
+                        form.detection.set_min_score(class, score);
+                    }
+                    ui.end_row();
+                }
+            });
+        ui.label(
+            RichText::new(
+                "Plus la certitude minimale est haute, moins il y a de fausses alertes (et \
+                     plus un passage lointain risque d'être manqué).",
+            )
+            .small()
+            .color(p.text_secondary),
+        );
+        ui.add_space(4.0);
+        // Réglage rare et technique : replié tant qu'on ne s'en sert pas.
+        egui::CollapsingHeader::new("Limiter à une partie de l'image (avancé)")
+            .id_salt("camera_zones")
+            .default_open(!form.zones.trim().is_empty() || !form.masks.trim().is_empty())
+            .show(ui, |ui| {
+                ui.label("Zones à surveiller (une par ligne)");
+                ui.add(
+                    egui::TextEdit::multiline(&mut form.zones)
+                        .desired_rows(2)
+                        .hint_text("0,0.5 1,0.5 1,1 0,1"),
+                );
+                ui.label("Zones à ignorer (masques, une par ligne)");
+                ui.add(
+                    egui::TextEdit::multiline(&mut form.masks)
+                        .desired_rows(2)
+                        .hint_text("0,0 1,0 1,0.2 0,0.2"),
+                );
+                ui.label(RichText::new(ZONES_HINT).small().color(p.text_secondary));
+            });
+    });
 }
 
 /// Le résultat du test d'un flux, sous son adresse.
