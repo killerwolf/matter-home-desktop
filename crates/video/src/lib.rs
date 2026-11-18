@@ -24,6 +24,7 @@
 //! - seule la **dernière** image décodée est gardée ([`FrameSink`]) : l'interface n'accumule jamais
 //!   de retard.
 
+pub mod mp4;
 pub mod nal;
 
 #[cfg(target_os = "macos")]

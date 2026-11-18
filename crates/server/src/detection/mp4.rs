@@ -344,6 +344,25 @@ mod tests {
         assert_eq!(&file[avcc + 4..avcc + 9], &[1, 0x64, 0, 0x1f, 0xff]);
     }
 
+    /// Le démultiplexeur du client (`matter_home_video::mp4`, ticket n° 22) relit ce muxer : mêmes
+    /// images, mêmes instants (relatifs au début), mêmes images clés.
+    #[test]
+    fn the_client_demuxer_reads_this_muxer() {
+        let samples = samples();
+        let avcc = [1, 0x64, 0, 0x1f, 0xff];
+        let file = mux(&avcc, 640, 360, &samples).unwrap();
+        let track = matter_home_video::mp4::parse(&file).unwrap();
+        assert_eq!((track.width, track.height), (640, 360));
+        assert_eq!(track.avcc, avcc);
+        assert_eq!(track.duration_ms, 466);
+        assert_eq!(track.samples.len(), samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            assert_eq!(track.samples[i].ts_ms, s.ts_ms - 1000);
+            assert_eq!(track.samples[i].key, s.key);
+            assert_eq!(track.sample_data(&file, i), Some(&s.data[..]));
+        }
+    }
+
     #[test]
     fn refuses_empty_or_keyless_clips() {
         assert_eq!(mux(&[1], 1, 1, &[]), Err(MuxError::Empty));

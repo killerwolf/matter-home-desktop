@@ -8,6 +8,20 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- **Client : les clips des événements se lisent dans l'application** (ticket n° 22). « Lire le clip »
+  ne télécharge plus le fichier pour l'ouvrir dans QuickTime : le clip se lit sous l'événement, avec
+  lecture / pause, barre de progression (on peut se déplacer dans le clip), temps écoulé et durée
+  totale, boucle facultative, image à la largeur du panneau. Un démultiplexeur MP4 minimal lit le
+  fichier du serveur et le décodeur VideoToolbox des flux en direct fait le reste, dans un fil à
+  part : l'interface ne se bloque pas, les images sont montrées aux instants du MP4, et seules
+  quelques images décodées sont gardées en mémoire. Un clip illisible ou un décodeur en échec
+  affiche un message dans le panneau. « Ouvrir dans QuickTime » reste disponible. Aucune dépendance
+  nouvelle.
+
 ## [1.2.1] - 2026-11-18
 
 ### Modifié
