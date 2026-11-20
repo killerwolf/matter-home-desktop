@@ -28,7 +28,8 @@ pas de framework, pas de nouvelle dépendance Rust.
     l'envoi), pas de double envoi (un nouveau tap est ignoré tant que la commande n'est pas
     acquittée et pendant 400 ms), l'attente cesse à l'événement attendu, au refus, ou après 5 s.
   - Tout en bas : **Notifications** (alertes sur l'iPhone ou l'iPad même app fermée, catégories,
-    appareils abonnés ; voir [Notifications](notifications.md)) et « Se déconnecter ».
+    appareils abonnés ; voir [Notifications](notifications.md)), **Widgets et raccourcis** (voir
+    plus bas) et « Se déconnecter ».
 - **Températures** : **tous les capteurs sur un seul graphique** (SVG dessiné à la main, sans
   bibliothèque), une courbe par capteur, chacune avec sa couleur stable (`--color-series-1` à
   `-8`, selon le rang de l'identifiant ; pointillés au-delà de 8). Un choix de durée (**1 h,
@@ -102,11 +103,49 @@ pas de framework, pas de nouvelle dépendance Rust.
   système. Installable (manifeste + service worker qui garde la coquille ; **jamais** `/api/`).
 - Hors périmètre : la **modification** du plan (elle reste dans l'application de bureau) et les automatisations.
 
+## Widgets et raccourcis
+
+Feuille ouverte par « Widgets et raccourcis », en bas de l'onglet Appareils. Elle installe, sur
+l'iPhone, deux **raccourcis Apple signés** (« Mode absent », « Mode présent ») et
+le **widget Scriptable** (état de la maison sur l'écran d'accueil), sans rien taper d'autre que deux
+valeurs collées :
+
+1. **L'adresse** : `location.origin`, avec un bouton « Copier l'adresse ». Sur le port 8443 (adresse
+   directe), la page conseille l'adresse en `.ts.net` : Raccourcis refuse le certificat de l'autre.
+   Le raccourci la demande à l'import (un fichier signé est figé : il ne peut pas porter l'adresse).
+2. **Le jeton de mode** : créé sur le Mac, fenêtre Matter Home Server › onglet Connexion ›
+   « Changer de mode automatiquement » › Créer le code secret › Copier (voir [Modes](modes.md)).
+3. **Les raccourcis** : deux liens vers `/app/raccourcis/…`. Le nom importé vient du nom du fichier,
+   que le widget appelle tel quel (`shortcuts://run-shortcut?name=…`).
+4. **Le script** : « Copier le script » lit `/app/raccourcis/matter-home.js` par `fetch` et le met
+   dans le presse-papiers (repli : le texte dans une zone sélectionnée, à copier à la main). La page
+   ne l'exécute jamais.
+
+Les deux raccourcis de mode n'utilisent que le jeton de mode (`PUT /api/mode`), jamais le jeton de session.
+
+| Route | Type | Content-Disposition |
+|---|---|---|
+| `/app/raccourcis/mode-absent.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20absent.shortcut` |
+| `/app/raccourcis/mode-present.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20pr%C3%A9sent.shortcut` |
+| `/app/raccourcis/matter-home.js` | `text/plain; charset=utf-8` | aucun |
+
+- Fichiers intégrés au binaire (`include_bytes!`, sources dans `crates/server/web/raccourcis/`),
+  servis **sans jeton** comme la coquille : ils ne contiennent ni adresse, ni jeton, ni donnée
+  personnelle (l'adresse et le jeton sont des questions d'importation ; la chaîne de signature ne
+  porte qu'un identifiant aléatoire « Apple Inc. »). Chemins en ASCII, nom exact dans l'en-tête.
+- Le service worker **n'intercepte pas** `/app/raccourcis/` (une nouvelle version signée remplace
+  l'ancienne) ; le serveur envoie déjà `Cache-Control: no-store`.
+- Les `.shortcut` sont signés par Apple (`shortcuts sign --mode anyone`) : on ne peut plus les
+  modifier sans les signer de nouveau (script de construction : `build_shortcuts.py`, hors dépôt).
+- **Non vérifié sur un vrai iPhone** : l'import de la fiche Raccourcis, et le téléchargement depuis
+  l'app installée sur l'écran d'accueil (la page invite à ouvrir Safari si rien ne se passe).
+- Logique sans navigateur : `widgets.js` (essai : `node --test crates/server/web/widgets.test.mjs`).
+
 ## Fichiers
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
-`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `push.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
-192 et 512). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
+`tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `push.js`, `widgets.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
+192 et 512, et `raccourcis/` pour les raccourcis et le script du widget). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 
 ## Sécurité

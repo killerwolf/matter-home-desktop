@@ -379,6 +379,16 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .ev-shot, .ev-clip { width: 100%; max-height: 60vh; display: block; background: var(--color-surface-alt); border-radius: var(--web-radius); margin-bottom: var(--web-pad); }
 .danger { color: var(--color-error); }
 
+/* Widgets et raccourcis : l'adresse, les liens de téléchargement, le script à copier à la main. */
+.widgets-origin { margin: var(--web-pad) 0; overflow-wrap: anywhere; }
+.widgets-link {
+  display: inline-flex; align-items: center; justify-content: center; min-height: var(--web-control-h); padding: 0 var(--space-lg);
+  border: var(--web-line) solid var(--color-line); border-radius: var(--web-radius); background: var(--color-surface-alt);
+  color: var(--color-accent-text); text-decoration: none; margin: 0 calc(-1 * var(--web-line)) 0 0;
+}
+.widgets-script { width: 100%; min-height: 12em; margin: var(--web-pad) 0; font: var(--web-font-small) ui-monospace, monospace; }
+.offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }
+
 /* Notifications (ticket n° 17) : réglages dans la feuille. */
 .push-check { display: flex; align-items: center; gap: var(--web-pad-x); margin: var(--web-pad-x) 0; min-height: 44px; }
 .push-check input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--color-accent); }

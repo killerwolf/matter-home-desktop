@@ -1,10 +1,10 @@
 // Service worker minimal : garde la coquille (HTML, CSS, JS, icônes) pour que l'app s'ouvre
 // instantanément et hors ligne. Il ne touche jamais à l'API : /api/ passe toujours par le réseau
 // (jeton, état, flux), rien de la maison n'est mis en cache.
-const CACHE = "matter-home-shell-v7";
+const CACHE = "matter-home-shell-v8";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "app.js", "api.js", "tiles.js", "icons.js",
-  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
+  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "widgets.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -23,6 +23,9 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
   if (!url.pathname.startsWith("/app/")) return; // l'API n'est jamais interceptée
+  // Les raccourcis signés et le script Scriptable ne sont jamais gardés : une nouvelle version
+  // remplace l'ancienne, et un téléchargement ne passe pas par le service worker.
+  if (url.pathname.startsWith("/app/raccourcis/")) return;
   // Réseau d'abord (une nouvelle version du serveur se voit tout de suite), cache en secours.
   event.respondWith(
     fetch(event.request)
