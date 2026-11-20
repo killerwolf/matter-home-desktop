@@ -12,6 +12,7 @@ import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
+import { SHORTCUTS, copyText, fetchScript, originInfo } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -264,6 +265,11 @@ function renderDevices() {
       notif.id = "notifications";
       notif.textContent = "Notifications";
       out.appendChild(notif);
+      const widgets = document.createElement("button");
+      widgets.className = "ghost";
+      widgets.id = "widgets";
+      widgets.textContent = "Widgets et raccourcis";
+      out.appendChild(widgets);
       const button = document.createElement("button");
       button.className = "ghost";
       button.id = "logout";
@@ -1087,7 +1093,111 @@ function renderPush() {
   note("iPhone et iPad : iOS 16.4 ou plus, app ajoutée à l'écran d'accueil et ouverte par l'adresse .ts.net. Détails : docs/notifications.md.");
 }
 
-/** Le toucher d'une notification : `#evenement=<id>` ouvre la fiche de l'événement. */
+// ---------------------------------------------------------------------------
+// Widgets et raccourcis : trois raccourcis Apple signés et le script Scriptable
+// ---------------------------------------------------------------------------
+const widgetsUi = { script: "", message: "", error: "" };
+
+function openWidgets() {
+  closeSheet();
+  widgetsUi.script = "";
+  widgetsUi.message = "";
+  widgetsUi.error = "";
+  $("#sheet-title").textContent = "Widgets et raccourcis";
+  renderWidgets();
+  showSheet();
+}
+
+/** Repli du presse-papiers (`navigator.clipboard` absent ou refusé) : copie d'une zone cachée. */
+function execCopy(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.className = "offscreen";
+  document.body.appendChild(area);
+  area.select();
+  try { return document.execCommand("copy"); } finally { area.remove(); }
+}
+
+/** Copie `text` ; sinon affiche `onManual` : la zone de texte sélectionnée à copier à la main. */
+async function copyOrShow(text, doneMessage) {
+  const result = await copyText(text, {
+    writeText: navigator.clipboard?.writeText?.bind(navigator.clipboard),
+    execCopy,
+  });
+  widgetsUi.error = "";
+  widgetsUi.message = result === "copied" ? doneMessage : "Copie impossible ici : copiez le texte ci-dessous à la main.";
+  return result;
+}
+
+function renderWidgets(manualText = "") {
+  const body = $("#sheet-body");
+  body.dataset.id = "widgets";
+  body.replaceChildren();
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const note = (text, cls = "ev-note") => { const p = el("p", cls, text); body.appendChild(p); return p; };
+  const actionButton = (label, onClick) => { const b = el("button", "primary", label); b.type = "button"; b.addEventListener("click", onClick); return b; };
+
+  note("Mets l'état de la maison sur l'écran d'accueil et change de mode en un geste.");
+  if (widgetsUi.error) note(widgetsUi.error, "error");
+  if (widgetsUi.message) note(widgetsUi.message);
+
+  // 1. L'adresse : location.origin, à coller quand le raccourci la demande.
+  const info = originInfo(location);
+  body.appendChild(el("h3", null, "1. Ton adresse"));
+  const addr = el("p", "widgets-origin");
+  addr.appendChild(el("code", null, info.origin || "(adresse introuvable)"));
+  body.appendChild(addr);
+  if (info.usable) body.appendChild(actionButton("Copier l'adresse", async () => {
+    await copyOrShow(info.origin, "Adresse copiée.");
+    renderWidgets();
+  }));
+  if (info.warning) note(info.warning, "error");
+  note("Tu la colleras quand le raccourci la demande.");
+
+  // 2. Le jeton de mode : créé sur le Mac.
+  body.appendChild(el("h3", null, "2. Ton jeton de mode"));
+  note("Il se crée sur le Mac : fenêtre Matter Home Server › onglet Connexion › « Changer de mode automatiquement » › Créer le code secret › Copier. Il ne s'affiche qu'une fois : garde-le dans une note jusqu'à la fin. Il ne sert qu'à changer de mode.");
+
+  // 3. Les raccourcis : de simples liens, le serveur envoie le bon nom de fichier.
+  body.appendChild(el("h3", null, "3. Installe les raccourcis"));
+  const links = el("div", "controls");
+  for (const s of SHORTCUTS) {
+    const a = el("a", "widgets-link", s.label);
+    a.href = s.href;
+    links.appendChild(a);
+  }
+  body.appendChild(links);
+  note("Touche un bouton, puis « Ajouter le raccourci ». Colle l'adresse, puis le jeton quand on te les demande. Garde les noms tels quels : le widget les appelle par leur nom. Si un raccourci du même nom existe déjà, supprime-le d'abord (sinon iOS crée « Mode absent 1 »).");
+  note("Si rien ne se passe, ouvre cette page dans Safari (le téléchargement peut échouer dans l'app installée sur l'écran d'accueil).");
+  note("Attention à « Tout éteindre » : il demande le jeton de session complet, celui du widget (copie-le depuis Scriptable, étape 4), pas le jeton de mode. Ce jeton donne accès à TOUTE la maison : l'état, les commandes, mais aussi l'export, qui contient les clés Matter et les mots de passe des caméras. Le raccourci le garde en clair, et iCloud le synchronise sur tes appareils Apple. Ne partage jamais ce raccourci. Si tu ne veux pas ce risque, n'installe pas « Tout éteindre » : les deux modes se passent très bien du jeton de session.", "error");
+
+  // 4. Le widget Scriptable.
+  body.appendChild(el("h3", null, "4. Le widget Scriptable"));
+  note("Installe Scriptable (App Store, gratuit), touche « Copier le script », puis dans Scriptable : « + », colle, nomme le script exactement Matter Home, touche ▶ et connecte-toi (mêmes identifiants que cette app). Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Matter Home. Le mot de passe n'est pas gardé : seul le jeton de session est rangé dans le trousseau de l'iPhone, 180 jours au plus.");
+  body.appendChild(actionButton("Copier le script", async () => {
+    try {
+      widgetsUi.script = await fetchScript((path, options) => fetch(path, options));
+      const result = await copyOrShow(widgetsUi.script, "Script copié : colle-le dans Scriptable.");
+      renderWidgets(result === "manual" ? widgetsUi.script : "");
+    } catch (error) {
+      widgetsUi.message = "";
+      widgetsUi.error = error?.message || "Script indisponible.";
+      renderWidgets();
+    }
+  }));
+  if (manualText) {
+    const area = el("textarea", "widgets-script");
+    area.value = manualText;
+    area.readOnly = true;
+    area.setAttribute("aria-label", "Script Matter Home à copier");
+    body.appendChild(area);
+    area.focus();
+    area.select();
+  }
+}
+
+/** Le toucher d'une notification :`#evenement=<id>` ouvre la fiche de l'événement. */
 async function openFromUrl(url) {
   const id = push.eventFromHash(new URL(url, location.href).hash);
   if (!id) return;
@@ -1325,6 +1435,7 @@ view.addEventListener("contextmenu", (e) => {
 view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   if (e.target.closest("#notifications")) { openNotifications(); return; }
+  if (e.target.closest("#widgets")) { openWidgets(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
     if (fullCam) { if (e.target.closest(".cam-fs")) exitFull(); } else if (cam.classList.contains("ok")) enterFull(cam.dataset.camera);

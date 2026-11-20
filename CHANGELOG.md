@@ -8,6 +8,20 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Ajouté
+
+- **Widgets et raccourcis** dans l'app web (Appareils › Widgets et raccourcis) : trois raccourcis
+  Apple signés (« Mode absent », « Mode présent », « Tout éteindre ») et le script du widget
+  Scriptable, à installer depuis l'iPhone. La page affiche l'adresse de la maison (`location.origin`,
+  avec « Copier »), explique le jeton de mode (onglet Connexion › Créer le code secret) et copie le
+  script. Quatre fichiers intégrés au binaire sous `/app/raccourcis/`, servis sans jeton (aucun
+  secret dedans), avec le nom de fichier exact dans `Content-Disposition`. Aucune route d'API
+  nouvelle. « Tout éteindre » exige le jeton de session complet, gardé en clair dans le raccourci
+  (synchronisé par iCloud) : la page l'écrit en toutes lettres. Service worker en version 8 (il
+  ne garde pas les raccourcis). Voir `docs/web-app.md`.
+
 ## [1.3.0] - 2026-11-19
 
 ### Ajouté

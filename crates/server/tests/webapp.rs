@@ -24,6 +24,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/plan.js", "text/javascript"),
     ("/app/mode.js", "text/javascript"),
     ("/app/push.js", "text/javascript"),
+    ("/app/widgets.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
@@ -172,7 +173,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("matter-home-shell-v7") && sw.contains("\"events.js\""),
+            sw.contains("matter-home-shell-v8") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.
@@ -474,5 +475,117 @@ fn api_responses_carry_a_locked_down_csp() {
         let csp = &r.headers["content-security-policy"];
         assert!(csp.contains("img-src 'self';") && csp.contains("media-src blob:;"));
         assert_eq!(csp.matches("blob:").count(), 1, "{csp}");
+    });
+}
+
+/// Page « Widgets et raccourcis » : les trois raccourcis signés et le script Scriptable se
+/// téléchargent sans jeton, avec le nom de fichier exact (accents compris) et le bon type ; le
+/// service worker ne les garde pas ; la page est branchée dans l'app.
+#[test]
+fn shortcuts_downloads_have_exact_names_and_headers_and_need_no_token() {
+    let dir = temp_dir("webapp-shortcuts");
+    let server = Server::start(&dir);
+    let client = server.client();
+    let web = concat!(env!("CARGO_MANIFEST_DIR"), "/web/raccourcis/");
+    let files = [
+        (
+            "mode-absent.shortcut",
+            "Mode%20absent.shortcut",
+            "application/octet-stream",
+        ),
+        (
+            "mode-present.shortcut",
+            "Mode%20pr%C3%A9sent.shortcut",
+            "application/octet-stream",
+        ),
+        (
+            "tout-eteindre.shortcut",
+            "Tout%20%C3%A9teindre.shortcut",
+            "application/octet-stream",
+        ),
+        ("matter-home.js", "", "text/plain; charset=utf-8"),
+    ];
+    runtime().block_on(async {
+        for (file, filename, content_type) in files {
+            let r = client
+                .request("GET", &format!("/app/raccourcis/{file}"), None, None)
+                .await;
+            assert_eq!(r.status, 200, "{file}");
+            assert_eq!(r.headers["content-type"], content_type, "{file}");
+            if filename.is_empty() {
+                assert!(!r.headers.contains_key("content-disposition"), "{file}");
+            } else {
+                assert_eq!(
+                    r.headers["content-disposition"],
+                    format!("attachment; filename*=UTF-8''{filename}"),
+                    "{file}"
+                );
+            }
+            // Le serveur n'autorise aucun cache (en-tête commun) : une nouvelle version remplace l'ancienne.
+            assert_eq!(r.headers["cache-control"], "no-store", "{file}");
+            assert_eq!(r.headers["x-content-type-options"], "nosniff", "{file}");
+            assert!(r.headers["content-security-policy"].contains("default-src 'self'"));
+            // Le corps est exactement le fichier du dépôt.
+            let on_disk = std::fs::read(format!("{web}{file}")).unwrap();
+            assert_eq!(r.body, on_disk, "{file}");
+            assert!(!r.body.is_empty());
+        }
+        // Les raccourcis signés sont des conteneurs Apple (AEA), pas du texte.
+        let r = client
+            .request("GET", "/app/raccourcis/mode-absent.shortcut", None, None)
+            .await;
+        assert_eq!(&r.body[..4], b"AEA1");
+        // Le script est un texte sans adresse ni jeton en dur.
+        let script = client
+            .request("GET", "/app/raccourcis/matter-home.js", None, None)
+            .await
+            .text();
+        assert!(script.contains("COLLE_TON_JETON_ICI") && script.contains("COLLE_TON_ADRESSE_ICI"));
+        // Seuls l'exemple et le champ de saisie citent une adresse en .ts.net, avec un faux nom.
+        assert!(
+            script.matches(".ts.net").count() == 2 && script.contains("nom-du-mac.tailnet-xxxx")
+        );
+        assert!(!script.contains("Bearer ey"));
+        // Un fichier inconnu, ou hors de la liste : 404 (pas de lecture du disque).
+        for path in [
+            "/app/raccourcis/inconnu.shortcut",
+            "/app/raccourcis/..%2Fapp.js",
+            "/app/raccourcis/",
+        ] {
+            let r = client.request("GET", path, None, None).await;
+            assert_eq!(r.status, 404, "{path}");
+        }
+    });
+}
+
+#[test]
+fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
+    let dir = temp_dir("webapp-widgets");
+    let server = Server::start(&dir);
+    let client = server.client();
+    runtime().block_on(async {
+        let app = client
+            .request("GET", "/app/app.js", None, None)
+            .await
+            .text();
+        assert!(app.contains(r#"from "./widgets.js""#));
+        assert!(app.contains(r#"widgets.id = "widgets""#));
+        assert!(app.contains("Widgets et raccourcis"));
+        assert!(app.contains("originInfo(location)") && app.contains("Copier l'adresse"));
+        assert!(app.contains("Copier le script"));
+        assert!(app.contains("Créer le code secret"));
+        // Le risque du jeton de session dans « Tout éteindre » est dit en clair.
+        assert!(app.contains("Tout éteindre") && app.contains("TOUTE la maison"));
+        assert!(app.contains("clés Matter") && app.contains("iCloud"));
+        let widgets = client.request("GET", "/app/widgets.js", None, None).await;
+        assert_eq!(widgets.status, 200);
+        assert!(widgets.headers["content-type"].starts_with("text/javascript"));
+        let js = widgets.text();
+        assert!(!js.contains("eval(") && !js.contains("innerHTML"));
+        let sw = client.request("GET", "/app/sw.js", None, None).await.text();
+        assert!(sw.contains("\"widgets.js\"") && sw.contains("matter-home-shell-v8"));
+        // Les raccourcis et le script ne sont ni listés ni gardés par le service worker.
+        assert!(sw.contains("/app/raccourcis/"));
+        assert!(!sw.contains("\"raccourcis/"));
     });
 }
