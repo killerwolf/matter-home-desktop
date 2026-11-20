@@ -372,20 +372,6 @@ async function info(msg) {
   await a.presentAlert();
 }
 
-async function toutEteindre() {
-  const state = await api("/api/state");
-  const cibles = (state.devices || []).filter((d) => estLumiere(d) && latest(d, "on_off") === 1);
-  let ok = 0;
-  for (const d of cibles) {
-    try {
-      await api("/api/devices/" + d.device.node_id + "/on-off", { method: "POST", body: { command: "Off" } });
-      ok++;
-    } catch (e) { /* on continue avec les autres */ }
-  }
-  if (cibles.length === 0) return "Toutes les lumières étaient déjà éteintes.";
-  return plural(ok, "lumière éteinte", "lumières éteintes") + (ok < cibles.length ? " sur " + cibles.length : "") + ".";
-}
-
 async function etatPourWidget() {
   try {
     const s = await lireEtat();
@@ -420,24 +406,17 @@ async function main() {
   if (!jeton() || !serveur() || action === "login") {
     if (!(await connexion())) return;
   }
-  if (action === "alloff") {
-    try { await info(await toutEteindre()); } catch (e) { await info(messageErreur(e, false)); }
-    return;
-  }
 
   const menu = new Alert();
   menu.title = "Matter Home";
   menu.addAction("Voir le widget moyen");
   menu.addAction("Voir le petit widget");
-  menu.addAction("Éteindre les lumières");
   menu.addDestructiveAction("Se reconnecter");
   menu.addCancelAction("Fermer");
   const choix = await menu.presentSheet();
   if (choix === 0) (await rendreWidget("medium")).presentMedium();
   else if (choix === 1) (await rendreWidget("small")).presentSmall();
-  else if (choix === 2) {
-    try { await info(await toutEteindre()); } catch (e) { await info(messageErreur(e, false)); }
-  } else if (choix === 3) await connexion();
+  else if (choix === 2) await connexion();
 }
 
 await main();

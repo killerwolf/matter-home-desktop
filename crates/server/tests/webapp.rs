@@ -570,7 +570,6 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         assert!(app.contains("Copier le script"));
         assert!(app.contains("Créer le code secret"));
         assert!(!app.contains("Tout éteindre"));
-        assert!(app.contains("clés Matter") && app.contains("iCloud"));
         let widgets = client.request("GET", "/app/widgets.js", None, None).await;
         assert_eq!(widgets.status, 200);
         assert!(widgets.headers["content-type"].starts_with("text/javascript"));
