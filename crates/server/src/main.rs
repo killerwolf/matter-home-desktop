@@ -353,6 +353,10 @@ fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
     if let Some(ms) = env_number("MATTER_HOME_TEST_BODY_IDLE_MS") {
         config.body_idle_timeout = Duration::from_millis(ms);
     }
+    // Les essais ne dépendent ni d'iCloud ni de `/usr/bin/shortcuts` : raccourcis non signés.
+    if std::env::var_os("MATTER_HOME_TEST_UNSIGNED_SHORTCUTS").is_some() {
+        config.shortcut_signer = matter_home_server::shortcuts::Signer::Unsigned;
+    }
     let server = match Server::start(config) {
         Ok(server) => server,
         Err(e) => {

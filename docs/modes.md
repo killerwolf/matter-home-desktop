@@ -56,28 +56,50 @@ Choisir l'emplacement **pré-remplit** le tableau, qui reste modifiable ligne pa
   « Absent ou Vacances ». Exemple : *Quand la porte d'entrée s'ouvre, seulement si le mode est Absent
   ou Vacances, notifier.*
 
-## Le jeton de mode
+## Les jetons de l'iPhone
 
-Pour qu'une automatisation de l'iPhone change le mode **sans** connaître le mot de passe du compte,
-le serveur peut créer un **jeton de mode** : un secret à part, qui ne sert **qu'à** `PUT /api/mode`
-(il ne lit rien et ne commande rien d'autre : toute autre route répond 401).
+Pour que l'iPhone change le mode ou affiche l'état **sans** connaître le mot de passe du compte, le
+serveur tient deux **jetons à part**, chacun pour une seule porte :
 
-- Dans la fenêtre du serveur (onglet Connexion, « Changer de mode automatiquement ») : « Créer le code
-  secret » (le jeton de mode). Le jeton
-  s'affiche **une seule fois** (bouton « Copier ») ; le serveur n'en garde que l'**empreinte**
-  (`serveur/jeton-mode.json`, droits 0600, jamais exportée ni importée avec les sauvegardes). Il n'est
-  jamais écrit dans le journal.
-- « Créer un nouveau code… » **révoque l'ancien** (les automatisations de l'iPhone sont alors à
-  mettre à jour) ; « Supprimer le code » supprime tout accès par jeton.
-- Il se place dans l'en-tête `Authorization: Bearer <jeton de mode>` (jamais dans l'URL). Le jeton est
-  vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et une
-  ligne au journal, **sans blocage par adresse** : derrière `tailscale serve`, toutes les connexions
-  viennent de 127.0.0.1 (voir [Accès à distance](acces-distant.md)), un compteur partagé aurait pu
-  bloquer le bon Raccourci. Le jeton fait 256 bits : l'essai en force est sans espoir.
-- Si `serveur/jeton-mode.json` est illisible, le serveur le met de côté (`jeton-mode.json.illisible`) et
-  repart sans jeton : il suffit d'en générer un nouveau.
+| Jeton | Fichier | Ouvre seulement | Sert à |
+|---|---|---|---|
+| **jeton de mode** | `serveur/jeton-mode.json` | `PUT /api/mode` | les raccourcis « Mode absent » / « Mode present », les automatisations Raccourcis |
+| **jeton de lecture** | `serveur/jeton-lecture.json` | `GET /api/state`, `GET /api/events` | le widget Scriptable |
+
+Toute autre route répond 401 : ni appareils, ni WebSocket (ni par l'en-tête, ni par le sous-protocole
+du navigateur), ni caméras, ni clips, ni export ou import, ni les routes des jetons ; le jeton de
+lecture ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essaient route par route.
+
+- **Le plus simple** : l'app web, Appareils › **Widgets et raccourcis** › « Installer les
+  raccourcis » ou « Installer le widget » (voir [App web](web-app.md#widgets-et-raccourcis)). Le
+  serveur crée le jeton et l'écrit, avec l'adresse, dans les fichiers à installer : rien à taper.
+- Le jeton de mode se crée aussi dans la fenêtre du serveur (onglet Connexion, « Changer de mode
+  automatiquement ») : « Créer le code secret » ; il s'affiche **une seule fois** (bouton « Copier »),
+  pour les automatisations faites à la main (plus bas).
+- **Un nouveau jeton révoque l'ancien.** Réinstaller les raccourcis depuis l'app web crée un nouveau
+  jeton de mode : les raccourcis d'avant **et les automatisations où l'ancien jeton a été collé à la
+  main** cessent de marcher (à corriger avec le nouveau, ou à refaire). De même, réinstaller le widget
+  révoque le widget installé avant (sur cet iPhone ou un autre), qui affiche « Jeton révoqué ».
+- **Révoquer** : l'app web (bouton « Révoquer » de chaque jeton) ou la fenêtre du serveur
+  (« Supprimer le code » pour le jeton de mode, « Révoquer » pour le jeton de lecture). Pendant une
+  préparation lancée depuis l'iPhone (quelques secondes de signature), la fenêtre ne l'attend pas :
+  elle répond « préparation en cours, réessayez ».
+- Le serveur n'en garde que l'**empreinte** (SHA-256, droits 0600, jamais exportée ni importée avec
+  les sauvegardes). Un jeton n'est jamais écrit dans le journal.
+- Il se place dans l'en-tête `Authorization: Bearer <jeton>` (jamais dans l'URL). Le jeton est
+  vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et
+  une ligne au journal (pour le jeton de lecture : seulement s'il en existe un ; sans widget installé,
+  une session expirée sur `GET /api/state` est refusée comme avant, sans attente), **sans blocage par adresse** : derrière `tailscale serve`, toutes les
+  connexions viennent de 127.0.0.1 (voir [Accès à distance](acces-distant.md)), un compteur partagé
+  aurait pu bloquer le bon Raccourci. Un jeton fait 256 bits : l'essai en force est sans espoir.
+- Si l'un des fichiers est illisible, le serveur le met de côté (`….json.illisible`) et repart sans
+  ce jeton : il suffit d'en générer un nouveau.
 
 ## Changer de mode automatiquement avec Raccourcis sur iPhone
+
+Les raccourcis « Mode absent » et « Mode present » installés depuis l'app web font déjà le travail
+de l'étape 4 ci-dessous : une automatisation peut simplement **lancer l'un d'eux** (action « Exécuter
+le raccourci »). La recette à la main reste utile pour les modes Nuit et Vacances.
 
 **Avant de commencer**
 

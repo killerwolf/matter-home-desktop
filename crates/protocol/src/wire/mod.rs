@@ -314,6 +314,7 @@ mod tests {
             (ErrorCode::NotFound, "not_found", 404),
             (ErrorCode::PayloadTooLarge, "payload_too_large", 413),
             (ErrorCode::PairingBusy, "pairing_busy", 409),
+            (ErrorCode::Busy, "busy", 409),
             (ErrorCode::PairingFailed, "pairing_failed", 502),
             (ErrorCode::InvalidImport, "invalid_import", 400),
             (ErrorCode::NoData, "no_data", 404),

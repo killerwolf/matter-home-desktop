@@ -12,7 +12,7 @@ import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
-import { SHORTCUTS, copyText, fetchScript, originInfo } from "./widgets.js";
+import { copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -1094,18 +1094,28 @@ function renderPush() {
 }
 
 // ---------------------------------------------------------------------------
-// Widgets et raccourcis : deux raccourcis Apple signés et le script Scriptable
+// Widgets et raccourcis : les deux raccourcis de mode et le widget Scriptable, préparés par le
+// serveur avec l'adresse et un jeton à part (rien à taper sur l'iPhone)
 // ---------------------------------------------------------------------------
-const widgetsUi = { script: "", message: "", error: "" };
+const widgetsUi = { tokens: null, links: null, busy: "", message: "", error: "" };
 
-function openWidgets() {
+async function openWidgets() {
   closeSheet();
-  widgetsUi.script = "";
-  widgetsUi.message = "";
-  widgetsUi.error = "";
+  Object.assign(widgetsUi, { tokens: null, links: null, busy: "", message: "", error: "" });
   $("#sheet-title").textContent = "Widgets et raccourcis";
   renderWidgets();
   showSheet();
+  await refreshTokens();
+}
+
+async function refreshTokens() {
+  try {
+    widgetsUi.tokens = await api.request("GET", "/api/tokens");
+  } catch (error) {
+    widgetsUi.tokens = null;
+    if (error?.status !== 401) widgetsUi.error = error?.message || "État des jetons indisponible.";
+  }
+  if ($("#sheet-body").dataset.id === "widgets") renderWidgets();
 }
 
 /** Repli du presse-papiers (`navigator.clipboard` absent ou refusé) : copie d'une zone cachée. */
@@ -1119,15 +1129,67 @@ function execCopy(text) {
   try { return document.execCommand("copy"); } finally { area.remove(); }
 }
 
-/** Copie `text` ; sinon affiche `onManual` : la zone de texte sélectionnée à copier à la main. */
-async function copyOrShow(text, doneMessage) {
-  const result = await copyText(text, {
-    writeText: navigator.clipboard?.writeText?.bind(navigator.clipboard),
-    execCopy,
-  });
+const clipboardDeps = () => ({
+  write: navigator.clipboard?.write?.bind(navigator.clipboard),
+  ClipboardItem: globalThis.ClipboardItem,
+  writeText: navigator.clipboard?.writeText?.bind(navigator.clipboard),
+  execCopy,
+});
+
+async function installShortcuts() {
+  if (widgetsUi.tokens?.mode?.exists && !confirm("Un nouveau jeton de mode remplace l'ancien : les raccourcis et les automatisations Raccourcis déjà installés avec l'ancien cesseront de marcher. Continuer ?")) return;
+  widgetsUi.busy = "shortcuts";
   widgetsUi.error = "";
-  widgetsUi.message = result === "copied" ? doneMessage : "Copie impossible ici : copiez le texte ci-dessous à la main.";
-  return result;
+  widgetsUi.message = "Signature des raccourcis sur le Mac…";
+  renderWidgets();
+  try {
+    widgetsUi.links = await prepareShortcuts(api.request, location.origin);
+    widgetsUi.message = "";
+  } catch (error) {
+    widgetsUi.message = "";
+    widgetsUi.error = error?.message || "Raccourcis indisponibles.";
+  }
+  widgetsUi.busy = "";
+  await refreshTokens();
+}
+
+async function installWidget() {
+  widgetsUi.busy = "widget";
+  widgetsUi.error = "";
+  widgetsUi.message = "";
+  // La copie est confiée au presse-papiers pendant le geste, avant la réponse du serveur.
+  const pending = prepareWidget(api.request, location.origin);
+  renderWidgets();
+  let manual = "";
+  try {
+    const { result, text } = await copyLater(pending, clipboardDeps());
+    if (result === "copied") widgetsUi.message = "Widget copié : colle-le dans Scriptable.";
+    else {
+      widgetsUi.message = "Copie impossible ici : copie le texte ci-dessous à la main.";
+      manual = text;
+    }
+  } catch (error) {
+    widgetsUi.error = error?.message || "Widget indisponible.";
+  }
+  widgetsUi.busy = "";
+  await refreshTokens();
+  if (manual) renderWidgets(manual);
+}
+
+async function revokeToken(kind) {
+  const what = kind === "mode"
+    ? "le jeton de mode ? Les raccourcis et automatisations qui l'utilisent ne marcheront plus"
+    : "le jeton de lecture ? Le widget affichera « Jeton révoqué »";
+  if (!confirm(`Révoquer ${what}.`)) return;
+  try {
+    await api.request("DELETE", `/api/tokens/${kind}`);
+    if (kind === "mode") widgetsUi.links = null;
+    widgetsUi.error = "";
+    widgetsUi.message = kind === "mode" ? "Jeton de mode révoqué." : "Jeton de lecture révoqué.";
+  } catch (error) {
+    widgetsUi.error = error?.message || "Révocation impossible.";
+  }
+  await refreshTokens();
 }
 
 function renderWidgets(manualText = "") {
@@ -1136,55 +1198,50 @@ function renderWidgets(manualText = "") {
   body.replaceChildren();
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const note = (text, cls = "ev-note") => { const p = el("p", cls, text); body.appendChild(p); return p; };
-  const actionButton = (label, onClick) => { const b = el("button", "primary", label); b.type = "button"; b.addEventListener("click", onClick); return b; };
+  const button = (label, cls, onClick, disabled = false) => {
+    const b = el("button", cls, label);
+    b.type = "button";
+    b.disabled = disabled;
+    b.addEventListener("click", onClick);
+    return b;
+  };
+  const tokenLine = (token, none) => (token?.exists ? `Jeton actif ${sinceText(token.created)}`.trim() + "." : none);
 
-  note("Mets l'état de la maison sur l'écran d'accueil et change de mode en un geste.");
+  note("Mets l'état de la maison sur l'écran d'accueil et change de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.");
   if (widgetsUi.error) note(widgetsUi.error, "error");
   if (widgetsUi.message) note(widgetsUi.message);
-
-  // 1. L'adresse : location.origin, à coller quand le raccourci la demande.
   const info = originInfo(location);
-  body.appendChild(el("h3", null, "1. Ton adresse"));
-  const addr = el("p", "widgets-origin");
-  addr.appendChild(el("code", null, info.origin || "(adresse introuvable)"));
-  body.appendChild(addr);
-  if (info.usable) body.appendChild(actionButton("Copier l'adresse", async () => {
-    await copyOrShow(info.origin, "Adresse copiée.");
-    renderWidgets();
-  }));
-  if (info.warning) note(info.warning, "error");
-  note("Tu la colleras quand le raccourci la demande.");
+  if (!info.usable) note(info.warning, "error");
+  const busy = widgetsUi.busy !== "";
 
-  // 2. Le jeton de mode : créé sur le Mac.
-  body.appendChild(el("h3", null, "2. Ton jeton de mode"));
-  note("Il se crée sur le Mac : fenêtre Matter Home Server › onglet Connexion › « Changer de mode automatiquement » › Créer le code secret › Copier. Il ne s'affiche qu'une fois : garde-le dans une note jusqu'à la fin. Il ne sert qu'à changer de mode.");
-
-  // 3. Les raccourcis : de simples liens, le serveur envoie le bon nom de fichier.
-  body.appendChild(el("h3", null, "3. Installe les raccourcis"));
-  const links = el("div", "controls");
-  for (const s of SHORTCUTS) {
-    const a = el("a", "widgets-link", s.label);
-    a.href = s.href;
-    links.appendChild(a);
-  }
-  body.appendChild(links);
-  note("Touche un bouton, puis « Ajouter le raccourci ». Colle l'adresse, puis le jeton quand on te les demande. Garde les noms tels quels : le widget les appelle par leur nom. Si un raccourci du même nom existe déjà, supprime-le d'abord (sinon iOS crée « Mode absent 1 »).");
-  note("Si rien ne se passe, ouvre cette page dans Safari (le téléchargement peut échouer dans l'app installée sur l'écran d'accueil).");
-
-  // 4. Le widget Scriptable.
-  body.appendChild(el("h3", null, "4. Le widget Scriptable"));
-  note("Installe Scriptable (App Store, gratuit), touche « Copier le script », puis dans Scriptable : « + », colle, nomme le script exactement Matter Home, touche ▶ et connecte-toi (mêmes identifiants que cette app). Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Matter Home. Le mot de passe n'est pas gardé : seul le jeton de session est rangé dans le trousseau de l'iPhone, 180 jours au plus.");
-  body.appendChild(actionButton("Copier le script", async () => {
-    try {
-      widgetsUi.script = await fetchScript((path, options) => fetch(path, options));
-      const result = await copyOrShow(widgetsUi.script, "Script copié : colle-le dans Scriptable.");
-      renderWidgets(result === "manual" ? widgetsUi.script : "");
-    } catch (error) {
-      widgetsUi.message = "";
-      widgetsUi.error = error?.message || "Script indisponible.";
-      renderWidgets();
+  // 1. Les raccourcis de mode.
+  body.appendChild(el("h3", null, "1. Les raccourcis Mode absent et Mode present"));
+  note(tokenLine(widgetsUi.tokens?.mode, "Pas encore de jeton de mode."));
+  note("Installer crée un nouveau jeton de mode, écrit dans les deux raccourcis : les raccourcis et automatisations installés avec l'ancien jeton cessent de marcher. Supprime d'abord, dans Raccourcis, les anciens « Mode absent », « Mode present » et « Mode présent » (sinon iOS crée « Mode absent 1 », que le widget n'appelle pas).");
+  const row = el("div", "controls");
+  row.appendChild(button(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
+  if (widgetsUi.tokens?.mode?.exists) row.appendChild(button("Révoquer", "ghost", () => revokeToken("mode"), busy));
+  body.appendChild(row);
+  if (widgetsUi.links) {
+    const links = el("div", "controls");
+    for (const s of widgetsUi.links.shortcuts) {
+      const a = el("a", "widgets-link", s.name);
+      a.href = s.url;
+      links.appendChild(a);
     }
-  }));
+    body.appendChild(links);
+    note(`Touche chaque bouton, puis « Ajouter le raccourci ». Liens valables ${Math.round(widgetsUi.links.expiresInS / 60)} minutes. Si rien ne se passe, ouvre cette page dans Safari (le téléchargement peut échouer dans l'app installée sur l'écran d'accueil).`);
+  }
+
+  // 2. Le widget Scriptable.
+  body.appendChild(el("h3", null, "2. Le widget Scriptable"));
+  note(tokenLine(widgetsUi.tokens?.read, "Pas encore de jeton de lecture."));
+  note("Installe Scriptable (App Store, gratuit), puis touche « Installer le widget » : le script est copié avec l'adresse et un jeton de lecture, qui ne permet que de lire l'état de la maison. Dans Scriptable : « + », colle, nomme le script Matter Home. Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Matter Home.");
+  if (widgetsUi.tokens?.read?.exists) note("Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié.");
+  const row2 = el("div", "controls");
+  row2.appendChild(button(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
+  if (widgetsUi.tokens?.read?.exists) row2.appendChild(button("Révoquer", "ghost", () => revokeToken("read"), busy));
+  body.appendChild(row2);
   if (manualText) {
     const area = el("textarea", "widgets-script");
     area.value = manualText;

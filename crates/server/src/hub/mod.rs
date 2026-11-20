@@ -36,7 +36,7 @@ use crate::history_store::{HistorySink, HistoryStore};
 use crate::home_mode;
 use crate::persistence;
 use crate::scrub::Scrubber;
-use crate::security::mode_token::ModeTokenStore;
+use crate::security::token_store::{self, Change, TokenStore};
 use crate::validate;
 
 /// Pourquoi le serveur doit s'arrêter de lui-même.
@@ -139,8 +139,12 @@ pub struct Subscription {
 
 pub struct Hub {
     state: Mutex<HubState>,
-    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/mode_token.rs`.
-    mode_token: ModeTokenStore,
+    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/token_store.rs`.
+    mode_token: TokenStore,
+    /// Jeton qui ne sert qu'à lire l'état et les événements (widget Scriptable).
+    read_token: TokenStore,
+    /// Les raccourcis préparés pour l'iPhone (ils portent le jeton de mode), en mémoire.
+    shortcut_downloads: crate::shortcuts::Downloads,
     tx: broadcast::Sender<Arc<str>>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// Sérialise les modifications du plan, des règles et des caméras (mémoire + disque + diffusion).
@@ -172,6 +176,26 @@ pub struct Hub {
 
 type ApiResult<T> = Result<T, ApiError>;
 
+/// Le droit de changer un jeton, sans attendre : une préparation en cours (signature des
+/// raccourcis, quelques secondes) répond « occupé » au lieu de faire la queue.
+fn try_change(store: &TokenStore) -> ApiResult<Change<'_>> {
+    store.try_change().ok_or_else(|| {
+        ApiError::with_detail(
+            ErrorCode::Busy,
+            "Une préparation (raccourcis ou widget) est déjà en cours : réessaie dans un instant.",
+        )
+    })
+}
+
+/// La requête qui a demandé la préparation est partie (délai, client fermé) : personne ne
+/// recevrait le nouveau jeton, on ne remplace donc pas l'ancien.
+fn abandoned() -> ApiError {
+    ApiError::with_detail(
+        ErrorCode::Unavailable,
+        "Préparation abandonnée : rien n'a changé.",
+    )
+}
+
 fn internal(context: &str, error: &anyhow::Error) -> ApiError {
     // Le détail complet va au journal, jamais au client.
     log::error!("{context} : {error:#}");
@@ -196,16 +220,23 @@ impl Hub {
                 home_mode::load(&config.data_dir),
             )
         };
-        // Le jeton de mode vit dans `serveur/` (jamais exporté). Un dossier inutilisable ne doit
-        // pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
-        let mode_token = crate::security::server_dir(&config.data_dir)
-            .and_then(|dir| ModeTokenStore::open(&dir))
-            .unwrap_or_else(|e| {
-                log::error!(
-                    "dossier du jeton de mode inutilisable, jeton en mémoire seulement : {e:#}"
-                );
-                ModeTokenStore::in_memory()
-            });
+        // Les jetons de mode et de lecture vivent dans `serveur/` (jamais exporté). Un dossier
+        // inutilisable ne doit pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
+        let server_dir = crate::security::server_dir(&config.data_dir);
+        let open_token = |file: &str, label: &'static str| {
+            server_dir
+                .as_ref()
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
+                .and_then(|dir| TokenStore::open(dir, file, label))
+                .unwrap_or_else(|e| {
+                    log::error!(
+                        "dossier du {label} inutilisable, jeton en mémoire seulement : {e:#}"
+                    );
+                    TokenStore::in_memory(label)
+                })
+        };
+        let mode_token = open_token(token_store::MODE_FILE, "jeton de mode");
+        let read_token = open_token(token_store::READ_FILE, "jeton de lecture");
         Self {
             state: Mutex::new(HubState {
                 seq: 0,
@@ -218,6 +249,8 @@ impl Hub {
                 mode,
             }),
             mode_token,
+            read_token,
+            shortcut_downloads: Default::default(),
             tx,
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
@@ -541,18 +574,52 @@ impl Hub {
         Ok(true)
     }
 
-    /// Un nouveau jeton de mode (l'ancien est révoqué), en clair : à montrer une seule fois.
+    /// Un nouveau jeton de mode (l'ancien est révoqué), en clair : à montrer une seule fois. Les
+    /// liens des raccourcis préparés avant (qui portent l'ancien) disparaissent. Ne fait jamais la
+    /// queue : `busy` si une préparation est en cours (la fenêtre du serveur ne se fige pas).
     pub fn generate_mode_token(&self) -> ApiResult<String> {
-        self.mode_token
-            .generate()
-            .map_err(|e| internal("jeton de mode", &e))
+        let change = try_change(&self.mode_token)?;
+        let token = Change::draw();
+        change
+            .install(&token)
+            .map_err(|e| internal("jeton de mode", &e))?;
+        self.shortcut_downloads.clear();
+        Ok(token)
     }
 
-    /// Supprime le jeton de mode : plus aucun accès par jeton.
+    /// Supprime le jeton de mode (plus aucun accès par jeton) et les liens des raccourcis.
     pub fn revoke_mode_token(&self) -> ApiResult<()> {
-        self.mode_token
-            .revoke()
-            .map_err(|e| internal("jeton de mode", &e))
+        let change = try_change(&self.mode_token)?;
+        change.revoke().map_err(|e| internal("jeton de mode", &e))?;
+        self.shortcut_downloads.clear();
+        Ok(())
+    }
+
+    /// Un nouveau jeton de mode et les raccourcis qui le portent, en un seul changement :
+    /// `build` fabrique les fichiers (signés) avec le jeton tiré ; puis, **seulement si**
+    /// `still_wanted()` (la requête n'a pas été abandonnée) et que tout a réussi, le jeton
+    /// remplace l'ancien et les fichiers remplacent les liens d'avant. Sinon rien ne change.
+    /// Rend les identifiants des liens, dans l'ordre des fichiers.
+    pub fn prepare_mode_shortcuts(
+        &self,
+        build: impl FnOnce(&str) -> Result<Vec<(String, Vec<u8>)>, ApiError>,
+        still_wanted: impl Fn() -> bool,
+    ) -> ApiResult<Vec<String>> {
+        let change = try_change(&self.mode_token)?;
+        let token = Change::draw();
+        let files = build(&token)?;
+        if !still_wanted() {
+            return Err(abandoned());
+        }
+        change
+            .install(&token)
+            .map_err(|e| internal("jeton de mode", &e))?;
+        Ok(self.shortcut_downloads.replace(files))
+    }
+
+    /// Un raccourci préparé (lien encore valable), par identifiant et nom de fichier.
+    pub fn shortcut_download(&self, id: &str, file_name: &str) -> Option<Vec<u8>> {
+        self.shortcut_downloads.get(id, file_name)
     }
 
     pub fn has_mode_token(&self) -> bool {
@@ -561,6 +628,56 @@ impl Hub {
 
     pub fn mode_token_created(&self) -> Option<f64> {
         self.mode_token.created()
+    }
+
+    /// Un nouveau jeton de lecture (l'ancien est révoqué), en clair : à montrer une seule fois.
+    pub fn generate_read_token(&self) -> ApiResult<String> {
+        let change = try_change(&self.read_token)?;
+        let token = Change::draw();
+        change
+            .install(&token)
+            .map_err(|e| internal("jeton de lecture", &e))?;
+        Ok(token)
+    }
+
+    /// Un nouveau jeton de lecture et ce qui le porte (le script du widget), comme
+    /// `prepare_mode_shortcuts` : rien ne change si `build` échoue ou si la requête est abandonnée.
+    pub fn prepare_widget<T>(
+        &self,
+        build: impl FnOnce(&str) -> Result<T, ApiError>,
+        still_wanted: impl Fn() -> bool,
+    ) -> ApiResult<T> {
+        let change = try_change(&self.read_token)?;
+        let token = Change::draw();
+        let built = build(&token)?;
+        if !still_wanted() {
+            return Err(abandoned());
+        }
+        change
+            .install(&token)
+            .map_err(|e| internal("jeton de lecture", &e))?;
+        Ok(built)
+    }
+
+    /// Supprime le jeton de lecture : le widget ne lit plus rien.
+    pub fn revoke_read_token(&self) -> ApiResult<()> {
+        let change = try_change(&self.read_token)?;
+        change
+            .revoke()
+            .map_err(|e| internal("jeton de lecture", &e))
+    }
+
+    pub fn has_read_token(&self) -> bool {
+        self.read_token.exists()
+    }
+
+    pub fn read_token_created(&self) -> Option<f64> {
+        self.read_token.created()
+    }
+
+    /// Le jeton présenté est-il le jeton de lecture ?
+    pub fn verify_read_token(&self, token: &str) -> bool {
+        self.read_token.verify(token)
     }
 
     /// Le jeton présenté est-il le jeton de mode ?
@@ -1420,6 +1537,91 @@ pub(crate) mod tests {
         assert!(again.verify_mode_token(&second));
         again.revoke_mode_token().unwrap();
         assert!(!again.has_mode_token());
+        // Le jeton de lecture vit à part : aucun ne vaut pour l'autre.
+        let read = again.generate_read_token().unwrap();
+        let mode = again.generate_mode_token().unwrap();
+        assert!(again.verify_read_token(&read) && !again.verify_mode_token(&read));
+        assert!(!again.verify_read_token(&mode));
+        // Une préparation refusée (signature) ou abandonnée (requête partie) garde l'ancien jeton
+        // et ne laisse aucun lien.
+        let refused = again
+            .prepare_mode_shortcuts(
+                |_| Err(ApiError::with_detail(ErrorCode::Unavailable, "signature")),
+                || true,
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Unavailable);
+        assert!(again.verify_mode_token(&mode));
+        let mut drawn = String::new();
+        let gone = again
+            .prepare_mode_shortcuts(
+                |token| {
+                    drawn = token.to_string();
+                    Ok(vec![("x".into(), token.as_bytes().to_vec())])
+                },
+                || false,
+            )
+            .unwrap_err();
+        assert!(gone.detail.unwrap().contains("abandonnée"));
+        assert!(again.verify_mode_token(&mode) && !again.verify_mode_token(&drawn));
+        // Réussie : le jeton change, le lien porte le nouveau ; un nouveau jeton ou une
+        // révocation (fenêtre du serveur) fait disparaître le lien.
+        let ids = again
+            .prepare_mode_shortcuts(|t| Ok(vec![("x".into(), t.as_bytes().to_vec())]), || true)
+            .unwrap();
+        let body = again.shortcut_download(&ids[0], "x").unwrap();
+        let carried = String::from_utf8(body).unwrap();
+        assert!(again.verify_mode_token(&carried) && !again.verify_mode_token(&mode));
+        again.generate_mode_token().unwrap();
+        assert!(again.shortcut_download(&ids[0], "x").is_none());
+        let ids = again
+            .prepare_mode_shortcuts(|t| Ok(vec![("x".into(), t.as_bytes().to_vec())]), || true)
+            .unwrap();
+        again.revoke_mode_token().unwrap();
+        assert!(again.shortcut_download(&ids[0], "x").is_none());
+        // Pendant une préparation, tout autre changement répond « occupé » tout de suite (la
+        // fenêtre du serveur ne se fige pas), la vérification continue.
+        let again = std::sync::Arc::new(again);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let worker = {
+            let hub = again.clone();
+            std::thread::spawn(move || {
+                hub.prepare_mode_shortcuts(
+                    |_| {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(vec![])
+                    },
+                    || true,
+                )
+            })
+        };
+        entered_rx.recv().unwrap();
+        for busy in [
+            again.generate_mode_token().map(|_| ()),
+            again.revoke_mode_token(),
+            again
+                .prepare_mode_shortcuts(|_| Ok(vec![]), || true)
+                .map(|_| ()),
+        ] {
+            assert_eq!(busy.unwrap_err().code, ErrorCode::Busy);
+        }
+        // Le jeton de lecture est indépendant.
+        let read = again.generate_read_token().unwrap();
+        release_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_ok());
+        let again = std::sync::Arc::try_unwrap(again).ok().unwrap();
+        let script = again
+            .prepare_widget(|t| Ok(format!("TOKEN={t}")), || true)
+            .unwrap();
+        assert!(!again.verify_read_token(&read));
+        assert!(again.verify_read_token(script.trim_start_matches("TOKEN=")));
+        assert!(again.prepare_widget(|_| Ok(()), || false).is_err());
+        assert!(again.verify_read_token(script.trim_start_matches("TOKEN=")));
+        let read = script.trim_start_matches("TOKEN=").to_string();
+        again.revoke_read_token().unwrap();
+        assert!(!again.has_read_token() && !again.verify_read_token(&read));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

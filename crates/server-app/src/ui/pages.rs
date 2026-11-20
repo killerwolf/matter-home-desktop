@@ -52,6 +52,11 @@ fn mode_hint(mode: HomeMode) -> &'static str {
     }
 }
 
+/// Une préparation de raccourcis (ou du widget) lancée depuis l'iPhone tient le jeton quelques
+/// secondes : la fenêtre ne l'attend pas, elle le dit.
+const BUSY_NOTICE: &str =
+    "Une préparation est en cours depuis l'iPhone (raccourcis ou widget) : réessayez dans un instant.";
+
 impl App {
     /// Les onglets ne s'affichent qu'une fois la première installation finie.
     pub(super) fn tabs_visible(&self, st: &State) -> bool {
@@ -889,6 +894,29 @@ impl App {
     fn shortcuts_steps(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
         let p = theme::palette(ui);
         ui.label("L'iPhone peut passer la maison en « Absent » quand vous partez et en « Présent » quand vous rentrez, tout seul, avec l'app Raccourcis. Il lui faut un code secret (le « jeton de mode »), qui ne permet rien d'autre que changer le mode.");
+        widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer les raccourcis » crée un nouveau code et les deux raccourcis tout prêts, sans rien taper.");
+        let read = hub.has_read_token();
+        ui.horizontal(|ui| {
+            ui.label(if read {
+                "Widget de l'iPhone : jeton de lecture actif (il ne permet que de lire l'état)."
+            } else {
+                "Widget de l'iPhone : aucun jeton de lecture."
+            });
+            if read && ui.button("Révoquer").clicked() {
+                self.local_notice = Some(match hub.revoke_read_token() {
+                    Ok(()) => {
+                        Notice::Ok("Jeton de lecture révoqué : le widget ne lit plus rien.".into())
+                    }
+                    Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                        Notice::Err(BUSY_NOTICE.into())
+                    }
+                    Err(_) => Notice::Err(
+                        "Le jeton n'a pas pu être révoqué (voir le journal, onglet Réglages)."
+                            .into(),
+                    ),
+                });
+            }
+        });
         ui.add_space(6.0);
         let remote = matches!(self.web, WebAccess::On { .. });
         let has = hub.has_mode_token();
@@ -954,6 +982,7 @@ impl App {
                     if ui.button("Supprimer le code").clicked() {
                         self.local_notice = Some(match hub.revoke_mode_token() {
                             Ok(()) => Notice::Ok("Code secret supprimé : Raccourcis ne peut plus changer le mode.".into()),
+                            Err(e) if e.code == protocol::wire::ErrorCode::Busy => Notice::Err(BUSY_NOTICE.into()),
                             Err(_) => Notice::Err("Le code n'a pas pu être supprimé (voir le journal, onglet Réglages).".into()),
                         });
                     }
@@ -1002,6 +1031,9 @@ impl App {
         self.mode_token_confirm = false;
         match hub.generate_mode_token() {
             Ok(token) => self.mode_token_shown = Some(token),
+            Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
+            }
             Err(_) => {
                 self.local_notice = Some(Notice::Err(
                     "Le code n'a pas pu être créé (voir le journal, onglet Réglages).".into(),

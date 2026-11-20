@@ -123,6 +123,7 @@ pub fn api_message(
             "Un import est déjà en attente : le serveur va redémarrer pour l'appliquer.".into()
         }
         ErrorCode::PairingBusy => "Un appairage est déjà en cours.".into(),
+        ErrorCode::Busy => "Une préparation est déjà en cours : réessayez dans un instant.".into(),
         ErrorCode::PairingFailed => with_detail("L'appairage a échoué"),
         ErrorCode::InvalidImport => {
             with_detail("Ce fichier n'est pas une sauvegarde Matter Home valable")

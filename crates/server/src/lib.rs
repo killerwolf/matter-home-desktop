@@ -21,6 +21,7 @@ pub mod push;
 pub mod scrub;
 pub mod security;
 pub mod setup;
+pub mod shortcuts;
 pub mod validate;
 
 use std::sync::mpsc;

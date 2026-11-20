@@ -5,27 +5,24 @@
 // ─────────────────────────────────────────────────────────────
 //  Matter Home — widget Scriptable (petit et moyen)
 //  Montre : le mode de la maison, les lumières allumées,
-//  la dernière alerte. Rien à modifier en principe : la première
-//  fois, lance le script dans l'app Scriptable, il te demande
-//  l'adresse du serveur, ton identifiant et ton mot de passe.
-//  Le mot de passe n'est jamais gardé : seul le jeton de session
-//  renvoyé par le serveur est rangé dans le trousseau de l'iPhone.
+//  la dernière alerte. Rien à modifier : l'adresse du serveur et
+//  le jeton de lecture sont écrits ci-dessous par l'app web
+//  (« Widgets et raccourcis » › « Installer le widget »).
+//  Le jeton de lecture ne permet que de lire l'état : ni appareils,
+//  ni caméras, ni changement de mode. Pour en changer, recopie le
+//  widget depuis l'app web (l'ancien jeton cesse de marcher).
 // ─────────────────────────────────────────────────────────────
 
-// Facultatif : laisse tel quel, la connexion se fait dans l'app.
-// (Si tu as déjà un jeton de session, tu peux le coller ici à la place.)
-const TOKEN = "COLLE_TON_JETON_ICI";
-// Facultatif : l'adresse du serveur, sinon elle est demandée à la connexion.
-// Exemple : "https://nom-du-mac.tailnet-xxxx.ts.net"
-const SERVEUR = "COLLE_TON_ADRESSE_ICI";
+const SERVEUR = "__SERVEUR__";
+const TOKEN = "__JETON_DE_LECTURE__";
 
-// Noms exacts des raccourcis (ils doivent exister dans l'app Raccourcis).
+// Noms exacts des raccourcis installés par l'app web (sans accent : iOS
+// enregistre les accents d'un nom de fichier d'une façon que le lien
+// shortcuts:// ne retrouve pas).
 const RACCOURCI_ABSENT = "Mode absent";
-const RACCOURCI_PRESENT = "Mode présent";
+const RACCOURCI_PRESENT = "Mode present";
 
 const NOM_SCRIPT = Script.name(); // « Matter Home »
-const KC_TOKEN = "matterhome.token";
-const KC_SERVEUR = "matterhome.serveur";
 const CACHE = "matter-home-cache.json";
 
 const MODES = {
@@ -45,23 +42,12 @@ const C = {
   btn: Color.dynamic(new Color("#f1f1f4"), new Color("#2c2c2e")),
 };
 
-// ───────── Réglages enregistrés ─────────
+// ───────── Réglages ─────────
 
-const isSet = (v, placeholder) => typeof v === "string" && v.trim() !== "" && v !== placeholder;
-
-function serveur() {
-  let s = isSet(SERVEUR, "COLLE_TON_ADRESSE_ICI") ? SERVEUR : Keychain.contains(KC_SERVEUR) ? Keychain.get(KC_SERVEUR) : "";
-  return normaliser(s);
-}
-function normaliser(s) {
-  s = (s || "").trim().replace(/\/+$/, "").replace(/\/app$/, "");
-  if (s && !/^https?:\/\//i.test(s)) s = "https://" + s;
-  return s;
-}
-function jeton() {
-  if (isSet(TOKEN, "COLLE_TON_JETON_ICI")) return TOKEN.trim();
-  return Keychain.contains(KC_TOKEN) ? Keychain.get(KC_TOKEN) : "";
-}
+// Un script recopié à la main depuis le dépôt garde ses emplacements vides.
+const rempli = (v) => typeof v === "string" && v.trim() !== "" && !v.startsWith("__");
+const serveur = () => (rempli(SERVEUR) ? SERVEUR.trim().replace(/\/+$/, "") : "");
+const jeton = () => (rempli(TOKEN) ? TOKEN.trim() : "");
 
 // ───────── Réseau ─────────
 
@@ -72,20 +58,17 @@ class HttpError extends Error {
   }
 }
 
-async function api(path, { method = "GET", body = null, auth = true } = {}) {
+// Lecture seule : le jeton de lecture n'ouvre que GET /api/state et GET /api/events.
+async function api(path) {
   const base = serveur();
-  if (!base) throw new HttpError(0, "pas_de_serveur");
+  if (!base || !jeton()) throw new HttpError(0, "pas_installe");
   const req = new Request(base + path);
-  req.method = method;
+  req.method = "GET";
   req.timeoutInterval = 10;
   // Scriptable : `req.headers` doit être affecté d'un bloc. Modifier une clé après coup
-  // (req.headers.X = …) est perdu en silence, et l'en-tête Authorization ne partirait pas.
-  const headers = { Accept: "application/json" };
-  if (auth) headers.Authorization = "Bearer " + jeton();
-  if (body) {
-    headers["Content-Type"] = "application/json";
-    req.body = JSON.stringify(body);
-  }
+  // (une clé de req.headers changée ensuite) est perdu en silence, et l'en-tête Authorization ne
+  // partirait pas.
+  const headers = { Accept: "application/json", Authorization: "Bearer " + jeton() };
   req.headers = headers;
   const text = await req.loadString(); // lève une erreur si le réseau ne répond pas
   const status = req.response ? req.response.statusCode : 0;
@@ -320,47 +303,12 @@ function construireWidget(family, s, note) {
   return w;
 }
 
-// ───────── Actions dans l'app ─────────
+// ───────── Messages ─────────
 
-async function connexion() {
-  const a = new Alert();
-  a.title = "Connexion à Matter Home";
-  a.message = "Mêmes identifiants que l'app web. Le mot de passe n'est pas gardé. Tape-le soigneusement : plusieurs erreurs bloquent la connexion quelques minutes.";
-  a.addTextField("https://nom-du-mac.….ts.net", serveur());
-  a.addTextField("Identifiant", "");
-  a.addSecureTextField("Mot de passe", "");
-  a.addAction("Se connecter");
-  a.addCancelAction("Annuler");
-  if ((await a.presentAlert()) === -1) return false;
-  const base = normaliser(a.textFieldValue(0));
-  const user = a.textFieldValue(1).trim();
-  const pass = a.textFieldValue(2);
-  if (!base || !user || !pass) {
-    await info("Il manque l'adresse, l'identifiant ou le mot de passe.");
-    return false;
-  }
-  Keychain.set(KC_SERVEUR, base);
-  try {
-    const v = await api("/api/version", { auth: false });
-    const r = await api("/api/login", {
-      method: "POST",
-      auth: false,
-      body: { username: user, password: pass, protocol_version: v.protocol_version },
-    });
-    Keychain.set(KC_TOKEN, r.token);
-    await info("Connecté. Ajoute maintenant le widget sur l'écran d'accueil.");
-    return true;
-  } catch (e) {
-    await info(messageErreur(e, true));
-    return false;
-  }
-}
-
-function messageErreur(e, login) {
+function messageErreur(e) {
   if (e instanceof HttpError) {
-    if (e.status === 0 && e.message === "pas_de_serveur") return "Adresse du serveur inconnue : lance le script dans l'app pour te connecter.";
-    if (e.status === 401) return login ? "Identifiant ou mot de passe incorrect." : "Session expirée : lance le script dans l'app pour te reconnecter.";
-    if (e.status === 429) return "Trop d'essais : attends quelques minutes avant de réessayer.";
+    if (e.status === 0 && e.message === "pas_installe") return "Widget pas installé : copie-le depuis l'app web (Widgets et raccourcis › Installer le widget).";
+    if (e.status === 401) return "Jeton révoqué : recopie le widget depuis l'app web.";
     if (e.status === 426) return "Version du serveur différente : mets à jour Matter Home.";
     return "Le serveur a répondu une erreur (" + e.status + (e.message ? ", " + e.message : "") + ").";
   }
@@ -392,7 +340,8 @@ async function rendreWidget(family) {
   const r = await etatPourWidget();
   if (r.erreur) {
     const auth = r.erreur instanceof HttpError && (r.erreur.status === 401 || r.erreur.status === 0);
-    return widgetMessage(auth ? "Connexion nécessaire" : "Serveur injoignable", messageErreur(r.erreur, false), scriptUrl(auth ? "action=login" : ""));
+    const base = serveur();
+    return widgetMessage(auth ? "Widget à recopier" : "Serveur injoignable", messageErreur(r.erreur), base ? base + "/app/" : scriptUrl());
   }
   return construireWidget(family, r.s, r.note);
 }
@@ -404,22 +353,18 @@ async function main() {
     Script.setWidget(await rendreWidget(config.widgetFamily || "small"));
     return;
   }
-  const action = (args.queryParameters || {}).action || "";
-
-  if (!jeton() || !serveur() || action === "login") {
-    if (!(await connexion())) return;
+  if (!jeton() || !serveur()) {
+    await info(messageErreur(new HttpError(0, "pas_installe")));
+    return;
   }
-
   const menu = new Alert();
   menu.title = "Matter Home";
   menu.addAction("Voir le widget moyen");
   menu.addAction("Voir le petit widget");
-  menu.addDestructiveAction("Se reconnecter");
   menu.addCancelAction("Fermer");
   const choix = await menu.presentSheet();
   if (choix === 0) (await rendreWidget("medium")).presentMedium();
   else if (choix === 1) (await rendreWidget("small")).presentSmall();
-  else if (choix === 2) await connexion();
 }
 
 await main();

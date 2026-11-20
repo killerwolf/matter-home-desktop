@@ -363,8 +363,10 @@ impl Client {
         headers: &[(&str, &str)],
     ) -> Resp {
         let mut stream = self.connect().await;
-        let mut head =
-            format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+        let mut head = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
+        if !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("host")) {
+            head.push_str("Host: localhost\r\n");
+        }
         if let Some(t) = token {
             head.push_str(&format!("Authorization: Bearer {t}\r\n"));
         }

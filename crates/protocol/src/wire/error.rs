@@ -31,6 +31,9 @@ pub enum ErrorCode {
     ImportPending,
     /// Un appairage est déjà en cours.
     PairingBusy,
+    /// Une préparation du même genre est déjà en cours (raccourcis ou widget de l'iPhone) :
+    /// réessayer dans un instant.
+    Busy,
     /// L'appairage a échoué (le détail donne la cause).
     PairingFailed,
     /// Fichier d'import illisible ou qui n'est pas une sauvegarde Matter Home.
@@ -60,7 +63,10 @@ impl ErrorCode {
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::RequestTimeout => 408,
-            ErrorCode::PairingBusy | ErrorCode::ImportPending | ErrorCode::IdentityMismatch => 409,
+            ErrorCode::PairingBusy
+            | ErrorCode::Busy
+            | ErrorCode::ImportPending
+            | ErrorCode::IdentityMismatch => 409,
             ErrorCode::PairingFailed | ErrorCode::DeviceUnreachable => 502,
             ErrorCode::Unavailable => 503,
             ErrorCode::Internal => 500,

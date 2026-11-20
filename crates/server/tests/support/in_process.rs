@@ -86,6 +86,7 @@ pub fn start(setup: Setup<'_>) -> Rig {
             listen: setup.listen.parse().expect("adresse d'écoute"),
             client_write_timeout: setup.client_write_timeout,
             body_idle_timeout: Duration::from_secs(15),
+            shortcut_signer: matter_home_server::shortcuts::Signer::Unsigned,
         },
         hub.clone(),
         auth,
