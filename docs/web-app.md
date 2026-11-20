@@ -106,7 +106,7 @@ pas de framework, pas de nouvelle dépendance Rust.
 ## Widgets et raccourcis
 
 Feuille ouverte par « Widgets et raccourcis », en bas de l'onglet Appareils. Elle installe, sur
-l'iPhone, trois **raccourcis Apple signés** (« Mode absent », « Mode présent », « Tout éteindre ») et
+l'iPhone, deux **raccourcis Apple signés** (« Mode absent », « Mode présent ») et
 le **widget Scriptable** (état de la maison sur l'écran d'accueil), sans rien taper d'autre que deux
 valeurs collées :
 
@@ -115,24 +115,18 @@ valeurs collées :
    Le raccourci la demande à l'import (un fichier signé est figé : il ne peut pas porter l'adresse).
 2. **Le jeton de mode** : créé sur le Mac, fenêtre Matter Home Server › onglet Connexion ›
    « Changer de mode automatiquement » › Créer le code secret › Copier (voir [Modes](modes.md)).
-3. **Les raccourcis** : trois liens vers `/app/raccourcis/…`. Le nom importé vient du nom du fichier,
+3. **Les raccourcis** : deux liens vers `/app/raccourcis/…`. Le nom importé vient du nom du fichier,
    que le widget appelle tel quel (`shortcuts://run-shortcut?name=…`).
 4. **Le script** : « Copier le script » lit `/app/raccourcis/matter-home.js` par `fetch` et le met
    dans le presse-papiers (repli : le texte dans une zone sélectionnée, à copier à la main). La page
    ne l'exécute jamais.
 
-**Risque de « Tout éteindre »** : ce raccourci demande le **jeton de session complet** (celui que
-le script Scriptable obtient par `POST /api/login` et copie sur demande), gardé **en clair** dans le
-raccourci et synchronisé par iCloud. Ce jeton ouvre toute l'API, y compris `/api/export` (clés
-Matter, mots de passe des caméras). La page le dit en toutes lettres à côté du bouton. Les deux
-raccourcis de mode n'utilisent que le jeton de mode (`PUT /api/mode`). Une alternative plus sûre
-serait un jeton « Raccourcis » limité, créé depuis l'app : pas encore faite.
+Les deux raccourcis de mode n'utilisent que le jeton de mode (`PUT /api/mode`), jamais le jeton de session.
 
 | Route | Type | Content-Disposition |
 |---|---|---|
 | `/app/raccourcis/mode-absent.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20absent.shortcut` |
 | `/app/raccourcis/mode-present.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20pr%C3%A9sent.shortcut` |
-| `/app/raccourcis/tout-eteindre.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Tout%20%C3%A9teindre.shortcut` |
 | `/app/raccourcis/matter-home.js` | `text/plain; charset=utf-8` | aucun |
 
 - Fichiers intégrés au binaire (`include_bytes!`, sources dans `crates/server/web/raccourcis/`),

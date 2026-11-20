@@ -145,12 +145,6 @@ static DOWNLOADS: &[Download] = &[
         filename: Some("Mode%20pr%C3%A9sent.shortcut"),
         body: include_bytes!("../../web/raccourcis/mode-present.shortcut"),
     },
-    Download {
-        path: "tout-eteindre.shortcut",
-        content_type: "application/octet-stream",
-        filename: Some("Tout%20%C3%A9teindre.shortcut"),
-        body: include_bytes!("../../web/raccourcis/tout-eteindre.shortcut"),
-    },
     // Le script Scriptable : un texte que la page lit par `fetch` et copie, jamais exécuté.
     Download {
         path: "matter-home.js",
@@ -306,10 +300,6 @@ mod tests {
         assert!(names.contains(&(
             "mode-present.shortcut",
             Some("Mode%20pr%C3%A9sent.shortcut")
-        )));
-        assert!(names.contains(&(
-            "tout-eteindre.shortcut",
-            Some("Tout%20%C3%A9teindre.shortcut")
         )));
         for d in DOWNLOADS {
             assert!(d.path.is_ascii() && !d.path.contains('/') && !d.path.contains(".."));

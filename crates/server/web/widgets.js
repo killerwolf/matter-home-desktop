@@ -1,15 +1,14 @@
-// « Widgets et raccourcis » : trois raccourcis Apple signés et le script du widget Scriptable,
+// « Widgets et raccourcis » : deux raccourcis Apple signés et le script du widget Scriptable,
 // téléchargés depuis le serveur (`/app/raccourcis/…`, sans jeton, aucun secret dedans).
 //
 // Ici, seulement la logique sans navigateur (essai : `node --test crates/server/web/widgets.test.mjs`).
 // L'affichage est dans app.js ; le presse-papiers et `fetch` sont passés en paramètre.
 
-/** Les trois raccourcis. Le nom importé vient du nom du fichier envoyé par le serveur : le widget
- *  Scriptable les appelle par « Mode absent », « Mode présent » et « Tout éteindre ». */
+/** Les deux raccourcis. Le nom importé vient du nom du fichier envoyé par le serveur : le widget
+ *  Scriptable les appelle par « Mode absent » et « Mode présent ». */
 export const SHORTCUTS = [
   { id: "absent", label: "Mode absent", href: "raccourcis/mode-absent.shortcut" },
   { id: "present", label: "Mode présent", href: "raccourcis/mode-present.shortcut" },
-  { id: "all-off", label: "Tout éteindre", href: "raccourcis/tout-eteindre.shortcut", sessionToken: true },
 ];
 
 export const SCRIPT_PATH = "raccourcis/matter-home.js";

@@ -22,7 +22,6 @@ const SERVEUR = "COLLE_TON_ADRESSE_ICI";
 // Noms exacts des raccourcis (ils doivent exister dans l'app Raccourcis).
 const RACCOURCI_ABSENT = "Mode absent";
 const RACCOURCI_PRESENT = "Mode présent";
-const RACCOURCI_ETEINDRE = "Tout éteindre";
 
 const NOM_SCRIPT = Script.name(); // « Matter Home »
 const KC_TOKEN = "matterhome.token";
@@ -307,8 +306,6 @@ function construireWidget(family, s, note) {
     bouton(btns, "Absent", MODES.absent.symbol, modeInfo("absent").color, shortcutUrl(RACCOURCI_ABSENT));
     btns.addSpacer(6);
     bouton(btns, "Présent", MODES.present.symbol, modeInfo("present").color, shortcutUrl(RACCOURCI_PRESENT));
-    btns.addSpacer(6);
-    bouton(btns, "Tout éteindre", "lightbulb.slash", C.warn, shortcutUrl(RACCOURCI_ETEINDRE));
     btns.addSpacer();
   } else {
     w.setPadding(12, 14, 12, 12);
@@ -433,7 +430,6 @@ async function main() {
   menu.addAction("Voir le widget moyen");
   menu.addAction("Voir le petit widget");
   menu.addAction("Éteindre les lumières");
-  menu.addAction("Copier mon jeton (pour « Tout éteindre »)");
   menu.addDestructiveAction("Se reconnecter");
   menu.addCancelAction("Fermer");
   const choix = await menu.presentSheet();
@@ -441,10 +437,7 @@ async function main() {
   else if (choix === 1) (await rendreWidget("small")).presentSmall();
   else if (choix === 2) {
     try { await info(await toutEteindre()); } catch (e) { await info(messageErreur(e, false)); }
-  } else if (choix === 3) {
-    Pasteboard.copy(jeton());
-    await info("Jeton copié. Colle-le quand le raccourci « Tout éteindre » le demande. Ne l'envoie à personne : il donne accès à toute la maison.");
-  } else if (choix === 4) await connexion();
+  } else if (choix === 3) await connexion();
 }
 
 await main();

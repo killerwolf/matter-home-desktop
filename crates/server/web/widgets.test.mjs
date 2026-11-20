@@ -20,11 +20,10 @@ test("l'adresse affichée est location.origin ; sur le port 8443, un conseil", (
 });
 
 test("les raccourcis gardent leur nom exact et un chemin relatif sans accent", () => {
-  assert.deepEqual(SHORTCUTS.map((s) => s.label), ["Mode absent", "Mode présent", "Tout éteindre"]);
+  assert.deepEqual(SHORTCUTS.map((s) => s.label), ["Mode absent", "Mode présent"]);
   for (const s of SHORTCUTS) {
     assert.match(s.href, /^raccourcis\/[a-z-]+\.shortcut$/);
   }
-  assert.deepEqual(SHORTCUTS.filter((s) => s.sessionToken).map((s) => s.id), ["all-off"]);
 });
 
 test("copie : presse-papiers, puis repli, puis à la main", async () => {

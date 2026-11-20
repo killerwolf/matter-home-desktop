@@ -1094,7 +1094,7 @@ function renderPush() {
 }
 
 // ---------------------------------------------------------------------------
-// Widgets et raccourcis : trois raccourcis Apple signés et le script Scriptable
+// Widgets et raccourcis : deux raccourcis Apple signés et le script Scriptable
 // ---------------------------------------------------------------------------
 const widgetsUi = { script: "", message: "", error: "" };
 
@@ -1170,7 +1170,6 @@ function renderWidgets(manualText = "") {
   body.appendChild(links);
   note("Touche un bouton, puis « Ajouter le raccourci ». Colle l'adresse, puis le jeton quand on te les demande. Garde les noms tels quels : le widget les appelle par leur nom. Si un raccourci du même nom existe déjà, supprime-le d'abord (sinon iOS crée « Mode absent 1 »).");
   note("Si rien ne se passe, ouvre cette page dans Safari (le téléchargement peut échouer dans l'app installée sur l'écran d'accueil).");
-  note("Attention à « Tout éteindre » : il demande le jeton de session complet, celui du widget (copie-le depuis Scriptable, étape 4), pas le jeton de mode. Ce jeton donne accès à TOUTE la maison : l'état, les commandes, mais aussi l'export, qui contient les clés Matter et les mots de passe des caméras. Le raccourci le garde en clair, et iCloud le synchronise sur tes appareils Apple. Ne partage jamais ce raccourci. Si tu ne veux pas ce risque, n'installe pas « Tout éteindre » : les deux modes se passent très bien du jeton de session.", "error");
 
   // 4. Le widget Scriptable.
   body.appendChild(el("h3", null, "4. Le widget Scriptable"));

@@ -478,7 +478,7 @@ fn api_responses_carry_a_locked_down_csp() {
     });
 }
 
-/// Page « Widgets et raccourcis » : les trois raccourcis signés et le script Scriptable se
+/// Page « Widgets et raccourcis » : les deux raccourcis signés et le script Scriptable se
 /// téléchargent sans jeton, avec le nom de fichier exact (accents compris) et le bon type ; le
 /// service worker ne les garde pas ; la page est branchée dans l'app.
 #[test]
@@ -496,11 +496,6 @@ fn shortcuts_downloads_have_exact_names_and_headers_and_need_no_token() {
         (
             "mode-present.shortcut",
             "Mode%20pr%C3%A9sent.shortcut",
-            "application/octet-stream",
-        ),
-        (
-            "tout-eteindre.shortcut",
-            "Tout%20%C3%A9teindre.shortcut",
             "application/octet-stream",
         ),
         ("matter-home.js", "", "text/plain; charset=utf-8"),
@@ -574,8 +569,7 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         assert!(app.contains("originInfo(location)") && app.contains("Copier l'adresse"));
         assert!(app.contains("Copier le script"));
         assert!(app.contains("Créer le code secret"));
-        // Le risque du jeton de session dans « Tout éteindre » est dit en clair.
-        assert!(app.contains("Tout éteindre") && app.contains("TOUTE la maison"));
+        assert!(!app.contains("Tout éteindre"));
         assert!(app.contains("clés Matter") && app.contains("iCloud"));
         let widgets = client.request("GET", "/app/widgets.js", None, None).await;
         assert_eq!(widgets.status, 200);
