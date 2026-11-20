@@ -8,6 +8,14 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Corrigé
+
+- Widget Scriptable : la connexion était redemandée sans fin (« Session expirée » juste après
+  « Connecté ») : l'en-tête `Authorization` n'était pas envoyé, Scriptable ignorant les en-têtes
+  ajoutés un par un.
+
 ## [1.3.1] - 2026-11-20
 
 ### Ajouté

@@ -78,12 +78,15 @@ async function api(path, { method = "GET", body = null, auth = true } = {}) {
   const req = new Request(base + path);
   req.method = method;
   req.timeoutInterval = 10;
-  req.headers = { Accept: "application/json" };
-  if (auth) req.headers.Authorization = "Bearer " + jeton();
+  // Scriptable : `req.headers` doit être affecté d'un bloc. Modifier une clé après coup
+  // (req.headers.X = …) est perdu en silence, et l'en-tête Authorization ne partirait pas.
+  const headers = { Accept: "application/json" };
+  if (auth) headers.Authorization = "Bearer " + jeton();
   if (body) {
-    req.headers["Content-Type"] = "application/json";
+    headers["Content-Type"] = "application/json";
     req.body = JSON.stringify(body);
   }
+  req.headers = headers;
   const text = await req.loadString(); // lève une erreur si le réseau ne répond pas
   const status = req.response ? req.response.statusCode : 0;
   let json = null;
