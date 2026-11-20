@@ -106,46 +106,80 @@ pas de framework, pas de nouvelle dépendance Rust.
 ## Widgets et raccourcis
 
 Feuille ouverte par « Widgets et raccourcis », en bas de l'onglet Appareils. Elle installe, sur
-l'iPhone, deux **raccourcis Apple signés** (« Mode absent », « Mode présent ») et
-le **widget Scriptable** (état de la maison sur l'écran d'accueil), sans rien taper d'autre que deux
-valeurs collées :
+l'iPhone, les deux **raccourcis de mode** (« Mode absent », « Mode present ») et le **widget
+Scriptable** (état de la maison sur l'écran d'accueil) **sans rien taper** : ni adresse, ni jeton,
+ni mot de passe. Le serveur prépare chaque fichier avec son adresse publique et un **jeton à part**
+(voir [Modes](modes.md#les-jetons-de-liphone)).
 
-1. **L'adresse** : `location.origin`, avec un bouton « Copier l'adresse ». Sur le port 8443 (adresse
-   directe), la page conseille l'adresse en `.ts.net` : Raccourcis refuse le certificat de l'autre.
-   Le raccourci la demande à l'import (un fichier signé est figé : il ne peut pas porter l'adresse).
-2. **Le jeton de mode** : créé sur le Mac, fenêtre Matter Home Server › onglet Connexion ›
-   « Changer de mode automatiquement » › Créer le code secret › Copier (voir [Modes](modes.md)).
-3. **Les raccourcis** : deux liens vers `/app/raccourcis/…`. Le nom importé vient du nom du fichier,
-   que le widget appelle tel quel (`shortcuts://run-shortcut?name=…`).
-4. **Le script** : « Copier le script » lit `/app/raccourcis/matter-home.js` par `fetch` et le met
-   dans le presse-papiers (repli : le texte dans une zone sélectionnée, à copier à la main). La page
-   ne l'exécute jamais.
+1. **Installer les raccourcis** : `POST /api/tokens/mode/shortcuts` crée un **nouveau jeton de mode**
+   (l'ancien est révoqué : la page le dit et demande confirmation s'il en existe un), l'écrit avec
+   l'adresse dans les deux raccourcis, les signe sur le Mac (`/usr/bin/shortcuts sign --mode anyone`),
+   puis affiche deux boutons à toucher : « Mode absent », « Mode present ». Plus aucune question à
+   l'import.
+2. **Installer le widget** : `POST /api/tokens/read/widget` crée un **nouveau jeton de lecture** et
+   rend le script `matter-home.js` avec `SERVEUR` et `TOKEN` déjà remplis ; la page le copie
+   (`ClipboardItem` confié au presse-papiers pendant le geste, comme l'exige Safari ; repli : le texte
+   dans une zone sélectionnée). On le colle une fois dans Scriptable.
+3. **Révoquer** : un bouton par jeton (`DELETE /api/tokens/mode`, `DELETE /api/tokens/read`), avec la
+   date de création de chacun (`GET /api/tokens`, jamais le jeton lui-même).
 
-Les deux raccourcis de mode n'utilisent que le jeton de mode (`PUT /api/mode`), jamais le jeton de session.
+Toutes ces routes exigent une **session** : ni le jeton de mode ni le jeton de lecture ne les ouvrent.
+
+**L'adresse.** La page envoie `location.origin` ; le serveur n'accepte que `https://<nom>.ts.net`, sans
+port (400 sinon, avec « Ouvre l'app par son adresse en .ts.net »). L'adresse directe en `:8443` a un
+certificat auto-signé que Raccourcis et Scriptable refusent : elle n'est jamais écrite dans un fichier.
+
+**Les liens des raccourcis.** Un lien de Safari ne peut pas poser d'en-tête `Authorization`, et les
+raccourcis portent le jeton de mode. Ils sont donc servis par une adresse **imprévisible** :
 
 | Route | Type | Content-Disposition |
 |---|---|---|
-| `/app/raccourcis/mode-absent.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20absent.shortcut` |
-| `/app/raccourcis/mode-present.shortcut` | `application/octet-stream` | `attachment; filename*=UTF-8''Mode%20pr%C3%A9sent.shortcut` |
-| `/app/raccourcis/matter-home.js` | `text/plain; charset=utf-8` | aucun |
+| `/app/raccourcis/perso/<128 bits>/Mode%20absent.shortcut` | `application/octet-stream` | `attachment; filename="Mode absent.shortcut"` |
+| `/app/raccourcis/perso/<128 bits>/Mode%20present.shortcut` | `application/octet-stream` | `attachment; filename="Mode present.shortcut"` |
 
-- Fichiers intégrés au binaire (`include_bytes!`, sources dans `crates/server/web/raccourcis/`),
-  servis **sans jeton** comme la coquille : ils ne contiennent ni adresse, ni jeton, ni donnée
-  personnelle (l'adresse et le jeton sont des questions d'importation ; la chaîne de signature ne
-  porte qu'un identifiant aléatoire « Apple Inc. »). Chemins en ASCII, nom exact dans l'en-tête.
-- Le service worker **n'intercepte pas** `/app/raccourcis/` (une nouvelle version signée remplace
-  l'ancienne) ; le serveur envoie déjà `Cache-Control: no-store`.
-- Les `.shortcut` sont signés par Apple (`shortcuts sign --mode anyone`) : on ne peut plus les
-  modifier sans les signer de nouveau (script de construction : `build_shortcuts.py`, hors dépôt).
-- **Non vérifié sur un vrai iPhone** : l'import de la fiche Raccourcis, et le téléchargement depuis
-  l'app installée sur l'écran d'accueil (la page invite à ouvrir Safari si rien ne se passe).
+- Gardés **en mémoire seulement**, valables **5 minutes**, remplacés par la préparation suivante et
+  oubliés quand le jeton de mode est révoqué ; `Cache-Control: no-store`, et le service worker
+  n'intercepte rien sous `/app/raccourcis/`. Un autre nom sous le même identifiant : 404.
+- **Pas à usage unique**, à dessein : l'app installée sur l'écran d'accueil peut confier le
+  téléchargement à Safari, qui redemande le fichier ; un lien mort obligerait à tout recommencer (et
+  à changer encore de jeton). Le jeton ne sert qu'à changer le mode, et le lien expire vite.
+- `HEAD` répond sans corps.
+
+**Noms sans accent.** Le nom d'un raccourci importé vient du nom du fichier, qu'iOS enregistre en
+Unicode **décomposé** (« e » suivi de l'accent) ; le widget l'ouvre par
+`shortcuts://run-shortcut?name=Mode%20pr%C3%A9sent` (« é » composé) et Raccourcis répondait qu'il ne
+trouvait pas « Mode présent ». Les noms sont donc en ASCII, les mêmes dans le serveur
+(`shortcuts.rs`), la page (`widgets.js`) et le widget (`matter-home.js`) ; un test le vérifie.
+Supprimez l'ancien « Mode présent » (et l'ancien « Mode absent ») avant d'installer : sinon iOS crée
+« Mode absent 1 », que le widget n'appelle pas.
+
+**La signature.** Elle tourne sur le Mac du serveur, dans un dossier temporaire privé (0700, supprimé
+quoi qu'il arrive : le plist d'entrée porte le jeton), 25 s au plus par raccourci. Elle demande une
+session ouverte et un compte iCloud connecté ; sinon : 503 avec un message clair, et **rien ne
+change** (le nouveau jeton n'est enregistré qu'une fois les deux signatures réussies). Les raccourcis
+sont fabriqués en Rust (plist XML, portage de `mode_shortcut` de `build_shortcuts.py`) : `PUT
+<adresse>/api/mode`, `Authorization: Bearer <jeton de mode>`, corps JSON ; notification « Maison en mode
+… » seulement si la réponse a une clé `mode`, sinon la réponse du serveur. Essai à la main de la vraie
+signature (valeurs factices) : `cargo test -p matter-home-server --lib -- --ignored
+real_apple_signature`. Les autres essais remplacent la signature par le plist tel quel
+(`MATTER_HOME_TEST_UNSIGNED_SHORTCUTS=1` pour le binaire) : ils ne dépendent ni d'iCloud ni d'Apple.
+
+**Le widget.** `matter-home.js` n'a plus de connexion par mot de passe ni de jeton de session dans le
+trousseau : il lit `GET /api/state` et `GET /api/events?limit=1` avec le jeton de lecture écrit dedans.
+Un 401 affiche « Jeton révoqué : recopie le widget depuis l'app web ». Ses boutons ouvrent les
+raccourcis par leur nom (`shortcuts://run-shortcut?name=Mode%20present`). L'en-tête est posé d'un
+bloc (`req.headers = headers`) : Scriptable ignore une clé ajoutée après coup.
+
+- **Non vérifié sur un vrai iPhone** : l'import des raccourcis personnalisés, le téléchargement depuis
+  l'app installée sur l'écran d'accueil (la page invite à ouvrir Safari si rien ne se passe), la copie
+  du script après la réponse du serveur, et le lancement par nom sans accent depuis le widget.
 - Logique sans navigateur : `widgets.js` (essai : `node --test crates/server/web/widgets.test.mjs`).
 
 ## Fichiers
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
 `tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `push.js`, `widgets.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
-192 et 512, et `raccourcis/` pour les raccourcis et le script du widget). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
+192 et 512, et `raccourcis/matter-home.js`, le modèle du script du widget, rempli par le serveur). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 
 ## Sécurité

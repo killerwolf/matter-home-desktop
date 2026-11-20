@@ -1,6 +1,7 @@
 //! L'app web mobile (PWA, ticket n° 15) : des fichiers statiques **intégrés au binaire**, servis
 //! sous `/app/`. Aucune donnée de la maison ne passe ici : c'est la coquille (HTML, CSS, JS,
 //! icônes), accessible sans jeton. Tout le reste de l'app passe par l'API, qui exige le jeton.
+//! Seule autre chose sous `/app/` : les raccourcis préparés pour l'iPhone (`install.rs`).
 //!
 //! Sources : `crates/server/web/` et `design/tokens.css` (la même feuille que le client lit
 //! par `tokens.json`, jamais recopiée).
@@ -118,42 +119,6 @@ static ASSETS: &[Asset] = &[
     },
 ];
 
-/// Un fichier à télécharger depuis la page « Widgets et raccourcis » (sous `/app/raccourcis/`).
-/// Servi sans jeton comme la coquille : aucun secret (l'adresse et le jeton sont des questions
-/// posées à l'import sur l'iPhone). Jamais mis en cache par le service worker, pour qu'une
-/// nouvelle version signée remplace l'ancienne.
-struct Download {
-    /// Nom dans l'adresse (ASCII).
-    path: &'static str,
-    content_type: &'static str,
-    /// Nom du fichier enregistré, accents compris, déjà codé pour `filename*=UTF-8''…`.
-    /// Le raccourci importé porte le nom du fichier : le widget Scriptable l'appelle par son nom.
-    filename: Option<&'static str>,
-    body: &'static [u8],
-}
-
-static DOWNLOADS: &[Download] = &[
-    Download {
-        path: "mode-absent.shortcut",
-        content_type: "application/octet-stream",
-        filename: Some("Mode%20absent.shortcut"),
-        body: include_bytes!("../../web/raccourcis/mode-absent.shortcut"),
-    },
-    Download {
-        path: "mode-present.shortcut",
-        content_type: "application/octet-stream",
-        filename: Some("Mode%20pr%C3%A9sent.shortcut"),
-        body: include_bytes!("../../web/raccourcis/mode-present.shortcut"),
-    },
-    // Le script Scriptable : un texte que la page lit par `fetch` et copie, jamais exécuté.
-    Download {
-        path: "matter-home.js",
-        content_type: "text/plain; charset=utf-8",
-        filename: None,
-        body: include_bytes!("../../web/raccourcis/matter-home.js"),
-    },
-];
-
 /// Politique de sécurité : tout vient de la même origine, aucun script ni style en ligne, aucune
 /// ressource externe (les images des caméras sont dessinées dans un canvas : pas de `blob:` en
 /// `img-src`). Seule exception : `media-src blob:`, le clip d'un événement de détection (ticket
@@ -167,10 +132,6 @@ pub fn router() -> Router<super::AppState> {
         .route("/app", get(|| async { Redirect::permanent("/app/") }))
         .route("/app/", get(|| async { serve("index.html") }))
         .route(
-            "/app/raccourcis/{name}",
-            get(|Path(name): Path<String>| async move { serve_download(&name) }),
-        )
-        .route(
             "/app/{name}",
             get(|Path(name): Path<String>| async move { serve(&name) }),
         )
@@ -181,27 +142,6 @@ fn not_found() -> Response {
         protocol::wire::ErrorCode::NotFound,
     ))
     .into_response()
-}
-
-fn serve_download(name: &str) -> Response {
-    let Some(file) = DOWNLOADS.iter().find(|d| d.path == name) else {
-        return not_found();
-    };
-    let mut response = (StatusCode::OK, file.body).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(file.content_type),
-    );
-    if let Some(filename) = file.filename {
-        let value = format!("attachment; filename*=UTF-8''{filename}");
-        headers.insert(
-            header::CONTENT_DISPOSITION,
-            HeaderValue::from_str(&value).expect("nom de fichier en ASCII"),
-        );
-    }
-    security_headers(headers);
-    response
 }
 
 fn serve(name: &str) -> Response {
@@ -225,7 +165,7 @@ fn serve(name: &str) -> Response {
     response
 }
 
-fn security_headers(headers: &mut axum::http::HeaderMap) {
+pub(super) fn security_headers(headers: &mut axum::http::HeaderMap) {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CSP),
@@ -291,19 +231,6 @@ mod tests {
                 "{} absent du cache du service worker",
                 a.name
             );
-        }
-    }
-
-    #[test]
-    fn downloads_are_ascii_paths_with_the_exact_accented_file_names() {
-        let names: Vec<_> = DOWNLOADS.iter().map(|d| (d.path, d.filename)).collect();
-        assert!(names.contains(&(
-            "mode-present.shortcut",
-            Some("Mode%20pr%C3%A9sent.shortcut")
-        )));
-        for d in DOWNLOADS {
-            assert!(d.path.is_ascii() && !d.path.contains('/') && !d.path.contains(".."));
-            assert!(!d.body.is_empty());
         }
     }
 

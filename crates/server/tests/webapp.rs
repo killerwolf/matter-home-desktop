@@ -5,6 +5,7 @@
 mod common;
 
 use common::*;
+use serde_json::json;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Error as WsError;
 
@@ -173,7 +174,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("matter-home-shell-v8") && sw.contains("\"events.js\""),
+            sw.contains("matter-home-shell-v9") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.
@@ -478,79 +479,224 @@ fn api_responses_carry_a_locked_down_csp() {
     });
 }
 
-/// Page « Widgets et raccourcis » : les deux raccourcis signés et le script Scriptable se
-/// téléchargent sans jeton, avec le nom de fichier exact (accents compris) et le bon type ; le
-/// service worker ne les garde pas ; la page est branchée dans l'app.
+/// Le jeton écrit dans un fichier préparé : `Bearer <64 hex>` (raccourci) ou `TOKEN = "<64 hex>"`.
+fn token_after(text: &str, marker: &str) -> String {
+    let start = text
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker} absent"))
+        + marker.len();
+    let token: String = text[start..].chars().take(64).collect();
+    assert!(token.bytes().all(|b| b.is_ascii_hexdigit()), "{token}");
+    token
+}
+
+/// Page « Widgets et raccourcis » : en un geste, sous session, le serveur prépare les deux
+/// raccourcis (nouveau jeton de mode, adresse en .ts.net écrite dedans, liens à toucher sans jeton)
+/// et le widget (nouveau jeton de lecture). Signature remplacée par le plist tel quel
+/// (`MATTER_HOME_TEST_UNSIGNED_SHORTCUTS`) : les essais ne dépendent ni d'iCloud ni d'Apple.
 #[test]
-fn shortcuts_downloads_have_exact_names_and_headers_and_need_no_token() {
-    let dir = temp_dir("webapp-shortcuts");
-    let server = Server::start(&dir);
+fn one_tap_install_prepares_personal_shortcuts_and_widget() {
+    let dir = temp_dir("webapp-install");
+    let server = Server::start_with(&dir, &[("MATTER_HOME_TEST_UNSIGNED_SHORTCUTS", "1")]);
     let client = server.client();
-    let web = concat!(env!("CARGO_MANIFEST_DIR"), "/web/raccourcis/");
-    let files = [
-        (
-            "mode-absent.shortcut",
-            "Mode%20absent.shortcut",
-            "application/octet-stream",
-        ),
-        (
-            "mode-present.shortcut",
-            "Mode%20pr%C3%A9sent.shortcut",
-            "application/octet-stream",
-        ),
-        ("matter-home.js", "", "text/plain; charset=utf-8"),
-    ];
+    let origin = json!({ "origin": "https://maison.tailnet-test.ts.net" });
+    let mut secrets = Vec::new();
     runtime().block_on(async {
-        for (file, filename, content_type) in files {
+        // Sans session : rien.
+        for (method, path) in [
+            ("GET", "/api/tokens"),
+            ("POST", "/api/tokens/mode/shortcuts"),
+            ("POST", "/api/tokens/read/widget"),
+            ("DELETE", "/api/tokens/mode"),
+            ("DELETE", "/api/tokens/read"),
+        ] {
             let r = client
-                .request("GET", &format!("/app/raccourcis/{file}"), None, None)
+                .request(method, path, None, Some(origin.to_string().as_bytes()))
                 .await;
-            assert_eq!(r.status, 200, "{file}");
-            assert_eq!(r.headers["content-type"], content_type, "{file}");
-            if filename.is_empty() {
-                assert!(!r.headers.contains_key("content-disposition"), "{file}");
-            } else {
-                assert_eq!(
-                    r.headers["content-disposition"],
-                    format!("attachment; filename*=UTF-8''{filename}"),
-                    "{file}"
-                );
-            }
-            // Le serveur n'autorise aucun cache (en-tête commun) : une nouvelle version remplace l'ancienne.
-            assert_eq!(r.headers["cache-control"], "no-store", "{file}");
-            assert_eq!(r.headers["x-content-type-options"], "nosniff", "{file}");
-            assert!(r.headers["content-security-policy"].contains("default-src 'self'"));
-            // Le corps est exactement le fichier du dépôt.
-            let on_disk = std::fs::read(format!("{web}{file}")).unwrap();
-            assert_eq!(r.body, on_disk, "{file}");
-            assert!(!r.body.is_empty());
+            assert_eq!(r.status, 401, "{method} {path}");
         }
-        // Les raccourcis signés sont des conteneurs Apple (AEA), pas du texte.
-        let r = client
-            .request("GET", "/app/raccourcis/mode-absent.shortcut", None, None)
+        let session = client.login().await;
+        let tokens = client.get("/api/tokens", &session).await.json();
+        assert_eq!(tokens["mode"]["exists"], false);
+        assert_eq!(tokens["read"]["exists"], false);
+
+        // L'adresse directe (port 8443, certificat auto-signé) ou une autre : refusées, sans
+        // créer de jeton.
+        for bad in [
+            "https://192.168.1.20:8443",
+            "https://maison.tailnet-test.ts.net:8443",
+            "null",
+        ] {
+            for path in ["/api/tokens/mode/shortcuts", "/api/tokens/read/widget"] {
+                let r = client
+                    .send_json("POST", path, &session, &json!({ "origin": bad }))
+                    .await;
+                assert_eq!((r.status, r.code().as_str()), (400, "bad_request"), "{bad}");
+                assert!(r.json()["error"]["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains(".ts.net"));
+            }
+        }
+        let tokens = client.get("/api/tokens", &session).await.json();
+        assert_eq!(tokens["mode"]["exists"], false);
+
+        // Les raccourcis : deux liens sans accent, à toucher sans jeton.
+        let prepared = client
+            .send_json("POST", "/api/tokens/mode/shortcuts", &session, &origin)
             .await;
-        assert_eq!(&r.body[..4], b"AEA1");
-        // Le script est un texte sans adresse ni jeton en dur.
-        let script = client
-            .request("GET", "/app/raccourcis/matter-home.js", None, None)
-            .await
-            .text();
-        assert!(script.contains("COLLE_TON_JETON_ICI") && script.contains("COLLE_TON_ADRESSE_ICI"));
-        // Seuls l'exemple et le champ de saisie citent une adresse en .ts.net, avec un faux nom.
-        assert!(
-            script.matches(".ts.net").count() == 2 && script.contains("nom-du-mac.tailnet-xxxx")
-        );
-        assert!(!script.contains("Bearer ey"));
-        // Un fichier inconnu, ou hors de la liste : 404 (pas de lecture du disque).
-        for path in [
-            "/app/raccourcis/inconnu.shortcut",
-            "/app/raccourcis/..%2Fapp.js",
+        assert_eq!(prepared.status, 200, "{}", prepared.text());
+        let prepared = prepared.json();
+        assert_eq!(prepared["expires_in_s"], 300);
+        let links = prepared["shortcuts"].as_array().unwrap().clone();
+        let names: Vec<_> = links.iter().map(|l| l["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Mode absent", "Mode present"]);
+        let mut mode_token = String::new();
+        for (link, mode) in links.iter().zip(["absent", "present"]) {
+            let url = link["url"].as_str().unwrap();
+            let file = format!("{}.shortcut", link["name"].as_str().unwrap());
+            assert!(url.starts_with("/app/raccourcis/perso/"), "{url}");
+            assert!(url.ends_with(&file.replace(' ', "%20")), "{url}");
+            secrets.push(url.split('/').nth(4).unwrap().to_string());
+            let r = client.request("GET", url, None, None).await;
+            assert_eq!(r.status, 200, "{url}");
+            assert_eq!(r.headers["content-type"], "application/octet-stream");
+            assert_eq!(
+                r.headers["content-disposition"],
+                format!("attachment; filename=\"{file}\"")
+            );
+            assert_eq!(r.headers["cache-control"], "no-store");
+            assert_eq!(r.headers["x-content-type-options"], "nosniff");
+            assert!(r.headers["content-security-policy"].contains("default-src 'self'"));
+            let plist = r.text();
+            assert!(plist.contains("<string>https://maison.tailnet-test.ts.net/api/mode</string>"));
+            assert!(plist.contains(&format!("<string>{mode}</string>")));
+            assert!(plist.contains("<key>WFWorkflowImportQuestions</key><array></array>"));
+            let token = token_after(&plist, "<string>Bearer ");
+            if !mode_token.is_empty() {
+                assert_eq!(token, mode_token, "le même jeton dans les deux raccourcis");
+            }
+            mode_token = token;
+            // Le lien sert encore (Safari peut redemander le fichier) ; HEAD ne rend pas le corps.
+            assert_eq!(client.request("GET", url, None, None).await.body, r.body);
+            let head = client.request("HEAD", url, None, None).await;
+            assert_eq!(head.status, 200);
+            assert!(head.body.is_empty());
+            // Un autre nom sous le même identifiant, ou un identifiant inventé : 404.
+            let other = url
+                .replace("Mode%20absent", "X")
+                .replace("Mode%20present", "X");
+            assert_eq!(client.request("GET", &other, None, None).await.status, 404);
+        }
+        secrets.push(mode_token.clone());
+        // Le raccourci marche de bout en bout.
+        let r = client
+            .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "absent"}))
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        for gone in [
+            "/app/raccourcis/perso/00000000000000000000000000000000/Mode%20absent.shortcut",
+            "/app/raccourcis/mode-absent.shortcut",
+            "/app/raccourcis/mode-present.shortcut",
+            "/app/raccourcis/matter-home.js",
             "/app/raccourcis/",
         ] {
-            let r = client.request("GET", path, None, None).await;
-            assert_eq!(r.status, 404, "{path}");
+            assert_eq!(
+                client.request("GET", gone, None, None).await.status,
+                404,
+                "{gone}"
+            );
         }
+
+        // Recommencer : nouveau jeton, les anciens liens et l'ancien jeton ne marchent plus.
+        let again = client
+            .send_json("POST", "/api/tokens/mode/shortcuts", &session, &origin)
+            .await
+            .json();
+        let old_url = links[0]["url"].as_str().unwrap();
+        assert_eq!(client.request("GET", old_url, None, None).await.status, 404);
+        let r = client
+            .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "nuit"}))
+            .await;
+        assert_eq!(r.status, 401);
+        let new_url = again["shortcuts"][1]["url"].as_str().unwrap().to_string();
+        let new_plist = client.request("GET", &new_url, None, None).await.text();
+        let new_mode_token = token_after(&new_plist, "<string>Bearer ");
+        secrets.push(new_mode_token.clone());
+        secrets.push(new_url.split('/').nth(4).unwrap().to_string());
+        assert_ne!(new_mode_token, mode_token);
+
+        // Le widget : le script prérempli avec l'adresse et un jeton de lecture.
+        let widget = client
+            .send_json("POST", "/api/tokens/read/widget", &session, &origin)
+            .await;
+        assert_eq!(widget.status, 200, "{}", widget.text());
+        let script = widget.json()["script"].as_str().unwrap().to_string();
+        assert!(script.contains("const SERVEUR = \"https://maison.tailnet-test.ts.net\";"));
+        assert!(script.contains("const RACCOURCI_PRESENT = \"Mode present\";"));
+        let read_token = token_after(&script, "const TOKEN = \"");
+        secrets.push(read_token.clone());
+        assert_eq!(client.get("/api/state", &read_token).await.status, 200);
+        assert_eq!(
+            client.get("/api/events?limit=1", &read_token).await.status,
+            200
+        );
+        assert_eq!(client.get("/api/plan", &read_token).await.status, 401);
+        let tokens = client.get("/api/tokens", &session).await.json();
+        assert_eq!(tokens["mode"]["exists"], true);
+        assert_eq!(tokens["read"]["exists"], true);
+        assert!(tokens["read"]["created"].as_f64().unwrap() > 1.7e9);
+        assert!(!tokens.to_string().contains(&read_token));
+
+        // Révoquer : chaque jeton à part, et les liens disparaissent avec le jeton de mode.
+        let r = client
+            .request("DELETE", "/api/tokens/read", Some(&session), None)
+            .await;
+        assert_eq!(r.status, 204);
+        assert_eq!(client.get("/api/state", &read_token).await.status, 401);
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/mode",
+                &new_mode_token,
+                &json!({"mode": "nuit"}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "le jeton de mode n'est pas touché");
+        let r = client
+            .request("DELETE", "/api/tokens/mode", Some(&session), None)
+            .await;
+        assert_eq!(r.status, 204);
+        assert_eq!(
+            client.request("GET", &new_url, None, None).await.status,
+            404
+        );
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/mode",
+                &new_mode_token,
+                &json!({"mode": "present"}),
+            )
+            .await;
+        assert_eq!(r.status, 401);
+        let tokens = client.get("/api/tokens", &session).await.json();
+        assert_eq!(tokens["mode"]["exists"], false);
+        assert_eq!(tokens["read"]["exists"], false);
     });
+    // Aucun jeton ni identifiant de lien dans le journal, ni en clair sur le disque.
+    let log = server.log();
+    let on_disk: String = ["jeton-mode.json", "jeton-lecture.json"]
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(dir.join("serveur").join(f)).ok())
+        .collect();
+    assert!(!secrets.is_empty());
+    for secret in &secrets {
+        assert!(!log.contains(secret.as_str()), "secret au journal");
+        assert!(!on_disk.contains(secret.as_str()));
+    }
+    // Le journal dit ce qui a été fait, sans le secret.
+    assert!(log.contains("raccourcis préparés"));
 }
 
 #[test]
@@ -566,9 +712,11 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         assert!(app.contains(r#"from "./widgets.js""#));
         assert!(app.contains(r#"widgets.id = "widgets""#));
         assert!(app.contains("Widgets et raccourcis"));
-        assert!(app.contains("originInfo(location)") && app.contains("Copier l'adresse"));
-        assert!(app.contains("Copier le script"));
-        assert!(app.contains("Créer le code secret"));
+        assert!(app.contains("originInfo(location)"));
+        assert!(app.contains("Installer les raccourcis") && app.contains("Installer le widget"));
+        assert!(app.contains("/api/tokens/${kind}") && app.contains("Révoquer"));
+        // Plus de jeton à créer sur le Mac ni d'adresse à coller.
+        assert!(!app.contains("Créer le code secret") && !app.contains("Copier l'adresse"));
         assert!(!app.contains("Tout éteindre"));
         let widgets = client.request("GET", "/app/widgets.js", None, None).await;
         assert_eq!(widgets.status, 200);
@@ -576,7 +724,7 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         let js = widgets.text();
         assert!(!js.contains("eval(") && !js.contains("innerHTML"));
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
-        assert!(sw.contains("\"widgets.js\"") && sw.contains("matter-home-shell-v8"));
+        assert!(sw.contains("\"widgets.js\"") && sw.contains("matter-home-shell-v9"));
         // Les raccourcis et le script ne sont ni listés ni gardés par le service worker.
         assert!(sw.contains("/app/raccourcis/"));
         assert!(!sw.contains("\"raccourcis/"));

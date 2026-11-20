@@ -1,12 +1,17 @@
-//! Le « jeton de mode » : un secret à part, qui ne sert qu'à changer le mode de la maison
-//! (`PUT /api/mode`), pour les automatisations Raccourcis de l'iPhone. Il ne donne accès à rien
-//! d'autre : ni état, ni appareils, ni WebSocket.
+//! Les jetons à part, chacun pour un seul usage, pour l'iPhone :
 //!
-//! Comme une session, il est tiré au hasard (256 bits) et seul son SHA-256 est enregistré
-//! (`serveur/jeton-mode.json`, 0600) : une fuite du fichier ne donne aucun jeton utilisable. Le
-//! jeton en clair n'existe qu'à sa création, que la fenêtre du serveur affiche une seule fois.
-//! Il n'est jamais écrit dans un journal. En générer un nouveau révoque l'ancien.
-//! `serveur/` n'est ni exporté ni importé : le jeton reste propre à ce Mac.
+//! - le **jeton de mode** (`serveur/jeton-mode.json`) ne sert qu'à changer le mode de la maison
+//!   (`PUT /api/mode`), pour les raccourcis et les automatisations de Raccourcis ;
+//! - le **jeton de lecture** (`serveur/jeton-lecture.json`) ne sert qu'à lire l'état
+//!   (`GET /api/state`) et les événements de détection (`GET /api/events`), pour le widget
+//!   Scriptable.
+//!
+//! Aucun n'ouvre d'autre porte : ni appareils, ni WebSocket, ni caméras, ni export.
+//!
+//! Comme une session, un jeton est tiré au hasard (256 bits) et seul son SHA-256 est enregistré
+//! (0600) : une fuite du fichier ne donne aucun jeton utilisable. Le jeton en clair n'existe qu'à
+//! sa création. Il n'est jamais écrit dans un journal. En générer un nouveau révoque l'ancien.
+//! `serveur/` n'est ni exporté ni importé : les jetons restent propres à ce Mac.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -19,7 +24,10 @@ use subtle::ConstantTimeEq;
 use super::{now, write_secret};
 use crate::persistence;
 
-pub const FILE_NAME: &str = "jeton-mode.json";
+/// Le jeton de mode.
+pub const MODE_FILE: &str = "jeton-mode.json";
+/// Le jeton de lecture.
+pub const READ_FILE: &str = "jeton-lecture.json";
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
@@ -29,27 +37,33 @@ struct Stored {
     created: f64,
 }
 
-pub struct ModeTokenStore {
+pub struct TokenStore {
     /// `None` : pas de dossier utilisable, le jeton ne survit pas au redémarrage.
     path: Option<PathBuf>,
+    /// « jeton de mode », « jeton de lecture » : pour le journal.
+    label: &'static str,
     stored: Mutex<Option<Stored>>,
+    /// Une création (ou suppression) à la fois : deux créations simultanées ne rendent jamais un
+    /// jeton déjà révoqué. À part de `stored`, pour qu'une vérification n'attende jamais derrière
+    /// une signature de raccourcis.
+    changing: Mutex<()>,
 }
 
 fn hash_of(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }
 
-impl ModeTokenStore {
-    /// Ouvre `dir/jeton-mode.json` (absent : aucun jeton, donc aucun accès par jeton).
-    pub fn open(dir: &Path) -> anyhow::Result<Self> {
-        let path = dir.join(FILE_NAME);
+impl TokenStore {
+    /// Ouvre `dir/<file_name>` (absent : aucun jeton, donc aucun accès par ce jeton).
+    pub fn open(dir: &Path, file_name: &str, label: &'static str) -> anyhow::Result<Self> {
+        let path = dir.join(file_name);
         // Un fichier illisible est mis de côté (comme `mode.json`) : pas de jeton, on repart de zéro.
         let stored = match persistence::load_json::<Stored>(&path) {
             Ok(stored) => stored,
             Err(e) => {
                 let aside = path.with_extension("json.illisible");
                 log::error!(
-                    "jeton de mode illisible, aucun jeton ({e:#}) ; fichier conservé sous {}",
+                    "{label} illisible, aucun jeton ({e:#}) ; fichier conservé sous {}",
                     aside.display()
                 );
                 std::fs::rename(&path, &aside)?;
@@ -58,20 +72,32 @@ impl ModeTokenStore {
         };
         Ok(Self {
             path: Some(path),
+            label,
             stored: Mutex::new(stored),
+            changing: Mutex::new(()),
         })
     }
 
     /// Un carnet sans fichier (dossier inutilisable) : le jeton ne vit qu'en mémoire.
-    pub fn in_memory() -> Self {
+    pub fn in_memory(label: &'static str) -> Self {
         Self {
             path: None,
+            label,
             stored: Mutex::new(None),
+            changing: Mutex::new(()),
         }
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.label
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Stored>> {
         self.stored.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn changing(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.changing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Un jeton existe-t-il ?
@@ -87,9 +113,21 @@ impl ModeTokenStore {
     /// Tire un nouveau jeton, remplace l'ancien (révoqué) et rend le jeton en clair : à montrer
     /// une seule fois. En cas d'échec d'écriture, l'ancien reste en place.
     pub fn generate(&self) -> anyhow::Result<String> {
+        self.generate_with(|_| Ok(())).map(|(token, ())| token)
+    }
+
+    /// Comme `generate`, en deux temps : `prepare` reçoit le nouveau jeton (pour fabriquer ce qui
+    /// le porte, par exemple les raccourcis signés) **avant** qu'il remplace l'ancien. Si `prepare`
+    /// échoue, rien ne change : l'ancien jeton reste valable.
+    pub fn generate_with<T>(
+        &self,
+        prepare: impl FnOnce(&str) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(String, T)> {
+        let _one_at_a_time = self.changing();
         let mut raw = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut raw);
         let token = hex::encode(raw);
+        let prepared = prepare(&token)?;
         let stored = Stored {
             hash: hex::encode(hash_of(&token)),
             created: now(),
@@ -99,11 +137,12 @@ impl ModeTokenStore {
             write_secret(path, text.as_bytes())?;
         }
         *self.lock() = Some(stored);
-        Ok(token)
+        Ok((token, prepared))
     }
 
-    /// Supprime le jeton : plus aucun accès par jeton.
+    /// Supprime le jeton : plus aucun accès par ce jeton.
     pub fn revoke(&self) -> anyhow::Result<()> {
+        let _one_at_a_time = self.changing();
         if let Some(path) = &self.path {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -128,9 +167,10 @@ impl ModeTokenStore {
     }
 }
 
-impl std::fmt::Debug for ModeTokenStore {
+impl std::fmt::Debug for TokenStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ModeTokenStore")
+        f.debug_struct("TokenStore")
+            .field("label", &self.label)
             .field("exists", &self.exists())
             .finish()
     }
@@ -147,10 +187,14 @@ mod tests {
         d
     }
 
+    fn open(dir: &Path) -> TokenStore {
+        TokenStore::open(dir, MODE_FILE, "jeton de mode").unwrap()
+    }
+
     #[test]
     fn a_token_works_until_a_new_one_replaces_it() {
         let dir = temp("replace");
-        let store = ModeTokenStore::open(&dir).unwrap();
+        let store = open(&dir);
         assert!(!store.exists());
         assert!(!store.verify("n'importe quoi"));
         let first = store.generate().unwrap();
@@ -163,15 +207,45 @@ mod tests {
         assert!(store.verify(&second));
         store.revoke().unwrap();
         assert!(!store.verify(&second));
-        assert!(!dir.join(FILE_NAME).exists());
+        assert!(!dir.join(MODE_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_preparation_keeps_the_old_token() {
+        let dir = temp("prepare");
+        let store = open(&dir);
+        let old = store.generate().unwrap();
+        let mut seen = String::new();
+        let failed = store.generate_with(|candidate| -> anyhow::Result<()> {
+            seen = candidate.to_string();
+            anyhow::bail!("signature impossible")
+        });
+        assert!(failed.is_err());
+        assert!(store.verify(&old), "l'ancien jeton reste valable");
+        assert!(
+            !seen.is_empty() && !store.verify(&seen),
+            "jamais enregistré"
+        );
+        assert!(open(&dir).verify(&old));
+        // Une préparation réussie remplace l'ancien, avec le jeton qu'elle a reçu.
+        let (new, prepared) = store.generate_with(|c| Ok(c.to_string())).unwrap();
+        assert_eq!(prepared, new);
+        assert!(store.verify(&new) && !store.verify(&old));
+        // Le jeton de lecture est un fichier à part : aucun ne vaut pour l'autre.
+        let read = TokenStore::open(&dir, READ_FILE, "jeton de lecture").unwrap();
+        assert!(!read.exists() && !read.verify(&new));
+        let lecture = read.generate().unwrap();
+        assert!(read.verify(&lecture) && !store.verify(&lecture));
+        assert!(dir.join(READ_FILE).exists() && dir.join(MODE_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn only_the_hash_is_stored_with_private_rights_and_survives_a_restart() {
         let dir = temp("hash");
-        let token = ModeTokenStore::open(&dir).unwrap().generate().unwrap();
-        let text = std::fs::read_to_string(dir.join(FILE_NAME)).unwrap();
+        let token = open(&dir).generate().unwrap();
+        let text = std::fs::read_to_string(dir.join(MODE_FILE)).unwrap();
         assert!(
             !text.contains(&token),
             "le jeton en clair n'est jamais écrit"
@@ -179,13 +253,13 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join(FILE_NAME))
+            let mode = std::fs::metadata(dir.join(MODE_FILE))
                 .unwrap()
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        let reopened = ModeTokenStore::open(&dir).unwrap();
+        let reopened = open(&dir);
         assert!(reopened.verify(&token));
         assert!(!format!("{reopened:?}").contains(&token));
         let _ = std::fs::remove_dir_all(&dir);
@@ -194,19 +268,19 @@ mod tests {
     #[test]
     fn an_unreadable_file_is_kept_aside_and_the_server_starts_without_a_token() {
         let dir = temp("broken");
-        std::fs::write(dir.join(FILE_NAME), "{pas du json").unwrap();
-        let store = ModeTokenStore::open(&dir).unwrap();
+        std::fs::write(dir.join(MODE_FILE), "{pas du json").unwrap();
+        let store = open(&dir);
         assert!(!store.exists());
         assert!(dir.join("jeton-mode.json.illisible").exists());
         // On peut en générer un tout de suite, et il survit au redémarrage.
         let token = store.generate().unwrap();
-        assert!(ModeTokenStore::open(&dir).unwrap().verify(&token));
+        assert!(open(&dir).verify(&token));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn without_a_folder_the_token_lives_in_memory() {
-        let store = ModeTokenStore::in_memory();
+        let store = TokenStore::in_memory("jeton de mode");
         let token = store.generate().unwrap();
         assert!(store.verify(&token));
     }

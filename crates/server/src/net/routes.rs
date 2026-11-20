@@ -1,5 +1,7 @@
 //! Les routes de l'API. Tout exige un jeton de session (`Authorization: Bearer …`, jamais
-//! dans l'URL) sauf `GET /api/version` et `POST /api/login`.
+//! dans l'URL) sauf `GET /api/version` et `POST /api/login`. Deux jetons à part ouvrent chacun
+//! une seule porte : le jeton de mode `PUT /api/mode`, le jeton de lecture `GET /api/state` et
+//! `GET /api/events` (le widget de l'iPhone).
 
 use std::net::SocketAddr;
 
@@ -43,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .merge(super::camera_stream::router(state.hub.live().clone()))
         .merge(super::events::router())
         .merge(super::push::router())
+        .merge(super::install::protected())
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))
         .route("/api/rules/{id}/test", post(test_rule))
@@ -68,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         ));
     Router::new()
         .merge(super::webapp::router())
+        .merge(super::install::public())
         .route("/api/version", get(version))
         .route(
             "/api/login",
@@ -440,13 +444,36 @@ async fn require_session(
             let account_id = state.auth.accounts.account_id()?;
             state.auth.sessions.validate(token, &account_id)
         });
-    match session {
-        Some(info) => {
-            request.extensions_mut().insert(info);
-            next.run(request).await
-        }
-        None => ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response(),
+    if let Some(info) = session {
+        request.extensions_mut().insert(info);
+        return next.run(request).await;
     }
+    // Le jeton de lecture (widget de l'iPhone) : seulement sur les deux routes de lecture, et
+    // seulement dans `Authorization` (jamais par le sous-protocole d'un WebSocket). Les deux
+    // gestionnaires ne lisent pas la session : aucune extension n'est posée.
+    if is_read_route(request.method(), request.uri().path()) {
+        if let Some(token) = bearer(request.headers()) {
+            if state.hub.verify_read_token(token) {
+                return next.run(request).await;
+            }
+            // Ni session ni jeton de lecture : comme pour le jeton de mode, un petit délai et
+            // un journal, jamais de blocage par adresse (derrière `tailscale serve`, tout vient
+            // de 127.0.0.1). Le jeton fait 256 bits : l'essai en force est sans espoir.
+            let ip = request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|c| c.0.ip().to_string())
+                .unwrap_or_default();
+            log::warn!("lecture refusée pour {ip} : jeton invalide");
+            tokio::time::sleep(FAILURE_PAUSE).await;
+        }
+    }
+    ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response()
+}
+
+/// Les seules routes qu'ouvre le jeton de lecture (le chemin exact, sans la requête `?…`).
+fn is_read_route(method: &axum::http::Method, path: &str) -> bool {
+    method == axum::http::Method::GET && (path == "/api/state" || path == wire::EVENTS_PATH)
 }
 
 /// `PUT /api/mode` : change le mode de la maison. Accepte un jeton de session (clients) **ou** le

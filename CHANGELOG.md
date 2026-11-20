@@ -8,6 +8,31 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Ajouté
+
+- **Raccourcis de mode en un geste** : dans l'app web, Widgets et raccourcis › « Installer les
+  raccourcis » crée un nouveau jeton de mode et prépare « Mode absent » et « Mode present » avec
+  l'adresse en .ts.net et le jeton écrits dedans, signés sur le Mac (`shortcuts sign`) : plus aucune
+  question à l'import. Liens imprévisibles, en mémoire, valables 5 minutes. Si la signature échoue,
+  l'ancien jeton reste valable.
+- **Jeton de lecture** (`serveur/jeton-lecture.json`) pour le widget Scriptable : il n'ouvre que
+  `GET /api/state` et `GET /api/events` (401 partout ailleurs, WebSocket et caméras compris).
+  « Installer le widget » le crée et copie le script déjà rempli (adresse et jeton).
+- Révocation de chaque jeton depuis l'app web ; état du jeton de lecture et bouton « Révoquer » dans
+  la fenêtre du serveur (onglet Connexion).
+
+### Modifié
+
+- Les raccourcis s'appellent **« Mode absent »** et **« Mode present »** (sans accent) : le widget ne
+  trouvait pas « Mode présent », iOS enregistrant l'accent du nom de fichier autrement. Supprimez les
+  anciens raccourcis avant d'installer les nouveaux.
+- Le widget Scriptable n'a plus de connexion par mot de passe ni de jeton de session gardé dans le
+  trousseau ; sur un jeton révoqué, il affiche « Jeton révoqué : recopie le widget depuis l'app web ».
+- Les raccourcis génériques (`/app/raccourcis/mode-absent.shortcut`, `mode-present.shortcut`) et le
+  script vierge (`/app/raccourcis/matter-home.js`) ne sont plus servis. Service worker en version 9.
+
 ## [1.3.2] - 2026-11-20
 
 ### Corrigé

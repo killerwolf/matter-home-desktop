@@ -36,7 +36,7 @@ use crate::history_store::{HistorySink, HistoryStore};
 use crate::home_mode;
 use crate::persistence;
 use crate::scrub::Scrubber;
-use crate::security::mode_token::ModeTokenStore;
+use crate::security::token_store::{self, TokenStore};
 use crate::validate;
 
 /// Pourquoi le serveur doit s'arrêter de lui-même.
@@ -139,8 +139,10 @@ pub struct Subscription {
 
 pub struct Hub {
     state: Mutex<HubState>,
-    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/mode_token.rs`.
-    mode_token: ModeTokenStore,
+    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/token_store.rs`.
+    mode_token: TokenStore,
+    /// Jeton qui ne sert qu'à lire l'état et les événements (widget Scriptable).
+    read_token: TokenStore,
     tx: broadcast::Sender<Arc<str>>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// Sérialise les modifications du plan, des règles et des caméras (mémoire + disque + diffusion).
@@ -172,6 +174,26 @@ pub struct Hub {
 
 type ApiResult<T> = Result<T, ApiError>;
 
+/// Crée un jeton ; une erreur de `prepare` est rendue telle quelle, une erreur d'écriture devient
+/// une erreur interne.
+fn generate<T>(
+    store: &TokenStore,
+    prepare: impl FnOnce(&str) -> Result<T, ApiError>,
+) -> ApiResult<(String, T)> {
+    let mut refused = None;
+    let result = store.generate_with(|token| {
+        prepare(token).map_err(|e| {
+            refused = Some(e);
+            anyhow::anyhow!("préparation refusée")
+        })
+    });
+    match (result, refused) {
+        (Ok(pair), _) => Ok(pair),
+        (Err(_), Some(e)) => Err(e),
+        (Err(e), None) => Err(internal(store.label(), &e)),
+    }
+}
+
 fn internal(context: &str, error: &anyhow::Error) -> ApiError {
     // Le détail complet va au journal, jamais au client.
     log::error!("{context} : {error:#}");
@@ -196,16 +218,23 @@ impl Hub {
                 home_mode::load(&config.data_dir),
             )
         };
-        // Le jeton de mode vit dans `serveur/` (jamais exporté). Un dossier inutilisable ne doit
-        // pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
-        let mode_token = crate::security::server_dir(&config.data_dir)
-            .and_then(|dir| ModeTokenStore::open(&dir))
-            .unwrap_or_else(|e| {
-                log::error!(
-                    "dossier du jeton de mode inutilisable, jeton en mémoire seulement : {e:#}"
-                );
-                ModeTokenStore::in_memory()
-            });
+        // Les jetons de mode et de lecture vivent dans `serveur/` (jamais exporté). Un dossier
+        // inutilisable ne doit pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
+        let server_dir = crate::security::server_dir(&config.data_dir);
+        let open_token = |file: &str, label: &'static str| {
+            server_dir
+                .as_ref()
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
+                .and_then(|dir| TokenStore::open(dir, file, label))
+                .unwrap_or_else(|e| {
+                    log::error!(
+                        "dossier du {label} inutilisable, jeton en mémoire seulement : {e:#}"
+                    );
+                    TokenStore::in_memory(label)
+                })
+        };
+        let mode_token = open_token(token_store::MODE_FILE, "jeton de mode");
+        let read_token = open_token(token_store::READ_FILE, "jeton de lecture");
         Self {
             state: Mutex::new(HubState {
                 seq: 0,
@@ -218,6 +247,7 @@ impl Hub {
                 mode,
             }),
             mode_token,
+            read_token,
             tx,
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
@@ -543,9 +573,16 @@ impl Hub {
 
     /// Un nouveau jeton de mode (l'ancien est révoqué), en clair : à montrer une seule fois.
     pub fn generate_mode_token(&self) -> ApiResult<String> {
-        self.mode_token
-            .generate()
-            .map_err(|e| internal("jeton de mode", &e))
+        generate(&self.mode_token, |_| Ok(())).map(|(token, ())| token)
+    }
+
+    /// Un nouveau jeton de mode, en deux temps : `prepare` fabrique ce qui le porte (les
+    /// raccourcis signés) ; s'il échoue, l'ancien jeton reste valable et son erreur est rendue.
+    pub fn generate_mode_token_with<T>(
+        &self,
+        prepare: impl FnOnce(&str) -> Result<T, ApiError>,
+    ) -> ApiResult<(String, T)> {
+        generate(&self.mode_token, prepare)
     }
 
     /// Supprime le jeton de mode : plus aucun accès par jeton.
@@ -561,6 +598,39 @@ impl Hub {
 
     pub fn mode_token_created(&self) -> Option<f64> {
         self.mode_token.created()
+    }
+
+    /// Un nouveau jeton de lecture (l'ancien est révoqué), en clair : à montrer une seule fois.
+    pub fn generate_read_token(&self) -> ApiResult<String> {
+        generate(&self.read_token, |_| Ok(())).map(|(token, ())| token)
+    }
+
+    /// Un nouveau jeton de lecture, en deux temps (voir `generate_mode_token_with`).
+    pub fn generate_read_token_with<T>(
+        &self,
+        prepare: impl FnOnce(&str) -> Result<T, ApiError>,
+    ) -> ApiResult<(String, T)> {
+        generate(&self.read_token, prepare)
+    }
+
+    /// Supprime le jeton de lecture : le widget ne lit plus rien.
+    pub fn revoke_read_token(&self) -> ApiResult<()> {
+        self.read_token
+            .revoke()
+            .map_err(|e| internal("jeton de lecture", &e))
+    }
+
+    pub fn has_read_token(&self) -> bool {
+        self.read_token.exists()
+    }
+
+    pub fn read_token_created(&self) -> Option<f64> {
+        self.read_token.created()
+    }
+
+    /// Le jeton présenté est-il le jeton de lecture ?
+    pub fn verify_read_token(&self, token: &str) -> bool {
+        self.read_token.verify(token)
     }
 
     /// Le jeton présenté est-il le jeton de mode ?
@@ -1420,6 +1490,21 @@ pub(crate) mod tests {
         assert!(again.verify_mode_token(&second));
         again.revoke_mode_token().unwrap();
         assert!(!again.has_mode_token());
+        // Le jeton de lecture vit à part : aucun ne vaut pour l'autre.
+        let read = again.generate_read_token().unwrap();
+        let mode = again.generate_mode_token().unwrap();
+        assert!(again.verify_read_token(&read) && !again.verify_mode_token(&read));
+        assert!(!again.verify_read_token(&mode));
+        // Une préparation refusée garde l'ancien jeton et rend son erreur.
+        let refused = again
+            .generate_mode_token_with(|_| -> Result<(), ApiError> {
+                Err(ApiError::with_detail(ErrorCode::Unavailable, "signature"))
+            })
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Unavailable);
+        assert!(again.verify_mode_token(&mode));
+        again.revoke_read_token().unwrap();
+        assert!(!again.has_read_token() && !again.verify_read_token(&read));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -7,6 +7,7 @@ mod body;
 mod camera_snapshot;
 mod camera_stream;
 mod events;
+mod install;
 mod push;
 mod routes;
 mod webapp;
@@ -53,6 +54,8 @@ pub struct NetConfig {
     pub client_write_timeout: Duration,
     /// Délai sans octet reçu sur le corps d'une requête.
     pub body_idle_timeout: Duration,
+    /// Qui signe les raccourcis de l'iPhone (`Unsigned` : essais seulement).
+    pub shortcut_signer: crate::shortcuts::Signer,
 }
 
 /// Ce que partagent les gestionnaires de requêtes.
@@ -64,6 +67,9 @@ pub struct AppState {
     pub ws_slots: Arc<Semaphore>,
     pub client_write_timeout: Duration,
     pub body_idle_timeout: Duration,
+    pub signer: crate::shortcuts::Signer,
+    /// Les raccourcis préparés pour l'iPhone, en mémoire seulement.
+    pub downloads: Arc<install::Downloads>,
 }
 
 /// Compte, sessions et limitation des tentatives.
@@ -126,6 +132,8 @@ pub fn start(
         ws_slots: Arc::new(Semaphore::new(MAX_WEBSOCKETS)),
         client_write_timeout: config.client_write_timeout,
         body_idle_timeout: config.body_idle_timeout,
+        signer: config.shortcut_signer,
+        downloads: Arc::new(install::Downloads::default()),
     };
     let router = routes::router(state);
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
