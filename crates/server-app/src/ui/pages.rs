@@ -52,6 +52,11 @@ fn mode_hint(mode: HomeMode) -> &'static str {
     }
 }
 
+/// Une préparation de raccourcis (ou du widget) lancée depuis l'iPhone tient le jeton quelques
+/// secondes : la fenêtre ne l'attend pas, elle le dit.
+const BUSY_NOTICE: &str =
+    "Une préparation est en cours depuis l'iPhone (raccourcis ou widget) : réessayez dans un instant.";
+
 impl App {
     /// Les onglets ne s'affichent qu'une fois la première installation finie.
     pub(super) fn tabs_visible(&self, st: &State) -> bool {
@@ -902,6 +907,9 @@ impl App {
                     Ok(()) => {
                         Notice::Ok("Jeton de lecture révoqué : le widget ne lit plus rien.".into())
                     }
+                    Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                        Notice::Err(BUSY_NOTICE.into())
+                    }
                     Err(_) => Notice::Err(
                         "Le jeton n'a pas pu être révoqué (voir le journal, onglet Réglages)."
                             .into(),
@@ -974,6 +982,7 @@ impl App {
                     if ui.button("Supprimer le code").clicked() {
                         self.local_notice = Some(match hub.revoke_mode_token() {
                             Ok(()) => Notice::Ok("Code secret supprimé : Raccourcis ne peut plus changer le mode.".into()),
+                            Err(e) if e.code == protocol::wire::ErrorCode::Busy => Notice::Err(BUSY_NOTICE.into()),
                             Err(_) => Notice::Err("Le code n'a pas pu être supprimé (voir le journal, onglet Réglages).".into()),
                         });
                     }
@@ -1022,6 +1031,9 @@ impl App {
         self.mode_token_confirm = false;
         match hub.generate_mode_token() {
             Ok(token) => self.mode_token_shown = Some(token),
+            Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
+            }
             Err(_) => {
                 self.local_notice = Some(Notice::Err(
                     "Le code n'a pas pu être créé (voir le journal, onglet Réglages).".into(),

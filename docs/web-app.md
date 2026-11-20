@@ -124,10 +124,19 @@ ni mot de passe. Le serveur prépare chaque fichier avec son adresse publique et
    date de création de chacun (`GET /api/tokens`, jamais le jeton lui-même).
 
 Toutes ces routes exigent une **session** : ni le jeton de mode ni le jeton de lecture ne les ouvrent.
+**Une préparation à la fois** par jeton : une autre demande pendant ce temps (autre onglet, fenêtre du
+serveur) répond aussitôt `409 busy` (« préparation déjà en cours »), sans faire la queue. Si la requête
+est abandonnée pendant la signature (page fermée, délai de 120 s), le nouveau jeton **n'est pas
+enregistré** : personne n'aurait reçu les fichiers.
 
 **L'adresse.** La page envoie `location.origin` ; le serveur n'accepte que `https://<nom>.ts.net`, sans
 port (400 sinon, avec « Ouvre l'app par son adresse en .ts.net »). L'adresse directe en `:8443` a un
 certificat auto-signé que Raccourcis et Scriptable refusent : elle n'est jamais écrite dans un fichier.
+Elle doit aussi être **celle de ce Mac** : l'en-tête `Origin` du navigateur doit être le même, et si
+`Host` (ou `X-Forwarded-Host`) est un nom en .ts.net, ce doit être ce nom-là. `tailscale serve`
+transmet le `Host` d'origine (le contrôle `Origin`/`Host` des WebSocket passe derrière lui, ce qui le
+montre) ; un relais qui le réécrirait (`localhost:8443`) laisse l'adresse validée telle quelle. Non
+essayé derrière un vrai `tailscale serve` par les tests.
 
 **Les liens des raccourcis.** Un lien de Safari ne peut pas poser d'en-tête `Authorization`, et les
 raccourcis portent le jeton de mode. Ils sont donc servis par une adresse **imprévisible** :
@@ -137,8 +146,10 @@ raccourcis portent le jeton de mode. Ils sont donc servis par une adresse **impr
 | `/app/raccourcis/perso/<128 bits>/Mode%20absent.shortcut` | `application/octet-stream` | `attachment; filename="Mode absent.shortcut"` |
 | `/app/raccourcis/perso/<128 bits>/Mode%20present.shortcut` | `application/octet-stream` | `attachment; filename="Mode present.shortcut"` |
 
-- Gardés **en mémoire seulement**, valables **5 minutes**, remplacés par la préparation suivante et
-  oubliés quand le jeton de mode est révoqué ; `Cache-Control: no-store`, et le service worker
+- Gardés **en mémoire seulement** (dans le `Hub`), valables **5 minutes**, remplacés par la
+  préparation suivante et oubliés quand le jeton de mode change ou est révoqué, depuis l'app web comme
+  depuis la fenêtre du serveur. Tout cela se fait sous le même verrou que le changement de jeton :
+  un lien ne porte jamais un jeton révoqué ; `Cache-Control: no-store`, et le service worker
   n'intercepte rien sous `/app/raccourcis/`. Un autre nom sous le même identifiant : 404.
 - **Pas à usage unique**, à dessein : l'app installée sur l'écran d'accueil peut confier le
   téléchargement à Safari, qui redemande le fichier ; un lien mort obligerait à tout recommencer (et
@@ -154,7 +165,8 @@ Supprimez l'ancien « Mode présent » (et l'ancien « Mode absent ») avant d'i
 « Mode absent 1 », que le widget n'appelle pas.
 
 **La signature.** Elle tourne sur le Mac du serveur, dans un dossier temporaire privé (0700, supprimé
-quoi qu'il arrive : le plist d'entrée porte le jeton), 25 s au plus par raccourci. Elle demande une
+quoi qu'il arrive : le plist d'entrée porte le jeton ; ceux de plus de 10 minutes restés d'un arrêt
+brutal sont supprimés au démarrage), 25 s au plus par raccourci. Elle demande une
 session ouverte et un compte iCloud connecté ; sinon : 503 avec un message clair, et **rien ne
 change** (le nouveau jeton n'est enregistré qu'une fois les deux signatures réussies). Les raccourcis
 sont fabriqués en Rust (plist XML, portage de `mode_shortcut` de `build_shortcuts.py`) : `PUT

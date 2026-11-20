@@ -15,8 +15,9 @@ Les téléchargements de chaque version sont sur la
 - **Raccourcis de mode en un geste** : dans l'app web, Widgets et raccourcis › « Installer les
   raccourcis » crée un nouveau jeton de mode et prépare « Mode absent » et « Mode present » avec
   l'adresse en .ts.net et le jeton écrits dedans, signés sur le Mac (`shortcuts sign`) : plus aucune
-  question à l'import. Liens imprévisibles, en mémoire, valables 5 minutes. Si la signature échoue,
-  l'ancien jeton reste valable.
+  question à l'import. Liens imprévisibles, en mémoire, valables 5 minutes. Si la signature échoue
+  ou si la page est fermée avant la fin, l'ancien jeton reste valable. Une préparation à la fois
+  (`409 busy` sinon, nouveau code d'erreur `busy`) ; l'adresse doit être celle de ce Mac.
 - **Jeton de lecture** (`serveur/jeton-lecture.json`) pour le widget Scriptable : il n'ouvre que
   `GET /api/state` et `GET /api/events` (401 partout ailleurs, WebSocket et caméras compris).
   « Installer le widget » le crée et copie le script déjà rempli (adresse et jeton).

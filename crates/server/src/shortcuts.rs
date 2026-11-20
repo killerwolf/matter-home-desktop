@@ -495,6 +495,102 @@ fn sign_with(program: &Path, plist: &str, timeout: Duration) -> Result<Vec<u8>, 
 }
 
 // ---------------------------------------------------------------------------
+// Les liens des raccourcis préparés
+// ---------------------------------------------------------------------------
+
+/// Durée de vie des liens de téléchargement.
+pub const LINK_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Les raccourcis préparés, en mémoire seulement. Le `Hub` ne les remplace ou ne les vide que
+/// sous le changement du jeton de mode : un lien ne porte jamais un jeton révoqué.
+#[derive(Default)]
+pub struct Downloads {
+    files: std::sync::Mutex<std::collections::HashMap<String, Prepared>>,
+}
+
+struct Prepared {
+    file_name: String,
+    body: Vec<u8>,
+    expires: Instant,
+}
+
+impl Downloads {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Prepared>> {
+        self.files.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remplace les liens d'avant par ceux-ci ; rend leurs identifiants (128 bits), dans l'ordre.
+    pub fn replace(&self, files: Vec<(String, Vec<u8>)>) -> Vec<String> {
+        let mut map = self.lock();
+        map.clear();
+        let expires = Instant::now() + LINK_TTL;
+        files
+            .into_iter()
+            .map(|(file_name, body)| {
+                let mut raw = [0u8; 16];
+                rand::thread_rng().fill_bytes(&mut raw);
+                let id = hex::encode(raw);
+                map.insert(
+                    id.clone(),
+                    Prepared {
+                        file_name,
+                        body,
+                        expires,
+                    },
+                );
+                id
+            })
+            .collect()
+    }
+
+    /// Oublie tous les liens.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
+    /// Un fichier encore valable, sous son identifiant **et** son nom.
+    pub fn get(&self, id: &str, file_name: &str) -> Option<Vec<u8>> {
+        let mut map = self.lock();
+        let now = Instant::now();
+        map.retain(|_, p| p.expires > now);
+        map.get(id)
+            .filter(|p| p.file_name == file_name)
+            .map(|p| p.body.clone())
+    }
+}
+
+/// Au démarrage : supprime les dossiers de signature restés d'un arrêt brutal (ils portent un
+/// jeton en clair). Seulement ceux de plus de 10 minutes, pour ne jamais toucher à la signature en
+/// cours d'un autre serveur du même compte.
+pub fn remove_leftovers() {
+    remove_leftovers_in(&std::env::temp_dir(), Duration::from_secs(10 * 60));
+}
+
+fn remove_leftovers_in(dir: &Path, older_than: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with("matter-home-raccourci-") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if old && std::fs::remove_dir_all(entry.path()).is_ok() {
+            log::info!(
+                "dossier de signature resté supprimé : {}",
+                entry.path().display()
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Le widget Scriptable
 // ---------------------------------------------------------------------------
 
@@ -640,6 +736,54 @@ mod tests {
         // L'en-tête est posé d'un bloc (Scriptable ignore une clé modifiée après coup).
         assert!(script.contains("req.headers = headers;"));
         assert!(!script.contains("req.headers."));
+    }
+
+    #[test]
+    fn links_are_unguessable_replaced_checked_by_name_and_expire() {
+        let downloads = Downloads::default();
+        let first = downloads.replace(vec![("Mode absent.shortcut".into(), b"a".to_vec())]);
+        assert_eq!(first[0].len(), 32);
+        // Réutilisable pendant sa durée de vie, mais seulement sous son nom.
+        assert_eq!(
+            downloads.get(&first[0], "Mode absent.shortcut").unwrap(),
+            b"a"
+        );
+        assert!(downloads.get(&first[0], "Mode absent.shortcut").is_some());
+        assert!(downloads.get(&first[0], "Mode present.shortcut").is_none());
+        let second = downloads.replace(vec![
+            ("Mode absent.shortcut".into(), b"b".to_vec()),
+            ("Mode present.shortcut".into(), b"c".to_vec()),
+        ]);
+        assert!(downloads.get(&first[0], "Mode absent.shortcut").is_none());
+        assert_eq!(
+            downloads.get(&second[1], "Mode present.shortcut").unwrap(),
+            b"c"
+        );
+        downloads.lock().get_mut(&second[1]).unwrap().expires = Instant::now();
+        assert!(downloads.get(&second[1], "Mode present.shortcut").is_none());
+        downloads.clear();
+        assert!(downloads.lock().is_empty());
+    }
+
+    #[test]
+    fn old_signing_leftovers_are_removed_at_startup_and_recent_ones_kept() {
+        let base = std::env::temp_dir().join(format!("mhd-restes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("matter-home-raccourci-vieux")).unwrap();
+        std::fs::write(
+            base.join("matter-home-raccourci-vieux/entree.shortcut"),
+            "x",
+        )
+        .unwrap();
+        std::fs::create_dir_all(base.join("autre-chose")).unwrap();
+        // Tout est « récent » : rien n'est touché.
+        remove_leftovers_in(&base, Duration::from_secs(3600));
+        assert!(base.join("matter-home-raccourci-vieux").exists());
+        // Assez vieux : supprimé, le reste non.
+        remove_leftovers_in(&base, Duration::ZERO);
+        assert!(!base.join("matter-home-raccourci-vieux").exists());
+        assert!(base.join("autre-chose").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Un faux `shortcuts` : vérifie ses arguments, note le chemin de son entrée, puis `body`.

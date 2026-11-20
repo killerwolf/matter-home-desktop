@@ -538,6 +538,31 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
                     .contains(".ts.net"));
             }
         }
+        // Derrière `tailscale serve`, Host est le nom en .ts.net de ce Mac : une page qui annonce
+        // un autre Mac (ou un Origin différent) est refusée.
+        let body = origin.to_string();
+        for extra in [
+            [("Host", "autre.tailnet-test.ts.net"), ("X-Essai", "1")],
+            [
+                ("Host", "maison.tailnet-test.ts.net"),
+                ("Origin", "https://autre.tailnet-test.ts.net"),
+            ],
+        ] {
+            let r = client
+                .request_with(
+                    "POST",
+                    "/api/tokens/mode/shortcuts",
+                    Some(&session),
+                    Some(body.as_bytes()),
+                    &extra,
+                )
+                .await;
+            assert_eq!((r.status, r.code().as_str()), (400, "bad_request"));
+            assert!(r.json()["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("ce Mac"));
+        }
         let tokens = client.get("/api/tokens", &session).await.json();
         assert_eq!(tokens["mode"]["exists"], false);
 
@@ -627,8 +652,18 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         assert_ne!(new_mode_token, mode_token);
 
         // Le widget : le script prérempli avec l'adresse et un jeton de lecture.
+        // Avec les en-têtes de `tailscale serve` et du navigateur, cohérents.
         let widget = client
-            .send_json("POST", "/api/tokens/read/widget", &session, &origin)
+            .request_with(
+                "POST",
+                "/api/tokens/read/widget",
+                Some(&session),
+                Some(body.as_bytes()),
+                &[
+                    ("Host", "maison.tailnet-test.ts.net"),
+                    ("Origin", "https://maison.tailnet-test.ts.net"),
+                ],
+            )
             .await;
         assert_eq!(widget.status, 200, "{}", widget.text());
         let script = widget.json()["script"].as_str().unwrap().to_string();

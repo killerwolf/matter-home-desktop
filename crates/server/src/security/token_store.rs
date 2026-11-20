@@ -96,8 +96,26 @@ impl TokenStore {
         self.stored.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn changing(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.changing.lock().unwrap_or_else(|e| e.into_inner())
+    /// Le droit de changer le jeton, en attendant son tour.
+    pub fn change(&self) -> Change<'_> {
+        Change {
+            store: self,
+            _one_at_a_time: self.changing.lock().unwrap_or_else(|e| e.into_inner()),
+        }
+    }
+
+    /// Le droit de changer le jeton, tout de suite ou jamais : `None` si un changement est déjà
+    /// en cours (par exemple une signature de raccourcis, qui dure quelques secondes).
+    pub fn try_change(&self) -> Option<Change<'_>> {
+        let guard = match self.changing.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(Change {
+            store: self,
+            _one_at_a_time: guard,
+        })
     }
 
     /// Un jeton existe-t-il ?
@@ -113,45 +131,15 @@ impl TokenStore {
     /// Tire un nouveau jeton, remplace l'ancien (révoqué) et rend le jeton en clair : à montrer
     /// une seule fois. En cas d'échec d'écriture, l'ancien reste en place.
     pub fn generate(&self) -> anyhow::Result<String> {
-        self.generate_with(|_| Ok(())).map(|(token, ())| token)
-    }
-
-    /// Comme `generate`, en deux temps : `prepare` reçoit le nouveau jeton (pour fabriquer ce qui
-    /// le porte, par exemple les raccourcis signés) **avant** qu'il remplace l'ancien. Si `prepare`
-    /// échoue, rien ne change : l'ancien jeton reste valable.
-    pub fn generate_with<T>(
-        &self,
-        prepare: impl FnOnce(&str) -> anyhow::Result<T>,
-    ) -> anyhow::Result<(String, T)> {
-        let _one_at_a_time = self.changing();
-        let mut raw = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut raw);
-        let token = hex::encode(raw);
-        let prepared = prepare(&token)?;
-        let stored = Stored {
-            hash: hex::encode(hash_of(&token)),
-            created: now(),
-        };
-        if let Some(path) = &self.path {
-            let text = serde_json::to_string_pretty(&stored)?;
-            write_secret(path, text.as_bytes())?;
-        }
-        *self.lock() = Some(stored);
-        Ok((token, prepared))
+        let change = self.change();
+        let token = Change::draw();
+        change.install(&token)?;
+        Ok(token)
     }
 
     /// Supprime le jeton : plus aucun accès par ce jeton.
     pub fn revoke(&self) -> anyhow::Result<()> {
-        let _one_at_a_time = self.changing();
-        if let Some(path) = &self.path {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        *self.lock() = None;
-        Ok(())
+        self.change().revoke()
     }
 
     /// Le jeton présenté est-il le bon ? Comparaison en temps constant.
@@ -164,6 +152,49 @@ impl TokenStore {
             Ok(bytes) if bytes.len() == 32 => bytes.ct_eq(hash_of(token).as_slice()).into(),
             _ => false,
         }
+    }
+}
+
+/// Un changement de jeton en cours : un seul à la fois par jeton. Tant qu'il est tenu, personne
+/// d'autre ne crée ni ne supprime ce jeton ; la vérification, elle, n'attend jamais.
+pub struct Change<'a> {
+    store: &'a TokenStore,
+    _one_at_a_time: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Change<'_> {
+    /// Un nouveau jeton (256 bits, hexadécimal), pas encore valable : `install` le rend valable.
+    pub fn draw() -> String {
+        let mut raw = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut raw);
+        hex::encode(raw)
+    }
+
+    /// Le jeton tiré remplace l'ancien (révoqué). En cas d'échec d'écriture, l'ancien reste.
+    pub fn install(&self, token: &str) -> anyhow::Result<()> {
+        let stored = Stored {
+            hash: hex::encode(hash_of(token)),
+            created: now(),
+        };
+        if let Some(path) = &self.store.path {
+            let text = serde_json::to_string_pretty(&stored)?;
+            write_secret(path, text.as_bytes())?;
+        }
+        *self.store.lock() = Some(stored);
+        Ok(())
+    }
+
+    /// Supprime le jeton : plus aucun accès par ce jeton.
+    pub fn revoke(&self) -> anyhow::Result<()> {
+        if let Some(path) = &self.store.path {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        *self.store.lock() = None;
+        Ok(())
     }
 }
 
@@ -216,21 +247,19 @@ mod tests {
         let dir = temp("prepare");
         let store = open(&dir);
         let old = store.generate().unwrap();
-        let mut seen = String::new();
-        let failed = store.generate_with(|candidate| -> anyhow::Result<()> {
-            seen = candidate.to_string();
-            anyhow::bail!("signature impossible")
-        });
-        assert!(failed.is_err());
-        assert!(store.verify(&old), "l'ancien jeton reste valable");
-        assert!(
-            !seen.is_empty() && !store.verify(&seen),
-            "jamais enregistré"
-        );
+        // Un jeton tiré mais pas installé (préparation abandonnée) ne vaut rien.
+        let change = store.change();
+        let seen = Change::draw();
+        // Pendant ce changement, un autre ne passe pas, mais la vérification oui.
+        assert!(store.try_change().is_none());
+        assert!(store.verify(&old) && !store.verify(&seen));
+        drop(change);
         assert!(open(&dir).verify(&old));
-        // Une préparation réussie remplace l'ancien, avec le jeton qu'elle a reçu.
-        let (new, prepared) = store.generate_with(|c| Ok(c.to_string())).unwrap();
-        assert_eq!(prepared, new);
+        // Installé, il remplace l'ancien.
+        let change = store.try_change().expect("plus de changement en cours");
+        let new = Change::draw();
+        change.install(&new).unwrap();
+        drop(change);
         assert!(store.verify(&new) && !store.verify(&old));
         // Le jeton de lecture est un fichier à part : aucun ne vaut pour l'autre.
         let read = TokenStore::open(&dir, READ_FILE, "jeton de lecture").unwrap();

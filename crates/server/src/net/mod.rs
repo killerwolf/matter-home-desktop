@@ -68,8 +68,6 @@ pub struct AppState {
     pub client_write_timeout: Duration,
     pub body_idle_timeout: Duration,
     pub signer: crate::shortcuts::Signer,
-    /// Les raccourcis préparés pour l'iPhone, en mémoire seulement.
-    pub downloads: Arc<install::Downloads>,
 }
 
 /// Compte, sessions et limitation des tentatives.
@@ -133,8 +131,9 @@ pub fn start(
         client_write_timeout: config.client_write_timeout,
         body_idle_timeout: config.body_idle_timeout,
         signer: config.shortcut_signer,
-        downloads: Arc::new(install::Downloads::default()),
     };
+    // Les dossiers de signature d'un arrêt brutal portent un jeton en clair.
+    crate::shortcuts::remove_leftovers();
     let router = routes::router(state);
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let listener = runtime

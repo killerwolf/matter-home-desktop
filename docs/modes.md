@@ -81,12 +81,15 @@ lecture ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essai
   main** cessent de marcher (à corriger avec le nouveau, ou à refaire). De même, réinstaller le widget
   révoque le widget installé avant (sur cet iPhone ou un autre), qui affiche « Jeton révoqué ».
 - **Révoquer** : l'app web (bouton « Révoquer » de chaque jeton) ou la fenêtre du serveur
-  (« Supprimer le code » pour le jeton de mode, « Révoquer » pour le jeton de lecture).
+  (« Supprimer le code » pour le jeton de mode, « Révoquer » pour le jeton de lecture). Pendant une
+  préparation lancée depuis l'iPhone (quelques secondes de signature), la fenêtre ne l'attend pas :
+  elle répond « préparation en cours, réessayez ».
 - Le serveur n'en garde que l'**empreinte** (SHA-256, droits 0600, jamais exportée ni importée avec
   les sauvegardes). Un jeton n'est jamais écrit dans le journal.
 - Il se place dans l'en-tête `Authorization: Bearer <jeton>` (jamais dans l'URL). Le jeton est
   vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et
-  une ligne au journal, **sans blocage par adresse** : derrière `tailscale serve`, toutes les
+  une ligne au journal (pour le jeton de lecture : seulement s'il en existe un ; sans widget installé,
+  une session expirée sur `GET /api/state` est refusée comme avant, sans attente), **sans blocage par adresse** : derrière `tailscale serve`, toutes les
   connexions viennent de 127.0.0.1 (voir [Accès à distance](acces-distant.md)), un compteur partagé
   aurait pu bloquer le bon Raccourci. Un jeton fait 256 bits : l'essai en force est sans espoir.
 - Si l'un des fichiers est illisible, le serveur le met de côté (`….json.illisible`) et repart sans

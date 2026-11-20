@@ -456,16 +456,21 @@ async fn require_session(
             if state.hub.verify_read_token(token) {
                 return next.run(request).await;
             }
-            // Ni session ni jeton de lecture : comme pour le jeton de mode, un petit délai et
-            // un journal, jamais de blocage par adresse (derrière `tailscale serve`, tout vient
-            // de 127.0.0.1). Le jeton fait 256 bits : l'essai en force est sans espoir.
-            let ip = request
-                .extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|c| c.0.ip().to_string())
-                .unwrap_or_default();
-            log::warn!("lecture refusée pour {ip} : jeton invalide");
-            tokio::time::sleep(FAILURE_PAUSE).await;
+            // Ni session ni jeton de lecture. Rien ne distingue une session expirée d'un essai :
+            // la pause (250 ms, jamais de blocage par adresse : derrière `tailscale serve` tout
+            // vient de 127.0.0.1) n'existe donc que s'il y a un jeton de lecture à protéger ;
+            // sans widget installé, une session expirée est refusée comme avant, sans attendre.
+            if state.hub.has_read_token() {
+                let ip = request
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|c| c.0.ip().to_string())
+                    .unwrap_or_default();
+                log::info!(
+                    "lecture refusée pour {ip} : session expirée ou jeton de lecture inconnu"
+                );
+                tokio::time::sleep(FAILURE_PAUSE).await;
+            }
         }
     }
     ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response()
