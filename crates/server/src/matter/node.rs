@@ -112,7 +112,7 @@ const LIVENESS_EVERY: Duration = Duration::from_secs(60);
 /// Nom du contrôleur écrit comme étiquette de fabric sur chaque appareil : l'écran « Services
 /// connectés » d'Apple Maison l'affiche à côté du numéro de fabricant brut. Limite Matter :
 /// 32 caractères.
-pub(crate) const ETIQUETTE_FABRIC_SERVEUR: &str = "Matter Home Serveur";
+pub(crate) const ETIQUETTE_FABRIC_SERVEUR: &str = "Ostal Serveur";
 const _: () = assert!(ETIQUETTE_FABRIC_SERVEUR.len() <= 32);
 /// Attente avant de toucher à l'étiquette, une fois la souscription établie : la session
 /// s'installe d'abord.
@@ -1638,11 +1638,11 @@ mod tests {
     fn our_fabric_label_picks_the_entry_of_our_node() {
         let list = Value::Container(vec![
             fabric_entry(7, Some("Autre contrôleur")),
-            fabric_entry(42, Some("Matter Home Serveur")),
+            fabric_entry(42, Some("Ostal Serveur")),
         ]);
         assert_eq!(
             our_fabric_label(&list, 42).as_deref(),
-            Some("Matter Home Serveur")
+            Some("Ostal Serveur")
         );
         assert_eq!(
             our_fabric_label(&list, 7).as_deref(),

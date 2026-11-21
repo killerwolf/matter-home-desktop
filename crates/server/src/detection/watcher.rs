@@ -22,7 +22,7 @@ use tokio::sync::watch;
 
 use protocol::wire::{DetectionEventView, StreamKind, StreamPacket};
 
-use matter_home_video::{nal, Decoder, FrameSink, Image};
+use ostal_video::{nal, Decoder, FrameSink, Image};
 
 use super::detector::Detector;
 use super::motion::{Motion, MotionConfig};

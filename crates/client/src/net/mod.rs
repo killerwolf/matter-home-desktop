@@ -1,4 +1,4 @@
-//! Connexion au serveur Matter Home : HTTPS pour les requêtes, WebSocket pour le temps réel.
+//! Connexion au serveur Ostal : HTTPS pour les requêtes, WebSocket pour le temps réel.
 //!
 //! Tout le travail réseau (résolution du nom, connexion TCP, TLS, requêtes, WebSocket) se fait
 //! dans des fils d'exécution à part : l'interface n'attend jamais le réseau. Elle envoie des

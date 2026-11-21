@@ -1,4 +1,4 @@
-# Empreintes SHA-256 des fichiers de la détection (ticket n° 18) embarqués dans « Matter Home
+# Empreintes SHA-256 des fichiers de la détection (ticket n° 18) embarqués dans « Ostal
 # Server.app » par scripts/fetch-detection-assets.sh. Une ligne par fichier : empreinte, nom, adresse.
 # Le script refuse tout fichier dont l'empreinte diffère, et tout fichier sans empreinte (ligne
 # « A_EPINGLER ») : voir docs/detection.md, « Épingler une empreinte ».

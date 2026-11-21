@@ -19,7 +19,7 @@ use protocol::wire::{CameraStatus, CameraView, StreamKind};
 use super::camera_text::{offline_since_now, problem_text};
 use super::player::{is_active, player_compact};
 use super::theme::{self, Severity, Thumb};
-use matter_home_client::model::Model;
+use ostal_client::model::Model;
 
 /// Nombre maximal de tuiles qui lisent un flux en même temps (le décodage se fait sur le client,
 /// et chaque flux ouvre une connexion côté serveur). Les suivantes montrent une image d'attente.
@@ -266,7 +266,7 @@ fn empty_state(ui: &mut egui::Ui) {
         ui.label(RichText::new("Aucune caméra").heading());
         ui.add_space(6.0);
         ui.label(
-            "Les caméras s'ajoutent depuis l'application Matter Home Server : \
+            "Les caméras s'ajoutent depuis l'application Ostal Server : \
              menu « Caméras… » (adresse du flux RTSP, identifiant et mot de passe).",
         );
         ui.label("Elles apparaîtront ici dès qu'elles seront enregistrées.");
@@ -481,7 +481,7 @@ fn detail(
         });
     });
     let kind = detail_stream(camera, state.main);
-    if remote_warning(kind, camera, matter_home_client::net::stream::is_remote()) {
+    if remote_warning(kind, camera, ostal_client::net::stream::is_remote()) {
         ui.label(
             RichText::new(
                 "Connexion à distance : le flux principal est lourd, « Fluide » est conseillé.",

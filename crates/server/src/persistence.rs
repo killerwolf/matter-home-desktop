@@ -215,12 +215,16 @@ pub fn previous_identity_neighbour(dir: &Path) -> Option<PathBuf> {
     found.pop()
 }
 
+/// Nom du dossier de données d'Ostal (`dev.ostal.OstalServer`). Volontairement différent de
+/// l'identifiant de l'application (`dev.ostal.server`) : un framework de macOS qui créerait un
+/// dossier vide à ce nom ne doit pas passer pour des données.
+pub const DATA_DIR: (&str, &str) = ("ostal", "OstalServer");
+
 fn current_dir() -> PathBuf {
     if let Some(dir) = DATA_DIR_OVERRIDE.get() {
         return dir.clone();
     }
-    project_dir("matter-home-desktop", "MatterHomeDesktop")
-        .unwrap_or_else(|| PathBuf::from("./matter-home-desktop-data"))
+    project_dir(DATA_DIR.0, DATA_DIR.1).unwrap_or_else(|| PathBuf::from("./ostal-data"))
 }
 
 /// Dossier de données standard (ou imposé par `--data-dir`), qu'il existe ou non : celui où
@@ -229,59 +233,67 @@ pub fn current_data_dir() -> PathBuf {
     current_dir()
 }
 
-/// Dossier des versions nommées « matter-demo » (jamais avec un dossier imposé).
-fn legacy_dir() -> Option<PathBuf> {
+/// Dossiers des anciens noms, du plus récent au plus ancien : « Matter Home », puis
+/// « matter-demo ». Aucun avec un dossier imposé (`--data-dir`, tests) : rien n'est alors lu
+/// ni copié hors de ce dossier.
+pub fn legacy_dirs() -> Vec<PathBuf> {
     if DATA_DIR_OVERRIDE.get().is_some() {
-        return None;
+        return Vec::new();
     }
-    project_dir("matter-demo", "MatterDemo")
+    [crate::legacy::DATA_DIR, crate::legacy::DEMO_DATA_DIR]
+        .into_iter()
+        .filter_map(|(org, app)| project_dir(org, app))
+        .collect()
 }
 
-/// Dossier à utiliser : le nouveau, sauf s'il n'existe pas encore alors que
-/// l'ancien existe (migration pas encore faite ou ratée) : jamais de perte de données.
-fn resolve_dir(current: PathBuf, legacy: Option<PathBuf>) -> PathBuf {
-    match legacy {
-        Some(old) if !current.exists() && old.exists() => old,
-        _ => current,
+/// Dossier à utiliser : le nouveau, sauf s'il n'existe pas encore alors qu'un ancien existe
+/// (migration pas encore faite ou ratée) : jamais de perte de données.
+fn resolve_dir(current: PathBuf, legacy: &[PathBuf]) -> PathBuf {
+    if current.exists() {
+        return current;
     }
+    legacy
+        .iter()
+        .find(|old| old.exists())
+        .cloned()
+        .unwrap_or(current)
 }
 
 /// Dossier de données de l'application
-/// (macOS : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop`).
+/// (macOS : `~/Library/Application Support/dev.ostal.OstalServer`).
 pub fn data_dir() -> PathBuf {
-    resolve_dir(current_dir(), legacy_dir())
+    resolve_dir(current_dir(), &legacy_dirs())
 }
 
-/// Déplace l'ancien dossier vers le nouveau s'il n'y a que l'ancien. `Ok(true)` si déplacé.
-fn migrate(old: &Path, new: &Path) -> std::io::Result<bool> {
-    if new.exists() || !old.exists() {
-        return Ok(false);
+/// Copie vers `new` le premier dossier de `legacy` qui porte une identité, si `new` n'en a
+/// pas (voir [`crate::legacy::migrate_dir`]).
+fn migrate_from(legacy: &[PathBuf], new: &Path) -> Result<Option<String>> {
+    for old in legacy {
+        if crate::backup::recovery_needed(old) || old.join(FILE_NAME).is_file() {
+            return crate::legacy::migrate_dir(old, new);
+        }
     }
-    if let Some(parent) = new.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(old, new)?;
-    Ok(true)
+    Ok(None)
 }
 
-/// À appeler au démarrage : renomme le dossier de données des versions « matter-demo ».
-/// Retourne un message pour le journal si quelque chose s'est passé.
-pub fn migrate_legacy_data_dir() -> Option<String> {
-    let old = legacy_dir()?;
-    let new = current_dir();
-    match migrate(&old, &new) {
-        Ok(true) => Some(format!(
-            "Données déplacées de {} vers {}.",
-            old.display(),
-            new.display()
-        )),
-        Ok(false) => None,
-        Err(e) => Some(format!(
-            "Impossible de déplacer {} vers {} ({e}) : l'ancien dossier reste utilisé.",
-            old.display(),
-            new.display()
-        )),
+/// À appeler au démarrage, verrous pris ([`acquire_data_lock`]) : copie le dossier de données
+/// de l'ancien nom (« Matter Home », ou « matter-demo ») vers celui d'Ostal, s'il n'y est pas
+/// encore. L'ancien reste intact. Rend un message pour le journal si la copie a eu lieu ; une
+/// erreur si elle était nécessaire et n'a pas pu se faire (rien n'est alors démarré).
+pub fn migrate_legacy_data_dir() -> Result<Option<String>> {
+    migrate_from(&legacy_dirs(), &current_dir())
+}
+
+/// Un ancien dossier porte une identité que `dir` n'a pas : y créer une nouvelle fabric
+/// orphelinerait les appareils. Seulement pour le dossier standard.
+fn legacy_identity_for(dir: &Path, current: &Path, legacy: &[PathBuf]) -> Option<PathBuf> {
+    if dir != current || dir.join(FILE_NAME).exists() {
+        return None;
     }
+    legacy
+        .iter()
+        .find(|old| old.join(FILE_NAME).is_file())
+        .cloned()
 }
 
 /// Refuse de créer une nouvelle identité (fabric) quand `controller.json` manque alors que
@@ -290,6 +302,16 @@ pub fn migrate_legacy_data_dir() -> Option<String> {
 /// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
 /// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
 pub fn check_fresh_start(dir: &Path) -> Result<()> {
+    if let Some(old) = legacy_identity_for(dir, &current_dir(), &legacy_dirs()) {
+        bail!(
+            "{FILE_NAME} est introuvable dans {} alors que l'ancien dossier de Matter Home {} en \
+             contient un : ses données n'ont pas encore été copiées. Créer une nouvelle identité \
+             ici orphelinerait les appareils appairés. Quittez l'ancienne application si elle \
+             tourne, puis relancez Ostal Server : la copie se fait au démarrage.",
+            dir.display(),
+            old.display()
+        );
+    }
     // Un import a mis de côté un dossier qui portait une identité (« …avant-import-… »), et le
     // dossier de données n'en a plus : démarrer ici créerait une nouvelle fabric alors que
     // l'identité existe quelque part. Refus, même si `dir` est vide.
@@ -340,7 +362,7 @@ pub fn check_fresh_start(dir: &Path) -> Result<()> {
         "{FILE_NAME} est introuvable dans {} alors que des données existent déjà ({}). \
          Démarrer ainsi créerait une nouvelle fabric : les appareils appairés ne seraient plus \
          reconnus et l'historique serait supprimé. Remettez {FILE_NAME} en place (sauvegarde \
-         ou import d'un fichier .matterhome), ou déplacez ces données si vous voulez repartir \
+         ou import d'un fichier .ostal), ou déplacez ces données si vous voulez repartir \
          de zéro.",
         dir.display(),
         found.join(", ")
@@ -354,8 +376,47 @@ pub fn instance_lock_path() -> PathBuf {
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "matter-home-desktop-data".into());
+        .unwrap_or_else(|| "ostal-data".into());
     dir.with_file_name(format!("{name}.lock"))
+}
+
+/// Verrous des anciens dossiers de données : ceux de « Matter Home » qui existent (dossier ou
+/// fichier de verrou). Aucun avec un dossier imposé.
+pub fn legacy_lock_paths() -> Vec<PathBuf> {
+    legacy_lock_paths_for(&legacy_dirs())
+}
+
+fn legacy_lock_paths_for(legacy: &[PathBuf]) -> Vec<PathBuf> {
+    legacy
+        .iter()
+        .filter_map(|dir| {
+            let name = dir.file_name()?.to_string_lossy().into_owned();
+            let lock = dir.with_file_name(format!("{name}.lock"));
+            (dir.exists() || lock.exists()).then_some(lock)
+        })
+        .collect()
+}
+
+/// Les verrous d'instance tenus par ce processus : celui d'Ostal et ceux des anciens noms.
+/// Tant qu'il vit, ni un autre serveur Ostal ni l'ancienne application « Matter Home Server »
+/// (qui prend son propre verrou) ne peuvent démarrer sur les mêmes données ou sur leur copie.
+#[derive(Debug)]
+pub struct DataLock {
+    _files: Vec<std::fs::File>,
+}
+
+/// Prend le verrou d'Ostal ([`instance_lock_path`]) puis ceux des anciens noms. Si l'un est
+/// tenu ailleurs, l'erreur est un [`LockHeld`] qui nomme ce verrou-là, et aucun n'est gardé.
+pub fn acquire_data_lock() -> Result<DataLock> {
+    acquire_data_lock_at(&instance_lock_path(), &legacy_lock_paths())
+}
+
+pub fn acquire_data_lock_at(main: &Path, legacy: &[PathBuf]) -> Result<DataLock> {
+    let mut files = vec![acquire_instance_lock(main)?];
+    for path in legacy {
+        files.push(acquire_instance_lock(path)?);
+    }
+    Ok(DataLock { _files: files })
 }
 
 /// Prend le verrou exclusif de `path` et le garde tant que le fichier retourné est ouvert.
@@ -401,7 +462,7 @@ impl std::fmt::Display for LockHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "un autre serveur Matter Home utilise déjà ces \
+            "un autre serveur (Ostal, ou l'ancienne application Matter Home) utilise déjà ces \
              données (verrou {}). Arrêtez-le avant de lancer celui-ci. (L'application de bureau v0.2 ne prend pas ce verrou : \
              ne la lancez pas en même temps.)",
             self.path.display()
@@ -515,8 +576,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let dir =
-            std::env::temp_dir().join(format!("matter-home-desktop-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ostal-test-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
         assert!(load(&path).unwrap().is_none());
         save(&path, &sample()).unwrap();
@@ -669,25 +729,57 @@ mod tests {
     }
 
     #[test]
-    fn legacy_dir_migration() {
-        let base = std::env::temp_dir().join(format!("mhd-migration-{}", std::process::id()));
+    fn legacy_dirs_are_resolved_copied_and_locked() {
+        let base = std::env::temp_dir().join(format!("ostal-migration-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let old = base.join("dev.matter-demo.MatterDemo");
-        let new = base.join("dev.matter-home-desktop.MatterHomeDesktop");
-        std::fs::create_dir_all(old.join("history")).unwrap();
-        std::fs::write(old.join(FILE_NAME), "{}").unwrap();
+        let matter_home = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        let demo = base.join("dev.matter-demo.MatterDemo");
+        let new = base.join("dev.ostal.OstalServer");
+        let legacy = [matter_home.clone(), demo.clone()];
+        std::fs::create_dir_all(demo.join("history")).unwrap();
+        std::fs::write(demo.join(FILE_NAME), "demo").unwrap();
 
-        // Tant que rien n'est déplacé, l'ancien dossier est utilisé.
-        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), old);
-        assert!(migrate(&old, &new).unwrap());
-        assert!(new.join(FILE_NAME).exists() && new.join("history").is_dir() && !old.exists());
-        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), new);
-        // Deuxième lancement : rien à faire.
-        assert!(!migrate(&old, &new).unwrap());
-        // Les deux existent : le nouveau gagne, l'ancien n'est pas touché.
-        std::fs::create_dir_all(&old).unwrap();
-        assert!(!migrate(&old, &new).unwrap());
-        assert_eq!(resolve_dir(new.clone(), Some(old.clone())), new);
+        // Tant que rien n'est copié, l'ancien dossier existant est celui qu'on lit.
+        assert_eq!(resolve_dir(new.clone(), &legacy), demo);
+        // Aucun verrou pour un ancien nom absent ; un verrou pour celui qui existe.
+        assert_eq!(
+            legacy_lock_paths_for(&legacy),
+            vec![base.join("dev.matter-demo.MatterDemo.lock")]
+        );
+        std::fs::create_dir_all(matter_home.join("history")).unwrap();
+        std::fs::write(matter_home.join(FILE_NAME), "matter home").unwrap();
+        assert_eq!(resolve_dir(new.clone(), &legacy), matter_home);
+        // Le plus récent des anciens noms gagne.
+        assert!(migrate_from(&legacy, &new).unwrap().is_some());
+        assert_eq!(std::fs::read(new.join(FILE_NAME)).unwrap(), b"matter home");
+        assert!(matter_home.join(FILE_NAME).is_file() && demo.join(FILE_NAME).is_file());
+        assert_eq!(resolve_dir(new.clone(), &legacy), new);
+        assert_eq!(migrate_from(&legacy, &new).unwrap(), None);
+
+        // Pas de nouvelle fabric dans le dossier standard tant qu'un ancien a une identité.
+        let empty = base.join("vide");
+        assert_eq!(
+            legacy_identity_for(&empty, &empty, &legacy),
+            Some(matter_home.clone())
+        );
+        assert_eq!(legacy_identity_for(&new, &new, &legacy), None);
+        assert_eq!(legacy_identity_for(&empty, &new, &legacy), None);
+
+        // Deux verrous : l'ancienne application (qui prend l'ancien) est tenue à l'écart, et un
+        // ancien verrou tenu empêche de démarrer.
+        let main_lock = base.join("dev.ostal.OstalServer.lock");
+        let old_locks = legacy_lock_paths_for(&legacy);
+        assert_eq!(old_locks.len(), 2);
+        let held = acquire_data_lock_at(&main_lock, &old_locks).unwrap();
+        let err = acquire_instance_lock(&old_locks[0]).unwrap_err();
+        assert_eq!(err.downcast_ref::<LockHeld>().unwrap().path, old_locks[0]);
+        drop(held);
+        let old_app = acquire_instance_lock(&old_locks[0]).unwrap();
+        let err = acquire_data_lock_at(&main_lock, &old_locks).unwrap_err();
+        assert_eq!(err.downcast_ref::<LockHeld>().unwrap().path, old_locks[0]);
+        drop(old_app);
+        // Rien n'est resté tenu après l'échec.
+        assert!(acquire_data_lock_at(&main_lock, &old_locks).is_ok());
         std::fs::remove_dir_all(base).unwrap();
     }
 }

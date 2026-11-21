@@ -35,7 +35,7 @@ pas de framework, pas de nouvelle dépendance Rust.
   `-8`, selon le rang de l'identifiant ; pointillés au-delà de 8). Un choix de durée (**1 h,
   24 h, 1 semaine**) et une **légende** avec une case à cocher par capteur, qui donne la valeur
   actuelle, le minimum et le maximum de la période ; capteur injoignable signalé. Le choix des
-  courbes et de la durée est gardé dans le `localStorage` (clé `matter-home.temps`, avec
+  courbes et de la durée est gardé dans le `localStorage` (clé `ostal.temps`, avec
   `try/catch`). Un **curseur** au survol ou au toucher (flèches du clavier aussi) affiche l'heure
   et la valeur de chaque courbe. Mêmes règles que le client de bureau (`temperatures.rs`) :
   lecture `GET /api/devices/{id}/history?…&metrics=temperature&limit=20000&buckets=N` (N entre
@@ -117,7 +117,7 @@ ni mot de passe. Le serveur prépare chaque fichier avec son adresse publique et
    puis affiche deux boutons à toucher : « Mode absent », « Mode present ». Plus aucune question à
    l'import.
 2. **Installer le widget** : `POST /api/tokens/read/widget` crée un **nouveau jeton de lecture** et
-   rend le script `matter-home.js` avec `SERVEUR` et `TOKEN` déjà remplis ; la page le copie
+   rend le script `ostal.js` avec `SERVEUR` et `TOKEN` déjà remplis ; la page le copie
    (`ClipboardItem` confié au presse-papiers pendant le geste, comme l'exige Safari ; repli : le texte
    dans une zone sélectionnée). On le colle une fois dans Scriptable.
 3. **Révoquer** : un bouton par jeton (`DELETE /api/tokens/mode`, `DELETE /api/tokens/read`), avec la
@@ -160,7 +160,7 @@ raccourcis portent le jeton de mode. Ils sont donc servis par une adresse **impr
 Unicode **décomposé** (« e » suivi de l'accent) ; le widget l'ouvre par
 `shortcuts://run-shortcut?name=Mode%20pr%C3%A9sent` (« é » composé) et Raccourcis répondait qu'il ne
 trouvait pas « Mode présent ». Les noms sont donc en ASCII, les mêmes dans le serveur
-(`shortcuts.rs`), la page (`widgets.js`) et le widget (`matter-home.js`) ; un test le vérifie.
+(`shortcuts.rs`), la page (`widgets.js`) et le widget (`ostal.js`) ; un test le vérifie.
 Supprimez l'ancien « Mode présent » (et l'ancien « Mode absent ») avant d'installer : sinon iOS crée
 « Mode absent 1 », que le widget n'appelle pas.
 
@@ -172,11 +172,11 @@ change** (le nouveau jeton n'est enregistré qu'une fois les deux signatures ré
 sont fabriqués en Rust (plist XML, portage de `mode_shortcut` de `build_shortcuts.py`) : `PUT
 <adresse>/api/mode`, `Authorization: Bearer <jeton de mode>`, corps JSON ; notification « Maison en mode
 … » seulement si la réponse a une clé `mode`, sinon la réponse du serveur. Essai à la main de la vraie
-signature (valeurs factices) : `cargo test -p matter-home-server --lib -- --ignored
+signature (valeurs factices) : `cargo test -p ostal-server --lib -- --ignored
 real_apple_signature`. Les autres essais remplacent la signature par le plist tel quel
-(`MATTER_HOME_TEST_UNSIGNED_SHORTCUTS=1` pour le binaire) : ils ne dépendent ni d'iCloud ni d'Apple.
+(`OSTAL_TEST_UNSIGNED_SHORTCUTS=1` pour le binaire) : ils ne dépendent ni d'iCloud ni d'Apple.
 
-**Le widget.** `matter-home.js` n'a plus de connexion par mot de passe ni de jeton de session dans le
+**Le widget.** `ostal.js` n'a plus de connexion par mot de passe ni de jeton de session dans le
 trousseau : il lit `GET /api/state` et `GET /api/events?limit=1` avec le jeton de lecture écrit dedans.
 Un 401 affiche « Jeton révoqué : recopie le widget depuis l'app web ». Ses boutons ouvrent les
 raccourcis par leur nom (`shortcuts://run-shortcut?name=Mode%20present`). L'en-tête est posé d'un
@@ -191,7 +191,7 @@ bloc (`req.headers = headers`) : Scriptable ignore une clé ajoutée après coup
 
 Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules `api.js`,
 `tiles.js`, `icons.js`, `charts.js`, `temps.js`, `cameras.js`, `plan.js`, `mode.js`, `push.js`, `widgets.js`, `sw.js`, `manifest.webmanifest`, icônes PNG
-192 et 512, et `raccourcis/matter-home.js`, le modèle du script du widget, rempli par le serveur). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
+192 et 512, et `raccourcis/ostal.js`, le modèle du script du widget, rempli par le serveur). Les **tokens** ne sont pas recopiés : `design/tokens.css` est intégré tel quel
 (`/app/tokens.css`), et un test vérifie que le fichier servi est celui du dépôt.
 
 ## Sécurité
@@ -209,9 +209,9 @@ Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules
   déconnecter » appelle `POST /api/logout` (jeton révoqué) puis l'efface.
 - **WebSocket d'un navigateur** : un `WebSocket` ne peut pas poser d'en-tête `Authorization`, et le
   jeton ne va jamais dans l'URL. L'app propose donc
-  `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`. Le serveur ne lit cette entrée que sur
+  `Sec-WebSocket-Protocol: ostal.v1, bearer.<jeton>`. Le serveur ne lit cette entrée que sur
   `GET /api/ws` et `GET /api/cameras/{id}/stream` avec un vrai upgrade (`Connection: upgrade`, `Sec-WebSocket-Key`, version 13), jamais ailleurs ; un `Origin` qui ne correspond pas à `Host` est refusé (403), vérifie le jeton comme
-  d'habitude, et **répond toujours `matter-home.v1`** (jamais l'entrée qui porte le jeton). Le
+  d'habitude, et **répond toujours `ostal.v1`** (jamais l'entrée qui porte le jeton). Le
   client natif, qui envoie `Authorization`, n'est pas touché ; `PROTOCOL_VERSION` reste **2**. Même
   mécanisme pour `GET /api/cameras/{id}/stream`.
 - **Certificat** : le client de bureau épingle l'empreinte SHA-256 du certificat auto-signé. Un
@@ -223,7 +223,7 @@ Sources : `crates/server/web/` (`index.html`, `app.css`, `app.js` et ses modules
 
 ## Accès à distance depuis l'app serveur (Tailscale)
 
-Le bouton **« Activer l'accès à distance »** de la fenêtre de Matter Home Server (onglet
+Le bouton **« Activer l'accès à distance »** de la fenêtre de Ostal Server (onglet
 Connexion, « Depuis l'iPhone, même hors de la maison ») publie le serveur sur le tailnet, sans
 Terminal. Le menu n'en montre plus que l'état (« Accès à distance : activé »). **Activer** lance `tailscale serve --bg https+insecure://localhost:<port>`
 (le port est celui du serveur), **désactiver** lance `tailscale serve --https=443 off`. Seule la
@@ -253,13 +253,13 @@ l'app ne range rien.
   plausible, reconstituée, non capturée.
 - **Actif** : la case est cochée et deux éléments apparaissent, « Ouvrir https://<nom>.ts.net/app/ »
   et « Copier l'adresse ».
-- **Essais** : `MATTER_HOME_TAILSCALE_BIN=/chemin/absolu/faux-tailscale` remplace tout le reste
+- **Essais** : `OSTAL_TAILSCALE_BIN=/chemin/absolu/faux-tailscale` remplace tout le reste
   (aucune recherche ailleurs) ; elle n'est lue qu'en `--demo` ou dans un build de développement. En `--demo`, sans cette variable, Tailscale est vu comme absent :
   le menu d'un essai ne lance jamais le vrai `tailscale`. Les tests unitaires s'appuient sur des
   fixtures JSON (`crates/server-app/tests/fixtures/tailscale/`) et ne lancent jamais le vrai binaire.
 
 ## Essayer
 
-`matter-home-server --demo --listen 127.0.0.1:18443 --data-dir <dossier jetable>`, puis ouvrir
+`ostal-server --demo --listen 127.0.0.1:18443 --data-dir <dossier jetable>`, puis ouvrir
 `https://127.0.0.1:18443/app/` ; le mot de passe du compte `demo` est affiché une fois au premier
-lancement. `MATTER_HOME_DEMO_HOUSE=1` donne une maison plus riche.
+lancement. `OSTAL_DEMO_HOUSE=1` donne une maison plus riche.

@@ -32,7 +32,7 @@ Un compagnon Node.js (matter.js) était prévu en repli ; il n'a pas été néce
 ### Modifications de `vendor/matc`
 
 Branchée par `[patch.crates-io]` dans `Cargo.toml`, chaque modification est repérée par
-`[matter-home-desktop]` dans le code :
+`[ostal]` dans le code :
 
 | Fichier | Modification | Pourquoi |
 |---|---|---|
@@ -144,7 +144,7 @@ crates/protocol/src/   types partagés (serde seul : ni egui ni matc)
   automation.rs        modèle des règles : déclencheurs, conditions, actions
   format.rs            formatage français des mesures
 crates/server/src/     serveur (Matter, règles, historique) : aucune dépendance egui
-  main.rs              binaire matter-home-server : --demo, --discover, init, import, refus sans identité,
+  main.rs              binaire ostal-server : --demo, --discover, init, import, refus sans identité,
                        --log-file, journaux, arrêt propre
   logfile.rs           journal 0600 à rotation par taille (--log-file, service launchd)
   events.rs            EventSink (émetteur d'événements, sans interface)
@@ -184,7 +184,7 @@ crates/client/src/     client (egui) : aucune dépendance matc, tokio ni serveur
   ui/plan.rs           plan de la maison (+ tests)
   ui/rules.rs          onglet Automatisations (+ test)
   ui/customize.rs      éditeur nom et icône
-crates/client/tests/   couche connexion contre le vrai matter-home-server --demo
+crates/client/tests/   couche connexion contre le vrai ostal-server --demo
 vendor/matc/           copie modifiée de matc 0.1.3
 scripts/bundle.sh      construction du .app et du DMG
 scripts/changelog-section.sh  notes de version tirées de CHANGELOG.md
@@ -199,7 +199,7 @@ docs/                  documentation et captures d'écran
 
 ## Paquet macOS
 
-`scripts/bundle.sh` assemble `Matter Home Desktop.app` : binaire universel (`lipo`),
+`scripts/bundle.sh` assemble `Ostal.app` : binaire universel (`lipo`),
 `Info.plist`, icône et signature ad hoc (pas de certificat Developer ID). L'`Info.plist`
 déclare `NSLocalNetworkUsageDescription` et `NSBonjourServices` (`_matter._tcp`,
 `_matterc._udp`) : sans eux, macOS bloque la découverte mDNS d'une application lancée depuis

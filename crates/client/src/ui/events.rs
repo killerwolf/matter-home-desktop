@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use eframe::egui::{self, RichText};
 
 use super::theme;
-use matter_home_client::clip::{format_time, ClipPlayer};
-use matter_home_client::model::Model;
-use matter_home_client::net::events::EventsFeed;
+use ostal_client::clip::{format_time, ClipPlayer};
+use ostal_client::model::Model;
+use ostal_client::net::events::EventsFeed;
 
 /// L'état de la colonne : la liste (fils réseau) et les textures des captures.
 pub struct EventsView {
@@ -38,7 +38,7 @@ enum Action {
 
 impl EventsView {
     pub fn new() -> Self {
-        matter_home_client::net::events::purge_old_clips();
+        ostal_client::net::events::purge_old_clips();
         Self {
             feed: None,
             textures: HashMap::new(),

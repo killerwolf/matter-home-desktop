@@ -4,10 +4,10 @@
 //! La clé d'API est saisie une fois, puis jamais réaffichée : la fenêtre ne sait que « il y en a
 //! une » (`Descriptions::has_key`).
 
-use matter_home_server::descriptions::settings::{CameraFilter, Model, Settings, MAX_DAILY_CAP};
+use ostal_server::descriptions::settings::{CameraFilter, Model, Settings, MAX_DAILY_CAP};
 
 /// Ce qui part, et où : à lire avant d'activer.
-pub const PRIVACY_NOTE: &str = "Quand c'est activé, la capture de chaque événement choisi (une seule image, jamais la vidéo) part vers l'API d'Anthropic, avec le nom de la caméra et la classe détectée. Rien ne part sans clé ni sans cette case cochée. La clé reste sur ce Mac (fichier en lecture seule pour votre compte) et n'est pas dans les sauvegardes « .matterhome » : saisissez-la de nouveau sur un autre Mac.";
+pub const PRIVACY_NOTE: &str = "Quand c'est activé, la capture de chaque événement choisi (une seule image, jamais la vidéo) part vers l'API d'Anthropic, avec le nom de la caméra et la classe détectée. Rien ne part sans clé ni sans cette case cochée. La clé reste sur ce Mac (fichier en lecture seule pour votre compte) et n'est pas dans les sauvegardes « .ostal » : saisissez-la de nouveau sur un autre Mac.";
 
 /// Le conseil de dépense, avec la limite côté Anthropic.
 pub const SPEND_NOTE: &str = "Fixez aussi une limite de dépense dans la console Anthropic (console.anthropic.com, section Limits) : le plafond quotidien ci-dessous protège contre une rafale, pas contre un oubli.";

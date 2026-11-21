@@ -1,18 +1,18 @@
 //! Le dessin de la fenêtre « Descriptions » (ticket n° 19) : activation, clé d'API (saisie une
 //! fois, jamais réaffichée), modèle et coût, caméras, classes, plafond quotidien. Les textes sont
-//! dans `matter_home_server_app::descriptions`.
+//! dans `ostal_server_app::descriptions`.
 
 use std::sync::Arc;
 
 use eframe::egui::{self, RichText};
-use matter_home_server::descriptions::settings::{CameraFilter, Model, Settings};
-use matter_home_server::hub::Hub;
-use matter_home_server_app::descriptions::{
+use ostal_server::descriptions::settings::{CameraFilter, Model, Settings};
+use ostal_server::hub::Hub;
+use ostal_server_app::descriptions::{
     filter_label, model_line, parse_cap, status_line, ON_OPEN_NOTE, PRIVACY_NOTE, RULES_NOTE,
     SPEND_NOTE,
 };
-use matter_home_server_app::system::{self, HelpPage};
-use matter_home_theme as theme;
+use ostal_server_app::system::{self, HelpPage};
+use ostal_theme as theme;
 
 use crate::ui::widgets::{self, StepState};
 use protocol::wire::DetectedClass;

@@ -1,4 +1,4 @@
-//! Outils des tests d'intégration : lancement du vrai binaire `matter-home-server --demo`
+//! Outils des tests d'intégration : lancement du vrai binaire `ostal-server --demo`
 //! comme processus, sur 127.0.0.1 uniquement, avec un dossier de données temporaire et un
 //! HOME factice. Jamais le vrai dossier de données, jamais un vrai appareil Matter.
 #![allow(dead_code)]
@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use matter_home_client::net::{Backend, Event, Link, NetError, Request, Response, Store};
+use ostal_client::net::{Backend, Event, Link, NetError, Request, Response, Store};
 
 pub const USER: &str = "hamdi";
 pub const PASSWORD: &str = "un-mot-de-passe-solide-pour-les-tests";
@@ -25,11 +25,11 @@ fn server_binary() -> PathBuf {
     let exe = std::env::current_exe().expect("chemin du test");
     exe.ancestors()
         .skip(1)
-        .map(|dir| dir.join("matter-home-server"))
+        .map(|dir| dir.join("ostal-server"))
         .find(|p| p.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "serveur introuvable au-dessus de {} : lancez `cargo test --workspace` ou `cargo build -p matter-home-server`",
+                "serveur introuvable au-dessus de {} : lancez `cargo test --workspace` ou `cargo build -p ostal-server`",
                 exe.display()
             )
         })

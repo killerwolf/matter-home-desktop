@@ -1,7 +1,7 @@
 // Service worker minimal : garde la coquille (HTML, CSS, JS, icônes) pour que l'app s'ouvre
 // instantanément et hors ligne. Il ne touche jamais à l'API : /api/ passe toujours par le réseau
 // (jeton, état, flux), rien de la maison n'est mis en cache.
-const CACHE = "matter-home-shell-v9";
+const CACHE = "ostal-shell-v10";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "app.js", "api.js", "tiles.js", "icons.js",
   "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "widgets.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
@@ -58,7 +58,7 @@ self.addEventListener("push", (event) => {
   let data = {};
   try { data = (event.data ? event.data.json() : {}) || {}; } catch { data = {}; }
   // Toujours une notification visible : Safari retire l'abonnement après des messages muets.
-  const title = typeof data.title === "string" && data.title ? data.title : "Matter Home";
+  const title = typeof data.title === "string" && data.title ? data.title : "Ostal";
   const options = {
     body: typeof data.body === "string" ? data.body : "",
     icon: "icon-192.png",

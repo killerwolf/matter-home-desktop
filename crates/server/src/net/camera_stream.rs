@@ -117,7 +117,7 @@ async fn upgrade(
         }
     };
     let stall = live.config().write_stall;
-    ws.protocols([super::routes::WS_SUBPROTOCOL])
+    ws.protocols(super::routes::WS_SUBPROTOCOLS)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;

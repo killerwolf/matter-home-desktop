@@ -126,7 +126,7 @@ pub fn api_message(
         ErrorCode::Busy => "Une préparation est déjà en cours : réessayez dans un instant.".into(),
         ErrorCode::PairingFailed => with_detail("L'appairage a échoué"),
         ErrorCode::InvalidImport => {
-            with_detail("Ce fichier n'est pas une sauvegarde Matter Home valable")
+            with_detail("Ce fichier n'est pas une sauvegarde Ostal valable")
         }
         ErrorCode::IdentityMismatch => {
             "Cette sauvegarde porte une autre identité Matter que le serveur : l'importer ferait \

@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use matter_home_server::cameras::CameraDraft;
-use matter_home_server::hub::{Hub, HubConfig};
-use matter_home_server::net::{self, Auth, NetConfig, NetServer};
-use matter_home_server::security::account::{self, AccountStore};
-use matter_home_server::security::sessions::SessionStore;
-use matter_home_server::security::{self, tls};
+use ostal_server::cameras::CameraDraft;
+use ostal_server::hub::{Hub, HubConfig};
+use ostal_server::net::{self, Auth, NetConfig, NetServer};
+use ostal_server::security::account::{self, AccountStore};
+use ostal_server::security::sessions::SessionStore;
+use ostal_server::security::{self, tls};
 
 use super::fake_camera::{self, FakeCamera};
 
@@ -86,7 +86,7 @@ pub fn start(setup: Setup<'_>) -> Rig {
             listen: setup.listen.parse().expect("adresse d'écoute"),
             client_write_timeout: setup.client_write_timeout,
             body_idle_timeout: Duration::from_secs(15),
-            shortcut_signer: matter_home_server::shortcuts::Signer::Unsigned,
+            shortcut_signer: ostal_server::shortcuts::Signer::Unsigned,
         },
         hub.clone(),
         auth,

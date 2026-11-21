@@ -3,7 +3,7 @@
 //!
 //! Le fichier `serveur/descriptions.json` (droits 0600, dossier 0700) garde les réglages **et la
 //! clé d'API**, comme `cameras.json` garde les mots de passe des caméras. Il est dans `serveur/` :
-//! **jamais exporté** dans une sauvegarde `.matterhome` (une clé d'API dépense de l'argent : on ne
+//! **jamais exporté** dans une sauvegarde `.ostal` (une clé d'API dépense de l'argent : on ne
 //! la laisse pas dans un fichier que l'on transfère par AirDrop ou clé USB), et recopié tel quel
 //! d'un dossier à l'autre à l'import d'une sauvegarde. Sur un nouveau Mac, on la saisit de nouveau.
 

@@ -4,9 +4,9 @@
 
 use std::time::{Duration, Instant};
 
-use matter_home_server_app::controller::{self, Cmd, Config, Handle, Notice};
-use matter_home_server_app::startup::SetupNeed;
-use matter_home_server_app::status::Phase;
+use ostal_server_app::controller::{self, Cmd, Config, Handle, Notice};
+use ostal_server_app::startup::SetupNeed;
+use ostal_server_app::status::Phase;
 
 fn wait_for(handle: &Handle, what: &str, ok: impl Fn(&controller::State) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -28,7 +28,7 @@ fn wait_for(handle: &Handle, what: &str, ok: impl Fn(&controller::State) -> bool
 fn empty_folder_goes_through_identity_then_account_then_runs() {
     let dir = std::env::temp_dir().join(format!("mh-app-flow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(matter_home_server::persistence::set_data_dir(dir.clone()));
+    assert!(ostal_server::persistence::set_data_dir(dir.clone()));
     let lock = controller::acquire_lock();
     let handle = controller::spawn(
         Config {

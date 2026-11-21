@@ -1,5 +1,5 @@
 //! Ce que les notifications gardent sur disque, dans `serveur/` (dossier 0700, fichiers 0600,
-//! **jamais exportés** dans une sauvegarde `.matterhome`, comme la clé d'API des descriptions) :
+//! **jamais exportés** dans une sauvegarde `.ostal`, comme la clé d'API des descriptions) :
 //!
 //! - `push-vapid.json` : la clé privée VAPID du serveur (PKCS#8, base64), créée au premier
 //!   lancement. Perdue ou illisible, une nouvelle est créée **et les abonnements sont oubliés**

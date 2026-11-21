@@ -1,22 +1,22 @@
 [package]
-name = "matter-home-desktop"
+name = "ostal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Client de bureau Matter Home (egui) : capteurs, plan de la maison, automatisations"
+description = "Client de bureau Ostal (egui) : capteurs, plan de la maison, automatisations"
 license.workspace = true
 
 [lib]
-name = "matter_home_client"
+name = "ostal_client"
 path = "src/lib.rs"
 
 [[bin]]
-name = "matter-home-desktop"
+name = "ostal"
 path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
-matter-home-theme = { path = "../theme" }
+ostal-theme = { path = "../theme" }
 chrono = "0.4"
 directories = "6"
 eframe = "0.37"
@@ -41,7 +41,7 @@ sha2 = "0.10"
 rfd = "0.17.2"
 
 # Décodage vidéo des caméras (#5) : VideoToolbox, dans la caisse partagée avec le serveur.
-matter-home-video = { path = "../video" }
+ostal-video = { path = "../video" }
 
 # Image fixe d'une caméra (#12) : le serveur renvoie du JPEG. Décodeur en Rust pur, déjà dans
 # l'arbre des dépendances (via `image`, tiré par eframe) : aucune caisse de plus dans le Cargo.lock.

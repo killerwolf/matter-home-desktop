@@ -1,8 +1,8 @@
-# Expérience utilisateur de Matter Home Server
+# Expérience utilisateur de Ostal Server
 
 [← Retour au README](../README.md) · [Installer le serveur](installation-serveur.md) · [Design system](design-system.md)
 
-Ticket n° 21. L'application serveur (« Matter Home Server », dans la barre de menus du Mac) tourne
+Ticket n° 21. L'application serveur (« Ostal Server », dans la barre de menus du Mac) tourne
 jour et nuit et on ne la regarde presque jamais. Ce document dit ce qui n'allait pas, comment elle
 est organisée maintenant, et ce qui a changé. Le comportement du serveur (`crates/server`) n'a pas
 bougé : seule l'application `crates/server-app` est concernée.
@@ -32,7 +32,7 @@ bougé : seule l'application `crates/server-app` est concernée.
 6. **Aucun secret affiché**, sauf le jeton de mode à sa création, une seule fois, comme avant. La
    clé Anthropic et les mots de passe ne sont jamais réaffichés.
 7. **Le même aspect que le client** : tokens de `design/tokens.json` par la crate
-   `matter-home-theme` (couleurs, espacements, rayons, tailles de texte), onglets `theme::tab`,
+   `ostal-theme` (couleurs, espacements, rayons, tailles de texte), onglets `theme::tab`,
    bouton principal `theme::primary_button`, cartes en aplat à trait fin. Ni ombre, ni animation.
 
 ## Audit de l'existant (avant)
@@ -40,7 +40,7 @@ bougé : seule l'application `crates/server-app` est concernée.
 ### Le menu de la barre de menus
 
 ```text
-Matter Home Server 1.2.1
+Ostal Server 1.2.1
 ────────────────
 12 appareils en ligne, 1 injoignable
 Appareils injoignables :
@@ -56,7 +56,7 @@ Journal
 ────────────────
 ☑ Ouvrir à la connexion
 ────────────────
-Quitter Matter Home Server…
+Quitter Ostal Server…
 ```
 
 | Constat | Détail |
@@ -71,7 +71,7 @@ Quitter Matter Home Server…
 
 ### La fenêtre
 
-Une seule page qui défile, « Matter Home Server », dans cet ordre : état, adresse du serveur,
+Une seule page qui défile, « Ostal Server », dans cet ordre : état, adresse du serveur,
 empreinte du certificat, appareils injoignables, boutons « Caméras… » et « Descriptions des
 événements… », mode et jeton de mode, compte, ouverture à la connexion, veille, dossier des données.
 
@@ -114,12 +114,12 @@ Voir l'appareil injoignable…          ← seulement quand quelque chose ne va 
 ────────────────
 Mode de la maison : Nuit ▸            (Présent, Absent, Nuit, Vacances)
 ────────────────
-Ouvrir Matter Home Server…            → Vue d'ensemble
+Ouvrir Ostal Server…            → Vue d'ensemble
 Connecter un Mac ou un iPhone…        → Connexion
 Caméras…                              → Caméras
 Réglages…                             → Réglages
 ────────────────
-Quitter Matter Home Server…
+Quitter Ostal Server…
 ```
 
 Serveur à l'arrêt : le titre le dit (« Le serveur est à l'arrêt », « Le serveur ne tourne pas »,
@@ -160,7 +160,7 @@ zéro), **le compte**, **c'est prêt** (les quatre gestes pour connecter son ord
 | Serve à autoriser, Funnel actif, port 443 déjà utilisé | « Tailscale demande une autorisation, une seule fois » ; « Tailscale expose ce Mac à tout Internet » ; « Tailscale publie déjà autre chose depuis ce Mac » |
 | Jeton de mode | Code secret (le « jeton de mode ») |
 | Révoquer le jeton | Supprimer le code |
-| Ouvrir à la connexion | Lancer Matter Home Server à l'ouverture de session de ce Mac |
+| Ouvrir à la connexion | Lancer Ostal Server à l'ouverture de session de ce Mac |
 | Journal | Journal, avec sa définition (« le fichier où le serveur note ce qu'il fait ») |
 | Identité Matter (première installation) | Votre maison ; « une nouvelle maison (une nouvelle identité Matter) » |
 | Appairer (côté serveur) | Ajouter un appareil (le bouton du client s'appelle toujours « Appairer ») |
@@ -204,9 +204,9 @@ l'ouverture de l'onglet Connexion. Rien ne le relit en boucle.
 ## Essayer sans risque
 
 ```text
-matter-home-server-app --demo --data-dir /tmp/essai --open connexion
+ostal-server-app --demo --data-dir /tmp/essai --open connexion
 ```
 
 En démonstration : appareils et caméras simulés, écoute sur `127.0.0.1` (port libre), aucun
 LaunchAgent, jamais le vrai Tailscale, verrous et journal dans le dossier donné. `--demo-setup`
-passe par la première installation. `MATTER_HOME_THEME=light` ou `dark` force le thème.
+passe par la première installation. `OSTAL_THEME=light` ou `dark` force le thème.

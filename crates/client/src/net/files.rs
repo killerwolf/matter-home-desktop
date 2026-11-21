@@ -38,7 +38,7 @@ pub fn write_file(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<(
 pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("fichier illisible ({})", e.kind()))?;
     if meta.len() > max {
-        return Err("fichier trop volumineux pour une sauvegarde Matter Home".into());
+        return Err("fichier trop volumineux pour une sauvegarde Ostal".into());
     }
     std::fs::read(path).map_err(|e| format!("fichier illisible ({})", e.kind()))
 }

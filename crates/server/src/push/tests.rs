@@ -850,7 +850,7 @@ fn notification_text_never_carries_addresses_passwords_or_raw_ids() {
     assert_eq!(p.body.chars().count(), content::BODY_MAX);
     assert!(p.body.ends_with('…'));
     let empty = content::payload(&|t| s.clean(t), "", "", "/app/".into(), None);
-    assert_eq!(empty.title, "Matter Home");
+    assert_eq!(empty.title, "Ostal");
     // Le nom d'un appareil qui n'est qu'un identifiant ne s'affiche pas.
     let b = content::battery(&|t| t.to_string(), Some("00000000DEADBEEF"), None);
     assert_eq!(b.body, "Un appareil : pile faible. Pensez à la remplacer.");

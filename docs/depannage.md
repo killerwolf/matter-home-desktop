@@ -6,11 +6,11 @@
 
 Le client ne contacte que votre serveur et ne montre rien sans lui.
 
-- Le serveur tourne-t-il (`matter-home-server`) et l'adresse saisie est-elle la bonne ? Le client
+- Le serveur tourne-t-il (`ostal-server`) et l'adresse saisie est-elle la bonne ? Le client
   réessaie seul, de plus en plus lentement (jusqu'à 30 s) ; « Réessayer maintenant » force un essai.
 - **« Le certificat du serveur a changé »** : le serveur ne présente plus le certificat approuvé. Si
   vous l'avez réinstallé ou remplacé son dossier de données, comparez la nouvelle empreinte
-  (`matter-home-server fingerprint`) avec celle affichée, puis « Oublier l'ancien certificat ». Sinon,
+  (`ostal-server fingerprint`) avec celle affichée, puis « Oublier l'ancien certificat ». Sinon,
   ne vous connectez pas : un autre appareil se fait peut-être passer pour votre serveur.
 - **« Votre session a expiré ou a été révoquée »** : saisissez à nouveau le mot de passe.
 - **« Trop de tentatives de connexion »** : le serveur met en attente l'adresse concernée, patientez
@@ -58,7 +58,7 @@ secondes : l'application patiente puis se reconnecte.
 Vérifiez que l'appareil apparaît sur le réseau (depuis le Mac du serveur) :
 
 ```bash
-matter-home-server --discover
+ostal-server --discover
 ```
 
 ## Rien n'apparaît sur le réseau
@@ -66,7 +66,7 @@ matter-home-server --discover
 - Le Mac doit être sur le même réseau local que les routeurs de bordure Thread (HomePod),
   avec IPv6 actif.
 - Au premier lancement, macOS demande l'accès au réseau local : s'il a été refusé, activez
-  « Matter Home Desktop » dans Réglages Système → Confidentialité et sécurité → Réseau local.
+  « Ostal » dans Réglages Système → Confidentialité et sécurité → Réseau local.
 - `dns-sd -B _matter._tcp local.` doit lister vos appareils.
 
 ## Les connexions échouent après début février 2027
@@ -78,10 +78,10 @@ Les appareils appairés avec les toutes premières versions ont reçu des certif
 ## Journaux détaillés
 
 ```bash
-RUST_LOG=debug,matc=debug "/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop"
+RUST_LOG=debug,matc=debug "/Applications/Ostal.app/Contents/MacOS/ostal"
 ```
 
-## « Matter Home Desktop est endommagé » au premier lancement
+## « Ostal est endommagé » au premier lancement
 
 L'application n'est pas signée avec un certificat Apple Developer : voir
 la section « Premier lancement » du [README](../README.md) : une commande `xattr -cr` à lancer une fois.

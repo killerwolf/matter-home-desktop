@@ -1,4 +1,4 @@
-//! Tests d'intégration : le vrai binaire `matter-home-server --demo`, en TLS sur 127.0.0.1,
+//! Tests d'intégration : le vrai binaire `ostal-server --demo`, en TLS sur 127.0.0.1,
 //! avec un client qui épingle l'empreinte du certificat. Aucun appareil réel, aucun dossier
 //! de données réel : chaque test a son dossier temporaire et un HOME factice.
 
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use common::*;
 use futures_util::StreamExt;
-use matter_home_server::persistence::BRIDGED_ID_MIN;
+use ostal_server::persistence::BRIDGED_ID_MIN;
 use serde_json::{json, Value};
 
 /// Un identifiant tel qu'il apparaît dans le JSON : en texte.
@@ -572,7 +572,7 @@ fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
     let dir = temp_dir("dry-run-drafts");
     let server = Server::start(&dir);
     let client = server.client();
-    let id = matter_home_server::matter::certs::generate_identity().unwrap();
+    let id = ostal_server::matter::certs::generate_identity().unwrap();
     let controller = json!({
         "version": 1,
         "identity": {
@@ -600,7 +600,7 @@ fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
         rule(3, "Brouillon avec espace", "http://exemple.invalid/a b"),
     ]});
     let bundle = json!({
-        "format": "matter-home-desktop-sauvegarde", "version": 1,
+        "format": "ostal-sauvegarde", "version": 1,
         "created": "2026-11-09T09:15:00+01:00",
         "files": {"controller.json": controller.to_string(), "regles.json": rules.to_string()},
     });
@@ -623,7 +623,7 @@ fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
             json!(["Brouillon vide", "Brouillon avec espace"])
         );
         // Rien n'est mis de côté, le serveur continue.
-        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(!dir.join("import-en-attente.ostal").exists());
         assert_eq!(client.get("/api/state", &token).await.status, 200);
     });
 }
@@ -633,18 +633,18 @@ fn the_import_dry_run_names_the_draft_rules_it_would_disable() {
 #[test]
 fn the_api_import_refuses_a_different_identity_unless_asked() {
     let dir = temp_dir("identity-guard");
-    let controller_of = |id: &matter_home_server::persistence::ControllerIdentity, nodes: usize| {
+    let controller_of = |id: &ostal_server::persistence::ControllerIdentity, nodes: usize| {
         let nodes: Vec<_> = (0..nodes)
             .map(|i| json!({"node_id": 7 + i, "name": format!("Capteur {i}")}))
             .collect();
         json!({"version": 1, "identity": id, "nodes": nodes}).to_string()
     };
-    let current = matter_home_server::matter::certs::generate_identity().unwrap();
-    let other = matter_home_server::matter::certs::generate_identity().unwrap();
+    let current = ostal_server::matter::certs::generate_identity().unwrap();
+    let other = ostal_server::matter::certs::generate_identity().unwrap();
     std::fs::write(dir.join("controller.json"), controller_of(&current, 1)).unwrap();
     let bundle_of = |id, nodes| {
         json!({
-            "format": "matter-home-desktop-sauvegarde", "version": 1,
+            "format": "ostal-sauvegarde", "version": 1,
             "created": "2026-11-09T09:15:00+01:00",
             "files": {"controller.json": controller_of(id, nodes)},
         })
@@ -683,7 +683,7 @@ fn the_api_import_refuses_a_different_identity_unless_asked() {
         let r = post!("/api/import", different).await;
         assert_eq!(r.status, 409, "{}", r.text());
         assert_eq!(r.code(), "identity_mismatch");
-        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(!dir.join("import-en-attente.ostal").exists());
         assert_eq!(client.get("/api/state", &token).await.status, 200);
         let r = post!("/api/import?replace_identity=0", different).await;
         assert_eq!(r.code(), "identity_mismatch");
@@ -693,7 +693,7 @@ fn the_api_import_refuses_a_different_identity_unless_asked() {
         // La même identité passe sans option ; une autre, avec l'option explicite seulement.
         let r = post!("/api/import?replace_identity=1", different).await;
         assert_eq!(r.status, 202, "{}", r.text());
-        assert!(dir.join("import-en-attente.matterhome").exists());
+        assert!(dir.join("import-en-attente.ostal").exists());
     });
 }
 
@@ -900,8 +900,8 @@ fn slow_client_is_dropped_without_blocking_others() {
         &[
             // Assez de place pour que le client rapide ne soit jamais en retard : seul le client
             // dont la connexion est bloquée doit être écarté.
-            ("MATTER_HOME_TEST_BROADCAST_CAPACITY", "16"),
-            ("MATTER_HOME_TEST_WRITE_TIMEOUT_MS", "1500"),
+            ("OSTAL_TEST_BROADCAST_CAPACITY", "16"),
+            ("OSTAL_TEST_WRITE_TIMEOUT_MS", "1500"),
         ],
     );
     let client = server.client();
@@ -989,9 +989,9 @@ fn lagging_client_gets_a_fresh_snapshot() {
     let server = Server::start_with(
         &dir,
         &[
-            ("MATTER_HOME_TEST_BROADCAST_CAPACITY", "6"),
+            ("OSTAL_TEST_BROADCAST_CAPACITY", "6"),
             // Ici le client finit par lire : pas de déconnexion pour écriture bloquée.
-            ("MATTER_HOME_TEST_WRITE_TIMEOUT_MS", "120000"),
+            ("OSTAL_TEST_WRITE_TIMEOUT_MS", "120000"),
         ],
     );
     let client = server.client();

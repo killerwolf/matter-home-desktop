@@ -58,7 +58,7 @@ pub async fn upgrade(
     let Some(account_id) = state.auth.accounts.account_id() else {
         return ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response();
     };
-    ws.protocols([super::routes::WS_SUBPROTOCOL])
+    ws.protocols(super::routes::WS_SUBPROTOCOLS)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;

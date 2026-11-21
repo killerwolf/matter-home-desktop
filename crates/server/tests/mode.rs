@@ -192,7 +192,7 @@ fn an_off_camera_refuses_snapshot_and_live_with_the_mode_in_the_message() {
     let client = client(&rig);
     let indoor = rig
         .hub
-        .add_camera(&matter_home_server::cameras::CameraDraft {
+        .add_camera(&ostal_server::cameras::CameraDraft {
             name: "Salon".into(),
             url: format!("rtsp://127.0.0.1:{}/live/salon", rig.camera.port),
             emplacement: CameraPlacement::Interieure,

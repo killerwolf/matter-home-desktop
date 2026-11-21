@@ -1,10 +1,10 @@
 //! Les briques de la fenêtre, dessinées avec les tokens partagés avec le client (crate
-//! `matter-home-theme`) : carte, ligne d'état, étape numérotée, texte d'aide. Des aplats et des
+//! `ostal-theme`) : carte, ligne d'état, étape numérotée, texte d'aide. Des aplats et des
 //! traits fins, comme dans le client : ni ombre, ni animation.
 
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, RichText, Sense, Stroke, Vec2};
-use matter_home_server_app::overview::Level;
-use matter_home_theme as theme;
+use ostal_server_app::overview::Level;
+use ostal_theme as theme;
 
 pub fn level_color(ui: &egui::Ui, level: Level) -> Color32 {
     let p = theme::palette(ui);

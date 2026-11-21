@@ -9,7 +9,7 @@ maison** : ni mesures, ni plan, ni règles, ni identité Matter. Sans serveur, e
 « déconnecté ». Elle ne conserve qu'un fichier, `connexion.json`, en 0600 :
 
 ```
-~/Library/Application Support/dev.matter-home-desktop.MatterHomeClient/connexion.json
+~/Library/Application Support/dev.ostal.OstalClient/connexion.json
 ```
 
 | Champ | Contenu |
@@ -20,15 +20,15 @@ maison** : ni mesures, ni plan, ni règles, ni identité Matter. Sans serveur, e
 
 Le mot de passe n'est jamais conservé. **Se déconnecter** (menu Fichier) révoque le jeton sur le
 serveur et supprime ce fichier. Ce dossier est distinct de celui de la v0.2.1
-(`…MatterHomeDesktop`), que le client ne lit, n'écrit ni ne supprime jamais.
+(`…Ostal`), que le client ne lit, n'écrit ni ne supprime jamais.
 
 ## Ce que le serveur garde
 
-Le reste de cette page décrit le dossier de données **du serveur** (`matter-home-server`), qui
+Le reste de cette page décrit le dossier de données **du serveur** (`ostal-server`), qui
 est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tourner, dans :
 
 ```
-~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/
+~/Library/Application Support/dev.ostal.OstalServer/
 ```
 
 | Fichier | Contenu |
@@ -36,11 +36,11 @@ est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tour
 | `controller.json` | identité du contrôleur (fabric, clés et certificats), appareils appairés, noms et icônes choisis |
 | `maison.json` | plan de la maison |
 | `regles.json` | automatisations |
-| `mode.json` | mode global de la maison (`present`, `absent`, `nuit` ou `vacances`) ; inclus dans la sauvegarde `.matterhome` |
+| `mode.json` | mode global de la maison (`present`, `absent`, `nuit` ou `vacances`) ; inclus dans la sauvegarde `.ostal` |
 | `serveur/jeton-mode.json` | **empreinte** (SHA-256, jamais le jeton) du jeton de mode des Raccourcis de l'iPhone, droits 0600 ; propre à ce Mac, jamais exportée (comme le reste de `serveur/`) |
-| `cameras.json` | caméras RTSP : nom, adresses, identifiant, emplacement et comportement par mode, et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.matterhome` |
+| `cameras.json` | caméras RTSP : nom, adresses, identifiant, emplacement et comportement par mode, et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.ostal` |
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
-| `events/<id>.json`, `.jpg`, `.mp4` | événements de détection (ticket n° 18) : fiche, capture, clip ; 7 jours et 2 Go au plus ; **pas** dans la sauvegarde `.matterhome` (voir [Détection](detection.md)) |
+| `events/<id>.json`, `.jpg`, `.mp4` | événements de détection (ticket n° 18) : fiche, capture, clip ; 7 jours et 2 Go au plus ; **pas** dans la sauvegarde `.ostal` (voir [Détection](detection.md)) |
 | `models/` | facultatif (utilisateurs avancés) : modèle de détection et ONNX Runtime pris quand l'application n'embarque pas les siens ; `coreml-cache/` (modèle compilé par CoreML, 0700) ; pas dans la sauvegarde |
 | `serveur/descriptions.json` | réglages des [descriptions](descriptions.md) (ticket n° 19) **et clé d'API Anthropic**, en clair, droits 0600 ; propre à ce Mac, **jamais exportée** dans la sauvegarde (la clé se ressaisit sur un autre Mac) |
 | `serveur/push-vapid.json` | clé privée VAPID des [notifications](notifications.md) (ticket n° 17), droits 0600 ; propre à ce Mac, **jamais exportée** (une nouvelle clé oublie les abonnements : les appareils se réabonnent) |
@@ -77,7 +77,7 @@ sont gardées qu'en mémoire, le temps de l'affichage.
 ## Changer de Mac
 
 1. Dans le client : menu **Fichier → Exporter mes données…**, puis choisissez où enregistrer le
-   fichier `.matterhome` (le serveur le produit : appareils, plan, règles, historique). Il est
+   fichier `.ostal` (le serveur le produit : appareils, plan, règles, historique). Il est
    créé en 0600.
 2. Transférez-le par AirDrop ou clé USB. Il contient les clés privées de votre maison : ne le
    partagez pas et supprimez-le après l'import.
@@ -98,7 +98,7 @@ sans connexion au serveur.
 - **Sauvegarde** : le menu d'export ci-dessus, ou copiez le dossier. Le fichier le plus précieux est
   `controller.json` : sans lui, il faut réappairer tous les appareils.
 - **Repartir de zéro** : arrêtez le service, déplacez (ou supprimez) le dossier de données, puis
-  lancez `matter-home-server init` et recréez le compte (`create-account`). Le serveur ne crée
+  lancez `ostal-server init` et recréez le compte (`create-account`). Le serveur ne crée
   jamais une nouvelle identité tout seul (hors `--demo`), et
   `init` refuse tant que des données ou un dossier « …avant-import-… » portant une identité
   traînent à côté. Pensez à retirer l'ancienne identité des appareils dans l'app Maison. Voir
@@ -108,4 +108,4 @@ sans connexion au serveur.
 
 Les premières versions s'appelaient « matter-demo » et rangeaient leurs données dans
 `dev.matter-demo.MatterDemo`. Ce dossier est renommé automatiquement au premier lancement de
-Matter Home Desktop ; si le renommage échoue, l'ancien dossier continue d'être utilisé.
+Ostal ; si le renommage échoue, l'ancien dossier continue d'être utilisé.

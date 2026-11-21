@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Installe le serveur Matter Home comme service launchd (LaunchDaemon) : il démarre avec le Mac,
+# Installe le serveur Ostal comme service launchd (LaunchDaemon) : il démarre avec le Mac,
 # sans qu'aucune session soit ouverte, et il est relancé s'il plante.
 #
 # À lancer depuis le dossier de l'archive, en tant que VOUS-MÊME (jamais avec « sudo ») :
@@ -25,7 +25,7 @@
 #                      mise à jour, le dossier du service déjà installé est repris et ne peut
 #                      pas être changé ici (désinstallez d'abord)
 #   --ignorer-application-ouverte
-#                      n'arrête pas l'installation si « matter-home-desktop » est ouvert (à
+#                      n'arrête pas l'installation si « ostal » est ouvert (à
 #                      n'utiliser que si c'est le client de la version 1, pas la v0.2.1)
 #   --oui              ne demande aucune confirmation
 #   --demarrer         démarre le service à la fin sans le demander (s'il peut démarrer)
@@ -36,9 +36,9 @@
 
 set -euo pipefail
 
-LABEL="dev.matter-home-desktop.server"
+LABEL="dev.ostal.server-daemon"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_NAME="matter-home-server"
+BIN_NAME="ostal-server"
 TEMPLATE="$HERE/$LABEL.plist.template"
 
 DRY=0
@@ -98,7 +98,7 @@ PLIST_FINAL="/Library/LaunchDaemons/$LABEL.plist"
 BIN_DEST="$PREFIX$BIN_FINAL"
 PLIST_DEST="$PREFIX$PLIST_FINAL"
 PLISTBUDDY=/usr/libexec/PlistBuddy
-DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.ostal.OstalServer"
 # Mise à jour : le dossier de données du service déjà installé fait foi, jamais celui qu'on
 # déduirait de HOME ou d'une option : le service ne doit pas être redirigé vers un autre dossier.
 INSTALLED_DATA_DIR=""
@@ -121,7 +121,7 @@ else
   DATA_DIR="$DEFAULT_DATA_DIR"
 fi
 DATA_DIR_FROM_SERVICE="${DATA_DIR_FROM_SERVICE:-0}"
-LOG_DIR="$USER_HOME/Library/Logs/MatterHomeServer"
+LOG_DIR="$USER_HOME/Library/Logs/OstalServer"
 LOG_FILE="$LOG_DIR/server.log"
 FALLBACK_LOG="$LOG_DIR/launchd.log"
 
@@ -186,12 +186,12 @@ sedrep() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
 # ---- 1. le binaire ---------------------------------------------------------
 
-title "Matter Home — installation du serveur"
+title "Ostal — installation du serveur"
 
 # La v0.2.1 (même nom de programme que le client) ne prend pas le verrou du serveur : ouverte sur
 # ce Mac avec les mêmes données, elle chasserait le serveur (deux instances, une même identité).
-if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x matter-home-desktop >/dev/null 2>&1; then
-  die "l'application « Matter Home Desktop » est ouverte sur ce Mac.
+if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x ostal >/dev/null 2>&1; then
+  die "l'application « Ostal » est ouverte sur ce Mac.
 Si c'est la v0.2.1 (l'ancienne application, avec ses appareils), elle doit être QUITTÉE avant d'installer le serveur : ne lancez jamais deux instances avec la même identité Matter. Quittez-la (Cmd+Q) puis relancez ./install.sh.
 Si c'est le client de la version 1 (il ne pilote rien lui-même), relancez avec --ignorer-application-ouverte."
 fi
@@ -231,7 +231,7 @@ else
   fi
   say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
   say "  que vous n'aurez pas, avec ce même compte utilisateur :"
-  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
+  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.ostal"
   say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
 fi
 [ -f "$DATA_DIR/serveur/compte.json" ] && HAS_ACCOUNT=1
@@ -263,7 +263,7 @@ ask "Continuer ?" || { say "Installation annulée : rien n'a été modifié."; e
 
 # ---- 4. le fichier de service ----------------------------------------------
 
-TMP_PLIST="$(mktemp "${TMPDIR:-/tmp}/matter-home-server.plist.XXXXXX")"
+TMP_PLIST="$(mktemp "${TMPDIR:-/tmp}/ostal-server.plist.XXXXXX")"
 trap 'rm -f "$TMP_PLIST"' EXIT
 sed \
   -e "s|__LABEL__|$(sedrep "$(xml "$LABEL")")|g" \
@@ -374,9 +374,9 @@ say "    Si FileVault est activé, après un redémarrage le service ne démarre
 say "    déverrouillé (mot de passe à saisir à l'écran) : prévoyez-le après chaque redémarrage."
 echo
 say "  Réseau local — Réglages Système → Confidentialité et sécurité → Réseau local :"
-say "    le client (Matter Home Desktop) doit y être activé : macOS le demande à son premier"
+say "    le client (Ostal) doit y être activé : macOS le demande à son premier"
 say "    lancement, acceptez, sinon il ne voit rien. Pour le serveur, regardez si"
-say "    « matter-home-server » apparaît dans cette liste et laissez-le activé ; un programme"
+say "    « ostal-server » apparaît dans cette liste et laissez-le activé ; un programme"
 say "    lancé en service n'affiche pas de fenêtre de demande, et ce réglage n'a pas pu être"
 say "    vérifié sur tous les macOS (si le serveur ne voit aucun appareil, c'est la première chose"
 say "    à regarder, avec le pare-feu)."

@@ -1,13 +1,13 @@
 [package]
-name = "matter-home-theme"
+name = "ostal-theme"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Thème Matter Home partagé (egui) : tokens de design/tokens.json et petits composants"
+description = "Thème Ostal partagé (egui) : tokens de design/tokens.json et petits composants"
 license.workspace = true
 
 [lib]
-name = "matter_home_theme"
+name = "ostal_theme"
 path = "src/lib.rs"
 
 [dependencies]

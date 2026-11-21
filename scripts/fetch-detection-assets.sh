@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Télécharge et vérifie les fichiers de la détection (ticket n° 18) à embarquer dans
-# « Matter Home Server.app » : les modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT, roues PyPI
+# « Ostal Server.app » : les modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT, roues PyPI
 # officielles de Microsoft, une par architecture, réunies en une bibliothèque universelle).
 #
 #   scripts/fetch-detection-assets.sh <dossier>        # télécharge, vérifie, prépare <dossier>

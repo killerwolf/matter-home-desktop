@@ -21,7 +21,7 @@ pub const ABSENT_NAME: &str = "Mode absent";
 pub const PRESENT_NAME: &str = "Mode present";
 
 /// Le script du widget, avec deux emplacements à remplir.
-const WIDGET_TEMPLATE: &str = include_str!("../web/raccourcis/matter-home.js");
+const WIDGET_TEMPLATE: &str = include_str!("../web/raccourcis/ostal.js");
 const SERVER_SLOT: &str = "const SERVEUR = \"__SERVEUR__\";";
 const TOKEN_SLOT: &str = "const TOKEN = \"__JETON_DE_LECTURE__\";";
 
@@ -266,7 +266,7 @@ fn notify(body: Plist) -> Plist {
     action(
         "is.workflow.actions.notification",
         vec![
-            ("WFNotificationActionTitle", s("Matter Home")),
+            ("WFNotificationActionTitle", s("Ostal")),
             ("WFNotificationActionBody", body),
             ("WFNotificationActionSound", Plist::Bool(false)),
         ],
@@ -392,8 +392,7 @@ impl PrivateDir {
     fn create() -> std::io::Result<Self> {
         let mut random = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut random);
-        let path =
-            std::env::temp_dir().join(format!("matter-home-raccourci-{}", hex::encode(random)));
+        let path = std::env::temp_dir().join(format!("ostal-raccourci-{}", hex::encode(random)));
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -572,7 +571,10 @@ fn remove_leftovers_in(dir: &Path, older_than: Duration) {
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
-        if !name.to_string_lossy().starts_with("matter-home-raccourci-") {
+        let name = name.to_string_lossy();
+        if !name.starts_with("ostal-raccourci-")
+            && !name.starts_with(crate::legacy::SHORTCUT_TEMP_PREFIX)
+        {
             continue;
         }
         let old = entry
@@ -769,19 +771,15 @@ mod tests {
     fn old_signing_leftovers_are_removed_at_startup_and_recent_ones_kept() {
         let base = std::env::temp_dir().join(format!("mhd-restes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("matter-home-raccourci-vieux")).unwrap();
-        std::fs::write(
-            base.join("matter-home-raccourci-vieux/entree.shortcut"),
-            "x",
-        )
-        .unwrap();
+        std::fs::create_dir_all(base.join("ostal-raccourci-vieux")).unwrap();
+        std::fs::write(base.join("ostal-raccourci-vieux/entree.shortcut"), "x").unwrap();
         std::fs::create_dir_all(base.join("autre-chose")).unwrap();
         // Tout est « récent » : rien n'est touché.
         remove_leftovers_in(&base, Duration::from_secs(3600));
-        assert!(base.join("matter-home-raccourci-vieux").exists());
+        assert!(base.join("ostal-raccourci-vieux").exists());
         // Assez vieux : supprimé, le reste non.
         remove_leftovers_in(&base, Duration::ZERO);
-        assert!(!base.join("matter-home-raccourci-vieux").exists());
+        assert!(!base.join("ostal-raccourci-vieux").exists());
         assert!(base.join("autre-chose").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -816,7 +814,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("matter-home-raccourci-"));
+            .starts_with("ostal-raccourci-"));
         assert!(!dir.exists(), "dossier temporaire resté");
         let _ = std::fs::remove_file(record);
     }
@@ -867,7 +865,7 @@ mod tests {
     }
 
     /// La vraie signature, à lancer à la main sur un Mac connecté à iCloud (valeurs factices) :
-    /// `cargo test -p matter-home-server --lib -- --ignored real_apple_signature`.
+    /// `cargo test -p ostal-server --lib -- --ignored real_apple_signature`.
     #[test]
     #[ignore = "passe par /usr/bin/shortcuts et les serveurs d'Apple"]
     fn real_apple_signature() {

@@ -6,8 +6,8 @@ v0.2.1 sur le serveur, **avec la même identité Matter : aucun appareil à réa
 Pour installer le serveur lui-même, voir [installation-serveur.md](installation-serveur.md). Cette
 page ne parle que des données.
 
-> **Avec l'application Matter Home Server (le plus simple)** : à la première ouverture, la fenêtre
-> de configuration propose **Reprendre une sauvegarde** : choisissez le fichier `.matterhome`
+> **Avec l'application Ostal Server (le plus simple)** : à la première ouverture, la fenêtre
+> de configuration propose **Reprendre une sauvegarde** : choisissez le fichier `.ostal`
 > (étape 1 ci-dessous), l'application montre son contenu et compare l'identité du fichier à celle
 > du dossier, vous confirmez, puis vous créez le compte. Les mêmes gardes que la ligne de commande
 > s'appliquent (jamais d'identité remplacée sans votre accord explicite, import atomique, reprise
@@ -26,7 +26,7 @@ page ne parle que des données.
 ## Procédure
 
 1. **Exporter depuis la v0.2.1** : menu **Fichier → Exporter mes données…**, puis enregistrez le
-   fichier `.matterhome`. Il contient les clés privées de votre maison : ne le partagez pas.
+   fichier `.ostal`. Il contient les clés privées de votre maison : ne le partagez pas.
 2. **Quitter la v0.2.1** (Cmd+Q) sur **tous** vos Mac qui l'ont utilisée, y compris celui où vous
    venez d'exporter.
 3. **Copier le fichier** sur le Mac du serveur (AirDrop, clé USB), dans un endroit que vous
@@ -34,16 +34,16 @@ page ne parle que des données.
 4. **Créer le compte** sur le Mac du serveur, dans le Terminal, depuis le dossier de l'archive
    décompressée (là où se trouve le programme, après `xattr -dr com.apple.quarantine .`, voir
    [installation-serveur.md](installation-serveur.md)) :
-   `./matter-home-server create-account --username NOM`
+   `./ostal-server create-account --username NOM`
    (une fois le service installé, le programme est aussi dans `/usr/local/bin` : la commande s'écrit
    alors sans `./`)
 5. **Importer** (le serveur, ou le service, ne doit pas tourner) :
-   `./matter-home-server import ~/chemin/matter-home-2026-11-09.matterhome`
+   `./ostal-server import ~/chemin/ostal-2026-11-09.ostal`
    La commande vérifie le fichier, affiche le résumé (appareils, pièces, règles, date), **l'identité
    du fichier et celle du dossier** (numéro de fabric et liste des appareils), rappelle d'arrêter la
    v0.2.1 partout et demande confirmation (`--yes` pour ne pas la demander). Elle applique l'import
    puis s'arrête : elle ne démarre ni Matter ni le réseau.
-6. **Démarrer le serveur** normalement (`matter-home-server`, ou le service launchd), puis
+6. **Démarrer le serveur** normalement (`ostal-server`, ou le service launchd), puis
    connectez le client avec l'adresse, l'identifiant et le mot de passe du compte.
 
 L'import fonctionne aussi sur un dossier de données vide (premier déploiement) : l'ordre ci-dessus
@@ -60,8 +60,8 @@ tout seul une identité Matter (hors `--demo`) : il refuse de
 démarrer (code 78) tant que le dossier n'en a pas. Créez-la une fois, explicitement :
 
 ```bash
-./matter-home-server init
-./matter-home-server create-account --username NOM
+./ostal-server init
+./ostal-server create-account --username NOM
 ```
 
 `init` refuse de rien faire si une identité existe déjà, si des données (plan, règles, historique)
@@ -92,8 +92,8 @@ dans ces cas, créer une nouvelle fabric ferait oublier tous vos appareils.
   Si l'import en attente est celui d'un **autre** fichier (ou demandé par l'API), `import` le dit
   et n'y touche pas.
 - **Renoncer à un import** (en attente ou interrompu) : arrêtez le service, puis
-  `matter-home-server import --abandon` (avec le même `--data-dir` si vous en utilisez un). Cela
-  retire la sauvegarde en attente (`import-en-attente.matterhome`) **et** met de côté le dossier
+  `ostal-server import --abandon` (avec le même `--data-dir` si vous en utilisez un). Cela
+  retire la sauvegarde en attente (`import-en-attente.ostal`) **et** met de côté le dossier
   déjà préparé « …import-nouveau » sous le nom « …import-abandonne-<date> » (il contient une copie
   des clés de la sauvegarde : supprimez-le quand vous n'en avez plus besoin). Les données actuelles
   ne sont pas touchées. **Si l'import avait été coupé en plein échange** (le dossier de données
@@ -108,6 +108,6 @@ dans ces cas, créer une nouvelle fabric ferait oublier tous vos appareils.
   plus lire). Lancez-les sous votre compte.
 - **Serveur qui ne démarre plus** après un import demandé par l'API (« n'a pas pu être appliqué après
   3 essais ») : corrigez la cause (espace disque, droits) ; pour renoncer à l'import, lancez
-  `matter-home-server import --abandon` comme ci-dessus, puis relancez.
+  `ostal-server import --abandon` comme ci-dessus, puis relancez.
 - **Mac sans la v0.2.1 sous la main** : un fichier exporté par un serveur (menu Fichier du client) a
   le même format et s'importe de la même façon.

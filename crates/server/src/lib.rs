@@ -1,5 +1,5 @@
-//! Serveur Matter Home : tout ce qui pilote les appareils et garde les données, sans
-//! aucune interface graphique. Le binaire `matter-home-server` (voir `main.rs`) l'assemble.
+//! Serveur Ostal : tout ce qui pilote les appareils et garde les données, sans
+//! aucune interface graphique. Le binaire `ostal-server` (voir `main.rs`) l'assemble.
 
 pub mod app;
 pub mod automation;
@@ -13,6 +13,7 @@ pub mod export;
 pub mod history_store;
 pub mod home_mode;
 pub mod hub;
+pub mod legacy;
 pub mod logfile;
 pub mod matter;
 pub mod net;

@@ -1,6 +1,6 @@
-//! Matter Home Server : l'application de la barre de menus.
+//! Ostal Server : l'application de la barre de menus.
 //!
-//! - `matter-home-server-app` (ou le double-clic sur l'application) : lance le serveur réel
+//! - `ostal-server-app` (ou le double-clic sur l'application) : lance le serveur réel
 //! - `--demo`                 : appareils simulés, aucun trafic réseau, aucun LaunchAgent
 //! - `--demo-setup`           : comme `--demo`, mais en passant par la fenêtre de configuration
 //! - `--data-dir DOSSIER`     : autre dossier de données (essais)
@@ -14,25 +14,25 @@ mod ui;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use matter_home_server::logfile::RotatingLog;
-use matter_home_server::persistence;
-use matter_home_server_app::controller::{self, Config};
-use matter_home_server_app::overview::Tab;
-use matter_home_server_app::signals;
-use matter_home_server_app::startup::{Holder, LockOutcome};
+use ostal_server::logfile::RotatingLog;
+use ostal_server::persistence;
+use ostal_server_app::controller::{self, Config};
+use ostal_server_app::overview::Tab;
+use ostal_server_app::signals;
+use ostal_server_app::startup::{Holder, LockOutcome};
 
 const HELP: &str = "\
-matter-home-server-app — Matter Home Server (application de la barre de menus)
+ostal-server-app — Ostal Server (application de la barre de menus)
 
 Usage :
-  matter-home-server-app                   lance le serveur (réseau réel)
-  matter-home-server-app --demo            appareils simulés, sans réseau, sans LaunchAgent
-  matter-home-server-app --demo-setup      comme --demo, avec la fenêtre de première configuration
-  matter-home-server-app --data-dir DOSSIER  autre dossier de données
-  matter-home-server-app --listen ADRESSE:PORT  adresse d'écoute (défaut 0.0.0.0:8443)
-  matter-home-server-app --open ONGLET     ouvre la fenêtre au lancement sur un onglet :
+  ostal-server-app                   lance le serveur (réseau réel)
+  ostal-server-app --demo            appareils simulés, sans réseau, sans LaunchAgent
+  ostal-server-app --demo-setup      comme --demo, avec la fenêtre de première configuration
+  ostal-server-app --data-dir DOSSIER  autre dossier de données
+  ostal-server-app --listen ADRESSE:PORT  adresse d'écoute (défaut 0.0.0.0:8443)
+  ostal-server-app --open ONGLET     ouvre la fenêtre au lancement sur un onglet :
                                            vue, appareils, cameras, connexion ou reglages
-  matter-home-server-app --version | --help";
+  ostal-server-app --version | --help";
 
 extern "C" {
     fn geteuid() -> u32;
@@ -67,7 +67,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if take_flag(&mut args, "--version") || take_flag(&mut args, "-V") {
-        println!("matter-home-server-app {}", env!("CARGO_PKG_VERSION"));
+        println!("ostal-server-app {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let demo_setup = take_flag(&mut args, "--demo-setup");
@@ -82,7 +82,7 @@ fn main() -> eframe::Result {
     }
     // SAFETY : `geteuid` n'a ni argument ni effet de bord.
     if !demo && unsafe { geteuid() } == 0 {
-        eprintln!("Refus : Matter Home Server ne se lance pas en root ni avec sudo.");
+        eprintln!("Refus : Ostal Server ne se lance pas en root ni avec sudo.");
         std::process::exit(1);
     }
 
@@ -98,8 +98,7 @@ fn main() -> eframe::Result {
             Err(e) => usage(&format!("{e:#}")),
         },
         None if demo => {
-            let d = std::env::temp_dir()
-                .join(format!("matter-home-server-demo-{}", std::process::id()));
+            let d = std::env::temp_dir().join(format!("ostal-server-demo-{}", std::process::id()));
             persistence::set_data_dir(d.clone());
             temp_data_dir = true;
             d
@@ -125,7 +124,7 @@ fn main() -> eframe::Result {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        home.join("Library/Logs/Matter Home Server/serveur.log")
+        home.join("Library/Logs/Ostal Server/serveur.log")
     };
     init_logging(&log_path);
     install_panic_hook();
@@ -136,7 +135,7 @@ fn main() -> eframe::Result {
     let _app_lock = match controller::acquire_app_lock() {
         Ok(Some(file)) => Some(file),
         Ok(None) => {
-            eprintln!("Matter Home Server est déjà ouvert.");
+            eprintln!("Ostal Server est déjà ouvert.");
             return Ok(());
         }
         Err(e) => {
@@ -150,7 +149,7 @@ fn main() -> eframe::Result {
     // à confusion). Si c'est autre chose, on reste ouvert pour l'expliquer dans le menu.
     let lock = controller::acquire_lock();
     if lock.0 == LockOutcome::Held(Holder::OtherApp) {
-        eprintln!("Matter Home Server est déjà ouvert.");
+        eprintln!("Ostal Server est déjà ouvert.");
         return Ok(());
     }
 

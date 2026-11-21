@@ -2,7 +2,7 @@
 //! Le pendant côté réseau, contre le vrai serveur, est dans `tests/connection.rs`.
 
 use super::*;
-use matter_home_client::net::Store;
+use ostal_client::net::Store;
 use protocol::events::{BridgeLink, Capabilities, CoverMotion};
 use protocol::wire::{
     DeviceView, ErrorCode, HistoryPoint, LatestReading, Metric, RuleRunView, WireBridge, WireNode,
@@ -614,7 +614,7 @@ fn backup_summary_reads_naturally() {
 fn files_from_the_server_are_written_privately_when_they_hold_keys() {
     let dir = std::env::temp_dir().join(format!("mhd-ui-file-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("sauvegarde.matterhome");
+    let path = dir.join("sauvegarde.ostal");
     // Un fichier existant aux droits larges est resserré.
     std::fs::write(&path, "ancien").unwrap();
     #[cfg(unix)]
@@ -622,7 +622,7 @@ fn files_from_the_server_are_written_privately_when_they_hold_keys() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    matter_home_client::net::files::write_file(&path, b"{}", true).unwrap();
+    ostal_client::net::files::write_file(&path, b"{}", true).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"{}");
     #[cfg(unix)]
     {
@@ -1122,7 +1122,7 @@ fn disconnecting_forgets_the_journal_the_toasts_the_code_and_the_dialogs_in_prog
     let mut f = Fixture::new();
     f.connect(snapshot(1, vec![]));
     f.app.data_dialog = Some(DataDialog::ConfirmImport {
-        path: PathBuf::from("/tmp/x.matterhome"),
+        path: PathBuf::from("/tmp/x.ostal"),
         summary: "1 appareil".into(),
         bytes: Arc::new(vec![1, 2, 3]),
         server: f.app.server.clone(),
@@ -1145,7 +1145,7 @@ fn a_backup_is_only_sent_to_the_server_that_checked_it() {
     f.connect(snapshot(1, vec![]));
     let bytes = Arc::new(vec![b'{', b'}']);
     let confirm = |server: Option<String>| DataDialog::ConfirmImport {
-        path: PathBuf::from("/tmp/x.matterhome"),
+        path: PathBuf::from("/tmp/x.ostal"),
         summary: "résumé".into(),
         bytes: bytes.clone(),
         server,
@@ -1175,7 +1175,7 @@ fn the_backup_read_by_a_network_thread_is_shared_never_copied() {
     f.app.pending.insert(
         77,
         Pending::ReadBackup {
-            path: PathBuf::from("/tmp/x.matterhome"),
+            path: PathBuf::from("/tmp/x.ostal"),
         },
     );
     f.send(Event::FileRead {
@@ -1198,7 +1198,7 @@ fn the_backup_read_by_a_network_thread_is_shared_never_copied() {
     f.app.pending.insert(
         3,
         Pending::ReadBackup {
-            path: PathBuf::from("/tmp/x.matterhome"),
+            path: PathBuf::from("/tmp/x.ostal"),
         },
     );
     f.send(Event::FileRead {
@@ -1538,7 +1538,7 @@ fn a_different_identity_is_only_sent_after_a_separate_confirmation() {
     let mut f = Fixture::new();
     f.connect(snapshot(1, vec![]));
     let confirm = |armed: bool, server: Option<String>| DataDialog::ConfirmImport {
-        path: PathBuf::from("/tmp/x.matterhome"),
+        path: PathBuf::from("/tmp/x.ostal"),
         summary: "résumé".into(),
         bytes: Arc::new(vec![b'{', b'}']),
         server,
@@ -1665,7 +1665,7 @@ fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings(
     // Changer de période relit tout, à la bonne fenêtre.
     f.app.maintain_temperatures();
     assert!(f.pending_ids().is_empty());
-    f.app.temp_window = matter_home_client::series::TimeWindow::All;
+    f.app.temp_window = ostal_client::series::TimeWindow::All;
     f.app.maintain_temperatures();
     assert_eq!(f.pending_ids().len(), 2);
 
@@ -1703,14 +1703,14 @@ fn temperature_page_reads_every_thermometer_by_window_and_follows_live_readings(
 
 #[test]
 fn the_temperature_chart_draws_curves_with_gaps_and_hidden_lines_without_a_window() {
-    use matter_home_client::series::TimeWindow;
+    use ostal_client::series::TimeWindow;
     let ctx = egui::Context::default();
     let now = now_unix();
     let curve = |node_id: u64, points: Vec<(f64, f64)>| temperatures::Curve {
         node_id,
         label: format!("Capteur {node_id}"),
         color_index: node_id as usize,
-        line: vec![matter_home_client::temperatures::LineSegment {
+        line: vec![ostal_client::temperatures::LineSegment {
             mean: points.clone(),
             band: vec![],
         }],

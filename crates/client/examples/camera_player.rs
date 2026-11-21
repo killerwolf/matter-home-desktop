@@ -1,9 +1,9 @@
 //! Démonstration du lecteur de caméra (ticket n° 5) : une vraie liaison avec un serveur (par
-//! exemple `matter-home-server`'s `--example camera_demo`), le vrai lecteur `ui/player.rs`, et une
+//! exemple `ostal-server`'s `--example camera_demo`), le vrai lecteur `ui/player.rs`, et une
 //! capture d'écran de ce qu'il affiche une fois la vidéo décodée.
 //!
 //! ```text
-//! MH_DEMO_PASSWORD=… cargo run -p matter-home-desktop --example camera_player -- \
+//! MH_DEMO_PASSWORD=… cargo run -p ostal --example camera_player -- \
 //!     --store FICHIER --url https://127.0.0.1:PORT --fingerprint AA:BB:… \
 //!     [--camera NOM] [--kind main|sub] [--shot IMAGE.ppm] [--after-frames N]
 //! ```
@@ -18,7 +18,7 @@ mod camera_text;
 #[allow(dead_code)]
 mod player;
 mod theme {
-    pub use matter_home_theme::*;
+    pub use ostal_theme::*;
 }
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +26,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 use eframe::egui;
-use matter_home_client::model::Model;
-use matter_home_client::net::{Backend, Event, Link, Store};
+use ostal_client::model::Model;
+use ostal_client::net::{Backend, Event, Link, Store};
 use protocol::wire::StreamKind;
 
 struct App {
@@ -162,7 +162,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
-            let notify: matter_home_client::net::Notifier = Arc::new(move || ctx.request_repaint());
+            let notify: ostal_client::net::Notifier = Arc::new(move || ctx.request_repaint());
             let (backend, events) = Backend::start(Store::at(store.into()), notify);
             backend.login(&url, &fingerprint, "demo", &password);
             Ok(Box::new(App {

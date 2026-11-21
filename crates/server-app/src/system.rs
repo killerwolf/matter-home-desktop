@@ -83,7 +83,9 @@ pub fn bundle_info_of(exe: &Path) -> BundleInfo {
 }
 
 pub fn service_installed() -> bool {
-    Path::new(startup::SERVICE_PLIST).exists()
+    [startup::SERVICE_PLIST, startup::LEGACY_SERVICE_PLIST]
+        .iter()
+        .any(|p| Path::new(p).exists())
 }
 
 /// Nom Bonjour du Mac (« Mac-de-Hamdi »), celui de « nom-du-mac.local ».

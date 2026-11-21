@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Construit « Matter Home Server.app » (l'application de la barre de menus) et, au besoin, le DMG.
+# Construit « Ostal Server.app » (l'application de la barre de menus) et, au besoin, le DMG.
 #
-#   scripts/bundle-server-app.sh          # dist/Matter Home Server.app
-#   scripts/bundle-server-app.sh --dmg    # ...et dist/MatterHomeServer-<version>-<arch>.dmg
+#   scripts/bundle-server-app.sh          # dist/Ostal Server.app
+#   scripts/bundle-server-app.sh --dmg    # ...et dist/OstalServer-<version>-<arch>.dmg
 #   ... --with-detection                  # embarque modèles YOLOX et ONNX Runtime (ticket n° 18)
 #
 # --with-detection (la CI de publication le passe) : scripts/fetch-detection-assets.sh télécharge
@@ -22,19 +22,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
-NAME="Matter Home Server"
-PACKAGE="matter-home-server-app"
-BIN="matter-home-server-app"
+NAME="Ostal Server"
+PACKAGE="ostal-server-app"
+BIN="ostal-server-app"
 APP="$DIST/$NAME.app"
 
 VERSION="$(awk -F'"' '/^version = /{print $2; exit}' "$ROOT/Cargo.toml")"
 # Le nom complet de la version (« 1.0.0-rc.7 »), lu à la compilation par le menu de l'application
-# (`option_env!("MATTER_HOME_VERSION")`) : Cargo.toml n'a que « 1.0.0 ». Sur un tag de la CI, il
+# (`option_env!("OSTAL_VERSION")`) : Cargo.toml n'a que « 1.0.0 ». Sur un tag de la CI, il
 # vient du nom du tag ; sinon le menu affiche « <version> (dev) ».
-if [ -z "${MATTER_HOME_VERSION:-}" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
-  export MATTER_HOME_VERSION="${GITHUB_REF_NAME#v}"
+if [ -z "${OSTAL_VERSION:-}" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+  export OSTAL_VERSION="${GITHUB_REF_NAME#v}"
 fi
-BUNDLE_ID="dev.matter-home-desktop.server-app"
+BUNDLE_ID="dev.ostal.server"
 MIN_X86_64="${MH_MIN_MACOS_X86_64:-10.15}"
 MIN_ARM64="${MH_MIN_MACOS_ARM64:-11.0}"
 
@@ -114,7 +114,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSAppSleepDisabled</key><true/>
   <key>NSHumanReadableCopyright</key><string>Licence MIT</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Matter Home Server communique avec vos appareils Matter sur le réseau local pour les appairer, lire leurs mesures et les commander, et il répond aux clients Matter Home de votre réseau.</string>
+  <string>Ostal Server communique avec vos appareils Matter sur le réseau local pour les appairer, lire leurs mesures et les commander, et il répond aux clients Ostal de votre réseau.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_matter._tcp</string>
@@ -161,7 +161,7 @@ for arch in $ARCHS; do
 done
 if ANNOUNCED="$("$EXE" --version 2>/dev/null)"; then
   echo "  $ANNOUNCED"
-  [ "$ANNOUNCED" = "matter-home-server-app $VERSION" ] ||
+  [ "$ANNOUNCED" = "ostal-server-app $VERSION" ] ||
     { echo "erreur : le binaire annonce « $ANNOUNCED » au lieu de la version $VERSION" >&2; exit 1; }
 fi
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
@@ -170,7 +170,7 @@ echo "  $APP  ($(du -sh "$APP" | cut -f1), $ARCHS)"
 # ---- DMG -------------------------------------------------------------------
 
 if [ "$DMG_WANTED" = 1 ]; then
-  DMG="$DIST/MatterHomeServer-$VERSION-$FLAVOUR.dmg"
+  DMG="$DIST/OstalServer-$VERSION-$FLAVOUR.dmg"
   log "Construction de $(basename "$DMG")"
   rm -f "$DMG"
 

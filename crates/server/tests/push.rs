@@ -16,10 +16,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use matter_home_server::cameras::CameraDraft;
-use matter_home_server::events::Event;
-use matter_home_server::push::crypto;
-use matter_home_server::push::transport::{PushReply, PushRequest, SendError, Transport};
+use ostal_server::cameras::CameraDraft;
+use ostal_server::events::Event;
+use ostal_server::push::crypto;
+use ostal_server::push::transport::{PushReply, PushRequest, SendError, Transport};
 use protocol::wire::PROTOCOL_VERSION;
 
 use common::Client;

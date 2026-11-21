@@ -1,4 +1,4 @@
-//! Matter Home Server : le serveur Matter Home sous forme d'application de la barre de menus.
+//! Ostal Server : le serveur Ostal sous forme d'application de la barre de menus.
 //!
 //! Tout ce qui se décide sans interface (texte d'état, décision de démarrage, LaunchAgent,
 //! veille, modèle du menu) est ici et se teste ; `main.rs` ne fait que brancher l'interface

@@ -995,7 +995,7 @@ impl Hub {
         Ok(export::temperature_csv(&response.points))
     }
 
-    /// Sauvegarde `.matterhome` complète : contient les clés privées en clair.
+    /// Sauvegarde `.ostal` complète : contient les clés privées en clair.
     pub fn export(&self) -> ApiResult<(String, String)> {
         match backup::export_to_string(&self.data_dir) {
             Ok((text, _)) => Ok((backup::default_file_name(), text)),
@@ -1384,19 +1384,19 @@ pub(crate) mod tests {
             let (summary, identity) = hub.inspect_import(&text).unwrap();
             assert!(!identity.differs && identity.current.is_some());
             assert_eq!((summary.rooms, summary.rules), (0, 0));
-            assert!(!dir.join("import-en-attente.matterhome").exists());
+            assert!(!dir.join("import-en-attente.ostal").exists());
         }
         assert!(hub.exit_reason().is_none());
 
         hub.stage_import(&text, false).unwrap();
         assert_eq!(hub.exit_reason(), Some(ExitReason::ImportStaged));
-        let pending = std::fs::read(dir.join("import-en-attente.matterhome")).unwrap();
+        let pending = std::fs::read(dir.join("import-en-attente.ostal")).unwrap();
         let second = hub.stage_import(&text, false).unwrap_err();
         assert_eq!(second.code, ErrorCode::ImportPending);
         assert_eq!(second.code.http_status(), 409);
         // Le premier dépôt n'a pas été touché.
         assert_eq!(
-            std::fs::read(dir.join("import-en-attente.matterhome")).unwrap(),
+            std::fs::read(dir.join("import-en-attente.ostal")).unwrap(),
             pending
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -1420,7 +1420,7 @@ pub(crate) mod tests {
         let err = hub.stage_import(&other, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::IdentityMismatch);
         assert_eq!(err.code.http_status(), 409);
-        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(!dir.join("import-en-attente.ostal").exists());
         assert!(hub.exit_reason().is_none());
         // Le refus ne bloque pas la suite : avec l'option, c'est accepté.
         hub.stage_import(&other, true).unwrap();

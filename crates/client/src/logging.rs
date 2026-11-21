@@ -91,7 +91,7 @@ mod tests {
             "tungstenite::handshake::client",
             Level::Debug
         ));
-        assert!(allowed_target("matter_home_client::net::ws", Level::Trace));
+        assert!(allowed_target("ostal_client::net::ws", Level::Trace));
         // Un nom qui commence pareil sans être la bibliothèque n'est pas touché.
         assert!(allowed_target("tungstenitelike", Level::Trace));
     }
@@ -119,7 +119,7 @@ mod tests {
         emit("autre", Level::Trace, request);
         emit("autre", Level::Debug, request);
         emit("tungstenite", Level::Debug, "Client handshake done.");
-        emit("matter_home_client", Level::Info, "connexion acceptée");
+        emit("ostal_client", Level::Info, "connexion acceptée");
         let kept = sink.0.lock().unwrap().clone();
         assert_eq!(kept, vec!["Client handshake done.", "connexion acceptée"]);
     }

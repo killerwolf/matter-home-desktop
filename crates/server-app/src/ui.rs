@@ -22,16 +22,16 @@ use std::time::Duration;
 use crate::cameras_ui::CamerasUi;
 use crate::descriptions_ui::DescriptionsUi;
 use eframe::egui::{self, RichText};
-use matter_home_server::backup;
-use matter_home_server::setup::{self, IdentityComparison, IdentityState};
-use matter_home_server_app::controller::{Cmd, Handle, Notice, State};
-use matter_home_server_app::menu::{self, Action, Entry, MenuInput};
-use matter_home_server_app::overview::{self, CameraSummary, Overview, Tab};
-use matter_home_server_app::startup::SetupNeed;
-use matter_home_server_app::status::{icon_kind, tooltip, IconKind, Phase};
-use matter_home_server_app::tailscale::{self, WebAccess};
-use matter_home_server_app::{agent, icon, system};
-use matter_home_theme as theme;
+use ostal_server::backup;
+use ostal_server::setup::{self, IdentityComparison, IdentityState};
+use ostal_server_app::controller::{Cmd, Handle, Notice, State};
+use ostal_server_app::menu::{self, Action, Entry, MenuInput};
+use ostal_server_app::overview::{self, CameraSummary, Overview, Tab};
+use ostal_server_app::startup::SetupNeed;
+use ostal_server_app::status::{icon_kind, tooltip, IconKind, Phase};
+use ostal_server_app::tailscale::{self, WebAccess};
+use ostal_server_app::{agent, icon, system};
+use ostal_theme as theme;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -43,13 +43,13 @@ const EXIT_WAIT: Duration = Duration::from_secs(20);
 const HIDDEN_TICK: Duration = Duration::from_millis(2000);
 const VISIBLE_TICK: Duration = Duration::from_millis(500);
 
-const SLEEP_NOTE: &str = "Tant que Matter Home Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
+const SLEEP_NOTE: &str = "Tant que Ostal Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
 
 /// `open` : l'onglet sur lequel ouvrir la fenêtre dès le lancement (`--open`, pour les essais).
 pub fn run(handle: Handle, demo: bool, open: Option<Tab>) -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Matter Home Server")
+            .with_title("Ostal Server")
             .with_inner_size([640.0, 700.0])
             .with_min_inner_size([560.0, 480.0])
             .with_visible(false),
@@ -65,14 +65,14 @@ pub fn run(handle: Handle, demo: bool, open: Option<Tab>) -> eframe::Result {
     // discret (choix par défaut d'egui-wgpu, « haute performance ») resterait allumé en permanence.
     low_power_gpu(&mut options.wgpu_options);
     eframe::run_native(
-        "Matter Home Server",
+        "Ostal Server",
         options,
         Box::new(move |cc| {
             // L'icône doit être créée sur le fil principal, une fois la boucle d'événements lancée.
             let (tx, rx) = mpsc::channel::<Action>();
             let ctx = cc.egui_ctx.clone();
-            // Le design system partagé avec le client (crate `matter-home-theme`).
-            matter_home_theme::apply(&ctx);
+            // Le design system partagé avec le client (crate `ostal-theme`).
+            ostal_theme::apply(&ctx);
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
                 if let Some(action) = Action::from_id(&event.id.0) {
                     let _ = tx.send(action);
@@ -81,7 +81,7 @@ pub fn run(handle: Handle, demo: bool, open: Option<Tab>) -> eframe::Result {
             }));
             let tray = TrayIconBuilder::new()
                 .with_icon_templated(tray_image(IconKind::Starting))
-                .with_tooltip("Matter Home Server")
+                .with_tooltip("Ostal Server")
                 .build()
                 .map_err(|e| format!("icône de la barre de menus : {e}"))?;
             Ok(Box::new(App::new(handle, demo, tray, rx, open)))
@@ -102,9 +102,9 @@ fn confirm_quit() -> bool {
     let quit = "Quitter".to_string();
     let result = MessageDialog::new()
         .set_level(MessageLevel::Warning)
-        .set_title("Quitter Matter Home Server ?")
+        .set_title("Quitter Ostal Server ?")
         .set_description(
-            "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture de Matter Home Server.",
+            "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture de Ostal Server.",
         )
         .set_buttons(MessageButtons::OkCancelCustom(quit.clone(), "Annuler".into()))
         .show();
@@ -482,9 +482,24 @@ impl App {
             mode_token_shown: None,
             mode_token_confirm: false,
         };
-        // Application déplacée : l'agent pointait ailleurs, on le réécrit.
         if !app.demo {
             if let (Some(dir), Ok(exe)) = (agent::default_dir(), std::env::current_exe()) {
+                // Premier lancement après le renommage en Ostal : l'ouverture à la connexion de
+                // « Matter Home Server » est reprise, avant le choix par défaut.
+                if let (Some(marker), Some(old_marker)) =
+                    (agent::default_marker_dir(), agent::legacy_marker_dir())
+                {
+                    match agent::adopt_legacy(&dir, &marker, &old_marker, &exe, app.demo) {
+                        agent::LegacyOutcome::Adopted => {
+                            log::info!("ouverture à la connexion reprise de Matter Home Server")
+                        }
+                        agent::LegacyOutcome::Failed(e) => {
+                            log::warn!("ouverture à la connexion de Matter Home Server : {e}")
+                        }
+                        _ => {}
+                    }
+                }
+                // Application déplacée : l'agent pointait ailleurs, on le réécrit.
                 agent::rewrite_if_stale(&dir, &exe);
             }
         }
@@ -939,7 +954,7 @@ mod tests {
 
     #[test]
     fn the_menu_never_discards_a_form_being_filled() {
-        // Formulaire de caméra ouvert (mot de passe saisi) : « Ouvrir Matter Home Server… » ou
+        // Formulaire de caméra ouvert (mot de passe saisi) : « Ouvrir Ostal Server… » ou
         // l'action corrective ramènent la fenêtre telle quelle.
         assert_eq!(menu_target(Tab::Cameras, Tab::Overview, true), Tab::Cameras);
         assert_eq!(
@@ -1000,7 +1015,7 @@ mod tests {
     }
 
     fn running_menu(unreachable: &[&str], mode: protocol::mode::HomeMode) -> Vec<Entry> {
-        let health = matter_home_server_app::status::Health {
+        let health = ostal_server_app::status::Health {
             total: 5,
             online: 5 - unreachable.len(),
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
@@ -1059,7 +1074,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mh-ui-pick-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("faux.matterhome");
+        let file = dir.join("faux.ostal");
         std::fs::write(&file, "ce n'est pas une sauvegarde").unwrap();
         let err = inspect_backup(&dir, file).err().expect("refusé");
         assert!(err.contains("pas une sauvegarde utilisable"), "{err}");

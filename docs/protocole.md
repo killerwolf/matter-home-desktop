@@ -2,7 +2,7 @@
 
 [← Retour au README](../README.md) · [Architecture](architecture.md)
 
-Le client (interface) et le serveur (`matter-home-server`) parlent en **HTTPS** (requêtes) et en
+Le client (interface) et le serveur (`ostal-server`) parlent en **HTTPS** (requêtes) et en
 **WebSocket** (temps réel), sur le même port (8443 par défaut). Les types sont dans
 `crates/protocol/src/wire/` : ce crate n'a ni tokio, ni axum, ni TLS, pour que le client le
 réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envoyés tels quels.
@@ -27,8 +27,8 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 - **Jeton** : `Authorization: Bearer <jeton>` sur toute route et sur le WebSocket, jamais
   dans l'URL. Seules `GET /api/version` et `POST /api/login` s'en passent. **Navigateur** (app web,
   `/app/`, voir [web-app.md](web-app.md)) : un `WebSocket` ne pose pas d'en-tête, donc le jeton
-  peut aussi venir de `Sec-WebSocket-Protocol: matter-home.v1, bearer.<jeton>`, accepté seulement
-  sur un upgrade WebSocket ; le serveur répond `matter-home.v1`. Le client natif n'est pas touché.
+  peut aussi venir de `Sec-WebSocket-Protocol: ostal.v1, bearer.<jeton>`, accepté seulement
+  sur un upgrade WebSocket ; le serveur répond `ostal.v1`. Le client natif n'est pas touché.
 - **Concurrence** : plusieurs clients à la fois ; pour le plan et les règles, la dernière
   modification gagne et chaque changement est diffusé à tous (`plan_changed`, `rules_changed`).
 
@@ -36,7 +36,7 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 
 Le serveur génère au premier lancement un certificat auto-signé (`serveur/tls-cert.pem`, clé
 en 0600), le garde d'un lancement à l'autre, affiche et journalise son **empreinte SHA-256**
-(`matter-home-server fingerprint` la redonne). Le client la mémorise à la première connexion
+(`ostal-server fingerprint` la redonne). Le client la mémorise à la première connexion
 et refuse tout autre certificat. Le compte unique se crée sur le serveur
 (`create-account`) ; le mot de passe est haché en argon2id. Après 5 échecs depuis une adresse,
 la connexion de **cette adresse** est mise en attente 30 s, doublée à chaque échec (15 min au
@@ -60,7 +60,7 @@ lecture suivante ; sans lui, le serveur attend la suite du corps jusqu'à son d�
 
 ## Essayer sans appareil
 
-`matter-home-server --demo` expose la même API avec des appareils simulés, sur
+`ostal-server --demo` expose la même API avec des appareils simulés, sur
 `127.0.0.1:8443`, dans un dossier temporaire supprimé à la sortie (ou celui de `--data-dir`).
 S'il n'y a pas encore de compte, il crée le compte `demo` et affiche son mot de passe, tiré au
 sort, **une seule fois sur la sortie standard** (jamais dans le journal). L'historique simulé
@@ -93,8 +93,8 @@ aux essais et aux tests.
 | `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances"}` : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
-| `GET /api/export` | sauvegarde `.matterhome` (**clés privées et mots de passe des caméras en clair**) |
-| `POST /api/import` | corps = fichier `.matterhome` ; 202, puis le serveur quitte (code 75). Une autre identité Matter est refusée (`identity_mismatch`, 409) sans `?replace_identity=1` |
+| `GET /api/export` | sauvegarde `.ostal` (**clés privées et mots de passe des caméras en clair**) |
+| `POST /api/import` | corps = fichier `.ostal` ; 202, puis le serveur quitte (code 75). Une autre identité Matter est refusée (`identity_mismatch`, 409) sans `?replace_identity=1` |
 | `POST /api/import?dry_run=1` | même corps ; inspecte sans rien engager : 200 avec le résumé (voir ci-dessous) |
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
@@ -182,7 +182,7 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   anti-rafale d'au moins 10 s (`400 bad_request` sinon). Un client de la 1.1.0 est refusé (version 3).
 - **Sauvegarde** : `mode.json` en fait partie (valeur inconnue : sauvegarde refusée). Une sauvegarde
   faite avec cette version est **refusée par un serveur 1.1.0** (il ne connaît pas `mode.json`) : en
-  retirer le fichier du `.matterhome` n'est pas prévu, mettez le serveur à jour.
+  retirer le fichier du `.ostal` n'est pas prévu, mettez le serveur à jour.
 
 ## Caméras
 
@@ -258,7 +258,7 @@ d'ailleurs une adresse qui en porte). Aqara G100 (recherche, non vérifié sur l
 `rtsp://ip:554/live/ch00_0` (principal, environ 2304 × 1296, signalé instable) et `ch00_1` (720p,
 stable) ; ne pas lire plus de deux flux à la fois par caméra. `Debug` masque tout (adresse,
 identifiant, mot de passe) ; ni le journal ni un message d'erreur ne reprennent ce qui a été saisi.
-Le fichier est dans la sauvegarde `.matterhome` : **les mots de passe des caméras y sont en clair**,
+Le fichier est dans la sauvegarde `.ostal` : **les mots de passe des caméras y sont en clair**,
 comme les clés de la maison (la fenêtre « Caméras… » et le message d'export du client le disent).
 L'import le valide (version, plage et unicité des identifiants, adresses `rtsp://` sans
 identifiants) et refuse la sauvegarde sans répéter d'adresse ni de mot de passe. Le résumé
@@ -315,7 +315,7 @@ une vignette quand la mosaïque ne lit pas de flux : caméra sans flux réduit, 
 de flux simultanés (4). La version du protocole reste **2** : une route de plus, aucun type ni code
 d'erreur nouveau (`wire::CAMERA_SNAPSHOT_PATH`, `wire::camera_snapshot_path(id)`).
 
-- **Fabrication** : le serveur décode une image clé H.264 (VideoToolbox, la caisse `matter-home-video`
+- **Fabrication** : le serveur décode une image clé H.264 (VideoToolbox, la caisse `ostal-video`
   partagée avec le client) et l'encode en JPEG (crate `jpeg-encoder`, Rust pur, sans FFmpeg ni
   libjpeg), réduite à 640 px de large au plus. La forme non carrée des pixels n'est pas corrigée.
   Une caméra H.265 n'a pas d'image fixe (503).
@@ -439,7 +439,7 @@ déjà enregistré pour un objet (même identifiant, même appareil) dont le nou
 
 ## Export et import
 
-`GET /api/export` renvoie le fichier `.matterhome` (appareils, plan, règles, caméras, historique, **les
+`GET /api/export` renvoie le fichier `.ostal` (appareils, plan, règles, caméras, historique, **les
 clés privées du contrôleur et les mots de passe des caméras en clair** : le canal est chiffré et authentifié, le fichier doit
 être gardé comme un secret).
 
@@ -449,7 +449,7 @@ lisibles), `maison.json` et `regles.json` (désérialisés, puis mêmes bornes q
 sauvegarde dont le plan n'a aucun étage (`floors: []`) n'est pas refusée : son plan est remplacé
 par le plan par défaut, avant d'être déposée (le même remplacement a lieu au chargement d'un
 `maison.json` sans étage).
-Sinon elle est déposée dans le dossier de données (`import-en-attente.matterhome`, créée en 0600,
+Sinon elle est déposée dans le dossier de données (`import-en-attente.ostal`, créée en 0600,
 écriture atomique), la réponse est 202, puis le serveur s'arrête **avec le code 75** (non nul,
 pour qu'un launchd configuré pour ne relancer que les échecs le relance aussi). Un second import
 pendant ce temps est refusé : `import_pending` (409).
@@ -484,7 +484,7 @@ adresse incomplète (`PUT /api/rules` l'accepte, bornes de taille comprises) : e
 jamais, et l'appel du webhook revérifie l'adresse, même pour `POST /api/rules/{id}/test`. Dès qu'on
 la réactive, l'adresse doit être complète.
 
-**Import en ligne de commande**, serveur arrêté : `matter-home-server import FICHIER [--yes]
+**Import en ligne de commande**, serveur arrêté : `ostal-server import FICHIER [--yes]
 [--replace-identity]` (voir [migration.md](migration.md)). Même validation (les deux certificats
 DER sont décodés), même application atomique ; il prend le verrou d'instance, applique tout de
 suite puis quitte, sans jamais démarrer Matter ni le réseau. Relancé après une coupure avec le même
@@ -523,7 +523,7 @@ d'exécution et des sockets bloquants, hors du fil de l'interface, qui n'attend 
   serveur). Après approbation, la connexion suivante, la seule à porter le mot de passe, n'accepte
   que ce certificat (la signature de la poignée de main est vérifiée pour de bon).
 - **Fichier de connexion** : adresse, empreinte et jeton, en 0600, dans
-  `dev.matter-home-desktop.MatterHomeClient/connexion.json` (jamais dans le dossier de données de la
+  `dev.ostal.OstalClient/connexion.json` (jamais dans le dossier de données de la
   v0.2.1). Jamais le mot de passe. Jeton expiré ou révoqué, ou « Se déconnecter » : le jeton est
   effacé (et révoqué sur le serveur), l'adresse et l'empreinte sont **conservées** ; un geste à part
   (« oublier son certificat », indisponible pendant une connexion) efface aussi l'empreinte. Une
@@ -558,7 +558,7 @@ d'exécution et des sockets bloquants, hors du fil de l'interface, qui n'attend 
   part sans attendre les 400 ms. « Tester » une règle attend l'enregistrement de la dernière version.
 - **Historique** : lu à la demande quand une fiche s'ouvre ou que la fenêtre change (« 7 jours » est
   le maximum que le serveur garde), complété par les mesures reçues, vidé à la déconnexion.
-- **Export et import** : le serveur produit le `.matterhome` et le CSV, le client les enregistre
+- **Export et import** : le serveur produit le `.ostal` et le CSV, le client les enregistre
   avec le sélecteur de fichier (sauvegarde en 0600) ; l'écriture, et la lecture d'une sauvegarde à
   importer (128 Mo au plus), se font dans les fils réseau, sans copie du contenu. Une sauvegarde ne
   part que vers le serveur qui l'a validée (`dry_run`). Import : `?dry_run=1` pour le résumé, confirmation,

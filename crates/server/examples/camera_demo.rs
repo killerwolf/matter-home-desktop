@@ -4,7 +4,7 @@
 //! `tests/fixtures/`. Tout reste sur 127.0.0.1.
 //!
 //! ```text
-//! MH_DEMO_PASSWORD=… cargo run -p matter-home-server --example camera_demo -- \
+//! MH_DEMO_PASSWORD=… cargo run -p ostal-server --example camera_demo -- \
 //!     --data-dir DOSSIER --listen 127.0.0.1:PORT [--camera-port PORT]
 //! ```
 //!
@@ -57,8 +57,7 @@ fn main() {
         client_write_timeout: Duration::from_secs(10),
     });
     // La surveillance donne leur état aux caméras (sinon elles restent « inconnues »).
-    let _monitor =
-        matter_home_server::cameras::start_monitor(rig.hub.clone()).expect("surveillance");
+    let _monitor = ostal_server::cameras::start_monitor(rig.hub.clone()).expect("surveillance");
     println!("Écoute : https://{}", rig.server.addr);
     println!("Empreinte du certificat (SHA-256) : {}", rig.fingerprint);
     println!("Fausse caméra : 127.0.0.1:{}", rig.camera.port);

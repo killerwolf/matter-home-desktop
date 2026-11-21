@@ -23,7 +23,7 @@ const MAX_CHUNK_LINE: usize = 1024;
 pub enum Body {
     None,
     Json(Vec<u8>),
-    /// Contenu brut (sauvegarde `.matterhome`, qui est du JSON).
+    /// Contenu brut (sauvegarde `.ostal`, qui est du JSON).
     Bytes(Vec<u8>),
     /// Contenu partagé, jamais copié : une sauvegarde lue une fois (jusqu'à 128 Mo) sert à la
     /// vérification puis à l'import réel, sans que l'interface en garde un second exemplaire.
@@ -152,7 +152,7 @@ pub fn exec(
         Body::Shared(b) => b,
     };
     let mut head = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: matter-home-desktop\r\nAccept: */*\r\nConnection: close\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: ostal\r\nAccept: */*\r\nConnection: close\r\n",
         request.method,
         request.path,
         addr.authority()

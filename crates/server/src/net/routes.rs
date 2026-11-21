@@ -351,10 +351,13 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
 
 /// Sous-protocole WebSocket que le serveur choisit toujours quand un client le propose : c'est
 /// celui-là qui est renvoyé au navigateur, jamais l'entrée qui porte le jeton.
-pub const WS_SUBPROTOCOL: &str = "matter-home.v1";
+pub const WS_SUBPROTOCOL: &str = "ostal.v1";
+/// Sous-protocoles acceptés : le nouveau, et celui de « Matter Home » (un onglet de l'app web
+/// resté ouvert sur l'ancienne version se reconnecte sans être rechargé).
+pub const WS_SUBPROTOCOLS: [&str; 2] = [WS_SUBPROTOCOL, crate::legacy::WS_SUBPROTOCOL];
 
 /// Jeton d'un navigateur : un `WebSocket` de navigateur ne peut pas poser d'en-tête
-/// `Authorization`. L'app web propose donc `Sec-WebSocket-Protocol: matter-home.v1,
+/// `Authorization`. L'app web propose donc `Sec-WebSocket-Protocol: ostal.v1,
 /// bearer.<jeton>` (jamais le jeton dans l'URL). Accepté **seulement** pour `GET /api/ws` et
 /// `GET /api/cameras/{id}/stream` avec un vrai upgrade WebSocket (`Connection: upgrade`,
 /// `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`) : jamais pour une autre route. Le client

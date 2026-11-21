@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
 
-use matter_home_client::net::snapshot::{SnapshotHandle, SnapshotState};
+use ostal_client::net::snapshot::{SnapshotHandle, SnapshotState};
 
 /// La tuile se redessine à cette cadence au plus : elle entretient le fil et prend les images.
 const REPAINT_EVERY: std::time::Duration = std::time::Duration::from_millis(500);

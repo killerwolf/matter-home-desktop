@@ -11,12 +11,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use matter_home_server::app::{Outcome, Server, ServerConfig};
-use matter_home_server::backup::{self, PendingKind};
-use matter_home_server::hub::Hub;
-use matter_home_server::persistence::{self, LockHeld};
-use matter_home_server::security::{self, account};
-use matter_home_server::setup::{self, IdentityState};
+use ostal_server::app::{Outcome, Server, ServerConfig};
+use ostal_server::backup::{self, PendingKind};
+use ostal_server::hub::Hub;
+use ostal_server::persistence::{self, DataLock, LockHeld};
+use ostal_server::security::{self, account};
+use ostal_server::setup::{self, IdentityState};
 use protocol::wire::WireStatus;
 
 use crate::sleep::SleepGuard;
@@ -53,7 +53,7 @@ pub struct State {
     pub setup: Option<SetupNeed>,
     pub busy: Option<String>,
     pub notice: Option<Notice>,
-    /// Pendant que le serveur tourne : un processus `matter-home-desktop` dont on ne peut pas
+    /// Pendant que le serveur tourne : un processus `ostal` dont on ne peut pas
     /// dire si c'est l'ancienne v0.2 (le serveur n'est pas arrêté pour autant).
     pub desktop_doubt: bool,
     pub data_dir: PathBuf,
@@ -185,20 +185,22 @@ pub fn after_outcome(outcome: Outcome, supervised: bool) -> AfterStop {
     }
 }
 
-/// Prend le verrou d'instance. En cas d'échec, dit qui le tient.
-pub fn acquire_lock() -> (LockOutcome, Option<File>) {
-    let path = persistence::instance_lock_path();
-    match persistence::acquire_instance_lock(&path) {
-        Ok(file) => (LockOutcome::Acquired, Some(file)),
-        Err(e) if e.downcast_ref::<LockHeld>().is_some() => {
-            let holder = startup::classify_holder(
-                persistence::lock_holder_pid(&path),
-                &system::processes(),
-                system::service_installed(),
-            );
-            (LockOutcome::Held(holder), None)
-        }
-        Err(e) => (LockOutcome::Failed(format!("{e:#}")), None),
+/// Prend les verrous d'instance (celui d'Ostal et ceux des anciens noms). En cas d'échec, dit
+/// qui tient celui qui manque.
+pub fn acquire_lock() -> (LockOutcome, Option<DataLock>) {
+    match persistence::acquire_data_lock() {
+        Ok(lock) => (LockOutcome::Acquired, Some(lock)),
+        Err(e) => match e.downcast_ref::<LockHeld>() {
+            Some(held) => {
+                let holder = startup::classify_holder(
+                    persistence::lock_holder_pid(&held.path),
+                    &system::processes(),
+                    system::service_installed(),
+                );
+                (LockOutcome::Held(holder), None)
+            }
+            None => (LockOutcome::Failed(format!("{e:#}")), None),
+        },
     }
 }
 
@@ -222,7 +224,7 @@ pub fn acquire_app_lock() -> anyhow::Result<Option<File>> {
     acquire_app_lock_at(&app_lock_path_for(&persistence::instance_lock_path()))
 }
 
-pub fn spawn(config: Config, first_lock: (LockOutcome, Option<File>)) -> Handle {
+pub fn spawn(config: Config, first_lock: (LockOutcome, Option<DataLock>)) -> Handle {
     let state = Arc::new(Mutex::new(State {
         phase: Phase::Starting,
         url: None,
@@ -262,7 +264,7 @@ struct Controller {
     cfg: Config,
     state: Shared,
     rx: Receiver<Cmd>,
-    lock: Option<File>,
+    lock: Option<DataLock>,
     first_outcome: Option<LockOutcome>,
     server: Option<Server>,
     sleep: Option<SleepGuard>,
@@ -385,7 +387,7 @@ impl Controller {
             }
             Decision::Blocked(Blocker::OtherApp) => {
                 // Une autre fenêtre de l'application a pris la place : une seule icône.
-                log::info!("Matter Home Server est déjà ouvert : cette instance se ferme.");
+                log::info!("Ostal Server est déjà ouvert : cette instance se ferme.");
                 std::process::exit(0);
             }
             Decision::Blocked(b) => {
@@ -522,7 +524,7 @@ impl Controller {
                     {
                         if doubt {
                             log::warn!(
-                                "processus matter-home-desktop incertain (pid {:?}) : le serveur continue de tourner",
+                                "processus ostal incertain (pid {:?}) : le serveur continue de tourner",
                                 scan.uncertain
                             );
                         }
@@ -557,7 +559,7 @@ impl Controller {
                 log::error!("erreur fatale du serveur");
                 self.stop_or_exit();
                 self.set_phase(Phase::Problem(
-                    "Le serveur s'est arrêté après une erreur. Consultez le journal, puis rouvrez Matter Home Server.".into(),
+                    "Le serveur s'est arrêté après une erreur. Consultez le journal, puis rouvrez Ostal Server.".into(),
                 ));
             }
             AfterStop::Relaunch => {
@@ -577,11 +579,11 @@ impl Controller {
                 let err = std::process::Command::new(exe).args(&self.cfg.args).exec();
                 log::error!("relance impossible : {err}");
                 self.set_phase(Phase::Problem(format!(
-                    "Relance impossible : {err}. Rouvrez Matter Home Server."
+                    "Relance impossible : {err}. Rouvrez Ostal Server."
                 )));
             }
             Err(e) => self.set_phase(Phase::Problem(format!(
-                "Relance impossible : {e}. Rouvrez Matter Home Server."
+                "Relance impossible : {e}. Rouvrez Ostal Server."
             ))),
         }
     }
@@ -721,7 +723,7 @@ fn create_account(username: &str, password: &str, replace: bool) -> Result<(), S
 /// En démo, un compte « demo » est créé s'il n'y en a pas ; son mot de passe est tiré au sort
 /// et écrit sur la sortie standard, jamais dans le journal.
 fn ensure_demo_account(data_dir: &std::path::Path) {
-    use matter_home_server::security::account::AccountStore;
+    use ostal_server::security::account::AccountStore;
     let result = security::server_dir(data_dir).and_then(|dir| {
         if AccountStore::open(&dir)?.exists() {
             return Ok(None);

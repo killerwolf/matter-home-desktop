@@ -4,18 +4,20 @@
 // durée est gardé dans le localStorage de l'app. Mêmes règles que le client de bureau.
 import { cursorLabel, gapThreshold, lineSegments, periodRange, tempChart, valueOnCurve } from "./charts.js";
 import { formatTemperature } from "./tiles.js";
+import { adoptLegacyKey } from "./api.js";
 
 const WINDOWS = [
   { key: "1h", label: "1 h", seconds: 3600 },
   { key: "24h", label: "24 h", seconds: 86400 },
   { key: "7d", label: "1 semaine", seconds: 7 * 86400 },
 ];
-const KEY = "matter-home.temps";
+const KEY = "ostal.temps";
 const REFRESH_MS = 60_000;
 const REFRESH_WEEK_MS = 10 * 60_000; // une semaine change peu : relecture toutes les 10 min
 const NONE = "—";
 
 function loadPrefs() {
+  adoptLegacyKey(KEY, "matter-home.temps");
   try {
     const v = JSON.parse(localStorage.getItem(KEY) || "null");
     return {

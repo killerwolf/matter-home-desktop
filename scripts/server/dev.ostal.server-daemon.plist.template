@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Service launchd du serveur Matter Home (LaunchDaemon) : démarre avec le Mac, sans session
+  Service launchd du serveur Ostal (LaunchDaemon) : démarre avec le Mac, sans session
   ouverte, sous le compte de l'utilisateur qui l'a installé (jamais root).
   Gabarit rempli par install.sh : les champs écrits en capitales entre doubles soulignés sont
   remplacés, rien n'est à modifier ici.
@@ -13,7 +13,7 @@
 
   <!-- Le dossier de données est donné explicitement : le service ne dépend pas de HOME.
        Le serveur ne crée jamais une nouvelle identité Matter par accident : sans identité dans
-       ce dossier il sort avec le code 78 (« matter-home-server import » ou « init » d'abord).
+       ce dossier il sort avec le code 78 (« ostal-server import » ou « init » d'abord).
        L'option log-file écrit un journal à droits restreints, avec rotation (5 Mo, 3 anciens
        fichiers). -->
   <key>ProgramArguments</key>

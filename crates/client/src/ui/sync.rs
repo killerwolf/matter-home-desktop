@@ -22,7 +22,7 @@
 
 use std::time::{Duration, Instant};
 
-use matter_home_client::net::NetError;
+use ostal_client::net::NetError;
 use protocol::wire::ErrorCode;
 
 /// Délai de calme avant d'envoyer une modification.

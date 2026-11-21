@@ -118,7 +118,7 @@ fn failed_login_is_slightly_delayed() {
 fn stalled_request_body_times_out_but_slow_progress_does_not() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let dir = temp_dir("bodyidle");
-    let server = Server::start_with(&dir, &[("MATTER_HOME_TEST_BODY_IDLE_MS", "700")]);
+    let server = Server::start_with(&dir, &[("OSTAL_TEST_BODY_IDLE_MS", "700")]);
     let client = server.client();
     runtime().block_on(async {
         // Corps annoncé de 100 octets, 10 envoyés, puis plus rien.

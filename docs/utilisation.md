@@ -6,10 +6,10 @@
 
 Au premier lancement, l'application demande l'adresse du serveur (par exemple
 `192.168.1.20:8443` ou `mac-mini.local`), l'identifiant et le mot de passe du compte créé sur le
-serveur (`matter-home-server create-account`).
+serveur (`ostal-server create-account`).
 
 1. L'application lit le certificat du serveur et affiche son **empreinte SHA-256**. Comparez-la à
-   celle affichée par le serveur à son lancement (ou par `matter-home-server fingerprint`), puis
+   celle affichée par le serveur à son lancement (ou par `ostal-server fingerprint`), puis
    cliquez **Approuver et se connecter**. Seul ce certificat sera accepté ensuite.
 2. Les fois suivantes, la connexion est automatique (jeton conservé, pas le mot de passe).
    Si la session expire ou est révoquée, l'écran de connexion revient avec l'adresse remplie.
@@ -28,7 +28,7 @@ jusqu'à 30 s). Rien n'est affiché ni commandé tant que le serveur n'est pas j
 2. Faites défiler, puis touchez **Activer le mode jumelage** (« mode d'appairage » selon la
    version d'iOS). Maison affiche un **code à 11 chiffres** (ex. `1234-567-8901`), valable
    quelques minutes.
-3. Dans Matter Home Desktop, collez le code dans « Appairer un appareil » puis cliquez
+3. Dans Ostal, collez le code dans « Appairer un appareil » puis cliquez
    **Appairer**. Tirets et espaces sont acceptés ; un code QR `MT:…` fonctionne aussi.
 
 L'appareil reste dans Apple Maison : l'application devient un administrateur de plus, sur sa
@@ -107,18 +107,18 @@ Le nom et l'icône s'appliquent partout (liste, fiche, plan, automatisations).
 
 | Commande | Effet |
 |---|---|
-| `matter-home-desktop` | lance l'application et se connecte au serveur |
-| `matter-home-desktop --plan` | ouvre directement le plan de la maison |
-| `matter-home-desktop --rules` | ouvre directement les automatisations |
-| `matter-home-desktop --device X` | ouvre la fiche du premier appareil dont le nom contient X |
-| `RUST_LOG=debug matter-home-desktop` | journaux détaillés |
+| `ostal` | lance l'application et se connecte au serveur |
+| `ostal --plan` | ouvre directement le plan de la maison |
+| `ostal --rules` | ouvre directement les automatisations |
+| `ostal --device X` | ouvre la fiche du premier appareil dont le nom contient X |
+| `RUST_LOG=debug ostal` | journaux détaillés |
 
 Les appareils simulés et le diagnostic mDNS sont des options du serveur :
-`matter-home-server --demo` (compte `demo`, mot de passe affiché une fois, adresse
-`127.0.0.1:8443`) et `matter-home-server --discover`.
+`ostal-server --demo` (compte `demo`, mot de passe affiché une fois, adresse
+`127.0.0.1:8443`) et `ostal-server --discover`.
 
 Avec l'application installée depuis le DMG, le programme se trouve dans le paquet :
 
 ```bash
-"/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop" --plan
+"/Applications/Ostal.app/Contents/MacOS/ostal" --plan
 ```

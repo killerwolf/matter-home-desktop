@@ -396,7 +396,7 @@ fn connect_with(
                 "le nom du serveur est illisible, le certificat ne peut pas être vérifié".into(),
             ))
         }
-        Err(_) => ServerName::try_from("matter-home.invalid".to_string())
+        Err(_) => ServerName::try_from("ostal.invalid".to_string())
             .map_err(|_| NetError::BadAddress("nom de serveur invalide".into()))?,
     };
     let mut conn = ClientConnection::new(Arc::new(config), name)

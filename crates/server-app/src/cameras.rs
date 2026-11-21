@@ -6,13 +6,13 @@
 //! changer. Une modification qui laisse le champ vide le **garde** ; la case « Supprimer le mot
 //! de passe » l'efface.
 
-use matter_home_server::cameras::{
+use ostal_server::cameras::{
     describe_stream, split_credentials, CameraAdmin, CameraDraft, StreamKind, StreamTest,
 };
 use protocol::wire::{CameraModes, CameraPlacement, CameraStatus, DetectionSettings, Polygon};
 
 /// Ce que la fenêtre dit des sauvegardes (demandé par le ticket #4 : « à dire dans l'interface »).
-pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .matterhome » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
+pub const BACKUP_NOTE: &str = "Les adresses et les mots de passe des caméras restent sur ce Mac : les clients ne reçoivent que le nom et l'état. Mais ils sont inclus, en clair, dans les sauvegardes « .ostal » (comme les clés de la maison) : gardez ces fichiers comme des secrets.";
 
 /// Titre de l'aide repliable du formulaire.
 pub const AQARA_TITLE: &str = "Aide pour une caméra Aqara G100";
@@ -332,7 +332,7 @@ pub fn kind_label(kind: StreamKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matter_home_server::cameras::{CameraBook, ProbeError};
+    use ostal_server::cameras::{CameraBook, ProbeError};
     use protocol::wire::{CameraProblem, StreamInfo};
 
     fn admin(name: &str, sub: bool) -> CameraAdmin {

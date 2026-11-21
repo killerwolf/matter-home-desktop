@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::*;
-use matter_home_server::backup;
+use ostal_server::backup;
 use serde_json::json;
 use tokio_rustls::TlsConnector;
 
@@ -25,7 +25,7 @@ fn mode(path: &Path) -> u32 {
 }
 
 fn fingerprint_command(dir: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_matter-home-server"))
+    let out = Command::new(env!("CARGO_BIN_EXE_ostal-server"))
         .args(["fingerprint", "--data-dir"])
         .arg(dir)
         .output()
@@ -141,40 +141,72 @@ fn import_keeps_account_certificate_and_sessions() {
         // Export : la sauvegarde complète (clés en clair), sans rien du serveur réseau.
         let export = client.get("/api/export", &token).await;
         assert_eq!(export.status, 200, "{}", export.text());
-        assert!(export.headers["content-disposition"].contains(".matterhome"));
+        assert!(export.headers["content-disposition"].contains(".ostal"));
         let text = export.text();
-        assert!(text.contains("ca_private_key"), "l'export contient les clés");
-        for forbidden in ["tls-key", "tls-cert", "compte.json", "sessions.json", "argon2", "BEGIN"] {
-            assert!(!text.contains(forbidden), "l'export contient « {forbidden} »");
+        assert!(
+            text.contains("ca_private_key"),
+            "l'export contient les clés"
+        );
+        for forbidden in [
+            "tls-key",
+            "tls-cert",
+            "compte.json",
+            "sessions.json",
+            "argon2",
+            "BEGIN",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "l'export contient « {forbidden} »"
+            );
         }
 
         // Imports refusés : le serveur continue, sans fuite de chemin local.
-        let garbage = client.request("POST", "/api/import", Some(&token), Some(b"pas une sauvegarde")).await;
-        assert_eq!((garbage.status, garbage.code().as_str()), (400, "invalid_import"));
+        let garbage = client
+            .request(
+                "POST",
+                "/api/import",
+                Some(&token),
+                Some(b"pas une sauvegarde"),
+            )
+            .await;
+        assert_eq!(
+            (garbage.status, garbage.code().as_str()),
+            (400, "invalid_import")
+        );
         let evil = json!({
-            "format": "matter-home-desktop-sauvegarde", "version": 1, "created": "2026-01-01T00:00:00+01:00",
+            "format": "ostal-sauvegarde", "version": 1, "created": "2026-01-01T00:00:00+01:00",
             "files": {"controller.json": CONTROLLER, "serveur/tls-key.pem": "cle de l'attaquant"}
         });
         let evil = client.send_json("POST", "/api/import", &token, &evil).await;
         assert_eq!((evil.status, evil.code().as_str()), (400, "invalid_import"));
         for refused in [&garbage, &evil] {
-            assert!(!refused.text().contains(dir.to_str().unwrap()), "{}", refused.text());
+            assert!(
+                !refused.text().contains(dir.to_str().unwrap()),
+                "{}",
+                refused.text()
+            );
         }
         // Contenu qui ne se chargerait pas (clé du contrôleur invalide) : refusé avant tout dépôt.
         let bad_key = CONTROLLER.replace(&"01".repeat(32), "aa");
         let bad = json!({
-            "format": "matter-home-desktop-sauvegarde", "version": 1, "created": "2026-01-01T00:00:00+01:00",
+            "format": "ostal-sauvegarde", "version": 1, "created": "2026-01-01T00:00:00+01:00",
             "files": {"controller.json": bad_key}
         });
         let bad = client.send_json("POST", "/api/import", &token, &bad).await;
         assert_eq!((bad.status, bad.code().as_str()), (400, "invalid_import"));
         assert!(!bad.text().contains("aa\"") && !bad.text().contains(&"01".repeat(32)));
-        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(!dir.join("import-en-attente.ostal").exists());
         assert_eq!(client.get("/api/state", &token).await.status, 200);
 
         // Inspection (dry_run) : résumé, sans rien mettre de côté ni arrêter le serveur.
         let inspected = client
-            .request("POST", "/api/import?dry_run=1", Some(&token), Some(text.as_bytes()))
+            .request(
+                "POST",
+                "/api/import?dry_run=1",
+                Some(&token),
+                Some(text.as_bytes()),
+            )
             .await;
         assert_eq!(inspected.status, 200, "{}", inspected.text());
         let body = inspected.json();
@@ -182,21 +214,44 @@ fn import_keeps_account_certificate_and_sessions() {
         assert_eq!(body["summary"]["devices"], 1);
         assert_eq!(body["summary"]["rooms"], 0);
         assert_eq!(body["summary"]["rules"], 0);
-        assert!(body["summary"]["created"].as_str().unwrap().starts_with("20"));
+        assert!(body["summary"]["created"]
+            .as_str()
+            .unwrap()
+            .starts_with("20"));
         let refused = client
-            .request("POST", "/api/import?dry_run=1", Some(&token), Some(b"pas une sauvegarde"))
+            .request(
+                "POST",
+                "/api/import?dry_run=1",
+                Some(&token),
+                Some(b"pas une sauvegarde"),
+            )
             .await;
-        assert_eq!((refused.status, refused.code().as_str()), (400, "invalid_import"));
+        assert_eq!(
+            (refused.status, refused.code().as_str()),
+            (400, "invalid_import")
+        );
         let odd = client
-            .request("POST", "/api/import?dry_run=peut-etre", Some(&token), Some(text.as_bytes()))
+            .request(
+                "POST",
+                "/api/import?dry_run=peut-etre",
+                Some(&token),
+                Some(text.as_bytes()),
+            )
             .await;
         assert_eq!((odd.status, odd.code().as_str()), (400, "bad_request"));
-        assert!(!dir.join("import-en-attente.matterhome").exists());
+        assert!(!dir.join("import-en-attente.ostal").exists());
         assert_eq!(client.get("/api/state", &token).await.status, 200);
 
         // Import valide : accepté, puis le serveur quitte pour être relancé.
         let changed = text.replace("Capteur", "Capteur importé");
-        let r = client.request("POST", "/api/import", Some(&token), Some(changed.as_bytes())).await;
+        let r = client
+            .request(
+                "POST",
+                "/api/import",
+                Some(&token),
+                Some(changed.as_bytes()),
+            )
+            .await;
         assert_eq!(r.status, 202, "{}", r.text());
         assert_eq!(r.json()["restarting"], true);
         assert_eq!(r.json()["summary"]["devices"], 1);
@@ -261,7 +316,7 @@ fn export_without_paired_devices_says_there_is_nothing() {
 
 #[test]
 fn account_creation_command() {
-    let bin = env!("CARGO_BIN_EXE_matter-home-server");
+    let bin = env!("CARGO_BIN_EXE_ostal-server");
     let dir = temp_dir("account");
 
     // Mot de passe trop court : refusé, rien n'est créé.

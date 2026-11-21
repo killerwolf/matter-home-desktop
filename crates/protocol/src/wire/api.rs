@@ -219,5 +219,5 @@ pub struct ImportIdentity {
     pub differs: bool,
 }
 
-/// Type de contenu de l'export `.matterhome` (JSON). Il contient des clés privées en clair.
+/// Type de contenu de l'export `.ostal` (JSON). Il contient des clés privées en clair.
 pub const EXPORT_CONTENT_TYPE: &str = "application/json";

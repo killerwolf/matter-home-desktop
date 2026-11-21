@@ -35,7 +35,7 @@ use ort::ep::coreml::{ComputeUnits, ModelFormat};
 use ort::session::Session;
 use ort::value::Tensor;
 
-use matter_home_video::Image;
+use ostal_video::Image;
 
 use super::detector::{letterbox, postprocess, Detection, Detector, ModelSpec};
 
@@ -134,7 +134,7 @@ fn init_runtime(models: &Path) -> Result<(), String> {
     };
     match ort::init_from(&path) {
         Ok(builder) => {
-            builder.with_name("matter-home").commit();
+            builder.with_name("ostal").commit();
             *loaded = true;
             Ok(())
         }
@@ -345,7 +345,7 @@ mod tests {
 
     /// Essai manuel avec un vrai modèle (jamais en CI : ni modèle ni ONNX Runtime dans le dépôt) :
     /// `MH_MODELS=<dossier avec detector.onnx> ORT_DYLIB_PATH=<libonnxruntime.dylib>
-    /// cargo test -p matter-home-server onnx -- --ignored --nocapture`.
+    /// cargo test -p ostal-server onnx -- --ignored --nocapture`.
     #[test]
     #[ignore = "manuel : MH_MODELS et ORT_DYLIB_PATH"]
     fn a_real_model_loads_and_runs() {

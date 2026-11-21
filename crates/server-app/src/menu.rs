@@ -116,10 +116,7 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
         });
         m.push(Entry::Separator);
     }
-    m.push(item(
-        Action::Open(Tab::Overview),
-        "Ouvrir Matter Home Server…",
-    ));
+    m.push(item(Action::Open(Tab::Overview), "Ouvrir Ostal Server…"));
     // Ces deux onglets n'ont de contenu que lorsque le serveur tourne.
     if i.mode.is_some() {
         m.push(item(
@@ -130,7 +127,7 @@ pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
     }
     m.push(item(Action::Open(Tab::Settings), "Réglages…"));
     m.push(Entry::Separator);
-    m.push(item(Action::Quit, "Quitter Matter Home Server…"));
+    m.push(item(Action::Quit, "Quitter Ostal Server…"));
     m
 }
 

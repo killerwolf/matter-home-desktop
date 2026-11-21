@@ -1,46 +1,46 @@
-Matter Home - serveur (macOS)
+Ostal - serveur (macOS)
 =============================
 
 Le serveur pilote vos appareils Matter et garde les données ; il tourne en tâche de fond sur
-un Mac qui reste allumé. Le client (application « Matter Home Desktop ») s'y connecte.
+un Mac qui reste allumé. Le client (application « Ostal ») s'y connecte.
 
 Contenu de cette archive
-  matter-home-server                          le programme (signature « ad hoc »)
+  ostal-server                          le programme (signature « ad hoc »)
   install.sh                                  installe le service qui démarre avec le Mac
   uninstall.sh                                le désinstalle (sans jamais effacer vos données)
-  dev.matter-home-desktop.server.plist.template   gabarit du fichier de service (launchd)
+  dev.ostal.server-daemon.plist.template   gabarit du fichier de service (launchd)
   VERSION                                     version et architectures du binaire
   LISEZMOI.txt                                ce fichier
 
 Installer, en bref (dans l'application Terminal, sur le Mac du serveur)
   1. Décompresser l'archive (double-clic), puis, TOUJOURS en premier, avant de lancer quoi que
      ce soit (macOS bloque les programmes téléchargés) :
-       cd ~/Downloads/matter-home-server-*-macos
+       cd ~/Downloads/ostal-server-*-macos
        xattr -dr com.apple.quarantine .
-  2. Reprendre vos données de la v0.2.1 (ou, installation neuve : ./matter-home-server init) :
-       ./matter-home-server import ~/chemin/matter-home-AAAA-MM-JJ.matterhome
-       ./matter-home-server create-account --username NOM
+  2. Reprendre vos données de la v0.2.1 (ou, installation neuve : ./ostal-server init) :
+       ./ostal-server import ~/chemin/ostal-AAAA-MM-JJ.ostal
+       ./ostal-server create-account --username NOM
   3. Installer le service :
        ./install.sh
      (essai sans rien modifier : ./install.sh --a-blanc)
   4. Lancer vous-même les commandes de veille et de pare-feu que le script affiche.
 
 Réglages Confidentialité et sécurité → Réseau local : activez le client (macOS le demande à son
-premier lancement) et regardez si « matter-home-server » est dans la liste.
+premier lancement) et regardez si « ostal-server » est dans la liste.
 
 Un seul serveur à la fois : ne lancez jamais deux serveurs, ni la v0.2.1, avec la même identité
 Matter (leurs abonnements se chassent, les règles s'exécutent deux fois).
 
-Arrêter le service :   sudo launchctl bootout system/dev.matter-home-desktop.server
-Démarrer le service :  sudo launchctl bootstrap system /Library/LaunchDaemons/dev.matter-home-desktop.server.plist
-Le programme installé : /usr/local/bin/matter-home-server
-Journal :              ~/Library/Logs/MatterHomeServer/server.log
+Arrêter le service :   sudo launchctl bootout system/dev.ostal.server-daemon
+Démarrer le service :  sudo launchctl bootstrap system /Library/LaunchDaemons/dev.ostal.server-daemon.plist
+Le programme installé : /usr/local/bin/ostal-server
+Journal :              ~/Library/Logs/OstalServer/server.log
 
 Guide complet : docs/installation-serveur.md dans le dépôt
 https://github.com/killerwolf/matter-home-desktop
 
-Plus simple : l'application « Matter Home Server »
-  Le fichier MatterHomeServer-<version>-universal.dmg (même page de téléchargement) contient le
+Plus simple : l'application « Ostal Server »
+  Le fichier OstalServer-<version>-universal.dmg (même page de téléchargement) contient le
   serveur sous forme d'application de la barre de menus : à glisser dans Applications, sans
   Terminal ni mot de passe administrateur. Cette archive en ligne de commande est l'option
   avancée ; ne l'utilisez pas en même temps que l'application sur le même Mac.
