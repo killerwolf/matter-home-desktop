@@ -35,7 +35,7 @@ comme option avancée.
    **Ouvrir quand même** (sur les macOS plus anciens, clic droit sur l'application → **Ouvrir**) ;
    en dernier recours, une seule commande dans le Terminal :
    `xattr -cr "/Applications/Ostal Server.app"`.
-4. Une petite maison apparaît dans la barre de menus (pas d'icône dans le Dock). Au premier
+4. Une arche (le logo d'Ostal) apparaît dans la barre de menus (pas d'icône dans le Dock). Au premier
    lancement, macOS demande l'accès au **réseau local** : acceptez.
 
 ### Première configuration (une seule fois)
@@ -62,9 +62,10 @@ sur ce Mac), l'application démarre directement le serveur, sans rien demander n
 
 ### Le menu de la barre de menus
 
-L'icône change de forme : maison pleine (tout va bien), maison avec une pastille en haut à droite
-(le serveur tourne, un point est à regarder), maison creuse (démarrage), maison avec un point
-d'exclamation (le serveur ne tourne pas : problème ou configuration à terminer).
+L'icône change de forme : arche épaisse avec un point (tout va bien), la même avec une pastille en
+haut à droite (le serveur tourne, un point est à regarder), arche fine sans point (démarrage),
+arche fine avec un point d'exclamation (le serveur ne tourne pas : problème ou configuration à
+terminer).
 
 Le menu répond à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à
 regarder », « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection,

@@ -378,7 +378,7 @@ impl App {
 
     fn done_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
         setup_header(ui, 3, "C'est prêt : le serveur tourne");
-        ui.label("Ce Mac travaille maintenant en arrière-plan : son icône (une petite maison) reste dans la barre de menus, en haut de l'écran. Il vous reste à ouvrir Ostal sur l'appareil que vous utilisez tous les jours.");
+        ui.label("Ce Mac travaille maintenant en arrière-plan : son icône (une arche avec un point) reste dans la barre de menus, en haut de l'écran. Il vous reste à ouvrir Ostal sur l'appareil que vous utilisez tous les jours.");
         ui.add_space(8.0);
         widgets::section(ui, "Connecter votre ordinateur", |ui| {
             self.desktop_steps(ui, st);

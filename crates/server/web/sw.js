@@ -4,7 +4,7 @@
 const CACHE = "ostal-shell-v10";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "app.js", "api.js", "tiles.js", "icons.js",
-  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "widgets.js", "manifest.webmanifest", "icon-192.png", "icon-512.png",
+  "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "widgets.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon.png",
 ];
 
 self.addEventListener("install", (event) => {

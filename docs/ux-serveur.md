@@ -96,10 +96,10 @@ l'adresse et l'empreinte en une phrase dense, sans dire ce qu'on fait ensuite.
 
 | Icône | Sens |
 |---|---|
-| Maison pleine | Tout va bien. |
-| Maison pleine avec une pastille en haut à droite | **Nouveau.** Le serveur tourne, un point est à regarder (appareil injoignable, caméra hors ligne, détection suspendue, accès à distance à terminer). |
-| Maison creuse | Démarrage ou arrêt en cours. |
-| Maison avec un point d'exclamation | Le serveur ne tourne pas (configuration à terminer, données utilisées ailleurs, erreur). |
+| Arche épaisse avec un point | Tout va bien. |
+| Arche épaisse avec un point et une pastille en haut à droite | **Nouveau.** Le serveur tourne, un point est à regarder (appareil injoignable, caméra hors ligne, détection suspendue, accès à distance à terminer). |
+| Arche fine, sans point | Démarrage ou arrêt en cours. |
+| Arche fine avec un point d'exclamation | Le serveur ne tourne pas (configuration à terminer, données utilisées ailleurs, erreur). |
 
 L'infobulle donne le titre du résumé, puis une ligne par point à regarder.
 

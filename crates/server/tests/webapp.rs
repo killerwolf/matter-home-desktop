@@ -30,6 +30,8 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
     ("/app/icon-512.png", "image/png"),
+    ("/app/apple-touch-icon.png", "image/png"),
+    ("/app/favicon.png", "image/png"),
 ];
 
 #[test]
