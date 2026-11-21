@@ -524,7 +524,7 @@ impl Controller {
                     {
                         if doubt {
                             log::warn!(
-                                "processus ostal incertain (pid {:?}) : le serveur continue de tourner",
+                                "processus matter-home-desktop incertain (pid {:?}) : le serveur continue de tourner",
                                 scan.uncertain
                             );
                         }

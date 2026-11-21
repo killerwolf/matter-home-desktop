@@ -110,6 +110,13 @@ if [ -f "$PLIST_DEST" ] \
   && [ "$($PLISTBUDDY -c 'Print :ProgramArguments:1' "$PLIST_DEST" 2>/dev/null || true)" = "--data-dir" ]; then
   INSTALLED_DATA_DIR="$($PLISTBUDDY -c 'Print :ProgramArguments:2' "$PLIST_DEST" 2>/dev/null || true)"
 fi
+# Passage du service de Matter Home à celui d'Ostal : le nouveau service garde le dossier de
+# données de l'ancien (même identité Matter, rien à copier ni à réappairer).
+LEGACY_PLIST="$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist"
+if [ -z "$INSTALLED_DATA_DIR" ] && [ -f "$LEGACY_PLIST" ] \
+  && [ "$($PLISTBUDDY -c 'Print :ProgramArguments:1' "$LEGACY_PLIST" 2>/dev/null || true)" = "--data-dir" ]; then
+  INSTALLED_DATA_DIR="$($PLISTBUDDY -c 'Print :ProgramArguments:2' "$LEGACY_PLIST" 2>/dev/null || true)"
+fi
 if [ -n "$DATA_DIR" ]; then
   case "$DATA_DIR" in /*) ;; *) die "--donnees doit être un chemin absolu" ;; esac
   DATA_DIR="${DATA_DIR%/}"
