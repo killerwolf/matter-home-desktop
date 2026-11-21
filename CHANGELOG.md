@@ -8,6 +8,13 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Corrigé
+
+- Matter Home Desktop : le Dock montre de nouveau l'icône de l'application (la maison bleue)
+  au lieu du logo d'egui une fois l'application ouverte.
+
 ## [1.4.0] - 2026-11-21
 
 ### Ajouté

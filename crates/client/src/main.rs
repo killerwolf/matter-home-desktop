@@ -124,7 +124,10 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Matter Home Desktop")
             .with_inner_size(size)
-            .with_min_inner_size([800.0, 520.0]),
+            .with_min_inner_size([800.0, 520.0])
+            // Sans icône, eframe remplace celle de l'application dans le Dock par le logo
+            // d'egui ; une icône vide garde celle du paquet .app (assets/icon.icns).
+            .with_icon(egui::IconData::default()),
         ..Default::default()
     };
     eframe::run_native(
