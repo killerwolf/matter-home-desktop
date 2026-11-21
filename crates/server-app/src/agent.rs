@@ -223,10 +223,12 @@ pub enum LegacyOutcome {
 /// [`apply_default`] (sinon un « non » enregistré serait remplacé par le oui par défaut) :
 ///
 /// - le choix enregistré est recopié dans le nouveau dossier de réglages s'il n'y en a pas
-///   encore (l'ancien fichier reste) ;
+///   encore ;
 /// - l'ancien agent, qui lancerait l'ancienne application à la connexion, est remplacé : le
 ///   nouvel agent est écrit d'abord (si l'ouverture à la connexion était voulue), l'ancien n'est
-///   retiré qu'ensuite. Jamais deux agents, jamais aucun par accident.
+///   retiré qu'ensuite. Jamais deux agents, jamais aucun par accident ;
+/// - enfin, « non » est écrit dans l'ancien dossier de réglages : l'ancienne application, si on
+///   la rouvre, ne récrit pas son agent (elle n'applique son « oui » par défaut que sans choix).
 pub fn adopt_legacy(
     agent_dir: &Path,
     marker_dir: &Path,
@@ -265,6 +267,11 @@ pub fn adopt_legacy(
                     old_agent.display()
                 ));
             }
+        }
+    }
+    if old_choice != Some(false) {
+        if let Err(e) = record_choice(legacy_marker, false) {
+            return LegacyOutcome::Failed(format!("{e:#}"));
         }
     }
     LegacyOutcome::Adopted
@@ -432,11 +439,12 @@ mod tests {
             adopt_legacy(&agents, &marker, &old_marker, exe, false),
             LegacyOutcome::Adopted
         );
-        // Un seul agent, le nouveau ; le choix est recopié, l'ancien réglage reste.
+        // Un seul agent, le nouveau ; le choix est recopié. L'ancienne application, elle, a
+        // désormais « non » : rouverte, elle ne récrirait pas son agent.
         assert!(!legacy_agent_path(&agents).exists());
         assert!(is_enabled(&agents) && !is_stale(&agents, exe));
         assert_eq!(recorded_choice(&marker), Some(true));
-        assert_eq!(recorded_choice(&old_marker), Some(true));
+        assert_eq!(recorded_choice(&old_marker), Some(false));
         let files: Vec<_> = std::fs::read_dir(&agents).unwrap().flatten().collect();
         assert_eq!(files.len(), 1);
         // Ensuite, le choix par défaut ne change rien.
@@ -491,14 +499,18 @@ mod tests {
         assert!(is_enabled(&agents) && !legacy_agent_path(&agents).exists());
         assert_eq!(recorded_choice(&marker), Some(true));
         // L'échec d'écriture du nouvel agent laisse l'ancien en place.
-        let (agents2, marker2) = (temp("y2-agents"), temp("y2-marker"));
+        assert_eq!(recorded_choice(&old_marker), Some(false));
+        let (agents2, marker2, old_marker2) =
+            (temp("y2-agents"), temp("y2-marker"), temp("y2-old"));
         old_plist(&agents2);
         std::fs::write(agent_path(&agents2).with_extension("plist.tmp"), "").unwrap();
         std::fs::create_dir_all(agent_path(&agents2)).unwrap();
-        let out = adopt_legacy(&agents2, &marker2, &old_marker, Path::new(EXE), false);
+        let out = adopt_legacy(&agents2, &marker2, &old_marker2, Path::new(EXE), false);
         assert!(matches!(out, LegacyOutcome::Failed(_)), "{out:?}");
         assert!(legacy_agent_path(&agents2).is_file());
-        for d in [agents, marker, old_marker, agents2, marker2] {
+        // Rien n'est écrit chez l'ancienne application tant que le remplacement n'est pas fait.
+        assert_eq!(recorded_choice(&old_marker2), None);
+        for d in [agents, marker, old_marker, agents2, marker2, old_marker2] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

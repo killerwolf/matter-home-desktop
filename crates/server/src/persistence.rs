@@ -246,29 +246,22 @@ pub fn legacy_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Dossier à utiliser : le nouveau, sauf s'il n'existe pas encore alors qu'un ancien existe
-/// (migration pas encore faite ou ratée) : jamais de perte de données.
-fn resolve_dir(current: PathBuf, legacy: &[PathBuf]) -> PathBuf {
-    if current.exists() {
-        return current;
-    }
-    legacy
-        .iter()
-        .find(|old| old.exists())
-        .cloned()
-        .unwrap_or(current)
-}
-
 /// Dossier de données de l'application
-/// (macOS : `~/Library/Application Support/dev.ostal.OstalServer`).
+/// (macOS : `~/Library/Application Support/dev.ostal.OstalServer`). Toujours celui d'Ostal,
+/// même avant la copie d'un ancien dossier : on n'y lit jamais les données d'un ancien nom
+/// (la copie se fait au démarrage, voir [`migrate_legacy_data_dir`]).
 pub fn data_dir() -> PathBuf {
-    resolve_dir(current_dir(), &legacy_dirs())
+    current_dir()
 }
 
 /// Copie vers `new` le premier dossier de `legacy` qui porte une identité, si `new` n'en a
-/// pas (voir [`crate::legacy::migrate_dir`]).
+/// pas (voir [`crate::legacy::migrate_dir`]). Un ancien dossier déjà copié (identité
+/// neutralisée) arrête la recherche : un nom plus ancien n'est jamais copié à sa place.
 fn migrate_from(legacy: &[PathBuf], new: &Path) -> Result<Option<String>> {
     for old in legacy {
+        if crate::legacy::identity_copied(old) && !old.join(FILE_NAME).exists() {
+            return Ok(None);
+        }
         if crate::backup::recovery_needed(old) || old.join(FILE_NAME).is_file() {
             return crate::legacy::migrate_dir(old, new);
         }
@@ -284,16 +277,26 @@ pub fn migrate_legacy_data_dir() -> Result<Option<String>> {
     migrate_from(&legacy_dirs(), &current_dir())
 }
 
-/// Un ancien dossier porte une identité que `dir` n'a pas : y créer une nouvelle fabric
-/// orphelinerait les appareils. Seulement pour le dossier standard.
-fn legacy_identity_for(dir: &Path, current: &Path, legacy: &[PathBuf]) -> Option<PathBuf> {
+/// Un ancien dossier porte une identité que `dir` n'a pas, active ou déjà copiée vers Ostal
+/// (neutralisée) : y créer une nouvelle fabric orphelinerait les appareils. Seulement pour le
+/// dossier standard. Rend l'ancien dossier et le fichier d'identité qu'il contient.
+fn legacy_identity_for(
+    dir: &Path,
+    current: &Path,
+    legacy: &[PathBuf],
+) -> Option<(PathBuf, &'static str)> {
     if dir != current || dir.join(FILE_NAME).exists() {
         return None;
     }
-    legacy
-        .iter()
-        .find(|old| old.join(FILE_NAME).is_file())
-        .cloned()
+    legacy.iter().find_map(|old| {
+        if old.join(FILE_NAME).is_file() {
+            Some((old.clone(), FILE_NAME))
+        } else if crate::legacy::identity_copied(old) {
+            Some((old.clone(), crate::legacy::NEUTRALIZED_IDENTITY))
+        } else {
+            None
+        }
+    })
 }
 
 /// Refuse de créer une nouvelle identité (fabric) quand `controller.json` manque alors que
@@ -302,15 +305,27 @@ fn legacy_identity_for(dir: &Path, current: &Path, legacy: &[PathBuf]) -> Option
 /// appareil appairé, et le nettoyage de l'historique supprimerait celui des appareils
 /// devenus inconnus. Les fichiers du mode démo (`*-demo.json`) ne comptent pas.
 pub fn check_fresh_start(dir: &Path) -> Result<()> {
-    if let Some(old) = legacy_identity_for(dir, &current_dir(), &legacy_dirs()) {
-        bail!(
+    match legacy_identity_for(dir, &current_dir(), &legacy_dirs()) {
+        Some((old, FILE_NAME)) => bail!(
             "{FILE_NAME} est introuvable dans {} alors que l'ancien dossier de Matter Home {} en \
              contient un : ses données n'ont pas encore été copiées. Créer une nouvelle identité \
              ici orphelinerait les appareils appairés. Quittez l'ancienne application si elle \
              tourne, puis relancez Ostal Server : la copie se fait au démarrage.",
             dir.display(),
             old.display()
-        );
+        ),
+        Some((old, name)) => bail!(
+            "{FILE_NAME} est introuvable dans {} alors que les données de Matter Home y ont déjà \
+             été copiées depuis {} (son identité y est gardée sous le nom {name}). Créer une \
+             nouvelle identité orphelinerait les appareils appairés. Pour recopier l'ancien \
+             dossier : quittez Ostal Server, déplacez {} ailleurs, renommez {name} en \
+             {FILE_NAME} dans {}, puis rouvrez Ostal Server.",
+            dir.display(),
+            old.display(),
+            dir.display(),
+            old.display()
+        ),
+        None => {}
     }
     // Un import a mis de côté un dossier qui portait une identité (« …avant-import-… »), et le
     // dossier de données n'en a plus : démarrer ici créerait une nouvelle fabric alors que
@@ -738,9 +753,9 @@ mod tests {
         let legacy = [matter_home.clone(), demo.clone()];
         std::fs::create_dir_all(demo.join("history")).unwrap();
         std::fs::write(demo.join(FILE_NAME), "demo").unwrap();
+        // Le dossier de données est toujours celui d'Ostal, même avant la copie.
+        assert_eq!(data_dir(), current_data_dir());
 
-        // Tant que rien n'est copié, l'ancien dossier existant est celui qu'on lit.
-        assert_eq!(resolve_dir(new.clone(), &legacy), demo);
         // Aucun verrou pour un ancien nom absent ; un verrou pour celui qui existe.
         assert_eq!(
             legacy_lock_paths_for(&legacy),
@@ -748,19 +763,29 @@ mod tests {
         );
         std::fs::create_dir_all(matter_home.join("history")).unwrap();
         std::fs::write(matter_home.join(FILE_NAME), "matter home").unwrap();
-        assert_eq!(resolve_dir(new.clone(), &legacy), matter_home);
         // Le plus récent des anciens noms gagne.
         assert!(migrate_from(&legacy, &new).unwrap().is_some());
         assert_eq!(std::fs::read(new.join(FILE_NAME)).unwrap(), b"matter home");
-        assert!(matter_home.join(FILE_NAME).is_file() && demo.join(FILE_NAME).is_file());
-        assert_eq!(resolve_dir(new.clone(), &legacy), new);
+        // Son identité est neutralisée ; celle de « matter-demo » n'est pas touchée.
+        assert!(crate::legacy::identity_copied(&matter_home));
+        assert!(!matter_home.join(FILE_NAME).exists() && demo.join(FILE_NAME).is_file());
         assert_eq!(migrate_from(&legacy, &new).unwrap(), None);
+        // Le nouveau dossier perd son identité : rien n'est recopié, pas même depuis
+        // « matter-demo », et aucune nouvelle fabric n'est créée sans un geste explicite.
+        std::fs::rename(new.join(FILE_NAME), base.join("perdu")).unwrap();
+        assert_eq!(migrate_from(&legacy, &new).unwrap(), None);
+        assert!(!new.join(FILE_NAME).exists());
+        assert_eq!(
+            legacy_identity_for(&new, &new, &legacy),
+            Some((matter_home.clone(), crate::legacy::NEUTRALIZED_IDENTITY))
+        );
+        std::fs::rename(base.join("perdu"), new.join(FILE_NAME)).unwrap();
 
         // Pas de nouvelle fabric dans le dossier standard tant qu'un ancien a une identité.
         let empty = base.join("vide");
         assert_eq!(
-            legacy_identity_for(&empty, &empty, &legacy),
-            Some(matter_home.clone())
+            legacy_identity_for(&empty, &empty, &[demo.clone()]),
+            Some((demo.clone(), FILE_NAME))
         );
         assert_eq!(legacy_identity_for(&new, &new, &legacy), None);
         assert_eq!(legacy_identity_for(&empty, &new, &legacy), None);

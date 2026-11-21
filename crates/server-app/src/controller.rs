@@ -53,12 +53,15 @@ pub struct State {
     pub setup: Option<SetupNeed>,
     pub busy: Option<String>,
     pub notice: Option<Notice>,
-    /// Pendant que le serveur tourne : un processus `ostal` dont on ne peut pas
+    /// Pendant que le serveur tourne : un processus `matter-home-desktop` dont on ne peut pas
     /// dire si c'est l'ancienne v0.2 (le serveur n'est pas arrêté pour autant).
     pub desktop_doubt: bool,
     pub data_dir: PathBuf,
     pub log_path: PathBuf,
     pub demo: bool,
+    /// Les données de « Matter Home » viennent d'être copiées : message à montrer jusqu'à la
+    /// fin de la session (il demande de supprimer l'ancienne application).
+    pub migrated: Option<String>,
     /// `Some` tant que le serveur tourne.
     pub hub: Option<HubHandle>,
 }
@@ -237,6 +240,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<DataLock>)) -> Han
         data_dir: config.data_dir.clone(),
         log_path: config.log_path.clone(),
         demo: config.demo,
+        migrated: None,
         hub: None,
     }));
     let (tx, rx) = mpsc::channel();
@@ -361,10 +365,22 @@ impl Controller {
                 scan.v02 || !scan.uncertain.is_empty()
             };
             if !inputs.desktop_v02_running && !inputs.service_installed && !demo_skips_setup {
-                if let Err(e) = setup::prologue(true) {
-                    log::error!("{e:#}");
-                    self.set_phase(Phase::Problem(format!("{e:#}")));
-                    return;
+                match setup::prologue_with_migration(true) {
+                    Ok((_, Some(note))) => {
+                        self.set(|s| {
+                            s.migrated = Some(format!("{}\n\n{note}", setup::DELETE_OLD_APP))
+                        });
+                    }
+                    Ok((_, None)) => {}
+                    Err(e) => {
+                        log::error!("{e:#}");
+                        // Les verrous (le nôtre et ceux de l'ancien nom) sont relâchés : sinon
+                        // l'ancienne application ne pourrait pas, par exemple, terminer l'import
+                        // interrompu qui bloque la copie.
+                        self.lock = None;
+                        self.set_phase(Phase::Problem(prologue_problem(&e)));
+                        return;
+                    }
                 }
                 let dir = persistence::data_dir();
                 inputs.identity = setup::identity_state(&dir);
@@ -654,6 +670,13 @@ impl Controller {
     }
 }
 
+/// Le texte du problème quand le prologue (reprise d'import, copie des données de l'ancien nom)
+/// a échoué. Les verrous sont alors relâchés : il faut quitter l'application avant d'agir
+/// (sinon un « Réessayer » les reprendrait).
+fn prologue_problem(e: &anyhow::Error) -> String {
+    format!("Quittez Ostal Server, puis suivez ces indications avant de le rouvrir : {e:#}")
+}
+
 fn retry_allowed(server_running: bool) -> bool {
     !server_running
 }
@@ -743,6 +766,17 @@ fn ensure_demo_account(data_dir: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_prologue_says_to_quit_first() {
+        let e = anyhow::anyhow!("un import de sauvegarde interrompu attend");
+        let text = super::prologue_problem(&e);
+        assert!(text.starts_with("Quittez Ostal Server, puis"), "{text}");
+        assert!(
+            text.ends_with("un import de sauvegarde interrompu attend"),
+            "{text}"
+        );
+    }
+
     use super::*;
 
     #[test]

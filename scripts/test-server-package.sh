@@ -68,6 +68,22 @@ if HOME="$REAL_HOME" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" >/dev/null 
 fi
 ok "refusé"
 
+echo "Données de Matter Home (ancien nom) sur ce Mac : proposées, jamais « init »"
+OLD_DATA="$HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+mkdir -p "$OLD_DATA"
+echo '{"factice":true}' > "$OLD_DATA/controller.json"
+OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"
+contains "$OUT" "vos données de « Matter Home »"
+contains "$OUT" "--donnees \"$OLD_DATA\""
+contains "$OUT" "Ne lancez PAS"
+case "$OUT" in *"installation neuve sans sauvegarde"*) fail "« init » ne doit pas être conseillé" ;; esac
+OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --donnees "$OLD_DATA" 2>&1)"
+contains "$OUT" "identité Matter : trouvée"
+case "$OUT" in *"Ne lancez PAS"*) fail "pas d'avertissement quand c'est déjà ce dossier" ;; esac
+rm -rf "$OLD_DATA"
+[ "$(count_files "$PREFIX")" = "0" ] || fail "l'essai à blanc a écrit des fichiers"
+ok "ancien dossier signalé, « init » déconseillé"
+
 echo "install.sh --prefixe (sans identité)"
 OUT="$("$PKG/install.sh" --prefixe "$PREFIX" --oui 2>&1)"
 contains "$OUT" "Le service est installé mais pas démarré"
@@ -113,6 +129,20 @@ contains "$OUT" "QUITTÉE"
 MH_PGREP="$FAKE_PGREP" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --ignorer-application-ouverte >/dev/null 2>&1 \
   || fail "--ignorer-application-ouverte"
 ok "refus clair, contournement explicite"
+
+echo "Seul l'ancien programme (matter-home-desktop) fait refuser, jamais le client « ostal »"
+FAKE_PGREP_OLD="$WORK/pgrep-ancien"
+printf '#!/bin/sh\n[ "$1" = "-x" ] && [ "$2" = "matter-home-desktop" ]\n' > "$FAKE_PGREP_OLD"
+FAKE_PGREP_CLIENT="$WORK/pgrep-client"
+printf '#!/bin/sh\n[ "$1" = "-x" ] && [ "$2" = "ostal" ]\n' > "$FAKE_PGREP_CLIENT"
+chmod +x "$FAKE_PGREP_OLD" "$FAKE_PGREP_CLIENT"
+if OUT="$(MH_PGREP="$FAKE_PGREP_OLD" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"; then
+  fail "l'ancienne application ouverte doit faire refuser l'installation"
+fi
+contains "$OUT" "« Matter Home Desktop » est ouverte"
+MH_PGREP="$FAKE_PGREP_CLIENT" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" >/dev/null 2>&1 \
+  || fail "le client Ostal ouvert ne doit pas bloquer l'installation"
+ok "garde v0.2.1 sur l'ancien nom de programme"
 
 echo "Mise à jour : le dossier du service installé est repris, jamais un autre"
 OTHER_HOME="$PREFIX/autre-home"

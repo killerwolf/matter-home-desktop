@@ -111,6 +111,10 @@ impl App {
             });
             return;
         }
+        if let Some(migrated) = &st.migrated {
+            notice_label(ui, &Notice::Ok(migrated.clone()));
+            ui.add_space(8.0);
+        }
         match (&st.phase, &st.setup) {
             (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
                 self.identity_page(ui, st, unreadable.as_deref())

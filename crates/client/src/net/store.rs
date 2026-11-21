@@ -6,7 +6,8 @@
 //! le client ne lit, n'écrit ni ne supprime rien dans ces derniers.
 //!
 //! Avant le renommage en Ostal, le fichier était dans `dev.matter-home-desktop.MatterHomeClient` :
-//! [`Store::adopt_legacy`] le copie au premier lancement, et laisse l'ancien en place.
+//! [`Store::adopt_legacy`] le copie au premier lancement (une seule fois : tant que le dossier
+//! d'Ostal n'existe pas), et laisse l'ancien en place.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -76,11 +77,15 @@ impl Store {
         Some(Store::at(dirs.data_dir().join(FILE_NAME)))
     }
 
-    /// Si ce fichier n'existe pas encore et que `legacy` existe, copie `legacy` ici (0600, octets
-    /// vérifiés, mise en place d'un seul renommage). L'ancien n'est pas touché. `Ok(true)` si la
-    /// copie a eu lieu.
+    /// Si le dossier de ce fichier n'existe pas encore (premier lancement d'Ostal) et que
+    /// `legacy` existe, copie `legacy` ici (0600, octets vérifiés, mise en place d'un seul
+    /// renommage). L'ancien n'est pas touché. `Ok(true)` si la copie a eu lieu.
+    ///
+    /// Le dossier, et non le fichier : « Oublier ce serveur » ou « Se déconnecter » suppriment le
+    /// fichier mais pas le dossier, et la connexion de Matter Home ne doit pas revenir ensuite.
     pub fn adopt_legacy(&self, legacy: &Store) -> Result<bool, NetError> {
-        if self.path.exists() || !legacy.path.is_file() {
+        let first_launch = self.path.parent().is_some_and(|dir| !dir.exists());
+        if !first_launch || self.path.exists() || !legacy.path.is_file() {
             return Ok(false);
         }
         let local = |what: &str, e: std::io::Error| {
@@ -107,6 +112,8 @@ impl Store {
         })();
         if let Err(e) = result {
             let _ = std::fs::remove_file(&tmp);
+            // Vide : retiré, pour réessayer au prochain lancement.
+            let _ = std::fs::remove_dir(dir);
             return Err(local("copie", e));
         }
         Ok(true)
@@ -380,6 +387,11 @@ mod tests {
         new.save(&out).unwrap();
         assert!(!new.adopt_legacy(&old).unwrap());
         assert_eq!(new.load().unwrap().unwrap().token, None);
+        // « Oublier ce serveur » supprime le fichier : la connexion de Matter Home ne revient pas.
+        new.delete().unwrap();
+        assert!(!new.path().exists() && new.path().parent().unwrap().is_dir());
+        assert!(!new.adopt_legacy(&old).unwrap());
+        assert!(!new.path().exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

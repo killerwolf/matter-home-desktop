@@ -4,10 +4,13 @@
 //!
 //! Migration du dossier de données, au premier lancement d'Ostal (voir [`migrate_dir`]) :
 //! l'ancien dossier est **copié** (jamais déplacé) vers le nouveau, la copie est vérifiée
-//! fichier par fichier, puis mise en place d'un seul renommage. L'ancien reste intact, comme
-//! sauvegarde. Pendant toute la vie du processus, le serveur tient aussi l'ancien verrou
-//! d'instance (`persistence::acquire_data_lock`) : l'ancienne application ne peut pas
-//! redémarrer sur l'ancienne copie avec la même identité Matter.
+//! fichier par fichier, puis mise en place d'un seul renommage. L'ancien reste en place, comme
+//! sauvegarde, à un détail près : son `controller.json` est renommé en
+//! [`NEUTRALIZED_IDENTITY`]. L'ancienne application rouverte y trouve alors « identité absente »
+//! et refuse de créer une nouvelle fabric (plan et historique présents) au lieu de repartir
+//! en silence avec la même fabric qu'Ostal. Pour revenir en arrière, il suffit de le renommer.
+//! Pendant toute la vie du processus, le serveur tient aussi l'ancien verrou d'instance
+//! (`persistence::acquire_data_lock`) : l'ancienne application ne peut pas démarrer à côté.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +52,17 @@ pub const DESKTOP_BINARY: &str = "matter-home-desktop";
 /// (`.import-partiel`, `.import-nouveau`, `.avant-import-…`) : une reprise d'import n'y touche pas.
 pub const STAGING_SUFFIX: &str = ".migration-en-cours";
 
+/// Nom que prend `controller.json` dans l'ancien dossier une fois la copie faite et vérifiée.
+pub const NEUTRALIZED_IDENTITY: &str = "controller.json.copie-vers-ostal";
+
+/// Marge gardée en plus de la taille de l'ancien dossier, pour la vérification d'espace libre.
+const SPACE_MARGIN: u64 = 16 * 1024 * 1024;
+
+/// L'identité de cet ancien dossier a déjà été copiée vers Ostal (puis neutralisée ici).
+pub fn identity_copied(old: &Path) -> bool {
+    old.join(NEUTRALIZED_IDENTITY).is_file()
+}
+
 fn sibling(dir: &Path, suffix: &str) -> Result<PathBuf> {
     let name = dir.file_name().context("dossier de données sans nom")?;
     Ok(dir.with_file_name(format!("{}{suffix}", name.to_string_lossy())))
@@ -61,7 +75,8 @@ fn sync_dir(dir: &Path) {
 /// Ce que [`migrate_dir`] doit faire, sans rien toucher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
-    /// Rien : l'ancien dossier n'a pas d'identité, ou le nouveau en a déjà une.
+    /// Rien : l'ancien dossier n'a pas d'identité (ou elle a déjà été copiée et neutralisée),
+    /// ou le nouveau en a déjà une.
     Nothing,
     /// Copier l'ancien vers le nouveau (absent ou vide).
     Copy,
@@ -89,9 +104,12 @@ pub fn plan(old: &Path, new: &Path) -> Plan {
 ///    ici modifierait l'ancien dossier ; l'ancienne application le reprend à son lancement.
 /// 2. Une copie précédente inachevée (`new` + [`STAGING_SUFFIX`]) est supprimée : `old` est
 ///    intact, on recommence.
-/// 3. Copie (dossiers, fichiers avec leurs droits et dates, liens symboliques tels quels),
-///    vérification (même arborescence, mêmes octets), puis un seul renommage vers `new`.
-///    En cas d'échec, `new` n'existe pas et `old` n'a pas bougé.
+/// 3. Espace libre : au moins la taille de `old` (plus une marge) sur le disque de `new`.
+/// 4. Copie (dossiers, fichiers avec leurs droits et dates, liens symboliques tels quels ;
+///    `old` lui-même peut être un lien vers un dossier), vérification (même arborescence,
+///    mêmes octets), puis un seul renommage vers `new`. En cas d'échec, `new` n'existe pas et
+///    `old` n'a pas bougé.
+/// 5. Seulement alors, `old/controller.json` est renommé en [`NEUTRALIZED_IDENTITY`].
 pub fn migrate_dir(old: &Path, new: &Path) -> Result<Option<String>> {
     if crate::backup::recovery_needed(old) {
         bail!(
@@ -105,8 +123,13 @@ pub fn migrate_dir(old: &Path, new: &Path) -> Result<Option<String>> {
     if what == Plan::Nothing {
         return Ok(None);
     }
+    // Un ancien dossier qui est un lien symbolique : on copie le dossier qu'il désigne.
+    let source = old
+        .canonicalize()
+        .with_context(|| format!("lecture de {}", old.display()))?;
     let parent = new.parent().context("dossier de données sans parent")?;
     std::fs::create_dir_all(parent).with_context(|| format!("création de {}", parent.display()))?;
+    check_space(&source, parent)?;
     let mut aside_note = String::new();
     match what {
         Plan::SetAsideThenCopy => {
@@ -138,8 +161,8 @@ pub fn migrate_dir(old: &Path, new: &Path) -> Result<Option<String>> {
     let staging = sibling(new, STAGING_SUFFIX)?;
     remove_tree(&staging)
         .with_context(|| format!("nettoyage de la copie inachevée {}", staging.display()))?;
-    let result = copy_tree(old, &staging)
-        .and_then(|files| verify_tree(old, &staging).map(|()| files))
+    let result = copy_tree(&source, &staging)
+        .and_then(|files| verify_tree(&source, &staging).map(|()| files))
         .and_then(|files| {
             rename_legacy_pending(&staging)?;
             #[cfg(unix)]
@@ -160,21 +183,89 @@ pub fn migrate_dir(old: &Path, new: &Path) -> Result<Option<String>> {
             Ok(files)
         });
     match result {
-        Ok(files) => Ok(Some(format!(
-            "Données de Matter Home copiées de {} vers {} ({files} fichiers, vérifiés). L'ancien \
-             dossier est gardé tel quel, comme sauvegarde.{aside_note}",
-            old.display(),
-            new.display()
-        ))),
+        Ok(files) => {
+            let neutralized = match neutralize(old) {
+                Ok(name) => format!(
+                    " Son identité Matter y est renommée en {name} : l'ancienne application ne \
+                     peut plus démarrer sur ces données (renommez ce fichier en {FILE_NAME} pour \
+                     revenir en arrière)."
+                ),
+                Err(e) => format!(
+                    " Attention : l'identité de l'ancien dossier n'a pas pu être neutralisée \
+                     ({e:#}) ; ne rouvrez plus l'ancienne application."
+                ),
+            };
+            Ok(Some(format!(
+                "Données de Matter Home copiées de {} vers {} ({files} fichiers, vérifiés). \
+                 L'ancien dossier est gardé comme sauvegarde.{neutralized}{aside_note}",
+                old.display(),
+                new.display()
+            )))
+        }
         Err(e) => {
             let _ = remove_tree(&staging);
             Err(e.context(format!(
-                "copie des données de {} vers {} impossible (l'ancien dossier n'a pas été modifié)",
+                "copie des données de {} vers {} impossible (l'ancien dossier n'a pas été \
+                 modifié).{aside_note}",
                 old.display(),
                 new.display()
             )))
         }
     }
+}
+
+/// Renomme `old/controller.json` en [`NEUTRALIZED_IDENTITY`] (ou, si ce nom est déjà pris, en
+/// une variante datée : rien n'est écrasé). Rend le nom choisi.
+fn neutralize(old: &Path) -> Result<String> {
+    let mut name = NEUTRALIZED_IDENTITY.to_string();
+    if old.join(&name).exists() {
+        name = format!(
+            "{NEUTRALIZED_IDENTITY}-{}",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        );
+    }
+    let (from, to) = (old.join(FILE_NAME), old.join(&name));
+    std::fs::rename(&from, &to).with_context(|| format!("renommage de {}", from.display()))?;
+    sync_dir(old);
+    Ok(name)
+}
+
+/// Taille cumulée des fichiers de `dir` (les liens comptent pour rien).
+fn tree_size(dir: &Path) -> Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir).with_context(|| format!("lecture de {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("lecture de {}", dir.display()))?;
+        let meta = std::fs::symlink_metadata(entry.path())
+            .with_context(|| format!("lecture de {}", entry.path().display()))?;
+        if meta.is_dir() {
+            total += tree_size(&entry.path())?;
+        } else if meta.is_file() {
+            total += meta.len();
+        }
+    }
+    Ok(total)
+}
+
+/// Refuse la copie si le disque de `dest` n'a pas la place de `source` (plus une marge).
+fn check_space(source: &Path, dest: &Path) -> Result<()> {
+    let needed = tree_size(source)?;
+    if let Some((free, _)) = crate::detection::store::disk_space(dest) {
+        space_ok(needed, free).map_err(|m| anyhow::anyhow!("{m} ({})", dest.display()))?;
+    }
+    Ok(())
+}
+
+fn space_ok(needed: u64, free: u64) -> std::result::Result<(), String> {
+    if free >= needed.saturating_add(SPACE_MARGIN) {
+        return Ok(());
+    }
+    let mo = |b: u64| b.div_ceil(1024 * 1024);
+    Err(format!(
+        "pas assez d'espace libre pour copier les données de Matter Home : il faut environ \
+         {} Mo, il en reste {} Mo. Libérez de la place sur ce disque, puis relancez Ostal Server",
+        mo(needed.saturating_add(SPACE_MARGIN)),
+        mo(free)
+    ))
 }
 
 fn remove_tree(path: &Path) -> std::io::Result<()> {
@@ -401,9 +492,29 @@ mod tests {
         assert_eq!(plan(&old, &new), Plan::Copy);
         let note = migrate_dir(&old, &new).unwrap().unwrap();
         assert!(note.contains("5 fichiers"), "{note}");
-        // Le nouveau est la copie exacte de l'ancien ; l'ancien n'a pas changé.
+        assert!(note.contains(NEUTRALIZED_IDENTITY), "{note}");
+        // Le nouveau est la copie exacte de l'ancien.
         assert_eq!(snapshot(&new), before);
-        assert_eq!(snapshot(&old), before);
+        // L'ancien n'a pas changé, sauf son identité, renommée (même contenu, mêmes droits).
+        let renamed: Vec<_> = before
+            .iter()
+            .cloned()
+            .map(|(name, mode, bytes)| {
+                let name = if name == FILE_NAME {
+                    NEUTRALIZED_IDENTITY.to_string()
+                } else {
+                    name
+                };
+                (name, mode, bytes)
+            })
+            .collect();
+        let mut renamed = renamed;
+        renamed.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut after = snapshot(&old);
+        after.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(after, renamed);
+        assert!(!old.join(FILE_NAME).exists() && identity_copied(&old));
+        assert_eq!(plan(&old, &new), Plan::Nothing);
         assert_eq!(
             std::fs::metadata(&new).unwrap().permissions().mode() & 0o777,
             0o700
@@ -446,6 +557,8 @@ mod tests {
         assert_eq!(plan(&old, &new), Plan::Copy);
         migrate_dir(&old, &new).unwrap().unwrap();
         assert!(new.join(FILE_NAME).is_file());
+        // (On remet l'identité de l'ancien pour recommencer.)
+        std::fs::rename(old.join(NEUTRALIZED_IDENTITY), old.join(FILE_NAME)).unwrap();
 
         // Un compte créé dans le nouveau dossier avant la migration : mis de côté, jamais perdu.
         std::fs::remove_dir_all(&new).unwrap();
@@ -485,8 +598,9 @@ mod tests {
         let staging = sibling(&new, STAGING_SUFFIX).unwrap();
         std::fs::create_dir_all(staging.join("history")).unwrap();
         std::fs::write(staging.join(FILE_NAME), "à moitié").unwrap();
+        let before = snapshot(&old);
         migrate_dir(&old, &new).unwrap().unwrap();
-        assert_eq!(snapshot(&new), snapshot(&old));
+        assert_eq!(snapshot(&new), before);
         assert!(!staging.exists());
         std::fs::remove_dir_all(base).unwrap();
     }
@@ -510,6 +624,8 @@ mod tests {
             assert!(!new.exists());
             assert!(!sibling(&new, STAGING_SUFFIX).unwrap().exists());
             assert_eq!(snapshot_without(&old, &locked), before);
+            // L'identité de l'ancien n'est neutralisée qu'après une copie réussie.
+            assert!(old.join(FILE_NAME).is_file() && !identity_copied(&old));
         }
         std::fs::remove_dir_all(base).unwrap();
 
@@ -573,6 +689,91 @@ mod tests {
         let err = format!("{:#}", migrate_dir(&old, &new).unwrap_err());
         assert!(err.contains("interrompu"), "{err}");
         assert!(!new.exists() && complete.join(FILE_NAME).exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_failed_set_aside_copy_names_the_set_aside_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = base("aside-fail");
+        let old = old_dir(&base);
+        let new = base.join("dev.ostal.OstalServer");
+        std::fs::create_dir_all(new.join("serveur")).unwrap();
+        std::fs::write(new.join("serveur/compte.json"), "nouveau compte").unwrap();
+        let locked = old.join("history/1.jsonl");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::File::open(&locked).is_ok();
+        let result = migrate_dir(&old, &new);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if !readable {
+            let err = format!("{:#}", result.unwrap_err());
+            assert!(
+                err.contains("dev.ostal.OstalServer.sans-identite-"),
+                "{err}"
+            );
+            assert!(old.join(FILE_NAME).is_file());
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn an_old_folder_that_is_a_symlink_is_copied() {
+        let base = base("symlink");
+        let real = old_dir(&base);
+        let real_moved = base.join("ailleurs");
+        std::fs::rename(&real, &real_moved).unwrap();
+        let old = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        std::os::unix::fs::symlink(&real_moved, &old).unwrap();
+        let new = base.join("dev.ostal.OstalServer");
+        let before = snapshot(&real_moved);
+        migrate_dir(&old, &new).unwrap().unwrap();
+        assert!(std::fs::symlink_metadata(&new).unwrap().is_dir());
+        assert_eq!(snapshot(&new), before);
+        // Le lien est toujours là ; l'identité du dossier qu'il désigne est neutralisée.
+        assert!(std::fs::symlink_metadata(&old)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(identity_copied(&real_moved));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn free_space_is_checked_against_the_old_folder_size() {
+        let base = base("space");
+        let old = old_dir(&base);
+        // 50 000 × 2 octets d'historique, plus le reste.
+        let size = tree_size(&old).unwrap();
+        assert!(size >= 100_000 && size < 101_000, "{size}");
+        assert!(space_ok(size, size + SPACE_MARGIN).is_ok());
+        let err = space_ok(size, size).unwrap_err();
+        assert!(err.contains("pas assez d'espace libre"), "{err}");
+        assert!(err.contains("Mo"), "{err}");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn an_already_neutralized_name_is_never_overwritten() {
+        let base = base("neutral");
+        let old = old_dir(&base);
+        std::fs::write(old.join(NEUTRALIZED_IDENTITY), "copie précédente").unwrap();
+        let new = base.join("dev.ostal.OstalServer");
+        migrate_dir(&old, &new).unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(old.join(NEUTRALIZED_IDENTITY)).unwrap(),
+            b"copie pr\xc3\xa9c\xc3\xa9dente"
+        );
+        assert!(!old.join(FILE_NAME).exists());
+        let dated = std::fs::read_dir(&old)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{NEUTRALIZED_IDENTITY}-"))
+            })
+            .count();
+        assert_eq!(dated, 1);
         std::fs::remove_dir_all(base).unwrap();
     }
 }

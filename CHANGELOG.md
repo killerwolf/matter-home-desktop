@@ -23,8 +23,10 @@ Les téléchargements de chaque version sont sur la
   appareil).
 - **Rien n'est perdu au passage** : au premier lancement, Ostal Server **copie** le dossier de
   données de Matter Home (`dev.matter-home-desktop.MatterHomeDesktop` →
-  `dev.ostal.OstalServer`), vérifie la copie et garde l'ancien dossier intact, comme sauvegarde ;
-  même identité Matter, aucun appareil à réappairer. L'application de bureau reprend de même sa
+  `dev.ostal.OstalServer`), vérifie la copie et garde l'ancien dossier comme sauvegarde ; même
+  identité Matter, aucun appareil à réappairer. Dans l'ancien dossier, seul `controller.json`
+  est renommé (`controller.json.copie-vers-ostal`, réversible) : l'ancienne application rouverte
+  par erreur ne repart pas avec la même fabric. L'application de bureau reprend de même sa
   connexion (`dev.ostal.OstalClient`), Ostal Server le réglage « ouverture à la connexion » (son
   agent remplace celui de Matter Home, qui est retiré). Les sauvegardes `.matterhome`
   s'importent toujours ; l'app web garde sa session et ses réglages. Voir

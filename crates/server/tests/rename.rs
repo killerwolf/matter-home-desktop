@@ -1,6 +1,7 @@
 //! Renommage « Matter Home » → Ostal, de bout en bout avec le vrai binaire : le dossier de
-//! données de l'ancien nom est copié au premier lancement, l'ancien reste intact, et l'ancienne
-//! application (qui tient l'ancien verrou) empêche toute écriture.
+//! données de l'ancien nom est copié au premier lancement, l'ancien reste en place (seule son
+//! identité est renommée, pour que l'ancienne application ne reparte pas avec la même fabric),
+//! et l'ancienne application (qui tient l'ancien verrou) empêche toute écriture.
 //!
 //! Sécurité : HOME factice dans le dossier temporaire, **sans** `--data-dir` (c'est le chemin
 //! standard, sous ce HOME, qui est en jeu). Seule `create-account` est lancée : elle ne démarre
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use common::{temp_dir, PASSWORD, USER};
-use ostal_server::persistence;
+use ostal_server::{legacy, persistence, setup};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ostal-server");
 
@@ -72,6 +73,23 @@ fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// L'arborescence `before` une fois l'identité de l'ancien dossier neutralisée.
+fn neutralized(before: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+    let mut v: Vec<_> = before
+        .iter()
+        .map(|(name, bytes)| {
+            let name = if name == persistence::FILE_NAME {
+                legacy::NEUTRALIZED_IDENTITY.to_string()
+            } else {
+                name.clone()
+            };
+            (name, bytes.clone())
+        })
+        .collect();
+    v.sort();
+    v
+}
+
 #[test]
 fn first_launch_copies_the_old_folder_and_leaves_it_intact() {
     let base = temp_dir("rename-copy");
@@ -92,8 +110,15 @@ fn first_launch_copies_the_old_folder_and_leaves_it_intact() {
         b"{}\n{}\n"
     );
     assert!(new.join(persistence::SERVER_DIR).is_dir());
-    assert_eq!(tree(&old), before);
+    assert_eq!(tree(&old), neutralized(&before));
     assert!(!old.join(persistence::SERVER_DIR).exists());
+    // Ce que l'ancienne application (v1.4) y voit : identité absente, et la même garde
+    // qu'elle (`check_fresh_start`) refuse d'y créer une nouvelle fabric.
+    assert_eq!(setup::identity_state(&old), setup::IdentityState::Missing);
+    let refused = persistence::check_fresh_start(&old)
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("maison.json"), "{refused}");
 
     // Deuxième lancement : plus de copie, le nouveau dossier est celui qu'on utilise.
     std::fs::write(old.join("maison.json"), "{\"modifie\":1}").unwrap();
@@ -133,6 +158,6 @@ fn the_old_app_holding_its_lock_blocks_everything() {
         .join("dev.ostal.OstalServer")
         .join(persistence::FILE_NAME)
         .is_file());
-    assert_eq!(tree(&old), before);
+    assert_eq!(tree(&old), neutralized(&before));
     let _ = std::fs::remove_dir_all(base);
 }

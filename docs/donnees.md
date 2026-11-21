@@ -25,7 +25,7 @@ serveur et supprime ce fichier. Ce dossier est distinct de celui de la v0.2.1
 ## Après le renommage de « Matter Home » en Ostal
 
 Au premier lancement, Ostal reprend les données de Matter Home **par copie** ; les anciens
-dossiers restent tels quels, comme sauvegarde, et ne sont plus lus ensuite.
+dossiers restent en place, comme sauvegarde, et ne sont plus lus ensuite.
 
 | Matter Home | Ostal | Repris par |
 |---|---|---|
@@ -37,11 +37,21 @@ dossiers restent tels quels, comme sauvegarde, et ne sont plus lus ensuite.
 
 La copie du serveur n'a lieu que si l'ancien dossier a une identité Matter (`controller.json`)
 et le nouveau non. Elle est vérifiée octet par octet avant d'être mise en place d'un seul
-renommage ; en cas d'échec, rien n'est démarré et l'ancien dossier n'a pas bougé. Tant qu'Ostal
-tourne, il tient aussi le verrou de Matter Home : l'ancienne application ne peut plus démarrer
-sur l'ancienne copie (même identité Matter, les deux se disputeraient les appareils). Les
-sauvegardes `.matterhome` s'importent toujours. Les journaux de Matter Home
-(`~/Library/Logs/Matter Home Server`) restent où ils sont.
+renommage ; l'espace libre est vérifié d'abord. En cas d'échec, rien n'est démarré, l'ancien
+dossier n'a pas bougé et l'application relâche ses verrous (quittez-la avant d'agir).
+
+Une fois la copie en place, une seule chose change dans l'ancien dossier : son
+`controller.json` est renommé en `controller.json.copie-vers-ostal`. Rouverte par erreur,
+l'ancienne application n'y trouve donc plus d'identité et refuse d'en créer une nouvelle (le plan
+et l'historique sont là) : elle ne peut plus repartir en silence avec la même fabric qu'Ostal et
+des réglages qui divergent. Ostal Server écrit aussi « non » dans les réglages de l'ancienne
+application, pour qu'elle ne remette pas son agent d'ouverture à la connexion, et demande de la
+supprimer. Pour revenir en arrière, il suffit de renommer ce fichier en `controller.json`.
+
+Tant qu'Ostal tourne, il tient aussi le verrou de Matter Home : l'ancienne application ne peut
+pas démarrer à côté. Les sauvegardes `.matterhome` s'importent toujours. Les journaux de Matter
+Home (`~/Library/Logs/Matter Home Server`) restent où ils sont. Avec le service installé au
+Terminal (`install.sh`), le dossier de Matter Home est repris tel quel (`--donnees`), sans copie.
 
 ## Ce que le serveur garde
 

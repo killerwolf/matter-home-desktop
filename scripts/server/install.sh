@@ -103,6 +103,9 @@ BIN_DEST="$PREFIX$BIN_FINAL"
 PLIST_DEST="$PREFIX$PLIST_FINAL"
 PLISTBUDDY=/usr/libexec/PlistBuddy
 DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.ostal.OstalServer"
+# Dossier de données de « Matter Home », l'ancien nom (v0.2.1 à v1.4).
+LEGACY_DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+LEGACY_DATA_FOUND=0
 # Mise à jour : le dossier de données du service déjà installé fait foi, jamais celui qu'on
 # déduirait de HOME ou d'une option : le service ne doit pas être redirigé vers un autre dossier.
 INSTALLED_DATA_DIR=""
@@ -201,8 +204,10 @@ title "Ostal — installation du serveur"
 
 # La v0.2.1 (même nom de programme que le client) ne prend pas le verrou du serveur : ouverte sur
 # ce Mac avec les mêmes données, elle chasserait le serveur (deux instances, une même identité).
-if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x ostal >/dev/null 2>&1; then
-  die "l'application « Ostal » est ouverte sur ce Mac.
+# (C'est l'ancien nom du programme, d'avant le renommage en Ostal : le client actuel s'appelle
+# « ostal » et n'est pas concerné.)
+if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x matter-home-desktop >/dev/null 2>&1; then
+  die "l'application « Matter Home Desktop » est ouverte sur ce Mac.
 Si c'est la v0.2.1 (l'ancienne application, avec ses appareils), elle doit être QUITTÉE avant d'installer le serveur : ne lancez jamais deux instances avec la même identité Matter. Quittez-la (Cmd+Q) puis relancez ./install.sh.
 Si c'est le client de la version 1 (il ne pilote rien lui-même), relancez avec --ignorer-application-ouverte."
 fi
@@ -240,10 +245,21 @@ else
   else
     say "  Le dossier n'existe pas encore : ce script ne le crée pas à vide."
   fi
-  say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
-  say "  que vous n'aurez pas, avec ce même compte utilisateur :"
-  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
-  say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
+  if [ "$DATA_DIR" != "$LEGACY_DEFAULT_DATA_DIR" ] && [ -f "$LEGACY_DEFAULT_DATA_DIR/controller.json" ]; then
+    # Les données de « Matter Home » (l'ancien nom) sont sur ce Mac : c'est ce dossier-là qu'il
+    # faut reprendre, jamais une nouvelle identité.
+    LEGACY_DATA_FOUND=1
+    warn "vos données de « Matter Home » (l'ancien nom d'Ostal), avec leur identité Matter, sont dans :
+    $LEGACY_DEFAULT_DATA_DIR
+  Reprenez ce dossier tel quel (rien à copier ni à réappairer) en relançant :
+    ./install.sh --donnees \"$LEGACY_DEFAULT_DATA_DIR\"
+  Ne lancez PAS « $BIN_NAME init » : il créerait une seconde maison (une nouvelle fabric), et vos appareils appairés ne seraient plus reconnus."
+  else
+    say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
+    say "  que vous n'aurez pas, avec ce même compte utilisateur :"
+    say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
+    say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
+  fi
 fi
 [ -f "$DATA_DIR/serveur/compte.json" ] && HAS_ACCOUNT=1
 if [ "$HAS_ACCOUNT" = "1" ]; then
@@ -408,8 +424,14 @@ CAN_START=0
 [ "$HAS_IDENTITY" = "1" ] && CAN_START=1
 if [ "$CAN_START" = "0" ]; then
   say "  Le service est installé mais pas démarré : il n'y a pas encore d'identité Matter."
-  say "  Importez vos données ou lancez « $BIN_NAME init » (voir ci-dessus), créez le compte, puis :"
-  say "    sudo launchctl bootstrap system $PLIST_FINAL"
+  if [ "$LEGACY_DATA_FOUND" = "1" ]; then
+    say "  Vos données de Matter Home sont sur ce Mac : relancez"
+    say "    ./install.sh --donnees \"$LEGACY_DEFAULT_DATA_DIR\""
+    say "  (et non « $BIN_NAME init », qui créerait une seconde maison)."
+  else
+    say "  Importez vos données ou lancez « $BIN_NAME init » (voir ci-dessus), créez le compte, puis :"
+    say "    sudo launchctl bootstrap system $PLIST_FINAL"
+  fi
 else
   DO_START=0
   case "$START" in
