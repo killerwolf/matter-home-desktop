@@ -20,12 +20,33 @@ maison** : ni mesures, ni plan, ni règles, ni identité Matter. Sans serveur, e
 
 Le mot de passe n'est jamais conservé. **Se déconnecter** (menu Fichier) révoque le jeton sur le
 serveur et supprime ce fichier. Ce dossier est distinct de celui de la v0.2.1
-(`…Ostal`), que le client ne lit, n'écrit ni ne supprime jamais.
+(`…MatterHomeDesktop`), que le client ne lit, n'écrit ni ne supprime jamais.
+
+## Après le renommage de « Matter Home » en Ostal
+
+Au premier lancement, Ostal reprend les données de Matter Home **par copie** ; les anciens
+dossiers restent tels quels, comme sauvegarde, et ne sont plus lus ensuite.
+
+| Matter Home | Ostal | Repris par |
+|---|---|---|
+| `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/` | `…/dev.ostal.OstalServer/` | le serveur (application ou ligne de commande), verrous pris |
+| `~/Library/Application Support/dev.matter-home-desktop.MatterHomeClient/connexion.json` | `…/dev.ostal.OstalClient/connexion.json` | l'application de bureau |
+| `~/Library/Application Support/Matter Home Server/ouverture-a-la-connexion` | `…/Ostal Server/` | Ostal Server |
+| `~/Library/LaunchAgents/dev.matter-home-desktop.server-app.plist` | `dev.ostal.server.plist` | Ostal Server (l'ancien est retiré) |
+| `/Library/LaunchDaemons/dev.matter-home-desktop.server.plist` | `dev.ostal.server-daemon.plist` | `install.sh` / `uninstall.sh` |
+
+La copie du serveur n'a lieu que si l'ancien dossier a une identité Matter (`controller.json`)
+et le nouveau non. Elle est vérifiée octet par octet avant d'être mise en place d'un seul
+renommage ; en cas d'échec, rien n'est démarré et l'ancien dossier n'a pas bougé. Tant qu'Ostal
+tourne, il tient aussi le verrou de Matter Home : l'ancienne application ne peut plus démarrer
+sur l'ancienne copie (même identité Matter, les deux se disputeraient les appareils). Les
+sauvegardes `.matterhome` s'importent toujours. Les journaux de Matter Home
+(`~/Library/Logs/Matter Home Server`) restent où ils sont.
 
 ## Ce que le serveur garde
 
-Le reste de cette page décrit le dossier de données **du serveur** (`ostal-server`), qui
-est celui de la v0.2.1 : toutes les données restent sur le Mac qui le fait tourner, dans :
+Le reste de cette page décrit le dossier de données **du serveur** (`ostal-server`) : toutes
+les données restent sur le Mac qui le fait tourner, dans :
 
 ```
 ~/Library/Application Support/dev.ostal.OstalServer/
