@@ -1640,10 +1640,7 @@ mod tests {
             fabric_entry(7, Some("Autre contrôleur")),
             fabric_entry(42, Some("Ostal Server")),
         ]);
-        assert_eq!(
-            our_fabric_label(&list, 42).as_deref(),
-            Some("Ostal Server")
-        );
+        assert_eq!(our_fabric_label(&list, 42).as_deref(), Some("Ostal Server"));
         assert_eq!(
             our_fabric_label(&list, 7).as_deref(),
             Some("Autre contrôleur")
