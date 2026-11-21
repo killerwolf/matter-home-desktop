@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 
 use protocol::automation::RuleSet;
 use protocol::home::HomePlan;
+use protocol::mode::ModeSource;
 use protocol::wire::{
     self, Accepted, ApiError, CamerasResponse, CoverRequest, CustomizeRequest, ErrorBody,
     ErrorCode, HistoryQuery, HistoryResponse, ImportResponse, LoginRequest, LoginResponse,
@@ -512,16 +513,20 @@ async fn put_mode(
         return Err(ApiError::new(ErrorCode::Unauthorized).into());
     }
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
-    let ModeRequest { mode } = serde_json::from_slice(&bytes).map_err(|_| {
+    let ModeRequest { mode, source } = serde_json::from_slice(&bytes).map_err(|_| {
         ApiErr(ApiError::with_detail(
             ErrorCode::BadRequest,
             "mode attendu : present, absent, nuit ou vacances",
         ))
     })?;
+    // La source annoncée n'est retenue que si le jeton la permet (un raccourci ne peut pas se
+    // dire « automatisation », une session pas « raccourci ») ; un ancien client n'en dit rien.
+    let source = ModeSource::claimed(source, !is_session);
     let hub = state.hub.clone();
-    let changed = blocking(move || hub.set_mode(mode)).await?;
+    let label = source.label();
+    let changed = blocking(move || hub.set_mode(mode, source)).await?;
     log::info!(
-        "mode demandé par {ip} ({}) : {}",
+        "mode demandé par {ip} ({}, {label}) : {}",
         if is_session {
             "session"
         } else {

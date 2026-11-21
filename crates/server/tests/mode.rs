@@ -162,6 +162,110 @@ fn the_mode_token_changes_the_mode_and_can_do_nothing_else() {
     });
 }
 
+/// `PUT /api/mode` avec une source annoncée par le client.
+async fn put_mode_from(
+    client: &Client,
+    token: &str,
+    mode: &str,
+    source: serde_json::Value,
+) -> common::Resp {
+    client
+        .request(
+            "PUT",
+            "/api/mode",
+            Some(token),
+            Some(
+                json!({ "mode": mode, "source": source })
+                    .to_string()
+                    .as_bytes(),
+            ),
+        )
+        .await
+}
+
+/// Chaque changement de mode dit d'où il vient (`mode_changed`, champ `source`) ; un client ne
+/// peut annoncer que ce que son jeton permet, et un ancien client (sans `source`) marche encore.
+#[test]
+fn every_mode_change_says_where_it_comes_from() {
+    let rig = rig("mode-source");
+    let client = client(&rig);
+    let mode_token = rig.hub.generate_mode_token().unwrap();
+    common::runtime().block_on(async {
+        let session = login(&client).await;
+        let mut ws = client.ws(&session, PROTOCOL_VERSION).await.unwrap();
+        let first = common::next_json(&mut ws, Duration::from_secs(5)).await;
+        assert_eq!(first.unwrap()["type"], "hello");
+        let cases: [(&str, &str, serde_json::Value, serde_json::Value); 8] = [
+            // App web, app de bureau.
+            (
+                "session",
+                "absent",
+                json!({"kind": "web"}),
+                json!({"kind": "web"}),
+            ),
+            (
+                "session",
+                "nuit",
+                json!({"kind": "desktop"}),
+                json!({"kind": "desktop"}),
+            ),
+            // Ancien client : aucune source annoncée.
+            ("session", "present", json!(null), json!({"kind": "other"})),
+            // Une session ne peut pas se dire raccourci ni automatisation.
+            (
+                "session",
+                "absent",
+                json!({"kind": "shortcut"}),
+                json!({"kind": "other"}),
+            ),
+            (
+                "session",
+                "nuit",
+                json!({"kind": "rule", "name": "x"}),
+                json!({"kind": "other"}),
+            ),
+            // Jeton de mode : raccourci iPhone, quoi qu'il dise (sauf widget).
+            (
+                "jeton",
+                "vacances",
+                json!(null),
+                json!({"kind": "shortcut"}),
+            ),
+            (
+                "jeton",
+                "present",
+                json!({"kind": "rule", "name": "x"}),
+                json!({"kind": "shortcut"}),
+            ),
+            (
+                "jeton",
+                "absent",
+                json!({"kind": "widget"}),
+                json!({"kind": "widget"}),
+            ),
+        ];
+        for (who, mode, declared, expected) in cases {
+            let token = if who == "session" {
+                &session
+            } else {
+                &mode_token
+            };
+            let r = if declared.is_null() {
+                put_mode(&client, Some(token), mode).await
+            } else {
+                put_mode_from(&client, token, mode, declared.clone()).await
+            };
+            assert_eq!(r.status, 200, "{who} {declared}: {}", r.text());
+            assert_eq!(r.json(), json!({"mode": mode, "changed": true}));
+            let event = common::wait_event(&mut ws, "mode_changed", Duration::from_secs(5), |e| {
+                e["mode"] == mode
+            })
+            .await;
+            assert_eq!(event["event"]["source"], expected, "{who} {declared}");
+        }
+    });
+}
+
 #[test]
 fn mode_token_failures_never_block_a_valid_token_nor_the_login() {
     let rig = rig("mode-limit");

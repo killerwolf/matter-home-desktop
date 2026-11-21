@@ -20,6 +20,16 @@ Les téléchargements de chaque version sont sur la
   dire « allumé », jamais « attention ». L'échelle de température ne change pas. Tous les textes
   gardent un contraste d'au moins 4,5 (testé).
 
+### Ajouté
+
+- **Chaque changement de mode dit d'où il vient** : raccourci iPhone (jeton de mode), app web, app
+  de bureau, fenêtre du serveur, automatisation (avec le nom de la règle) ou autre. Le journal du
+  serveur et celui de l'app de bureau l'écrivent (« Mode : Absent (raccourci iPhone) ») ; l'app web
+  montre une notification brève quand le mode change ailleurs ; une règle « Quand le mode
+  devient… » peut l'écrire dans sa notification avec la nouvelle variable `{source}`. Protocole
+  compatible : `mode_changed` et `PUT /api/mode` gagnent un champ facultatif `source`, que les
+  anciens clients ignorent ; un client ne peut annoncer que ce que son jeton permet.
+
 ## [2.0.0] - 2026-11-21
 
 ### Modifié

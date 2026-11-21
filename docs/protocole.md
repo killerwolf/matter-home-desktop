@@ -90,7 +90,7 @@ aux essais et aux tests.
 | `DELETE /api/devices/{id}/history` | effacer l'historique (202) |
 | `GET`, `PUT /api/plan` | lire, remplacer le plan de la maison (au moins un étage : sinon `plan_without_floor`, 400) |
 | `GET`, `PUT /api/rules` | lire, remplacer les règles |
-| `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances"}` : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
+| `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances", "source": {"kind": "web"}}` (`source` facultatif) : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
 | `GET /api/export` | sauvegarde `.ostal` (**clés privées et mots de passe des caméras en clair**) |
@@ -159,6 +159,15 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   (`changed: false`). Version du protocole : **3** (les règles de mode
   n'ont pas de repli : un client de version 2, 1.1.0, est refusé d'emblée par `version_incompatible`,
   plutôt que d'échouer à lire l'état complet en boucle).
+- **D'où vient le changement** (ajouté après la 2.0, sans changer la version du protocole) :
+  `mode_changed` porte un champ facultatif `source`, par exemple
+  `{"type": "mode_changed", "mode": "nuit", "source": {"kind": "rule", "name": "Nuit à 23 h"}}`.
+  `kind` vaut `shortcut` (raccourci iPhone : jeton de mode), `web`, `desktop`, `server_app` (fenêtre
+  du serveur), `rule` (automatisation, avec `name`), `widget` ou `other`. Un client l'annonce dans
+  `PUT /api/mode` (`"source": {"kind": "web"}`), mais le serveur ne garde que ce que le jeton
+  permet : avec le jeton de mode, `shortcut` (ou `widget` s'il le dit) ; avec une session, `web` ou
+  `desktop`, sinon `other` (un ancien client n'envoie rien). Une valeur inconnue se lit `other` ; un
+  ancien client ignore le champ.
 - **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode**, un secret
   à part que le serveur crée à la demande (fenêtre du serveur), qui ne vaut que pour cette route :
   `GET /api/state`, le WebSocket, le plan, les règles, l'export… répondent 401 avec lui. Il se

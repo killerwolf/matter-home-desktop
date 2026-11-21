@@ -735,7 +735,7 @@ impl App {
     /// Change le mode de la maison (menu ou vue d'ensemble).
     fn set_mode(&mut self, st: &State, mode: protocol::mode::HomeMode) {
         if let Some(hub) = &st.hub {
-            if let Err(e) = hub.0.set_mode(mode) {
+            if let Err(e) = hub.0.set_mode(mode, protocol::mode::ModeSource::ServerApp) {
                 log::warn!("mode non changé : {e:?}");
                 self.local_notice = Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
             }

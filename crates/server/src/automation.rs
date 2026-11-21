@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context as _, Result};
-use protocol::mode::HomeMode;
+use protocol::mode::{HomeMode, ModeSource};
 use tokio::sync::mpsc;
 
 use crate::events::{now_unix, Event, EventSink, MeasureKind, NodeStatus, StateKind};
@@ -116,6 +116,9 @@ pub struct Firing {
     /// Description de l'événement de détection (vide s'il n'y en a pas) et son niveau en mots.
     pub description: String,
     pub niveau: String,
+    /// D'où vient le changement de mode (règle « Quand le mode devient… ») : `{source}`. Vide
+    /// pour les autres déclencheurs.
+    pub source: String,
 }
 
 #[derive(Default)]
@@ -178,8 +181,9 @@ impl Engine {
     }
 
     /// Le mode change : le retient et rend les règles « Quand le mode devient… » à exécuter.
-    /// Redemander le mode actuel ne déclenche rien. `{valeur}` vaut le libellé du mode.
-    pub fn on_mode(&mut self, mode: HomeMode, clock: &Clock) -> Vec<Firing> {
+    /// Redemander le mode actuel ne déclenche rien. `{valeur}` vaut le libellé du mode, `{source}`
+    /// d'où vient le changement (« raccourci iPhone »…).
+    pub fn on_mode(&mut self, mode: HomeMode, source: &ModeSource, clock: &Clock) -> Vec<Firing> {
         if self.mode == mode {
             return Vec::new();
         }
@@ -189,6 +193,10 @@ impl Engine {
             .iter()
             .filter(|r| matches!(r.trigger, Trigger::Mode { to } if to == mode))
             .filter_map(|r| self.try_fire(r, clock, String::new(), mode.label().to_string()))
+            .map(|f| Firing {
+                source: source.label(),
+                ..f
+            })
             .collect()
     }
 
@@ -335,6 +343,7 @@ impl Engine {
             time: clock.hhmm(),
             description: String::new(),
             niveau: String::new(),
+            source: String::new(),
         })
     }
 
@@ -559,6 +568,7 @@ pub fn render(template: &str, f: &Firing) -> String {
         .replace("{regle}", &f.rule.name)
         .replace("{description}", &f.description)
         .replace("{niveau}", &f.niveau)
+        .replace("{source}", &f.source)
 }
 
 // Même contrôle que celui du client, qui ne doit pas envoyer une adresse que le serveur refuse.
@@ -681,7 +691,10 @@ async fn run(
             // Même chemin qu'une demande d'API (`app::pump_events` → `Hub::set_mode`) : le même mode
             // ne fait rien ; le délai anti-rafale des règles borne les allers-retours.
             Action::SetMode { mode } => {
-                ui.send(Event::HomeModeRequested(*mode));
+                ui.send(Event::HomeModeRequested {
+                    mode: *mode,
+                    rule: firing.rule.name.clone(),
+                });
                 Ok(format!("mode : {}", mode.label()))
             }
             Action::Unknown => Err(anyhow::anyhow!("action inconnue de ce serveur")),
@@ -717,7 +730,7 @@ pub enum EngineCommand {
     SetRules(Vec<Rule>),
     Test(u64),
     /// Le mode de la maison a changé : peut déclencher des règles.
-    Mode(HomeMode),
+    Mode(HomeMode, ModeSource),
     /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18).
     /// `true` : début du passage ; `false` : classe nouvelle en cours de passage. Le dernier
     /// booléen : une description va arriver (les règles qui l'emploient attendent).
@@ -749,13 +762,13 @@ pub fn spawn(
                 },
                 cmd = commands.recv() => match cmd {
                     Some(EngineCommand::SetRules(rules)) => { engine.set_rules(rules); Vec::new() }
-                    Some(EngineCommand::Mode(mode)) => engine.on_mode(mode, &Clock::local()),
+                    Some(EngineCommand::Mode(mode, source)) => engine.on_mode(mode, &source, &Clock::local()),
                     Some(EngineCommand::Detection(event, opening, awaiting)) => engine.on_detection(&event, opening, awaiting, &Clock::local()),
                     Some(EngineCommand::Described(event)) => engine.on_described(&event, &Clock::local()),
                     Some(EngineCommand::Test(id)) => engine
                         .rule(id)
                         .cloned()
-                        .map(|rule| Firing { rule, device: "test".into(), value: "test".into(), time: Clock::local().hhmm(), description: "Une personne se tient devant la porte.".into(), niveau: "suspect".into() })
+                        .map(|rule| Firing { rule, device: "test".into(), value: "test".into(), time: Clock::local().hhmm(), description: "Une personne se tient devant la porte.".into(), niveau: "suspect".into(), source: "test".into() })
                         .into_iter()
                         .collect(),
                     None => break,
@@ -1121,6 +1134,7 @@ mod tests {
             time: "22:14".into(),
             description: "Un livreur dépose un colis.".into(),
             niveau: "normal".into(),
+            source: "raccourci iPhone".into(),
         };
         assert_eq!(
             render("{appareil} {valeur} à {heure} ({regle})", &f),
@@ -1130,6 +1144,7 @@ mod tests {
             render("[{niveau}] {description}", &f),
             "[normal] Un livreur dépose un colis."
         );
+        assert_eq!(render("Mode ({source})", &f), "Mode (raccourci iPhone)");
     }
 
     #[test]
@@ -1180,15 +1195,23 @@ mod tests {
         ]);
         // Le mode du démarrage n'est pas un changement, même s'il correspond à une règle.
         e.init_mode(HomeMode::Absent);
-        assert!(e.on_mode(HomeMode::Absent, &clock(10.0, 0)).is_empty());
-        let fired = e.on_mode(HomeMode::Nuit, &clock(20.0, 600));
+        assert!(e
+            .on_mode(HomeMode::Absent, &ModeSource::Other, &clock(10.0, 0))
+            .is_empty());
+        let fired = e.on_mode(HomeMode::Nuit, &ModeSource::Shortcut, &clock(20.0, 600));
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].rule.id, 2);
         assert_eq!(fired[0].value, "Nuit", "{{valeur}} est le libellé du mode");
+        assert_eq!(
+            fired[0].source, "raccourci iPhone",
+            "{{source}} dit d'où vient le mode"
+        );
         assert_eq!(fired[0].time, "10:00");
         // Redemander le mode actuel : rien.
-        assert!(e.on_mode(HomeMode::Nuit, &clock(30.0, 0)).is_empty());
-        let back = e.on_mode(HomeMode::Absent, &clock(40.0, 0));
+        assert!(e
+            .on_mode(HomeMode::Nuit, &ModeSource::Other, &clock(30.0, 0))
+            .is_empty());
+        let back = e.on_mode(HomeMode::Absent, &ModeSource::Other, &clock(40.0, 0));
         assert_eq!(back.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
     }
 
@@ -1260,7 +1283,7 @@ mod tests {
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [2]);
         // En cours de passage, une classe nouvelle (la personne après le chien) : seules les règles
         // qui la suivent partent, pas la règle « toutes classes » (déjà partie à l'ouverture).
-        e.on_mode(HomeMode::Absent, &clock(950.0, 0));
+        e.on_mode(HomeMode::Absent, &ModeSource::Other, &clock(950.0, 0));
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Personne]),
             false,
@@ -1269,7 +1292,7 @@ mod tests {
         );
         assert_eq!(fired.iter().map(|f| f.rule.id).collect::<Vec<_>>(), [1]);
         // Présent : la condition de mode retient la règle 1.
-        e.on_mode(HomeMode::Present, &clock(1000.0, 0));
+        e.on_mode(HomeMode::Present, &ModeSource::Other, &clock(1000.0, 0));
         let fired = e.on_detection(
             &event(9, vec![DetectedClass::Personne]),
             true,
@@ -1423,11 +1446,11 @@ mod tests {
         e.on_event(&open(7, false, 1.0), &clock(1.0, 0));
         // Présent (défaut) : la condition échoue.
         assert!(fire(&mut e, 100.0).is_empty());
-        e.on_mode(HomeMode::Vacances, &clock(200.0, 0));
+        e.on_mode(HomeMode::Vacances, &ModeSource::Other, &clock(200.0, 0));
         assert_eq!(fire(&mut e, 300.0).len(), 1);
-        e.on_mode(HomeMode::Nuit, &clock(400.0, 0));
+        e.on_mode(HomeMode::Nuit, &ModeSource::Other, &clock(400.0, 0));
         assert!(fire(&mut e, 500.0).is_empty());
-        e.on_mode(HomeMode::Absent, &clock(600.0, 0));
+        e.on_mode(HomeMode::Absent, &ModeSource::Other, &clock(600.0, 0));
         assert_eq!(fire(&mut e, 700.0).len(), 1);
     }
 
@@ -1453,6 +1476,7 @@ mod tests {
             minute: 0,
             days: [true; 7],
         };
+        rule.name = "Nuit à 23 h".into();
         rule.actions = vec![Action::SetMode {
             mode: HomeMode::Nuit,
         }];
@@ -1463,6 +1487,7 @@ mod tests {
             time: "23:00".into(),
             description: String::new(),
             niveau: String::new(),
+            source: String::new(),
         };
         run(
             firing,
@@ -1474,7 +1499,7 @@ mod tests {
         let events: Vec<Event> = rx.try_iter().collect();
         assert!(events
             .iter()
-            .any(|e| matches!(e, Event::HomeModeRequested(HomeMode::Nuit))));
+            .any(|e| matches!(e, Event::HomeModeRequested { mode: HomeMode::Nuit, rule } if rule == "Nuit à 23 h")));
         assert!(events.iter().any(
             |e| matches!(e, Event::RuleRun { ok: true, detail, .. } if detail == "mode : Nuit")
         ));
@@ -1498,15 +1523,21 @@ mod tests {
         }];
         let mut e = Engine::new(vec![to_nuit, to_absent]);
         // Présent → Nuit : la règle 1 part (et demandera Absent).
-        let first = e.on_mode(HomeMode::Nuit, &clock(100.0, 0));
+        let first = e.on_mode(HomeMode::Nuit, &ModeSource::Other, &clock(100.0, 0));
         assert_eq!(first.len(), 1);
         // Le serveur applique Absent : la règle 2 part (et demandera Nuit).
-        let second = e.on_mode(HomeMode::Absent, &clock(100.5, 0));
+        let second = e.on_mode(HomeMode::Absent, &ModeSource::Other, &clock(100.5, 0));
         assert_eq!(second.len(), 1);
         // Nuit de nouveau : la règle 1 est encore dans son délai, rien ne part.
-        assert!(e.on_mode(HomeMode::Nuit, &clock(101.0, 0)).is_empty());
+        assert!(e
+            .on_mode(HomeMode::Nuit, &ModeSource::Other, &clock(101.0, 0))
+            .is_empty());
         // Après le délai, elle repart (une fois, jamais en rafale).
-        assert_eq!(e.on_mode(HomeMode::Absent, &clock(200.0, 0)).len(), 1);
+        assert_eq!(
+            e.on_mode(HomeMode::Absent, &ModeSource::Other, &clock(200.0, 0))
+                .len(),
+            1
+        );
     }
 
     #[test]

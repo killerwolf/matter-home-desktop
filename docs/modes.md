@@ -11,7 +11,14 @@ Ticket n° 8. Un **mode global**, tenu par le serveur et le même pour tous les 
 - **automatiquement**, depuis l'iPhone, avec Raccourcis (voir plus bas).
 
 Chaque changement est enregistré (`mode.json`, voir [Données](donnees.md)), diffusé aux clients
-(`mode_changed`), inscrit au journal, et peut déclencher des règles. Redemander le mode actuel ne
+(`mode_changed`), inscrit au journal, et peut déclencher des règles. **Chaque changement dit d'où il
+vient** : raccourci iPhone (jeton de mode), app web, app de bureau, fenêtre du serveur,
+automatisation (avec le nom de la règle) ou autre (un client plus ancien, qui ne le dit pas). Le journal du serveur
+écrit « mode : Présent → Absent (raccourci iPhone) », celui de l'app de bureau « Mode : Absent
+(raccourci iPhone) » ; l'app web montre une notification brève (« Mode Absent · raccourci iPhone »)
+quand le changement vient d'ailleurs ; une règle « Quand le mode devient… » peut l'écrire dans sa
+notification avec `{source}`. Le widget Scriptable ne fait que lire : ses boutons lancent les
+raccourcis, qui comptent comme « raccourci iPhone ». Redemander le mode actuel ne
 fait rien (ni écriture, ni diffusion, ni déclenchement) : une automatisation « Arriver » qui part
 alors qu'on est déjà Présent est sans effet.
 

@@ -6,7 +6,7 @@ use super::message::Metric;
 use super::text_ids::text_id;
 use crate::automation::{CoverCommand, OnOffCommand};
 use crate::home::Symbol;
-use crate::mode::HomeMode;
+use crate::mode::{HomeMode, ModeSource};
 
 /// `GET /api/version` (sans jeton) : de quoi vérifier la compatibilité avant de se connecter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,10 +91,14 @@ pub struct CoverRequest {
 }
 
 /// `PUT /api/mode` : le mode voulu. Accepté avec un jeton de session **ou** avec le jeton de mode
-/// (Raccourcis de l'iPhone), qui ne peut rien faire d'autre.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// (Raccourcis de l'iPhone), qui ne peut rien faire d'autre. `source` (facultatif, ajouté après
+/// la 2.0) : qui le demande ; le serveur ne retient que ce que le jeton permet
+/// (`ModeSource::claimed`). Un ancien client ne l'envoie pas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeRequest {
     pub mode: HomeMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ModeSource>,
 }
 
 /// Réponse de `PUT /api/mode` (200). `changed` est faux si c'était déjà le mode actuel : rien n'a

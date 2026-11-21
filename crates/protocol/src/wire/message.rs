@@ -9,7 +9,7 @@ use super::text_ids::{text_id, TextIds};
 use crate::automation::RuleSet;
 use crate::events::{Capabilities, CoverMotion};
 use crate::home::{HomePlan, Symbol};
-use crate::mode::HomeMode;
+use crate::mode::{HomeMode, ModeSource};
 
 /// Grandeur suivie : mesures numériques et états binaires (0 ou 1). Ce sont aussi les
 /// clés de l'historique.
@@ -244,8 +244,12 @@ pub enum WireEvent {
         rules: TextIds<RuleSet>,
     },
     /// Le mode global de la maison a changé (jamais envoyé si le mode demandé est déjà le bon).
+    /// `source` (facultatif, ajouté après la 2.0) : d'où vient le changement ; absent d'un ancien
+    /// serveur, ignoré par un ancien client.
     ModeChanged {
         mode: HomeMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<ModeSource>,
     },
     /// La liste des caméras ou l'état de l'une d'elles a changé : la liste **complète**
     /// (une trentaine d'entrées au plus), à appliquer en remplaçant la précédente.

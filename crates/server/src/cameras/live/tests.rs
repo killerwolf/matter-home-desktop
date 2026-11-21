@@ -412,13 +412,15 @@ async fn a_mode_that_turns_the_camera_off_cuts_its_viewers_and_refuses_new_ones(
         "rien n'est ouvert vers une caméra éteinte"
     );
 
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     let mut sub = live.subscribe(&hub, id, StreamKind::Main).unwrap();
     let mut seen = Seen::default();
     read_until(&mut sub, &mut seen, |s| s.frames.len() >= 2).await;
 
     // Nuit : éteinte de nouveau, la session est fermée pour son spectateur.
-    hub.set_mode(HomeMode::Nuit).unwrap();
+    hub.set_mode(HomeMode::Nuit, protocol::mode::ModeSource::Other)
+        .unwrap();
     read_until(&mut sub, &mut seen, |_| false).await;
     assert_eq!(seen.ended, Some(EndReason::Changed));
     until("coupée", || camera.open() == 0).await;

@@ -45,6 +45,7 @@ Les textes des notifications et des webhooks acceptent :
 | `{regle}` | nom de la règle |
 | `{description}` | pour une détection : la phrase qui décrit l'événement (voir [Descriptions](descriptions.md)) ; vide sans description |
 | `{niveau}` | pour une détection : `normal`, `suspect` ou `critique` ; vide sans description |
+| `{source}` | pour « Quand le mode devient… » : d'où vient le changement (« raccourci iPhone », « app web », « app de bureau », « fenêtre du serveur », « automatisation « Nuit à 23 h » », « autre ») ; vide sinon |
 
 Une règle dont le texte emploie `{description}` ou `{niveau}` **attend la description** de l'événement
 (à la fin du passage, ou dès la première description si « Décrire dès l'ouverture » est coché) avant de

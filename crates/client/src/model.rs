@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use protocol::automation::RuleSet;
 use protocol::events::{Capabilities, CoverMotion};
 use protocol::home::HomePlan;
-use protocol::mode::HomeMode;
+use protocol::mode::{HomeMode, ModeSource};
 use protocol::wire::{
     CameraBehavior, CameraView, DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent,
     WireMode, WireNode, WireStatus, RULE_RUNS_KEPT,
@@ -217,7 +217,8 @@ pub enum Change {
     /// La liste des caméras (`Model::cameras`) vient de changer.
     CamerasChanged,
     /// Le mode de la maison a changé (`Model::mode` est déjà à jour) : une ligne au journal.
-    ModeChanged(HomeMode),
+    /// Le nouveau mode et, si le serveur la donne, sa source (pour le journal).
+    ModeChanged(HomeMode, Option<ModeSource>),
 }
 
 #[derive(Debug, Default)]
@@ -394,9 +395,9 @@ impl Model {
                 self.detections.truncate(DETECTIONS_KEPT);
                 Change::Detection(line)
             }
-            WireEvent::ModeChanged { mode } => {
+            WireEvent::ModeChanged { mode, source } => {
                 self.mode = mode;
-                Change::ModeChanged(mode)
+                Change::ModeChanged(mode, source)
             }
             // Un événement d'un serveur plus récent : ignoré (son `seq` a déjà été compté).
             WireEvent::Unknown => Change::Nothing,
