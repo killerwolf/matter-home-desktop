@@ -227,54 +227,86 @@ pub enum LegacyOutcome {
 /// - l'ancien agent, qui lancerait l'ancienne application à la connexion, est remplacé : le
 ///   nouvel agent est écrit d'abord (si l'ouverture à la connexion était voulue), l'ancien n'est
 ///   retiré qu'ensuite. Jamais deux agents, jamais aucun par accident ;
-/// - enfin, « non » est écrit dans l'ancien dossier de réglages : l'ancienne application, si on
-///   la rouvre, ne récrit pas son agent (elle n'applique son « oui » par défaut que sans choix).
+/// - enfin, « non » est écrit dans l'ancien dossier de réglages, dès que les données de Matter
+///   Home sont sur ce Mac (`legacy_data`) même s'il n'y avait rien à reprendre : l'ancienne
+///   application, si on la rouvre, ne récrit pas son agent (elle n'applique son « oui » par
+///   défaut que sans choix enregistré).
 pub fn adopt_legacy(
     agent_dir: &Path,
     marker_dir: &Path,
     legacy_marker: &Path,
     exe: &Path,
     demo: bool,
+    legacy_data: bool,
 ) -> LegacyOutcome {
     let old_agent = legacy_agent_path(agent_dir);
-    let old_choice = recorded_choice(legacy_marker);
-    if !old_agent.is_file() && (old_choice.is_none() || recorded_choice(marker_dir).is_some()) {
+    let raw_old = recorded_choice(legacy_marker);
+    // Un « non » qu'Ostal a lui-même écrit (voir plus bas) n'est pas un choix à reprendre.
+    let old_choice = if legacy_marker.join(LEGACY_NO_BY_OSTAL).exists() {
+        None
+    } else {
+        raw_old
+    };
+    let nothing_to_adopt =
+        !old_agent.is_file() && (old_choice.is_none() || recorded_choice(marker_dir).is_some());
+    let shield = (legacy_data || !nothing_to_adopt) && raw_old != Some(false);
+    if nothing_to_adopt && !shield {
         return LegacyOutcome::Nothing;
     }
     if demo || !is_installable(exe) {
         return LegacyOutcome::Later;
     }
+    if !nothing_to_adopt {
+        if let Err(e) = adopt_agent(agent_dir, marker_dir, &old_agent, old_choice, exe) {
+            return LegacyOutcome::Failed(e);
+        }
+    }
+    if shield {
+        let written = record_choice(legacy_marker, false).and_then(|()| {
+            let path = legacy_marker.join(LEGACY_NO_BY_OSTAL);
+            std::fs::write(&path, "").with_context(|| format!("écriture de {}", path.display()))
+        });
+        if let Err(e) = written {
+            return LegacyOutcome::Failed(format!("{e:#}"));
+        }
+    }
+    LegacyOutcome::Adopted
+}
+
+/// À côté du « non » écrit chez « Matter Home Server » : c'est Ostal Server qui l'a mis, pas
+/// l'utilisateur. Sans lui, un lancement suivant reprendrait ce « non » comme choix d'Ostal.
+const LEGACY_NO_BY_OSTAL: &str = "ouverture-a-la-connexion.ecrit-par-ostal";
+
+/// Le choix et l'agent de « Matter Home Server » passent à Ostal Server (voir [`adopt_legacy`]).
+fn adopt_agent(
+    agent_dir: &Path,
+    marker_dir: &Path,
+    old_agent: &Path,
+    old_choice: Option<bool>,
+    exe: &Path,
+) -> Result<(), String> {
     // Le choix : celui déjà fait dans Ostal, sinon celui de Matter Home, sinon l'existence de
     // l'ancien agent (il n'existait que si l'ouverture était voulue).
     let choice = recorded_choice(marker_dir)
         .or(old_choice)
         .unwrap_or_else(|| old_agent.is_file());
     if recorded_choice(marker_dir).is_none() {
-        if let Err(e) = record_choice(marker_dir, choice) {
-            return LegacyOutcome::Failed(format!("{e:#}"));
-        }
+        record_choice(marker_dir, choice).map_err(|e| format!("{e:#}"))?;
     }
     if old_agent.is_file() {
         if choice {
-            if let Err(e) = enable(agent_dir, exe) {
-                return LegacyOutcome::Failed(format!("{e:#}"));
-            }
+            enable(agent_dir, exe).map_err(|e| format!("{e:#}"))?;
         }
-        if let Err(e) = std::fs::remove_file(&old_agent) {
+        if let Err(e) = std::fs::remove_file(old_agent) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                return LegacyOutcome::Failed(format!(
+                return Err(format!(
                     "retrait de l'ancien agent {} : {e}",
                     old_agent.display()
                 ));
             }
         }
     }
-    if old_choice != Some(false) {
-        if let Err(e) = record_choice(legacy_marker, false) {
-            return LegacyOutcome::Failed(format!("{e:#}"));
-        }
-    }
-    LegacyOutcome::Adopted
+    Ok(())
 }
 
 /// Application déplacée : l'agent pointait ailleurs, on le réécrit, sauf vers un emplacement
@@ -420,23 +452,30 @@ mod tests {
         let (agents, marker, old_marker) = (temp("l-agents"), temp("l-marker"), temp("l-old"));
         let exe = Path::new(EXE);
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, false),
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
             LegacyOutcome::Nothing
         );
         old_plist(&agents);
         record_choice(&old_marker, true).unwrap();
         // Depuis l'image disque : rien n'est touché.
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, Path::new(DMG_EXE), false),
+            adopt_legacy(
+                &agents,
+                &marker,
+                &old_marker,
+                Path::new(DMG_EXE),
+                false,
+                false
+            ),
             LegacyOutcome::Later
         );
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, true),
+            adopt_legacy(&agents, &marker, &old_marker, exe, true, false),
             LegacyOutcome::Later
         );
         assert!(legacy_agent_path(&agents).is_file() && !is_enabled(&agents));
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, false),
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
             LegacyOutcome::Adopted
         );
         // Un seul agent, le nouveau ; le choix est recopié. L'ancienne application, elle, a
@@ -453,7 +492,7 @@ mod tests {
             DefaultOutcome::AlreadyChosen
         );
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, false),
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
             LegacyOutcome::Nothing
         );
         for d in [agents, marker, old_marker] {
@@ -467,7 +506,7 @@ mod tests {
         let exe = Path::new(EXE);
         record_choice(&old_marker, false).unwrap();
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, false),
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
             LegacyOutcome::Adopted
         );
         assert_eq!(recorded_choice(&marker), Some(false));
@@ -479,7 +518,7 @@ mod tests {
         // Un ancien agent resté malgré un « non » (réglé à la main) : retiré, pas remplacé.
         old_plist(&agents);
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, exe, false),
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
             LegacyOutcome::Adopted
         );
         assert!(!legacy_agent_path(&agents).exists() && !is_enabled(&agents));
@@ -493,7 +532,7 @@ mod tests {
         let (agents, marker, old_marker) = (temp("y-agents"), temp("y-marker"), temp("y-old"));
         old_plist(&agents);
         assert_eq!(
-            adopt_legacy(&agents, &marker, &old_marker, Path::new(EXE), false),
+            adopt_legacy(&agents, &marker, &old_marker, Path::new(EXE), false, false),
             LegacyOutcome::Adopted
         );
         assert!(is_enabled(&agents) && !legacy_agent_path(&agents).exists());
@@ -505,12 +544,72 @@ mod tests {
         old_plist(&agents2);
         std::fs::write(agent_path(&agents2).with_extension("plist.tmp"), "").unwrap();
         std::fs::create_dir_all(agent_path(&agents2)).unwrap();
-        let out = adopt_legacy(&agents2, &marker2, &old_marker2, Path::new(EXE), false);
+        let out = adopt_legacy(
+            &agents2,
+            &marker2,
+            &old_marker2,
+            Path::new(EXE),
+            false,
+            false,
+        );
         assert!(matches!(out, LegacyOutcome::Failed(_)), "{out:?}");
         assert!(legacy_agent_path(&agents2).is_file());
         // Rien n'est écrit chez l'ancienne application tant que le remplacement n'est pas fait.
         assert_eq!(recorded_choice(&old_marker2), None);
         for d in [agents, marker, old_marker, agents2, marker2, old_marker2] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn the_old_app_gets_no_even_with_nothing_to_adopt() {
+        let (agents, marker, old_marker) = (temp("s-agents"), temp("s-marker"), temp("s-old"));
+        let exe = Path::new(EXE);
+        // Pas de données de Matter Home sur ce Mac : on n'écrit rien chez elle.
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Nothing
+        );
+        assert!(!old_marker.exists());
+        // Ses données sont là, mais ni agent ni choix : l'ancienne application, rouverte,
+        // appliquerait son « oui » par défaut et récrirait son agent. Elle reçoit « non ».
+        assert_eq!(
+            adopt_legacy(
+                &agents,
+                &marker,
+                &old_marker,
+                Path::new(DMG_EXE),
+                false,
+                true
+            ),
+            LegacyOutcome::Later
+        );
+        assert_eq!(recorded_choice(&old_marker), None);
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Adopted
+        );
+        assert_eq!(recorded_choice(&old_marker), Some(false));
+        // Rien d'autre n'a changé : ni agent, ni choix chez Ostal…
+        assert!(!agents.exists() && recorded_choice(&marker).is_none());
+        // … même au lancement suivant (le serveur n'avait pas démarré, le choix par défaut
+        // n'a pas été fait) : ce « non » écrit par Ostal n'est pas repris comme choix.
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Nothing
+        );
+        assert!(recorded_choice(&marker).is_none());
+        // Le « oui » par défaut d'Ostal s'applique ensuite, comme quand le serveur tourne (ui.rs).
+        assert_eq!(
+            apply_default(&agents, &marker, exe, false),
+            DefaultOutcome::Enabled
+        );
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Nothing
+        );
+        assert!(is_enabled(&agents) && recorded_choice(&marker) == Some(true));
+        for d in [agents, marker, old_marker] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

@@ -72,17 +72,35 @@ echo "Données de Matter Home (ancien nom) sur ce Mac : proposées, jamais « in
 OLD_DATA="$HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
 mkdir -p "$OLD_DATA"
 echo '{"factice":true}' > "$OLD_DATA/controller.json"
-OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"
-contains "$OUT" "vos données de « Matter Home »"
-contains "$OUT" "--donnees \"$OLD_DATA\""
-contains "$OUT" "Ne lancez PAS"
-case "$OUT" in *"installation neuve sans sauvegarde"*) fail "« init » ne doit pas être conseillé" ;; esac
+# Sans --donnees : arrêt avant d'écrire quoi que ce soit, à blanc comme pour de vrai.
+for MODE in --a-blanc --oui; do
+  if OUT="$("$PKG/install.sh" "$MODE" --prefixe "$PREFIX" 2>&1)"; then
+    fail "$MODE : l'installation sur un dossier vide doit être refusée"
+  fi
+  contains "$OUT" "vos données de « Matter Home »"
+  contains "$OUT" "--donnees \"$OLD_DATA\""
+  contains "$OUT" "Ne lancez PAS"
+  case "$OUT" in *"installation neuve sans sauvegarde"*) fail "« init » ne doit pas être conseillé" ;; esac
+  [ "$(count_files "$PREFIX")" = "1" ] || fail "$MODE : des fichiers ont été écrits : $(find "$PREFIX" -type f)"
+done
+# La commande conseillée : le service est installé sur l'ancien dossier, tel quel.
 OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --donnees "$OLD_DATA" 2>&1)"
 contains "$OUT" "identité Matter : trouvée"
 case "$OUT" in *"Ne lancez PAS"*) fail "pas d'avertissement quand c'est déjà ce dossier" ;; esac
-rm -rf "$OLD_DATA"
-[ "$(count_files "$PREFIX")" = "0" ] || fail "l'essai à blanc a écrit des fichiers"
-ok "ancien dossier signalé, « init » déconseillé"
+"$PKG/install.sh" --oui --prefixe "$PREFIX" --donnees "$OLD_DATA" >/dev/null 2>&1 || fail "--donnees vers l'ancien dossier"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$PLIST")" = "$OLD_DATA" ] || fail "dossier du plist"
+[ "$(cat "$OLD_DATA/controller.json")" = '{"factice":true}' ] || fail "l'ancienne identité a changé"
+# Un service déjà installé sur un dossier vide : il faut le désinstaller d'abord.
+"$PKG/uninstall.sh" --prefixe "$PREFIX" --oui >/dev/null
+"$PKG/install.sh" --oui --prefixe "$PREFIX" --donnees "$DATA" >/dev/null 2>&1 || fail "service sur le dossier vide"
+if OUT="$("$PKG/install.sh" --oui --prefixe "$PREFIX" 2>&1)"; then
+  fail "un service sur un dossier vide alors que Matter Home a des données : refus attendu"
+fi
+contains "$OUT" "./uninstall.sh"
+"$PKG/uninstall.sh" --prefixe "$PREFIX" --oui >/dev/null
+rm -rf "$OLD_DATA" "$HOME/Library/Logs"
+[ "$(count_files "$PREFIX")" = "0" ] || fail "restes : $(find "$PREFIX" -type f)"
+ok "ancien dossier proposé, rien écrit sans lui, « init » déconseillé"
 
 echo "install.sh --prefixe (sans identité)"
 OUT="$("$PKG/install.sh" --prefixe "$PREFIX" --oui 2>&1)"

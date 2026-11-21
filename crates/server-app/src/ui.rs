@@ -489,7 +489,17 @@ impl App {
                 if let (Some(marker), Some(old_marker)) =
                     (agent::default_marker_dir(), agent::legacy_marker_dir())
                 {
-                    match agent::adopt_legacy(&dir, &marker, &old_marker, &exe, app.demo) {
+                    let legacy_data = ostal_server::persistence::legacy_dirs()
+                        .iter()
+                        .any(|d| d.exists());
+                    match agent::adopt_legacy(
+                        &dir,
+                        &marker,
+                        &old_marker,
+                        &exe,
+                        app.demo,
+                        legacy_data,
+                    ) {
                         agent::LegacyOutcome::Adopted => {
                             log::info!("ouverture à la connexion reprise de Matter Home Server")
                         }

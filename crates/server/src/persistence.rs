@@ -784,7 +784,7 @@ mod tests {
         // Pas de nouvelle fabric dans le dossier standard tant qu'un ancien a une identité.
         let empty = base.join("vide");
         assert_eq!(
-            legacy_identity_for(&empty, &empty, &[demo.clone()]),
+            legacy_identity_for(&empty, &empty, std::slice::from_ref(&demo)),
             Some((demo.clone(), FILE_NAME))
         );
         assert_eq!(legacy_identity_for(&new, &new, &legacy), None);

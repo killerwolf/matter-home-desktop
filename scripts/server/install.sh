@@ -49,6 +49,7 @@ DRY=0
 [ "${MH_DRY_RUN:-0}" = "1" ] && DRY=1
 PREFIX="${MH_PREFIX:-}"
 DATA_DIR=""
+DATA_DIR_FROM_OPTION=0
 ASSUME_YES=0
 START="ask"
 IGNORE_APP=0
@@ -66,7 +67,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --a-blanc) DRY=1 ;;
     --prefixe) [ $# -ge 2 ] || die "--prefixe attend un dossier"; PREFIX="$2"; shift ;;
-    --donnees) [ $# -ge 2 ] || die "--donnees attend un dossier"; DATA_DIR="$2"; shift ;;
+    --donnees) [ $# -ge 2 ] || die "--donnees attend un dossier"; DATA_DIR="$2"; DATA_DIR_FROM_OPTION=1; shift ;;
     --oui) ASSUME_YES=1 ;;
     --demarrer) START="yes" ;;
     --ne-pas-demarrer) START="no" ;;
@@ -249,11 +250,22 @@ else
     # Les données de « Matter Home » (l'ancien nom) sont sur ce Mac : c'est ce dossier-là qu'il
     # faut reprendre, jamais une nouvelle identité.
     LEGACY_DATA_FOUND=1
-    warn "vos données de « Matter Home » (l'ancien nom d'Ostal), avec leur identité Matter, sont dans :
+    LEGACY_ADVICE="vos données de « Matter Home » (l'ancien nom d'Ostal), avec leur identité Matter, sont dans :
     $LEGACY_DEFAULT_DATA_DIR
   Reprenez ce dossier tel quel (rien à copier ni à réappairer) en relançant :
     ./install.sh --donnees \"$LEGACY_DEFAULT_DATA_DIR\"
   Ne lancez PAS « $BIN_NAME init » : il créerait une seconde maison (une nouvelle fabric), et vos appareils appairés ne seraient plus reconnus."
+    if [ "$DATA_DIR_FROM_SERVICE" = "1" ]; then
+      # Le service installé ne change jamais de dossier : il faut le désinstaller d'abord.
+      die "le service Ostal déjà installé utilise un dossier sans identité ($DATA_DIR), alors que
+  $LEGACY_ADVICE
+  Désinstallez d'abord ce service (./uninstall.sh, qui garde les données), puis relancez la commande ci-dessus."
+    elif [ "$DATA_DIR_FROM_OPTION" = "0" ]; then
+      # Rien n'est encore écrit : on s'arrête ici plutôt que d'installer un service sur un
+      # dossier vide (il faudrait ensuite le désinstaller pour changer de dossier).
+      die "$LEGACY_ADVICE"
+    fi
+    warn "$LEGACY_ADVICE"
   else
     say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
     say "  que vous n'aurez pas, avec ce même compte utilisateur :"

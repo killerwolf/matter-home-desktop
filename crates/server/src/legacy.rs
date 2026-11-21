@@ -744,7 +744,7 @@ mod tests {
         let old = old_dir(&base);
         // 50 000 × 2 octets d'historique, plus le reste.
         let size = tree_size(&old).unwrap();
-        assert!(size >= 100_000 && size < 101_000, "{size}");
+        assert!((100_000..101_000).contains(&size), "{size}");
         assert!(space_ok(size, size + SPACE_MARGIN).is_ok());
         let err = space_ok(size, size).unwrap_err();
         assert!(err.contains("pas assez d'espace libre"), "{err}");
