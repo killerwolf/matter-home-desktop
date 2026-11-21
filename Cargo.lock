@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "ostal"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "directories",
@@ -3782,7 +3782,7 @@ dependencies = [
 
 [[package]]
 name = "ostal-server"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3826,7 +3826,7 @@ dependencies = [
 
 [[package]]
 name = "ostal-server-app"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3843,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "ostal-theme"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "eframe",
  "serde",
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "ostal-video"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-media",
@@ -4302,7 +4302,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "serde",
  "serde_json",
