@@ -1,4 +1,9 @@
-# Ostal
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/ostal-logotype-sombre.svg">
+    <img src="assets/logo/ostal-logotype-clair.svg" alt="Ostal" height="64">
+  </picture>
+</h1>
 
 [![Build](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml/badge.svg)](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml)
 [![Dernière version](https://img.shields.io/github/v/release/killerwolf/matter-home-desktop)](https://github.com/killerwolf/matter-home-desktop/releases/latest)

@@ -22,6 +22,9 @@ Les téléchargements de chaque version sont sur la
 
 ### Ajouté
 
+- **Logotype Ostal** : le logo Seuil et le mot « Ostal » en Outfit SemiBold, en tracés, en
+  variantes claire et sombre (`assets/logo/ostal-logotype-*.svg`). Il apparaît en haut du README et
+  sur l'écran de connexion de l'app web.
 - **Chaque changement de mode dit d'où il vient** : raccourci iPhone (jeton de mode), app web, app
   de bureau, fenêtre du serveur, automatisation (avec le nom de la règle) ou autre. Le journal du
   serveur et celui de l'app de bureau l'écrivent (« Mode : Absent (raccourci iPhone) ») ; l'app web

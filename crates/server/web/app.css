@@ -216,7 +216,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 /* ---- Connexion ---- */
 #login { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: var(--web-pad-x); }
 #login-form { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: var(--web-pad-x); }
-#login-form h1 { margin: 0; font-size: 24px; }
+#login-form h1 { margin: 0 0 var(--web-pad); font-size: 24px; line-height: 0; }
+#login-form h1 img { height: 48px; width: auto; }
 #login-form label { display: flex; flex-direction: column; gap: 2px; font-size: var(--web-font-small); color: var(--color-text-secondary); }
 #login-form input {
   min-height: 44px; padding: 0 var(--web-pad-x); border-radius: var(--web-radius);

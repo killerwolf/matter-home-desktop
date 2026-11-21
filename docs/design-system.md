@@ -51,6 +51,15 @@ Quatre couleurs de marque, celles du logo Seuil : **Nuit** `#10232d` (le texte e
   lampe allumée en clair (Lueur sur fond très pâle) reste sous 3:1, comme l'ancien jaune : elle est
   portée par le fond teinté et le mot « Allumée ».
 
+## Le logotype
+
+`assets/logo/ostal-logotype-clair.svg` (mot en Nuit, pour fond clair) et
+`ostal-logotype-sombre.svg` (mot en Craie, pour fond sombre) : le logo Seuil suivi du mot « Ostal »
+en **Outfit SemiBold (600)**, converti en tracés (aucune police embarquée ni à installer). Outfit est
+sous licence SIL Open Font License 1.1, qui ne s'étend pas aux dessins faits avec la police : le
+crédit est en commentaire dans les fichiers. L'interface garde la police du système ; Outfit ne
+sert qu'au nom. Le logotype est en haut du README et sur l'écran de connexion de l'app web.
+
 ## Les tokens (`design/tokens.json`)
 
 | Groupe | Contenu |
