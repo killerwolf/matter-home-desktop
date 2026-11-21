@@ -62,6 +62,9 @@ palette!(
     accent_soft,
     accent_text,
     on_accent,
+    lueur,
+    on_lueur,
+    lueur_text,
     ok,
     warn,
     on_warn,
@@ -188,9 +191,7 @@ pub struct TileTokens {
     pub height: f32,
     pub radius: u8,
     pub icon: f32,
-    /// Jaune chaud d'une lampe allumée (l'icône ; le fond de la carte en prend un peu).
-    #[serde(deserialize_with = "hex")]
-    pub on_tint: Color32,
+    /// Part de `lueur` (palette) dans le fond d'une tuile allumée ; l'icône est en `lueur`.
     pub on_tint_alpha: f32,
 }
 
@@ -759,6 +760,9 @@ mod tests {
                 (p.text_secondary, p.surface, "texte secondaire"),
                 (p.warn, p.surface, "pastille d'alerte"),
                 (p.error, p.surface, "pastille d'erreur"),
+                (p.on_lueur, p.lueur, "texte sur lueur (mode Présent)"),
+                (p.lueur_text, p.surface, "lueur en texte"),
+                (p.lueur_text, p.bg, "lueur en texte sur fond"),
             ] {
                 let c = contrast(fg, bg);
                 assert!(c >= 4.5, "{name} ({}) : contraste {c:.1}", dark_name(dark));
@@ -837,6 +841,42 @@ mod tests {
         for s in &t.temperature.stops {
             assert!(
                 lum(p.no_sensor) > lum(over(p.surface, s.color, t.temperature.fill_alpha)) - 30
+            );
+        }
+    }
+
+    /// Palette « Nuit et Lueur » : une tuile allumée reste lisible, son icône se voit, et Lueur
+    /// (allumé) ne se confond pas avec l'alerte (`warn`).
+    #[test]
+    fn lit_tiles_stay_readable_and_lueur_is_not_a_warning() {
+        let t = tokens();
+        for dark in [false, true] {
+            let p = t.palette(dark);
+            let lit = over(p.surface, p.lueur, t.tile.on_tint_alpha);
+            for (fg, what) in [(p.text, "nom"), (p.text_secondary, "valeur secondaire")] {
+                let c = contrast(fg, lit);
+                assert!(
+                    c >= 4.5,
+                    "{what} sur tuile allumée ({}) : {c:.1}",
+                    dark_name(dark)
+                );
+            }
+            // L'icône allumée est en lueur sur le fond teinté : en clair, une ampoule jaune sur
+            // fond très pâle reste sous 3:1 (comme l'ancien jaune) ; on vérifie qu'elle se
+            // distingue au moins du fond.
+            let icon = contrast(p.lueur, lit);
+            assert!(
+                icon >= 1.5,
+                "icône allumée ({}) : {icon:.1}",
+                dark_name(dark)
+            );
+            // Deux teintes bien distinctes : l'écart de teinte entre lueur et warn.
+            let hue = |c: Color32| egui::ecolor::Hsva::from(c).h * 360.0;
+            let gap = (hue(p.lueur) - hue(p.warn)).abs();
+            assert!(
+                gap >= 12.0,
+                "lueur et warn trop proches ({}) : {gap:.0}°",
+                dark_name(dark)
             );
         }
     }

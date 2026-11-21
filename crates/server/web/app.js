@@ -1293,6 +1293,7 @@ function renderModeChip() {
   if (modeChip.hidden) closeModeMenu(false);
   const label = modeLabel(state.mode);
   modeChip.textContent = `Mode : ${label}`;
+  modeChip.classList.toggle("present", state.mode === "present");
   modeChip.setAttribute("aria-label", `Mode de la maison : ${label}. Changer de mode.`);
   for (const item of modeMenu.children) item.setAttribute("aria-checked", String(item.dataset.mode === state.mode));
 }

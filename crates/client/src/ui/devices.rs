@@ -651,11 +651,7 @@ fn card(
         },
     );
     if tile.lit {
-        painter.rect_filled(
-            rect,
-            radius,
-            t.tile.on_tint.gamma_multiply(t.tile.on_tint_alpha),
-        );
+        painter.rect_filled(rect, radius, p.lueur.gamma_multiply(t.tile.on_tint_alpha));
     }
     let border = if expecting || selected {
         Stroke::new(1.5, p.accent_text)

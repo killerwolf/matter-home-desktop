@@ -2384,9 +2384,15 @@ impl MatterApp {
                     // Le mode de la maison, visible depuis toutes les vues : un clic ouvre les
                     // quatre choix (le serveur confirme, le sélecteur suit l'événement).
                     if self.connected() && self.model.has_mode {
-                        let shown = RichText::new(format!("Mode : {}", self.model.mode.label()))
-                            .strong()
-                            .color(theme::palette(ui).accent_text);
+                        // Présent : quelqu'un est là, la maison est « allumée » (Lueur).
+                        let p = theme::palette(ui);
+                        let shown = RichText::new(format!(" Mode : {} ", self.model.mode.label()))
+                            .strong();
+                        let shown = if self.model.mode == HomeMode::Present {
+                            shown.color(p.on_lueur).background_color(p.lueur)
+                        } else {
+                            shown.color(p.accent_text)
+                        };
                         ui.menu_button(shown, |ui| {
                             for mode in HomeMode::ALL {
                                 if ui

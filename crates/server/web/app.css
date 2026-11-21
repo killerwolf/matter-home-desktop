@@ -67,6 +67,8 @@ button { cursor: pointer; }
   background: var(--color-accent-soft); color: var(--color-accent-text);
   border: var(--web-line) solid var(--color-accent); font-weight: var(--font-weight-strong);
 }
+/* Présent : quelqu'un est là, la maison est « allumée » (Lueur, jamais une alerte). */
+.mode-chip.present { background: var(--color-lueur); color: var(--color-on-lueur); border-color: var(--color-lueur); }
 .mode-chip[aria-expanded="true"] { background: var(--color-accent); color: var(--color-on-accent); }
 .mode-menu {
   position: absolute; top: 100%; right: env(safe-area-inset-right); z-index: 8;
@@ -155,13 +157,13 @@ button { cursor: pointer; }
   -webkit-touch-callout: none;
 }
 .tile:active { background: var(--color-state-hover); }
-.tile.lit { background: color-mix(in srgb, var(--tile-on-tint) calc(var(--tile-on-tint-alpha) * 100%), var(--color-surface)); }
+.tile.lit { background: color-mix(in srgb, var(--color-lueur) calc(var(--tile-on-tint-alpha) * 100%), var(--color-surface)); }
 .tile.dim { opacity: 0.55; }
 .tile.pending { outline: 2px solid var(--color-accent-text); outline-offset: -2px; }
 .tile.pending .value { opacity: 0.6; }
 .tile .icon { grid-area: icon; width: 22px; height: 22px; color: var(--color-text-secondary); }
 .tile .icon svg { width: 100%; height: 100%; display: block; }
-.tile.lit .icon { color: var(--tile-on-tint); }
+.tile.lit .icon { color: var(--color-lueur); }
 .tile .icon.warn { color: var(--color-warn); }
 .tile .name {
   grid-area: name; font-size: var(--web-font-small); line-height: 1.25; color: var(--color-text-secondary);
@@ -319,8 +321,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .plan .phit { fill: transparent; } /* cible tactile de 48 px, de taille fixe quel que soit le zoom des pictogrammes */
 .plan .pbg { fill: var(--color-surface); stroke: var(--color-line); stroke-width: 1.5; }
 .plan .pico { color: var(--color-text-secondary); }
-.plan .pi.lit .pbg { fill: color-mix(in srgb, var(--tile-on-tint) calc(var(--tile-on-tint-alpha) * 100% + 20%), var(--color-surface)); stroke: var(--tile-on-tint); }
-.plan .pi.lit .pico { color: var(--tile-on-tint); }
+.plan .pi.lit .pbg { fill: color-mix(in srgb, var(--color-lueur) calc(var(--tile-on-tint-alpha) * 100% + 20%), var(--color-surface)); stroke: var(--color-lueur); }
+.plan .pi.lit .pico { color: var(--color-lueur); }
 .plan .pi.warn .pbg { stroke: var(--color-warn); }
 .plan .pi.warn .pico, .plan .pi.warn .pval { color: var(--color-warn); fill: var(--color-warn); }
 .plan .pi.err .pbg { stroke: var(--color-error); }

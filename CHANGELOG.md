@@ -8,6 +8,18 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- **Nouvelle palette « Nuit et Lueur »**, celle du logo Seuil, dans l'app de bureau, l'app web et
+  la fenêtre du serveur : neutres légèrement bleutés, texte Nuit (`#10232d`) en clair, fond nuit
+  profonde en sombre. Nouveaux tokens `lueur`, `on_lueur` et `lueur_text` : une lampe allumée et
+  le mode **Présent** (pastille du mode) prennent la Lueur (`#f5b33f`). L'alerte (`warn`) passe à
+  un orange plus rouge (`#b4500e`), pour ne plus se confondre avec une lampe allumée : Lueur veut
+  dire « allumé », jamais « attention ». L'échelle de température ne change pas. Tous les textes
+  gardent un contraste d'au moins 4,5 (testé).
+
 ## [2.0.0] - 2026-11-21
 
 ### Modifié
