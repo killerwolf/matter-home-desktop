@@ -8,7 +8,7 @@
 
 /** Noms des deux raccourcis, sans accent : iOS enregistre un nom de fichier accentué en Unicode
  *  décomposé, et `shortcuts://run-shortcut?name=…` (composé) ne le retrouve pas. Mêmes noms dans
- *  le serveur (shortcuts.rs) et dans le widget (matter-home.js). */
+ *  le serveur (shortcuts.rs) et dans le widget (ostal.js). */
 export const SHORTCUT_NAMES = ["Mode absent", "Mode present"];
 
 /** Raccourcis et widget ne savent joindre que l'adresse en .ts.net : sur une autre (le port 8443,

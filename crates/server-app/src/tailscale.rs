@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 /// Variable d'environnement pour les essais : chemin d'un faux `tailscale`. Quand elle est
 /// posée, elle est le seul binaire employé (aucune recherche ailleurs).
-pub const BINARY_ENV: &str = "MATTER_HOME_TAILSCALE_BIN";
+pub const BINARY_ENV: &str = "OSTAL_TAILSCALE_BIN";
 
 /// Où chercher le binaire, dans l'ordre (puis le `PATH`).
 pub const CANDIDATES: [&str; 3] = [

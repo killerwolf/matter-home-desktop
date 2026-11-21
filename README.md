@@ -1,4 +1,4 @@
-# Matter Home Desktop
+# Ostal
 
 [![Build](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml/badge.svg)](https://github.com/killerwolf/matter-home-desktop/actions/workflows/release.yml)
 [![Dernière version](https://img.shields.io/github/v/release/killerwolf/matter-home-desktop)](https://github.com/killerwolf/matter-home-desktop/releases/latest)
@@ -11,8 +11,8 @@ tout reste en local, sans cloud.
 
 | | Rôle | Où |
 |---|---|---|
-| **Serveur** (`matter-home-server`) | Tourne en continu, sans fenêtre, sur un Mac du réseau local (un ancien Mac convient). Il pilote les appareils, exécute les automatisations, garde les données et l'historique. | Service macOS qui démarre avec le Mac |
-| **Client** (« Matter Home Desktop ») | L'application avec fenêtre : elle affiche et commande, sans stocker de données. On y saisit l'adresse du serveur, un identifiant et un mot de passe. | N'importe quel Mac du réseau |
+| **Serveur** (`ostal-server`) | Tourne en continu, sans fenêtre, sur un Mac du réseau local (un ancien Mac convient). Il pilote les appareils, exécute les automatisations, garde les données et l'historique. | Service macOS qui démarre avec le Mac |
+| **Client** (« Ostal ») | L'application avec fenêtre : elle affiche et commande, sans stocker de données. On y saisit l'adresse du serveur, un identifiant et un mot de passe. | N'importe quel Mac du réseau |
 
 Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un seul compte, aucun cloud.
 Vous venez de la v0.2.1 ? [Reprenez vos données](docs/migration.md) sans réappairer un seul appareil.
@@ -77,7 +77,7 @@ versions définitives : pour une pré-version, `-rc.1` par exemple, voir la
 
 ### 1. Le serveur, sur le Mac qui reste allumé
 
-**Le plus simple : `MatterHomeServer-<version>-universal.dmg`**, l'application « Matter Home
+**Le plus simple : `OstalServer-<version>-universal.dmg`**, l'application « Ostal
 Server » (macOS 10.15 minimum sur Intel, 11 sur Apple Silicon). Glissez-la dans **Applications**
 et ouvrez-la : une icône apparaît dans la barre de menus, et une petite fenêtre guide la première
 configuration (reprendre une sauvegarde ou créer une nouvelle maison, puis le compte). **Pas de
@@ -85,14 +85,14 @@ Terminal, pas de mot de passe administrateur.** Elle s'ouvre à la connexion et 
 voir [docs/installation-serveur.md](docs/installation-serveur.md) (ouverture de session
 automatique, capot ouvert, secteur).
 
-**Option avancée : l'archive en ligne de commande**, `matter-home-server-<version>-macos.tar.gz` : le programme (arm64 et Intel, macOS 10.15 minimum
+**Option avancée : l'archive en ligne de commande**, `ostal-server-<version>-macos.tar.gz` : le programme (arm64 et Intel, macOS 10.15 minimum
 sur Intel, 11 sur Apple Silicon), `install.sh`, `uninstall.sh` et un fichier de service launchd.
 `install.sh` l'installe comme service qui démarre avec le Mac, relancé s'il plante, sous votre
 compte (jamais root). Il ne touche jamais seul à la veille ni au pare-feu : il affiche les
 commandes à lancer. Avant de lancer quoi que ce soit, retirez la quarantaine :
 `xattr -dr com.apple.quarantine <dossier de l'archive>`. **Guide pas à pas, pour non-développeurs :
 [docs/installation-serveur.md](docs/installation-serveur.md).** Pour passer du service à l'application :
-`./uninstall.sh` (vos données restent), puis ouvrez Matter Home Server.
+`./uninstall.sh` (vos données restent), puis ouvrez Ostal Server.
 
 Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
 **[docs/migration.md](docs/migration.md)**.
@@ -103,10 +103,10 @@ Pour reprendre vos appareils, plan, règles et historique de la v0.2.1 :
 
 ### 2. Le client, sur le Mac où vous regardez
 
-`MatterHomeDesktop-<version>-universal.dmg`, pour **macOS 12 et plus**, Apple Silicon comme Intel
-(environ 13 Mo). Ouvrez-le et glissez **Matter Home Desktop** dans **Applications**. Au
+`Ostal-<version>-universal.dmg`, pour **macOS 12 et plus**, Apple Silicon comme Intel
+(environ 13 Mo). Ouvrez-le et glissez **Ostal** dans **Applications**. Au
 lancement, saisissez l'adresse du serveur, l'identifiant et le mot de passe ; la première fois,
-le client affiche l'empreinte du certificat du serveur (à comparer avec `matter-home-server
+le client affiche l'empreinte du certificat du serveur (à comparer avec `ostal-server
 fingerprint`) puis ne fait confiance qu'à lui. Au premier lancement, macOS demande l'accès au
 **réseau local** : acceptez (Réglages Système → Confidentialité et sécurité → Réseau local),
 sans quoi le client ne voit rien. Le même réglage concerne le serveur : voir le guide
@@ -114,14 +114,14 @@ d'installation. Le client n'a besoin de voir que le serveur ;
 c'est le serveur qui doit être sur le même réseau local que vos HomePod (ou autres routeurs de
 bordure Thread).
 
-### Premier lancement : « Matter Home Desktop est endommagé »
+### Premier lancement : « Ostal est endommagé »
 
 L'application n'est pas abîmée : elle n'est pas encore signée avec un certificat Apple
 Developer payant, et macOS bloque les applications non signées téléchargées sur internet.
 Pour l'autoriser, lancez une fois dans le Terminal :
 
 ```bash
-xattr -cr "/Applications/Matter Home Desktop.app"
+xattr -cr "/Applications/Ostal.app"
 ```
 
 Ouvrez ensuite l'application normalement. C'est à refaire après chaque nouvelle version.
@@ -132,7 +132,7 @@ Le **mode démo** du serveur simule thermomètres, porte, prise, volets et autom
 temporaire, écoute sur `127.0.0.1:8443`, compte « demo » dont le mot de passe est affiché) :
 
 ```bash
-matter-home-server --demo
+ostal-server --demo
 ```
 
 Lancez le client et connectez-le à `https://127.0.0.1:8443`.
@@ -146,8 +146,8 @@ git clone https://github.com/killerwolf/matter-home-desktop.git && cd matter-hom
 ```
 
 ```bash
-scripts/bundle.sh --dmg          # le client : dist/MatterHomeDesktop-<version>-<arch>.dmg
-scripts/package-server.sh        # le serveur : dist/matter-home-server-<version>-macos.tar.gz
+scripts/bundle.sh --dmg          # le client : dist/Ostal-<version>-<arch>.dmg
+scripts/package-server.sh        # le serveur : dist/ostal-server-<version>-macos.tar.gz
 ```
 
 Les deux sont créés dans `dist/` (universels quand les deux cibles Apple sont installées avec
@@ -192,7 +192,7 @@ Vérifiez donc le nom de votre Mac. Tout autre certificat invalide est refusé. 
 
 1. Dans l'app **Maison** : appui long sur l'appareil → **Réglages** → **Activer le mode
    jumelage**. Maison affiche un code à 11 chiffres.
-2. Dans Matter Home Desktop : collez le code dans « Appairer un appareil », puis **Appairer**.
+2. Dans Ostal : collez le code dans « Appairer un appareil », puis **Appairer**.
 
 L'appareil reste dans Apple Maison ; l'application devient un contrôleur de plus. Pour un
 capteur sur pile, appuyez sur son bouton juste avant pour le réveiller.
@@ -213,7 +213,7 @@ les notifications sont envoyées aux clients connectés (un client fermé n'en r
 ## Vos données
 
 Tout reste sur le Mac du **serveur**, dans
-`~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/` : identité du
+`~/Library/Application Support/dev.ostal.OstalServer/` : identité du
 contrôleur, appareils, plan, règles, 7 jours d'historique des mesures, compte et certificat du
 serveur. Le client ne garde que l'adresse du serveur, l'empreinte du certificat et un jeton de
 session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous-même. Détails :

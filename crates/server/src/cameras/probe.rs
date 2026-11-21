@@ -113,7 +113,7 @@ pub(super) fn classify(error: &retina::Error) -> ProbeError {
 /// dimensions du premier flux vidéo.
 pub async fn probe(target: &Target, timeout: Duration) -> Result<StreamInfo, ProbeError> {
     let mut options = retina::client::SessionOptions::default()
-        .user_agent(format!("MatterHomeServer/{}", env!("CARGO_PKG_VERSION")));
+        .user_agent(format!("OstalServer/{}", env!("CARGO_PKG_VERSION")));
     if let Some(c) = &target.credentials {
         options = options.creds(Some(retina::client::Credentials {
             username: c.username.clone(),

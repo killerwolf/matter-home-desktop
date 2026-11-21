@@ -15,7 +15,7 @@ use super::customize::{editor, DeviceEdit, EditResult};
 use super::sync::{Failure, Incoming, SyncState};
 use super::theme::{self, Palette};
 use super::Device;
-use matter_home_client::model::Model;
+use ostal_client::model::Model;
 use protocol::format::{format_position, format_power};
 use protocol::home::{
     self, snap, FovShape, HomePlan, Item, ItemKind, OpeningKind, Room, Symbol, ITEM_SNAP,

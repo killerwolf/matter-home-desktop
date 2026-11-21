@@ -43,7 +43,7 @@ type Runner = Box<dyn Fn(&str, &str) + Send + 'static>;
 /// Texte du résumé qui remplace les notifications en surplus.
 fn overflow_summary(count: usize) -> (&'static str, String) {
     (
-        "Matter Home",
+        "Ostal",
         format!(
             "{count} autre{} notification{} non affichée{} : voir le journal de l'application.",
             if count > 1 { "s" } else { "" },
@@ -175,11 +175,8 @@ mod tests {
         }
         gate_tx.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let summary_seen = |shown: &Vec<(String, String)>| {
-            shown
-                .last()
-                .is_some_and(|(title, _)| title == "Matter Home")
-        };
+        let summary_seen =
+            |shown: &Vec<(String, String)>| shown.last().is_some_and(|(title, _)| title == "Ostal");
         while !summary_seen(&shown.lock().unwrap()) {
             assert!(std::time::Instant::now() < deadline, "pas de résumé");
             std::thread::sleep(Duration::from_millis(10));

@@ -8,7 +8,7 @@ rapports de bugs, idées et propositions de modification sont les bienvenus.
 Ouvrez une [issue](https://github.com/killerwolf/matter-home-desktop/issues) en précisant :
 la version de macOS, les appareils concernés (marque, modèle, Thread ou Wi-Fi), ce que vous
 avez fait, ce qui s'est passé, et les journaux utiles
-(`RUST_LOG=debug ./target/release/matter-home-desktop`).
+(`RUST_LOG=debug ./target/release/ostal`).
 
 **Avant de coller des journaux, retirez vos données personnelles** : codes d'appairage,
 adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant votre nom.
@@ -22,8 +22,8 @@ adresses IP, identifiants de vos appareils et de votre fabric, chemins contenant
   thermomètres, porte, prise et automatisations.
 
 Le dépôt est un workspace Cargo de trois crates : `crates/protocol` (types partagés),
-`crates/server` (Matter, règles, historique ; binaire `matter-home-server`, sans fenêtre) et
-`crates/client` (interface egui ; binaire `matter-home-desktop`, branché sur le serveur).
+`crates/server` (Matter, règles, historique ; binaire `ostal-server`, sans fenêtre) et
+`crates/client` (interface egui ; binaire `ostal`, branché sur le serveur).
 `scripts/bundle.sh --dmg` fabrique le DMG du client, `scripts/package-server.sh` l'archive du
 serveur (`scripts/server/` : `install.sh`, `uninstall.sh`, gabarit launchd) ; les scripts
 d'installation s'essaient avec `--a-blanc` ou `--prefixe` (voir `scripts/test-server-package.sh`).
@@ -33,10 +33,10 @@ cargo build --workspace
 ```
 
 ```bash
-cargo run -p matter-home-server -- --demo
+cargo run -p ostal-server -- --demo
 ```
 
-`--demo` ne touche à aucun fichier. Côté client, `cargo run -p matter-home-desktop` lance
+`--demo` ne touche à aucun fichier. Côté client, `cargo run -p ostal` lance
 l'interface ; `--plan`, `--rules` et `--device <nom>` ouvrent directement un onglet ou une fiche.
 
 ## Avant de proposer une modification
@@ -73,7 +73,7 @@ avec de vrais appareils.
   (identifiants d'appareils, adresses, codes) ; utilisez des valeurs inventées. Les données de
   l'application vivent dans le dossier de données local, ignoré par Git.
 - **`vendor/matc`** : modifiez-le le moins possible, repérez chaque changement par un
-  commentaire `[matter-home-desktop]` et documentez-le dans
+  commentaire `[ostal]` et documentez-le dans
   [docs/architecture.md](docs/architecture.md).
 - **Captures d'écran** : uniquement en mode démo, rangées dans `docs/screenshots/`.
 
@@ -85,8 +85,8 @@ scripts/bundle.sh --dmg
 
 Le script compile un binaire universel (Apple Silicon + Intel) si les deux cibles Rust sont
 installées (`rustup target add x86_64-apple-darwin aarch64-apple-darwin`), sinon pour ce Mac
-seulement, puis assemble `dist/Matter Home Desktop.app` (Info.plist, icône, signature ad hoc)
-et `dist/MatterHomeDesktop-<version>-<arch>.dmg`. La fenêtre du DMG (taille, fond, position
+seulement, puis assemble `dist/Ostal.app` (Info.plist, icône, signature ad hoc)
+et `dist/Ostal-<version>-<arch>.dmg`. La fenêtre du DMG (taille, fond, position
 des icônes) est mise en page par [dmgbuild](https://github.com/dmgbuild/dmgbuild), installé
 automatiquement à une version fixe dans `target/` ; réglages dans `scripts/dmg-settings.py`.
 

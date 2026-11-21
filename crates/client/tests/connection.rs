@@ -1,4 +1,4 @@
-//! La couche connexion du client contre le vrai `matter-home-server --demo`, lancé comme
+//! La couche connexion du client contre le vrai `ostal-server --demo`, lancé comme
 //! processus sur 127.0.0.1 (dossier de données temporaire, HOME factice).
 
 mod common;
@@ -7,10 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::*;
-use matter_home_client::net::tls::Trust;
-use matter_home_client::net::{
-    http, Body, Event, Link, NetError, Request, Saved, ServerAddr, Store,
-};
+use ostal_client::net::tls::Trust;
+use ostal_client::net::{http, Body, Event, Link, NetError, Request, Saved, ServerAddr, Store};
 use protocol::wire::{ErrorCode, HistoryResponse, ImportResponse, Metric, WireEvent};
 
 const T: Duration = Duration::from_secs(30);
@@ -391,7 +389,7 @@ fn files_are_written_and_read_by_the_network_threads() {
         .starts_with("timestamp_unix"));
 
     // Privé : en 0600 (la sauvegarde contient des clés).
-    let secret = dir.join("secret.matterhome");
+    let secret = dir.join("secret.ostal");
     let id = client
         .backend
         .download(Request::get(csv_path), secret.clone(), true);
@@ -421,7 +419,7 @@ fn files_are_written_and_read_by_the_network_threads() {
     assert!(matches!(reply, Err(NetError::Local(_))), "{reply:?}");
 
     // Lecture : contenu partagé, plafond respecté, fichier absent signalé.
-    let backup = dir.join("a-importer.matterhome");
+    let backup = dir.join("a-importer.ostal");
     std::fs::write(&backup, vec![b'x'; 1000]).unwrap();
     let mut read = |path: PathBuf, max: u64| {
         let id = client.backend.read_file(path, max);
@@ -432,7 +430,7 @@ fn files_are_written_and_read_by_the_network_threads() {
     };
     assert_eq!(read(backup.clone(), 2000).unwrap().len(), 1000);
     assert!(matches!(read(backup, 10), Err(NetError::Local(m)) if m.contains("volumineux")));
-    assert!(read(dir.join("absent.matterhome"), 10).is_err());
+    assert!(read(dir.join("absent.ostal"), 10).is_err());
 }
 
 /// Contrôleur minimal mais valide : clé P-256 valide et vrais certificats DER (l'import les décode).
@@ -484,7 +482,7 @@ fn import_is_checked_first_then_applied_and_the_client_reconnects() {
         .unwrap();
     assert!(!check.restarting);
     assert_eq!(check.summary.devices, 1);
-    assert!(!dir.join("import-en-attente.matterhome").exists());
+    assert!(!dir.join("import-en-attente.ostal").exists());
 
     // 2. Import réel : accepté, puis le serveur s'arrête (code 75) pour être relancé.
     let applied: ImportResponse = client

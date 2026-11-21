@@ -1,4 +1,4 @@
-// App web Matter Home : appareils en tuiles, températures, caméras. Sans framework, sans build.
+// App web Ostal : appareils en tuiles, températures, caméras. Sans framework, sans build.
 import * as api from "./api.js";
 import { ICONS, mountIcons } from "./icons.js";
 import {
@@ -1236,7 +1236,7 @@ function renderWidgets(manualText = "") {
   // 2. Le widget Scriptable.
   body.appendChild(el("h3", null, "2. Le widget Scriptable"));
   note(tokenLine(widgetsUi.tokens?.read, "Pas encore de jeton de lecture."));
-  note("Installe Scriptable (App Store, gratuit), puis touche « Installer le widget » : le script est copié avec l'adresse et un jeton de lecture, qui ne permet que de lire l'état de la maison. Dans Scriptable : « + », colle, nomme le script Matter Home. Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Matter Home.");
+  note("Installe Scriptable (App Store, gratuit), puis touche « Installer le widget » : le script est copié avec l'adresse et un jeton de lecture, qui ne permet que de lire l'état de la maison. Dans Scriptable : « + », colle, nomme le script Ostal. Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Ostal.");
   if (widgetsUi.tokens?.read?.exists) note("Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié.");
   const row2 = el("div", "controls");
   row2.appendChild(button(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
@@ -1246,7 +1246,7 @@ function renderWidgets(manualText = "") {
     const area = el("textarea", "widgets-script");
     area.value = manualText;
     area.readOnly = true;
-    area.setAttribute("aria-label", "Script Matter Home à copier");
+    area.setAttribute("aria-label", "Script Ostal à copier");
     body.appendChild(area);
     area.focus();
     area.select();

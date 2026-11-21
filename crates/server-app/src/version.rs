@@ -1,14 +1,11 @@
 //! La version affichée dans le menu. `CARGO_PKG_VERSION` ne porte pas le suffixe d'une
 //! pré-version (1.0.0 pour `v1.0.0-rc.7`) : la CI donne le nom complet au build par la variable
-//! d'environnement `MATTER_HOME_VERSION`, lue ici à la compilation. Sans elle (build local),
+//! d'environnement `OSTAL_VERSION`, lue ici à la compilation. Sans elle (build local),
 //! « 1.0.0 (dev) ».
 
 /// Le nom complet de la version, tel qu'il s'affiche.
 pub fn display_version() -> String {
-    format_version(
-        option_env!("MATTER_HOME_VERSION"),
-        env!("CARGO_PKG_VERSION"),
-    )
+    format_version(option_env!("OSTAL_VERSION"), env!("CARGO_PKG_VERSION"))
 }
 
 pub fn format_version(full: Option<&str>, package: &str) -> String {

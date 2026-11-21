@@ -17,7 +17,7 @@ use super::http::{self, Request};
 use super::snapshot::decode_jpeg;
 use super::stream::current;
 use super::tls::Trust;
-use matter_home_video::Image;
+use ostal_video::Image;
 
 /// Événements lus à chaque rafraîchissement, et captures chargées.
 pub const LIST_LIMIT: usize = 50;
@@ -235,7 +235,7 @@ pub fn purge_old_clips() {
 
 /// Le dossier des clips téléchargés : privé (0700), dans le dossier temporaire du compte.
 pub fn clips_dir() -> PathBuf {
-    std::env::temp_dir().join("matter-home-clips")
+    std::env::temp_dir().join("ostal-clips")
 }
 
 /// Télécharge le clip en mémoire (lecteur intégré, ticket n° 22).

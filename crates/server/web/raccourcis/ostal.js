@@ -3,7 +3,7 @@
 // icon-color: deep-green; icon-glyph: home;
 
 // ─────────────────────────────────────────────────────────────
-//  Matter Home — widget Scriptable (petit et moyen)
+//  Ostal — widget Scriptable (petit et moyen)
 //  Montre : le mode de la maison, les lumières allumées,
 //  la dernière alerte. Rien à modifier : l'adresse du serveur et
 //  le jeton de lecture sont écrits ci-dessous par l'app web
@@ -22,8 +22,8 @@ const TOKEN = "__JETON_DE_LECTURE__";
 const RACCOURCI_ABSENT = "Mode absent";
 const RACCOURCI_PRESENT = "Mode present";
 
-const NOM_SCRIPT = Script.name(); // « Matter Home »
-const CACHE = "matter-home-cache.json";
+const NOM_SCRIPT = Script.name(); // « Ostal »
+const CACHE = "ostal-cache.json";
 
 const MODES = {
   present: { label: "Présent", symbol: "house.fill", light: "#1f8a4c", dark: "#4ccf7f" },
@@ -297,7 +297,7 @@ function construireWidget(family, s, note) {
     w.setPadding(12, 14, 12, 12);
     colonneEtat(w, s, note);
   }
-  // Toucher le fond du widget ouvre l'app web Matter Home.
+  // Toucher le fond du widget ouvre l'app web Ostal.
   const base = serveur();
   w.url = base ? base + "/app/" : scriptUrl();
   return w;
@@ -309,7 +309,7 @@ function messageErreur(e) {
   if (e instanceof HttpError) {
     if (e.status === 0 && e.message === "pas_installe") return "Widget pas installé : copie-le depuis l'app web (Widgets et raccourcis › Installer le widget).";
     if (e.status === 401) return "Jeton révoqué : recopie le widget depuis l'app web.";
-    if (e.status === 426) return "Version du serveur différente : mets à jour Matter Home.";
+    if (e.status === 426) return "Version du serveur différente : mets à jour Ostal.";
     return "Le serveur a répondu une erreur (" + e.status + (e.message ? ", " + e.message : "") + ").";
   }
   return "Serveur injoignable. Vérifie que Tailscale est activé sur l'iPhone et que le Mac est allumé.";
@@ -317,7 +317,7 @@ function messageErreur(e) {
 
 async function info(msg) {
   const a = new Alert();
-  a.title = "Matter Home";
+  a.title = "Ostal";
   a.message = msg;
   a.addAction("OK");
   await a.presentAlert();
@@ -358,7 +358,7 @@ async function main() {
     return;
   }
   const menu = new Alert();
-  menu.title = "Matter Home";
+  menu.title = "Ostal";
   menu.addAction("Voir le widget moyen");
   menu.addAction("Voir le petit widget");
   menu.addCancelAction("Fermer");

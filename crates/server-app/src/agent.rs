@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-pub const LABEL: &str = "dev.matter-home-desktop.server-app";
+pub const LABEL: &str = "dev.ostal.server";
 /// Variable d'environnement posée par le LaunchAgent : elle seule prouve que launchd supervise
 /// ce processus (le fichier peut exister sans être encore chargé, avant la prochaine connexion).
-pub const SUPERVISED_ENV: &str = "MATTER_HOME_SERVER_LAUNCH_AGENT";
+pub const SUPERVISED_ENV: &str = "OSTAL_SERVER_LAUNCH_AGENT";
 const THROTTLE_SECONDS: u32 = 30;
 
 pub fn agent_path(launch_agents_dir: &Path) -> PathBuf {
@@ -86,9 +86,9 @@ pub fn is_installable(exe: &Path) -> bool {
 /// Pourquoi l'agent ne peut pas pointer ici, en une phrase pour l'utilisateur.
 pub fn refusal(exe: &Path) -> &'static str {
     if is_in_bundle(exe) && is_temporary_location(exe) {
-        "L'application tourne depuis l'image disque (ou une copie temporaire) : glissez « Matter Home Server » dans le dossier Applications, ouvrez-la depuis là, puis réglez l'ouverture à la connexion."
+        "L'application tourne depuis l'image disque (ou une copie temporaire) : glissez « Ostal Server » dans le dossier Applications, ouvrez-la depuis là, puis réglez l'ouverture à la connexion."
     } else {
-        "L'ouverture à la connexion n'est possible que depuis l'application installée (« Matter Home Server.app »)."
+        "L'ouverture à la connexion n'est possible que depuis l'application installée (« Ostal Server.app »)."
     }
 }
 
@@ -126,10 +126,7 @@ pub fn disable(dir: &Path) -> Result<()> {
 /// dossier de données (qui s'exporte et s'importe d'un Mac à l'autre : le choix d'un Mac ne
 /// doit pas suivre l'autre).
 pub fn default_marker_dir() -> Option<PathBuf> {
-    Some(
-        PathBuf::from(std::env::var_os("HOME")?)
-            .join("Library/Application Support/Matter Home Server"),
-    )
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Ostal Server"))
 }
 
 fn choice_path(marker_dir: &Path) -> PathBuf {
@@ -192,6 +189,126 @@ pub fn apply_default(
     }
 }
 
+/// Le LaunchAgent de « Matter Home Server » (avant le renommage en Ostal).
+pub fn legacy_agent_path(launch_agents_dir: &Path) -> PathBuf {
+    launch_agents_dir.join(format!(
+        "{}.plist",
+        ostal_server::legacy::LAUNCH_AGENT_LABEL
+    ))
+}
+
+/// Le dossier des petits réglages de « Matter Home Server ».
+pub fn legacy_marker_dir() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/Application Support")
+            .join(ostal_server::legacy::MARKER_DIR),
+    )
+}
+
+/// Ce qu'a fait [`adopt_legacy`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum LegacyOutcome {
+    /// Aucun reste de « Matter Home Server » à reprendre.
+    Nothing,
+    /// Le choix et/ou l'agent ont été repris ; l'ancien agent est retiré.
+    Adopted,
+    /// Emplacement non durable (image disque…) ou démo : rien n'est touché, ce sera fait depuis
+    /// l'application installée.
+    Later,
+    Failed(String),
+}
+
+/// Reprend ce que « Matter Home Server » avait réglé pour l'ouverture à la connexion, **avant**
+/// [`apply_default`] (sinon un « non » enregistré serait remplacé par le oui par défaut) :
+///
+/// - le choix enregistré est recopié dans le nouveau dossier de réglages s'il n'y en a pas
+///   encore ;
+/// - l'ancien agent, qui lancerait l'ancienne application à la connexion, est remplacé : le
+///   nouvel agent est écrit d'abord (si l'ouverture à la connexion était voulue), l'ancien n'est
+///   retiré qu'ensuite. Jamais deux agents, jamais aucun par accident ;
+/// - enfin, « non » est écrit dans l'ancien dossier de réglages, dès que les données de Matter
+///   Home sont sur ce Mac (`legacy_data`) même s'il n'y avait rien à reprendre : l'ancienne
+///   application, si on la rouvre, ne récrit pas son agent (elle n'applique son « oui » par
+///   défaut que sans choix enregistré).
+pub fn adopt_legacy(
+    agent_dir: &Path,
+    marker_dir: &Path,
+    legacy_marker: &Path,
+    exe: &Path,
+    demo: bool,
+    legacy_data: bool,
+) -> LegacyOutcome {
+    let old_agent = legacy_agent_path(agent_dir);
+    let raw_old = recorded_choice(legacy_marker);
+    // Un « non » qu'Ostal a lui-même écrit (voir plus bas) n'est pas un choix à reprendre.
+    let old_choice = if legacy_marker.join(LEGACY_NO_BY_OSTAL).exists() {
+        None
+    } else {
+        raw_old
+    };
+    let nothing_to_adopt =
+        !old_agent.is_file() && (old_choice.is_none() || recorded_choice(marker_dir).is_some());
+    let shield = (legacy_data || !nothing_to_adopt) && raw_old != Some(false);
+    if nothing_to_adopt && !shield {
+        return LegacyOutcome::Nothing;
+    }
+    if demo || !is_installable(exe) {
+        return LegacyOutcome::Later;
+    }
+    if !nothing_to_adopt {
+        if let Err(e) = adopt_agent(agent_dir, marker_dir, &old_agent, old_choice, exe) {
+            return LegacyOutcome::Failed(e);
+        }
+    }
+    if shield {
+        let written = record_choice(legacy_marker, false).and_then(|()| {
+            let path = legacy_marker.join(LEGACY_NO_BY_OSTAL);
+            std::fs::write(&path, "").with_context(|| format!("écriture de {}", path.display()))
+        });
+        if let Err(e) = written {
+            return LegacyOutcome::Failed(format!("{e:#}"));
+        }
+    }
+    LegacyOutcome::Adopted
+}
+
+/// À côté du « non » écrit chez « Matter Home Server » : c'est Ostal Server qui l'a mis, pas
+/// l'utilisateur. Sans lui, un lancement suivant reprendrait ce « non » comme choix d'Ostal.
+const LEGACY_NO_BY_OSTAL: &str = "ouverture-a-la-connexion.ecrit-par-ostal";
+
+/// Le choix et l'agent de « Matter Home Server » passent à Ostal Server (voir [`adopt_legacy`]).
+fn adopt_agent(
+    agent_dir: &Path,
+    marker_dir: &Path,
+    old_agent: &Path,
+    old_choice: Option<bool>,
+    exe: &Path,
+) -> Result<(), String> {
+    // Le choix : celui déjà fait dans Ostal, sinon celui de Matter Home, sinon l'existence de
+    // l'ancien agent (il n'existait que si l'ouverture était voulue).
+    let choice = recorded_choice(marker_dir)
+        .or(old_choice)
+        .unwrap_or_else(|| old_agent.is_file());
+    if recorded_choice(marker_dir).is_none() {
+        record_choice(marker_dir, choice).map_err(|e| format!("{e:#}"))?;
+    }
+    if old_agent.is_file() {
+        if choice {
+            enable(agent_dir, exe).map_err(|e| format!("{e:#}"))?;
+        }
+        if let Err(e) = std::fs::remove_file(old_agent) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!(
+                    "retrait de l'ancien agent {} : {e}",
+                    old_agent.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Application déplacée : l'agent pointait ailleurs, on le réécrit, sauf vers un emplacement
 /// non durable.
 pub fn rewrite_if_stale(agent_dir: &Path, exe: &Path) {
@@ -204,7 +321,7 @@ pub fn rewrite_if_stale(agent_dir: &Path, exe: &Path) {
 mod tests {
     use super::*;
 
-    const EXE: &str = "/Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app";
+    const EXE: &str = "/Applications/Ostal Server.app/Contents/MacOS/ostal-server-app";
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mh-agent-{name}-{}", std::process::id()));
@@ -239,7 +356,7 @@ mod tests {
         assert!(!is_stale(&dir, Path::new(EXE)));
         assert!(is_stale(
             &dir,
-            Path::new("/Users/x/Matter Home Server.app/Contents/MacOS/matter-home-server-app")
+            Path::new("/Users/x/Ostal Server.app/Contents/MacOS/ostal-server-app")
         ));
         disable(&dir).unwrap();
         assert!(!is_enabled(&dir));
@@ -247,16 +364,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    const DMG_EXE: &str =
-        "/Volumes/Matter Home Server/Matter Home Server.app/Contents/MacOS/matter-home-server-app";
-    const TRANSLOCATED: &str = "/private/var/folders/ab/xyz/T/AppTranslocation/0000-1111/d/Matter Home Server.app/Contents/MacOS/matter-home-server-app";
+    const DMG_EXE: &str = "/Volumes/Ostal Server/Ostal Server.app/Contents/MacOS/ostal-server-app";
+    const TRANSLOCATED: &str = "/private/var/folders/ab/xyz/T/AppTranslocation/0000-1111/d/Ostal Server.app/Contents/MacOS/ostal-server-app";
 
     #[test]
     fn refuses_disk_images_and_translocation() {
         assert!(is_installable(Path::new(EXE)));
         assert!(!is_installable(Path::new(DMG_EXE)));
         assert!(!is_installable(Path::new(TRANSLOCATED)));
-        assert!(!is_installable(Path::new("/tmp/matter-home-server-app")));
+        assert!(!is_installable(Path::new("/tmp/ostal-server-app")));
         let dir = temp("dmg");
         let err = enable(&dir, Path::new(DMG_EXE)).unwrap_err().to_string();
         assert!(err.contains("Applications"), "{err}");
@@ -326,10 +442,182 @@ mod tests {
         let _ = std::fs::remove_file(&blocker);
     }
 
+    fn old_plist(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(legacy_agent_path(dir), "<plist>ancien</plist>").unwrap();
+    }
+
+    #[test]
+    fn legacy_agent_is_replaced_by_the_new_one_and_the_choice_kept() {
+        let (agents, marker, old_marker) = (temp("l-agents"), temp("l-marker"), temp("l-old"));
+        let exe = Path::new(EXE);
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Nothing
+        );
+        old_plist(&agents);
+        record_choice(&old_marker, true).unwrap();
+        // Depuis l'image disque : rien n'est touché.
+        assert_eq!(
+            adopt_legacy(
+                &agents,
+                &marker,
+                &old_marker,
+                Path::new(DMG_EXE),
+                false,
+                false
+            ),
+            LegacyOutcome::Later
+        );
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, true, false),
+            LegacyOutcome::Later
+        );
+        assert!(legacy_agent_path(&agents).is_file() && !is_enabled(&agents));
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Adopted
+        );
+        // Un seul agent, le nouveau ; le choix est recopié. L'ancienne application, elle, a
+        // désormais « non » : rouverte, elle ne récrirait pas son agent.
+        assert!(!legacy_agent_path(&agents).exists());
+        assert!(is_enabled(&agents) && !is_stale(&agents, exe));
+        assert_eq!(recorded_choice(&marker), Some(true));
+        assert_eq!(recorded_choice(&old_marker), Some(false));
+        let files: Vec<_> = std::fs::read_dir(&agents).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1);
+        // Ensuite, le choix par défaut ne change rien.
+        assert_eq!(
+            apply_default(&agents, &marker, exe, false),
+            DefaultOutcome::AlreadyChosen
+        );
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Nothing
+        );
+        for d in [agents, marker, old_marker] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_legacy_no_stays_no() {
+        let (agents, marker, old_marker) = (temp("n2-agents"), temp("n2-marker"), temp("n2-old"));
+        let exe = Path::new(EXE);
+        record_choice(&old_marker, false).unwrap();
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Adopted
+        );
+        assert_eq!(recorded_choice(&marker), Some(false));
+        assert_eq!(
+            apply_default(&agents, &marker, exe, false),
+            DefaultOutcome::AlreadyChosen
+        );
+        assert!(!is_enabled(&agents));
+        // Un ancien agent resté malgré un « non » (réglé à la main) : retiré, pas remplacé.
+        old_plist(&agents);
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Adopted
+        );
+        assert!(!legacy_agent_path(&agents).exists() && !is_enabled(&agents));
+        for d in [agents, marker, old_marker] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_legacy_agent_without_a_recorded_choice_means_yes() {
+        let (agents, marker, old_marker) = (temp("y-agents"), temp("y-marker"), temp("y-old"));
+        old_plist(&agents);
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, Path::new(EXE), false, false),
+            LegacyOutcome::Adopted
+        );
+        assert!(is_enabled(&agents) && !legacy_agent_path(&agents).exists());
+        assert_eq!(recorded_choice(&marker), Some(true));
+        // L'échec d'écriture du nouvel agent laisse l'ancien en place.
+        assert_eq!(recorded_choice(&old_marker), Some(false));
+        let (agents2, marker2, old_marker2) =
+            (temp("y2-agents"), temp("y2-marker"), temp("y2-old"));
+        old_plist(&agents2);
+        std::fs::write(agent_path(&agents2).with_extension("plist.tmp"), "").unwrap();
+        std::fs::create_dir_all(agent_path(&agents2)).unwrap();
+        let out = adopt_legacy(
+            &agents2,
+            &marker2,
+            &old_marker2,
+            Path::new(EXE),
+            false,
+            false,
+        );
+        assert!(matches!(out, LegacyOutcome::Failed(_)), "{out:?}");
+        assert!(legacy_agent_path(&agents2).is_file());
+        // Rien n'est écrit chez l'ancienne application tant que le remplacement n'est pas fait.
+        assert_eq!(recorded_choice(&old_marker2), None);
+        for d in [agents, marker, old_marker, agents2, marker2, old_marker2] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn the_old_app_gets_no_even_with_nothing_to_adopt() {
+        let (agents, marker, old_marker) = (temp("s-agents"), temp("s-marker"), temp("s-old"));
+        let exe = Path::new(EXE);
+        // Pas de données de Matter Home sur ce Mac : on n'écrit rien chez elle.
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, false),
+            LegacyOutcome::Nothing
+        );
+        assert!(!old_marker.exists());
+        // Ses données sont là, mais ni agent ni choix : l'ancienne application, rouverte,
+        // appliquerait son « oui » par défaut et récrirait son agent. Elle reçoit « non ».
+        assert_eq!(
+            adopt_legacy(
+                &agents,
+                &marker,
+                &old_marker,
+                Path::new(DMG_EXE),
+                false,
+                true
+            ),
+            LegacyOutcome::Later
+        );
+        assert_eq!(recorded_choice(&old_marker), None);
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Adopted
+        );
+        assert_eq!(recorded_choice(&old_marker), Some(false));
+        // Rien d'autre n'a changé : ni agent, ni choix chez Ostal…
+        assert!(!agents.exists() && recorded_choice(&marker).is_none());
+        // … même au lancement suivant (le serveur n'avait pas démarré, le choix par défaut
+        // n'a pas été fait) : ce « non » écrit par Ostal n'est pas repris comme choix.
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Nothing
+        );
+        assert!(recorded_choice(&marker).is_none());
+        // Le « oui » par défaut d'Ostal s'applique ensuite, comme quand le serveur tourne (ui.rs).
+        assert_eq!(
+            apply_default(&agents, &marker, exe, false),
+            DefaultOutcome::Enabled
+        );
+        assert_eq!(
+            adopt_legacy(&agents, &marker, &old_marker, exe, false, true),
+            LegacyOutcome::Nothing
+        );
+        assert!(is_enabled(&agents) && recorded_choice(&marker) == Some(true));
+        for d in [agents, marker, old_marker] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
     #[test]
     fn refuses_a_bare_binary() {
         let dir = temp("bare");
-        assert!(enable(&dir, Path::new("/tmp/target/debug/matter-home-server-app")).is_err());
+        assert!(enable(&dir, Path::new("/tmp/target/debug/ostal-server-app")).is_err());
         assert!(!dir.exists());
     }
 }

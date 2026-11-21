@@ -2,8 +2,12 @@
 //! jeton de session. Jamais le mot de passe. Aucune mesure, aucun plan, aucune règle.
 //!
 //! Le fichier est créé en 0600 dans un dossier propre au client, **distinct** du dossier de
-//! données de la v0.2.1 (`dev.matter-home-desktop.MatterHomeDesktop`) : le client ne lit,
-//! n'écrit ni ne supprime rien dans ce dernier.
+//! données du serveur (et de celui de la v0.2.1, `dev.matter-home-desktop.MatterHomeDesktop`) :
+//! le client ne lit, n'écrit ni ne supprime rien dans ces derniers.
+//!
+//! Avant le renommage en Ostal, le fichier était dans `dev.matter-home-desktop.MatterHomeClient` :
+//! [`Store::adopt_legacy`] le copie au premier lancement (une seule fois : tant que le dossier
+//! d'Ostal n'existe pas), et laisse l'ancien en place.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,8 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use super::error::NetError;
 
-/// Nom du dossier du client (la v0.2.1 utilisait `MatterHomeDesktop`).
-const APP_NAME: &str = "MatterHomeClient";
+/// Dossier du client : `dev.ostal.OstalClient`.
+const ORGANIZATION: &str = "ostal";
+const APP_NAME: &str = "OstalClient";
+/// Dossier du client avant le renommage en Ostal : `dev.matter-home-desktop.MatterHomeClient`.
+const LEGACY_DIR: (&str, &str) = ("matter-home-desktop", "MatterHomeClient");
 const FILE_NAME: &str = "connexion.json";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -57,11 +64,59 @@ impl Store {
         Store { path }
     }
 
-    /// Emplacement habituel : `~/Library/Application Support/dev.matter-home-desktop.MatterHomeClient/`
+    /// Emplacement habituel : `~/Library/Application Support/dev.ostal.OstalClient/`
     /// sous macOS (suit `$HOME`).
     pub fn default_location() -> Option<Store> {
-        let dirs = directories::ProjectDirs::from("dev", "matter-home-desktop", APP_NAME)?;
+        let dirs = directories::ProjectDirs::from("dev", ORGANIZATION, APP_NAME)?;
         Some(Store::at(dirs.data_dir().join(FILE_NAME)))
+    }
+
+    /// Le fichier de connexion de l'ancien nom (« Matter Home »).
+    pub fn legacy_location() -> Option<Store> {
+        let dirs = directories::ProjectDirs::from("dev", LEGACY_DIR.0, LEGACY_DIR.1)?;
+        Some(Store::at(dirs.data_dir().join(FILE_NAME)))
+    }
+
+    /// Si le dossier de ce fichier n'existe pas encore (premier lancement d'Ostal) et que
+    /// `legacy` existe, copie `legacy` ici (0600, octets vérifiés, mise en place d'un seul
+    /// renommage). L'ancien n'est pas touché. `Ok(true)` si la copie a eu lieu.
+    ///
+    /// Le dossier, et non le fichier : « Oublier ce serveur » ou « Se déconnecter » suppriment le
+    /// fichier mais pas le dossier, et la connexion de Matter Home ne doit pas revenir ensuite.
+    pub fn adopt_legacy(&self, legacy: &Store) -> Result<bool, NetError> {
+        let first_launch = self.path.parent().is_some_and(|dir| !dir.exists());
+        if !first_launch || self.path.exists() || !legacy.path.is_file() {
+            return Ok(false);
+        }
+        let local = |what: &str, e: std::io::Error| {
+            NetError::Local(format!(
+                "Impossible de reprendre la connexion de Matter Home ({what} : {}).",
+                e.kind()
+            ))
+        };
+        let bytes = std::fs::read(&legacy.path).map_err(|e| local("lecture", e))?;
+        let dir = self.path.parent().ok_or_else(|| {
+            NetError::Local("Emplacement du fichier de connexion invalide.".into())
+        })?;
+        create_private_dir(dir).map_err(|e| local("dossier", e))?;
+        let tmp = self.path.with_extension("json.tmp");
+        let result = (|| {
+            let _ = std::fs::remove_file(&tmp);
+            let mut file = private_file(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            if std::fs::read(&tmp)? != bytes {
+                return Err(std::io::Error::other("copie différente de l'original"));
+            }
+            std::fs::rename(&tmp, &self.path)
+        })();
+        if let Err(e) = result {
+            let _ = std::fs::remove_file(&tmp);
+            // Vide : retiré, pour réessayer au prochain lancement.
+            let _ = std::fs::remove_dir(dir);
+            return Err(local("copie", e));
+        }
+        Ok(true)
     }
 
     pub fn path(&self) -> &Path {
@@ -311,10 +366,40 @@ mod tests {
     }
 
     #[test]
+    fn legacy_connection_is_copied_once_and_left_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("legacy");
+        let old = Store::at(dir.join("dev.matter-home-desktop.MatterHomeClient/connexion.json"));
+        let new = Store::at(dir.join("dev.ostal.OstalClient/connexion.json"));
+        // Rien à reprendre.
+        assert!(!new.adopt_legacy(&old).unwrap());
+        assert!(!new.path().exists());
+        old.save(&saved()).unwrap();
+        let original = std::fs::read(old.path()).unwrap();
+        assert!(new.adopt_legacy(&old).unwrap());
+        assert_eq!(new.load().unwrap(), Some(saved()));
+        assert_eq!(std::fs::read(old.path()).unwrap(), original);
+        let mode = std::fs::metadata(new.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // Le nouveau existe : plus jamais recopié (une déconnexion n'est pas annulée).
+        let mut out = saved();
+        out.token = None;
+        new.save(&out).unwrap();
+        assert!(!new.adopt_legacy(&old).unwrap());
+        assert_eq!(new.load().unwrap().unwrap().token, None);
+        // « Oublier ce serveur » supprime le fichier : la connexion de Matter Home ne revient pas.
+        new.delete().unwrap();
+        assert!(!new.path().exists() && new.path().parent().unwrap().is_dir());
+        assert!(!new.adopt_legacy(&old).unwrap());
+        assert!(!new.path().exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn default_location_is_not_the_v0_2_1_data_dir() {
         if let Some(store) = Store::default_location() {
             let path = store.path().to_string_lossy().to_string();
-            assert!(!path.contains("MatterHomeDesktop"), "{path}");
+            assert!(path.contains("dev.ostal.OstalClient"), "{path}");
         }
     }
 }

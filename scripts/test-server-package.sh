@@ -4,14 +4,14 @@
 # dans un dossier temporaire (préfixe factice et HOME factice), et AUCUNE commande système
 # (sudo, launchctl, pmset, pare-feu) n'est lancée.
 #
-#   scripts/test-server-package.sh [dist/matter-home-server-<version>-macos.tar.gz]
+#   scripts/test-server-package.sh [dist/ostal-server-<version>-macos.tar.gz]
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="${1:-}"
 if [ -z "$ARCHIVE" ]; then
-  set -- "$ROOT"/dist/matter-home-server-*-macos.tar.gz
+  set -- "$ROOT"/dist/ostal-server-*-macos.tar.gz
   ARCHIVE="$1"
 fi
 [ -f "$ARCHIVE" ] || { echo "archive introuvable : $ARCHIVE" >&2; exit 1; }
@@ -22,18 +22,18 @@ REAL_HOME="$HOME"
 
 mkdir "$WORK/archive"
 tar -xzf "$ARCHIVE" -C "$WORK/archive"
-PKG="$(echo "$WORK"/archive/matter-home-server-*-macos)"
-BIN="$PKG/matter-home-server"
+PKG="$(echo "$WORK"/archive/ostal-server-*-macos)"
+BIN="$PKG/ostal-server"
 
 PREFIX="$WORK/racine"
 # Jamais le vrai pgrep : l'état réel du Mac ne doit pas décider du résultat de l'essai.
 export MH_PGREP=/usr/bin/false
 export HOME="$PREFIX/home"
 mkdir -p "$HOME"
-DATA="$HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
-PLIST="$PREFIX/Library/LaunchDaemons/dev.matter-home-desktop.server.plist"
-INSTALLED="$PREFIX/usr/local/bin/matter-home-server"
-LOGS="$HOME/Library/Logs/MatterHomeServer"
+DATA="$HOME/Library/Application Support/dev.ostal.OstalServer"
+PLIST="$PREFIX/Library/LaunchDaemons/dev.ostal.server-daemon.plist"
+INSTALLED="$PREFIX/usr/local/bin/ostal-server"
+LOGS="$HOME/Library/Logs/OstalServer"
 
 fail() { echo "ÉCHEC : $*" >&2; exit 1; }
 ok() { echo "  ok : $*"; }
@@ -42,7 +42,7 @@ mode() { stat -f '%Lp' "$1"; }
 count_files() { find "$1" -type f | wc -l | tr -d ' '; }
 
 echo "Contenu de l'archive"
-for f in matter-home-server install.sh uninstall.sh dev.matter-home-desktop.server.plist.template LISEZMOI.txt VERSION; do
+for f in ostal-server install.sh uninstall.sh dev.ostal.server-daemon.plist.template LISEZMOI.txt VERSION; do
   [ -f "$PKG/$f" ] || fail "$f manque dans l'archive"
 done
 ok "fichiers présents ($(cat "$PKG/VERSION"))"
@@ -56,7 +56,7 @@ OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"
 contains "$OUT" "[à blanc]"
 contains "$OUT" "plutil -lint : OK"
 contains "$OUT" "sudo pmset -a sleep 0"
-contains "$OUT" "socketfilterfw --add /usr/local/bin/matter-home-server"
+contains "$OUT" "socketfilterfw --add /usr/local/bin/ostal-server"
 contains "$OUT" "AUCUNE"
 [ "$(count_files "$PREFIX")" = "0" ] || fail "l'essai à blanc a écrit des fichiers : $(find "$PREFIX" -type f)"
 [ ! -e "$DATA" ] || fail "le dossier de données ne doit jamais être créé à vide"
@@ -67,6 +67,40 @@ if HOME="$REAL_HOME" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" >/dev/null 
   fail "un HOME hors du préfixe doit être refusé"
 fi
 ok "refusé"
+
+echo "Données de Matter Home (ancien nom) sur ce Mac : proposées, jamais « init »"
+OLD_DATA="$HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+mkdir -p "$OLD_DATA"
+echo '{"factice":true}' > "$OLD_DATA/controller.json"
+# Sans --donnees : arrêt avant d'écrire quoi que ce soit, à blanc comme pour de vrai.
+for MODE in --a-blanc --oui; do
+  if OUT="$("$PKG/install.sh" "$MODE" --prefixe "$PREFIX" 2>&1)"; then
+    fail "$MODE : l'installation sur un dossier vide doit être refusée"
+  fi
+  contains "$OUT" "vos données de « Matter Home »"
+  contains "$OUT" "--donnees \"$OLD_DATA\""
+  contains "$OUT" "Ne lancez PAS"
+  case "$OUT" in *"installation neuve sans sauvegarde"*) fail "« init » ne doit pas être conseillé" ;; esac
+  [ "$(count_files "$PREFIX")" = "1" ] || fail "$MODE : des fichiers ont été écrits : $(find "$PREFIX" -type f)"
+done
+# La commande conseillée : le service est installé sur l'ancien dossier, tel quel.
+OUT="$("$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --donnees "$OLD_DATA" 2>&1)"
+contains "$OUT" "identité Matter : trouvée"
+case "$OUT" in *"Ne lancez PAS"*) fail "pas d'avertissement quand c'est déjà ce dossier" ;; esac
+"$PKG/install.sh" --oui --prefixe "$PREFIX" --donnees "$OLD_DATA" >/dev/null 2>&1 || fail "--donnees vers l'ancien dossier"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$PLIST")" = "$OLD_DATA" ] || fail "dossier du plist"
+[ "$(cat "$OLD_DATA/controller.json")" = '{"factice":true}' ] || fail "l'ancienne identité a changé"
+# Un service déjà installé sur un dossier vide : il faut le désinstaller d'abord.
+"$PKG/uninstall.sh" --prefixe "$PREFIX" --oui >/dev/null
+"$PKG/install.sh" --oui --prefixe "$PREFIX" --donnees "$DATA" >/dev/null 2>&1 || fail "service sur le dossier vide"
+if OUT="$("$PKG/install.sh" --oui --prefixe "$PREFIX" 2>&1)"; then
+  fail "un service sur un dossier vide alors que Matter Home a des données : refus attendu"
+fi
+contains "$OUT" "./uninstall.sh"
+"$PKG/uninstall.sh" --prefixe "$PREFIX" --oui >/dev/null
+rm -rf "$OLD_DATA" "$HOME/Library/Logs"
+[ "$(count_files "$PREFIX")" = "0" ] || fail "restes : $(find "$PREFIX" -type f)"
+ok "ancien dossier proposé, rien écrit sans lui, « init » déconseillé"
 
 echo "install.sh --prefixe (sans identité)"
 OUT="$("$PKG/install.sh" --prefixe "$PREFIX" --oui 2>&1)"
@@ -81,7 +115,7 @@ PB=/usr/libexec/PlistBuddy
 [ "$($PB -c 'Print :UserName' "$PLIST")" != "root" ] || fail "UserName ne doit pas être root"
 [ "$($PB -c 'Print :KeepAlive:SuccessfulExit' "$PLIST")" = "false" ] || fail "KeepAlive SuccessfulExit"
 [ "$($PB -c 'Print :ThrottleInterval' "$PLIST")" = "30" ] || fail "ThrottleInterval"
-[ "$($PB -c 'Print :ProgramArguments:0' "$PLIST")" = "/usr/local/bin/matter-home-server" ] || fail "binaire"
+[ "$($PB -c 'Print :ProgramArguments:0' "$PLIST")" = "/usr/local/bin/ostal-server" ] || fail "binaire"
 [ "$($PB -c 'Print :ProgramArguments:1' "$PLIST")" = "--data-dir" ] || fail "--data-dir"
 [ "$($PB -c 'Print :ProgramArguments:2' "$PLIST")" = "$DATA" ] || fail "dossier de données du plist"
 [ "$($PB -c 'Print :ProgramArguments:3' "$PLIST")" = "--log-file" ] || fail "--log-file"
@@ -114,6 +148,20 @@ MH_PGREP="$FAKE_PGREP" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" --ignorer
   || fail "--ignorer-application-ouverte"
 ok "refus clair, contournement explicite"
 
+echo "Seul l'ancien programme (matter-home-desktop) fait refuser, jamais le client « ostal »"
+FAKE_PGREP_OLD="$WORK/pgrep-ancien"
+printf '#!/bin/sh\n[ "$1" = "-x" ] && [ "$2" = "matter-home-desktop" ]\n' > "$FAKE_PGREP_OLD"
+FAKE_PGREP_CLIENT="$WORK/pgrep-client"
+printf '#!/bin/sh\n[ "$1" = "-x" ] && [ "$2" = "ostal" ]\n' > "$FAKE_PGREP_CLIENT"
+chmod +x "$FAKE_PGREP_OLD" "$FAKE_PGREP_CLIENT"
+if OUT="$(MH_PGREP="$FAKE_PGREP_OLD" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" 2>&1)"; then
+  fail "l'ancienne application ouverte doit faire refuser l'installation"
+fi
+contains "$OUT" "« Matter Home Desktop » est ouverte"
+MH_PGREP="$FAKE_PGREP_CLIENT" "$PKG/install.sh" --a-blanc --prefixe "$PREFIX" >/dev/null 2>&1 \
+  || fail "le client Ostal ouvert ne doit pas bloquer l'installation"
+ok "garde v0.2.1 sur l'ancien nom de programme"
+
 echo "Mise à jour : le dossier du service installé est repris, jamais un autre"
 OTHER_HOME="$PREFIX/autre-home"
 mkdir -p "$OTHER_HOME"
@@ -132,8 +180,8 @@ echo "Réinstallation avec une identité (mise à jour)"
 "$INSTALLED" init --data-dir "$DATA" >/dev/null
 OUT="$("$PKG/install.sh" --prefixe "$PREFIX" --oui --demarrer 2>&1)"
 contains "$OUT" "identité Matter : trouvée"
-contains "$OUT" "[préfixe : non exécuté] sudo launchctl bootout system/dev.matter-home-desktop.server"
-contains "$OUT" "[préfixe : non exécuté] sudo launchctl bootstrap system /Library/LaunchDaemons/dev.matter-home-desktop.server.plist"
+contains "$OUT" "[préfixe : non exécuté] sudo launchctl bootout system/dev.ostal.server-daemon"
+contains "$OUT" "[préfixe : non exécuté] sudo launchctl bootstrap system /Library/LaunchDaemons/dev.ostal.server-daemon.plist"
 ok "mise à jour : bootout puis bootstrap affichés, non exécutés"
 
 echo "uninstall.sh --a-blanc : ne supprime rien"

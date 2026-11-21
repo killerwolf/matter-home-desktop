@@ -30,6 +30,8 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
     ("/app/icon-512.png", "image/png"),
+    ("/app/apple-touch-icon.png", "image/png"),
+    ("/app/favicon.png", "image/png"),
 ];
 
 #[test]
@@ -174,7 +176,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("matter-home-shell-v9") && sw.contains("\"events.js\""),
+            sw.contains("ostal-shell-v10") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.
@@ -307,17 +309,17 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
     runtime().block_on(async {
         let token = client.login().await;
         // Navigateur : sous-protocole, pas d'en-tête Authorization. Le serveur répond avec
-        // `matter-home.v1`, jamais avec l'entrée qui porte le jeton.
+        // `ostal.v1`, jamais avec l'entrée qui porte le jeton.
         let (chosen, hello) = ws_with_protocols(
             &client,
             "/api/ws?protocol=3",
-            &format!("matter-home.v1, bearer.{token}"),
+            &format!("ostal.v1, bearer.{token}"),
             None,
             None,
         )
         .await
         .expect("connexion acceptée");
-        assert_eq!(chosen, "matter-home.v1");
+        assert_eq!(chosen, "ostal.v1");
         assert!(!chosen.contains(&token));
         assert_eq!(hello["type"], "hello");
 
@@ -325,7 +327,7 @@ fn browser_websocket_authenticates_with_a_subprotocol_never_the_url() {
         let refused = ws_with_protocols(
             &client,
             "/api/ws?protocol=3",
-            &format!("matter-home.v1, bearer.{}", "1".repeat(64)),
+            &format!("ostal.v1, bearer.{}", "1".repeat(64)),
             None,
             None,
         )
@@ -419,7 +421,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
     let client = server.client();
     runtime().block_on(async {
         let token = client.login().await;
-        let protocols = format!("matter-home.v1, bearer.{token}");
+        let protocols = format!("ostal.v1, bearer.{token}");
         let same = format!("https://localhost:{}", client.addr.port());
         // Même origine que l'hôte : accepté.
         assert!(
@@ -445,7 +447,7 @@ fn websocket_refuses_a_foreign_origin_but_not_the_native_client() {
         let refused = ws_with_protocols(
             &client,
             "/api/ws?protocol=3",
-            "matter-home.v1",
+            "ostal.v1",
             Some(&bearer),
             Some("https://evil.example"),
         )
@@ -493,11 +495,11 @@ fn token_after(text: &str, marker: &str) -> String {
 /// Page « Widgets et raccourcis » : en un geste, sous session, le serveur prépare les deux
 /// raccourcis (nouveau jeton de mode, adresse en .ts.net écrite dedans, liens à toucher sans jeton)
 /// et le widget (nouveau jeton de lecture). Signature remplacée par le plist tel quel
-/// (`MATTER_HOME_TEST_UNSIGNED_SHORTCUTS`) : les essais ne dépendent ni d'iCloud ni d'Apple.
+/// (`OSTAL_TEST_UNSIGNED_SHORTCUTS`) : les essais ne dépendent ni d'iCloud ni d'Apple.
 #[test]
 fn one_tap_install_prepares_personal_shortcuts_and_widget() {
     let dir = temp_dir("webapp-install");
-    let server = Server::start_with(&dir, &[("MATTER_HOME_TEST_UNSIGNED_SHORTCUTS", "1")]);
+    let server = Server::start_with(&dir, &[("OSTAL_TEST_UNSIGNED_SHORTCUTS", "1")]);
     let client = server.client();
     let origin = json!({ "origin": "https://maison.tailnet-test.ts.net" });
     let mut secrets = Vec::new();
@@ -623,7 +625,7 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             "/app/raccourcis/perso/00000000000000000000000000000000/Mode%20absent.shortcut",
             "/app/raccourcis/mode-absent.shortcut",
             "/app/raccourcis/mode-present.shortcut",
-            "/app/raccourcis/matter-home.js",
+            "/app/raccourcis/ostal.js",
             "/app/raccourcis/",
         ] {
             assert_eq!(
@@ -759,7 +761,7 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         let js = widgets.text();
         assert!(!js.contains("eval(") && !js.contains("innerHTML"));
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
-        assert!(sw.contains("\"widgets.js\"") && sw.contains("matter-home-shell-v9"));
+        assert!(sw.contains("\"widgets.js\"") && sw.contains("ostal-shell-v10"));
         // Les raccourcis et le script ne sont ni listés ni gardés par le service worker.
         assert!(sw.contains("/app/raccourcis/"));
         assert!(!sw.contains("\"raccourcis/"));

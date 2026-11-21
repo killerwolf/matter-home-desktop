@@ -122,7 +122,7 @@ d'autre moyen pour l'instant que de lire `{niveau}` dans le texte.
 
 `<données>/serveur/descriptions.json` (dossier 0700, fichier **0600**) garde les réglages **et la clé**, en
 clair, comme `cameras.json` garde les mots de passe des caméras. Mais, contrairement à `cameras.json`, il est
-dans `serveur/` : **il n'est jamais exporté** dans une sauvegarde `.matterhome` (une clé d'API dépense de
+dans `serveur/` : **il n'est jamais exporté** dans une sauvegarde `.ostal` (une clé d'API dépense de
 l'argent : on ne la laisse pas dans un fichier que l'on transfère). L'import d'une sauvegarde garde celui
 du Mac. Sur un nouveau Mac, ressaisissez la clé (les réglages sont à refaire aussi). En mode démonstration,
 rien n'est lu, écrit ni envoyé.

@@ -3,7 +3,7 @@
 //! Une caméra sans flux réduit n'est pas ouverte dans la mosaïque (une G100 supporte mal plusieurs
 //! flux à la fois) : les clients affichent à la place une **image fixe**, rafraîchie de temps en
 //! temps. Le serveur la fabrique ici, sans FFmpeg : le H.264 est décodé par VideoToolbox (caisse
-//! `matter-home-video`, la même que le client) puis encodé en JPEG par `jpeg-encoder` (Rust pur).
+//! `ostal-video`, la même que le client) puis encodé en JPEG par `jpeg-encoder` (Rust pur).
 //!
 //! # Règles
 //!
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use protocol::wire::{StreamPacket, StreamStatus};
 
-use matter_home_video::{Decoder, FrameSink, Image, VideoError};
+use ostal_video::{Decoder, FrameSink, Image, VideoError};
 
 use super::live::{Event, LiveRegistry, SubscribeError};
 use crate::hub::Hub;

@@ -5,7 +5,7 @@
 //!
 //! Les mots sont ceux de l'utilisateur : pas de « Serve », de « tailnet » ni de « flux » ici.
 
-use matter_home_server::cameras::CameraAdmin;
+use ostal_server::cameras::CameraAdmin;
 use protocol::wire::{CameraStatus, DetectionStatusView};
 
 use crate::startup::Blocker;
@@ -450,7 +450,9 @@ pub fn build(
                 checks.push(Check {
                     title: "Ancienne application",
                     level: Level::Warn,
-                    text: "un programme « matter-home-desktop » tourne : si c'est l'ancienne version 0.2, fermez-la".into(),
+                    text:
+                        "un programme « ostal » tourne : si c'est l'ancienne version 0.2, fermez-la"
+                            .into(),
                     fix: None,
                 });
             }
@@ -761,7 +763,7 @@ mod tests {
             true,
         );
         assert_eq!(o.headline, "1 point à regarder");
-        assert!(texts(&o).iter().any(|t| t.contains("matter-home-desktop")));
+        assert!(texts(&o).iter().any(|t| t.contains("ostal")));
     }
 
     #[test]

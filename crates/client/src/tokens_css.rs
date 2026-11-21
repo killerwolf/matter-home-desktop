@@ -3,7 +3,7 @@
 //! qu'il correspond au JSON. Pour le régénérer :
 //!
 //! ```text
-//! cargo run -p matter-home-desktop --example tokens_css
+//! cargo run -p ostal --example tokens_css
 //! ```
 //!
 //! Préfixes : `--color-*`, `--temp-*`, `--space-*`, `--radius-*`, `--font-*`, `--size-*`. Le
@@ -137,7 +137,7 @@ pub fn generate(json: &str) -> Result<String, String> {
 
     let mut css = String::from(
         "/* Généré depuis design/tokens.json : ne pas modifier à la main.\n   \
-         Régénérer : cargo run -p matter-home-desktop --example tokens_css */\n",
+         Régénérer : cargo run -p ostal --example tokens_css */\n",
     );
     css.push_str(&block(":root", &common, ""));
     css.push_str("@media (prefers-color-scheme: dark) {\n");
@@ -155,7 +155,7 @@ mod tests {
         let fresh = generate(TOKENS_JSON).expect("le JSON doit se convertir");
         assert_eq!(
             TOKENS_CSS, fresh,
-            "design/tokens.css n'est plus à jour : cargo run -p matter-home-desktop --example tokens_css"
+            "design/tokens.css n'est plus à jour : cargo run -p ostal --example tokens_css"
         );
     }
 

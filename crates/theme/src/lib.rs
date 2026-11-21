@@ -282,8 +282,8 @@ fn radius(r: u8) -> CornerRadius {
 
 /// Installe les deux thèmes et suit celui du système.
 pub fn apply(ctx: &egui::Context) {
-    // MATTER_HOME_THEME=light ou dark : pour les essais et les captures ; sinon, le système.
-    let preference = match std::env::var("MATTER_HOME_THEME").as_deref() {
+    // OSTAL_THEME=light ou dark : pour les essais et les captures ; sinon, le système.
+    let preference = match std::env::var("OSTAL_THEME").as_deref() {
         Ok("light") => egui::ThemePreference::Light,
         Ok("dark") => egui::ThemePreference::Dark,
         _ => egui::ThemePreference::System,

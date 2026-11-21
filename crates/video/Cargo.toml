@@ -1,5 +1,5 @@
 [package]
-name = "matter-home-video"
+name = "ostal-video"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ description = "Décodage H.264 des caméras (VideoToolbox), partagé par le clie
 license.workspace = true
 
 [lib]
-name = "matter_home_video"
+name = "ostal_video"
 path = "src/lib.rs"
 
 [dependencies]

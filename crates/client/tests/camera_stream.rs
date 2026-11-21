@@ -3,7 +3,7 @@
 //! locale qui joue un clip). Tout reste sur 127.0.0.1.
 //!
 //! Le serveur de ces tests est l'exemple `camera_demo`, construit à côté des tests par
-//! `cargo test --workspace` (sinon : `cargo build -p matter-home-server --examples`).
+//! `cargo test --workspace` (sinon : `cargo build -p ostal-server --examples`).
 #![cfg(target_os = "macos")]
 
 use std::io::{BufRead, BufReader};
@@ -13,8 +13,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use matter_home_client::net::stream::{StreamHandle, StreamState};
-use matter_home_client::net::{Backend, Event, Link, Store};
+use ostal_client::net::stream::{StreamHandle, StreamState};
+use ostal_client::net::{Backend, Event, Link, Store};
 use protocol::wire::{CameraView, StreamKind};
 
 const PASSWORD: &str = "mot-de-passe-jetable-du-test-video";
@@ -40,7 +40,7 @@ fn demo_binary() -> PathBuf {
         .find(|p| p.is_file());
     bin.unwrap_or_else(|| {
         panic!(
-            "serveur de démonstration introuvable au-dessus de {} : `cargo build -p matter-home-server --examples`",
+            "serveur de démonstration introuvable au-dessus de {} : `cargo build -p ostal-server --examples`",
             exe.display()
         )
     })

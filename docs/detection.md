@@ -10,7 +10,7 @@ Frigate, mais **sans enregistrement continu** : rien n'est écrit sur le disque 
 
 ## Rien à installer
 
-**L'application du serveur embarque tout** (`Matter Home Server.app`, depuis la version qui
+**L'application du serveur embarque tout** (`Ostal Server.app`, depuis la version qui
 contient ce ticket) : les modèles **YOLOX-s 640** (CoreML) et **YOLOX-nano 416** (processeur), et
 **ONNX Runtime 1.23.2** (avec CoreML), tiré des roues officielles publiées par Microsoft sur PyPI
 (`onnxruntime`, une par architecture, réunies en une bibliothèque universelle ; **macOS 13**
@@ -43,7 +43,7 @@ le fichier. La version de YOLOX ne publie pas d'empreinte : celles de `yolox_s.o
 ### Utilisateurs avancés : `<données>/models/`
 
 Sans fichiers embarqués (serveur en ligne de commande, version de développement), le serveur
-prend ceux de `~/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop/models/` (ou
+prend ceux de `~/Library/Application Support/dev.ostal.OstalServer/models/` (ou
 `<dossier>/models/` avec `--data-dir`) : `detector.onnx`, `detector-cpu.onnx`, `detector.json`,
 `libonnxruntime.dylib` (cherchée aussi à côté du programme, puis dans `ORT_DYLIB_PATH`). Ceux de
 l'application **l'emportent**, et `models/detector.json` ne s'applique **que si le modèle utilisé vient
@@ -154,7 +154,7 @@ Dossier `<données>/events/` (droits 0600), trois fichiers par passage :
 - Une fiche illisible est ignorée, jamais effacée ; un événement resté « en cours » (serveur arrêté
   brutalement pendant un passage) est clos au démarrage suivant, **quel que soit son âge**. À l'arrêt
   propre du serveur, les passages en cours sont clos et écrits (attente de 3 s au plus).
-- Les événements **ne sont pas** dans les sauvegardes `.matterhome` (ni les modèles) ; à
+- Les événements **ne sont pas** dans les sauvegardes `.ostal` (ni les modèles) ; à
   l'import d'une sauvegarde, ceux de ce Mac sont gardés (`events/`, `models/` et `detection.json`
   sont recopiés dans le nouveau dossier de données, comme `serveur/`).
 

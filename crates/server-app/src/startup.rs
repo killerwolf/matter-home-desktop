@@ -5,15 +5,18 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use matter_home_server::setup::IdentityState;
+use ostal_server::setup::IdentityState;
 
 /// Nom du binaire de cette application et du serveur en ligne de commande.
-pub const APP_BINARY: &str = "matter-home-server-app";
-pub const CLI_BINARY: &str = "matter-home-server";
-/// Le binaire de l'application de bureau (v0.2.1 comme client actuel, qui porte le même nom).
-pub const DESKTOP_BINARY: &str = "matter-home-desktop";
+pub const APP_BINARY: &str = "ostal-server-app";
+pub const CLI_BINARY: &str = "ostal-server";
+/// Le binaire de l'ancienne application de bureau : la v0.2 s'appelait déjà
+/// « matter-home-desktop », comme le client V1 jusqu'au renommage en Ostal.
+pub const DESKTOP_BINARY: &str = ostal_server::legacy::DESKTOP_BINARY;
 /// Le service installé par l'archive en ligne de commande.
-pub const SERVICE_PLIST: &str = "/Library/LaunchDaemons/dev.matter-home-desktop.server.plist";
+pub const SERVICE_PLIST: &str = "/Library/LaunchDaemons/dev.ostal.server-daemon.plist";
+/// Le même service, installé par l'archive de « Matter Home ».
+pub const LEGACY_SERVICE_PLIST: &str = ostal_server::legacy::LAUNCH_DAEMON_PLIST;
 
 /// Un processus de la liste de `ps` : numéro, temps écoulé depuis son lancement (s'il est lisible)
 /// et chemin de l'exécutable.
@@ -72,24 +75,33 @@ pub enum Holder {
     OtherApp,
     /// Le service installé au Terminal (plist dans `/Library/LaunchDaemons`).
     Service,
-    /// Un `matter-home-server` lancé à la main.
+    /// Un `ostal-server` lancé à la main.
     OtherServer,
+    /// L'ancienne application « Matter Home Server » (ou son serveur en ligne de commande) :
+    /// elle tient l'ancien verrou, que cette application prend aussi.
+    OldApp,
     Unknown,
 }
 
 pub fn classify_holder(holder_pid: Option<u32>, procs: &[Proc], service_installed: bool) -> Holder {
+    use ostal_server::legacy;
     if let Some(pid) = holder_pid {
-        if procs
-            .iter()
-            .any(|p| p.pid == pid && p.file_name() == APP_BINARY)
-        {
-            return Holder::OtherApp;
+        if let Some(p) = procs.iter().find(|p| p.pid == pid) {
+            if p.file_name() == APP_BINARY {
+                return Holder::OtherApp;
+            }
+            if p.file_name() == legacy::APP_BINARY || p.file_name() == legacy::CLI_BINARY {
+                return Holder::OldApp;
+            }
         }
     }
     if service_installed {
         return Holder::Service;
     }
-    if procs.iter().any(|p| p.file_name() == CLI_BINARY) {
+    if procs
+        .iter()
+        .any(|p| p.file_name() == CLI_BINARY || p.file_name() == ostal_server::legacy::CLI_BINARY)
+    {
         return Holder::OtherServer;
     }
     Holder::Unknown
@@ -104,6 +116,8 @@ pub enum Blocker {
     Service,
     /// Un autre serveur (ligne de commande) tient les données.
     OtherServer,
+    /// L'ancienne application « Matter Home Server » tourne encore.
+    OldApp,
     /// Quelqu'un tient le verrou, on ne sait pas qui.
     Unknown,
     /// L'ancienne application de bureau (v0.2.x) tourne, ou (au démarrage seulement) on ne peut
@@ -118,6 +132,7 @@ impl Blocker {
             Holder::OtherApp => Blocker::OtherApp,
             Holder::Service => Blocker::Service,
             Holder::OtherServer => Blocker::OtherServer,
+            Holder::OldApp => Blocker::OldApp,
             Holder::Unknown => Blocker::Unknown,
         }
     }
@@ -128,6 +143,7 @@ impl Blocker {
             Blocker::OtherApp => "déjà ouvert",
             Blocker::Service => "le service installé tient les données",
             Blocker::OtherServer => "un autre serveur tient les données",
+            Blocker::OldApp => "l'ancienne application Matter Home Server tourne",
             Blocker::Unknown => "les données sont utilisées ailleurs",
             Blocker::DesktopV02 => "l'ancienne application de bureau tourne",
         }
@@ -136,11 +152,12 @@ impl Blocker {
     /// L'explication complète, avec la marche à suivre.
     pub fn explain(&self) -> String {
         match self {
-            Blocker::OtherApp => "Matter Home Server est déjà ouvert : cherchez son icône dans la barre de menus.".into(),
-            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Pour passer à cette application : ouvrez le Terminal une seule fois, allez dans le dossier de l'archive du serveur (celui où se trouve « uninstall.sh ») et lancez « ./uninstall.sh » : il demande le mot de passe administrateur du Mac, et vos données restent en place. Si ce dossier n'existe plus, retéléchargez l'archive sur la page des versions, ou tapez ces deux commandes : « sudo launchctl bootout system/dev.matter-home-desktop.server » puis « sudo rm -f /Library/LaunchDaemons/dev.matter-home-desktop.server.plist /usr/local/bin/matter-home-server ». Rouvrez ensuite Matter Home Server. Rien n'est démarré en attendant.".into(),
-            Blocker::OtherServer => "Un autre serveur Matter Home (lancé à la main) utilise déjà les données. Arrêtez-le, puis rouvrez Matter Home Server. Rien n'est démarré en attendant.".into(),
-            Blocker::Unknown => "Les données sont déjà utilisées par un autre programme Matter Home. Fermez-le, puis rouvrez Matter Home Server. Rien n'est démarré en attendant.".into(),
-            Blocker::DesktopV02 => "L'ancienne application de bureau (version 0.2) est ouverte. Elle ne signale pas qu'elle utilise les données : si le serveur démarrait en même temps, les deux se disputeraient vos appareils. Fermez-la (sur tous vos Mac), le serveur démarrera alors tout seul. Au démarrage, même message si l'application de bureau a été mise à jour pendant qu'elle était ouverte, ou si on ne peut pas savoir laquelle tourne : fermez-la puis rouvrez-la. Le client Matter Home V1 n'est pas concerné.".into(),
+            Blocker::OtherApp => "Ostal Server est déjà ouvert : cherchez son icône dans la barre de menus.".into(),
+            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Pour passer à cette application : ouvrez le Terminal une seule fois, allez dans le dossier de l'archive du serveur (celui où se trouve « uninstall.sh ») et lancez « ./uninstall.sh » : il demande le mot de passe administrateur du Mac, et vos données restent en place. Si ce dossier n'existe plus, retéléchargez l'archive sur la page des versions, ou tapez ces deux commandes : « sudo launchctl bootout system/dev.ostal.server-daemon » puis « sudo rm -f /Library/LaunchDaemons/dev.ostal.server-daemon.plist /usr/local/bin/ostal-server » (pour un service installé avec Matter Home : « sudo launchctl bootout system/dev.matter-home-desktop.server » puis « sudo rm -f /Library/LaunchDaemons/dev.matter-home-desktop.server.plist /usr/local/bin/matter-home-server »). Rouvrez ensuite Ostal Server. Rien n'est démarré en attendant.".into(),
+            Blocker::OtherServer => "Un autre serveur Ostal (lancé à la main) utilise déjà les données. Arrêtez-le, puis rouvrez Ostal Server. Rien n'est démarré en attendant.".into(),
+            Blocker::OldApp => "L'ancienne application Matter Home Server est encore ouverte. Quittez-la (son icône dans la barre de menus → Quitter) : Ostal Server reprend alors ses données (une copie, l'ancien dossier reste intact) et démarre. Rien n'est démarré en attendant. Supprimez ensuite « Matter Home Server » du dossier Applications.".into(),
+            Blocker::Unknown => "Les données sont déjà utilisées par un autre programme Ostal. Fermez-le, puis rouvrez Ostal Server. Rien n'est démarré en attendant.".into(),
+            Blocker::DesktopV02 => "L'ancienne application de bureau (version 0.2) est ouverte. Elle ne signale pas qu'elle utilise les données : si le serveur démarrait en même temps, les deux se disputeraient vos appareils. Fermez-la (sur tous vos Mac), le serveur démarrera alors tout seul. Au démarrage, même message si l'application de bureau a été mise à jour pendant qu'elle était ouverte, ou si on ne peut pas savoir laquelle tourne : fermez-la puis rouvrez-la. Le client Ostal V1 n'est pas concerné.".into(),
         }
     }
 }
@@ -233,7 +250,7 @@ pub struct BundleInfo {
 /// Marge sur l'heure de lancement (le temps écoulé de `ps` est arrondi à la seconde).
 const START_MARGIN: Duration = Duration::from_secs(5);
 
-/// Ce que l'on sait d'un processus nommé `matter-home-desktop`.
+/// Ce que l'on sait d'un processus nommé `ostal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Ce n'est pas l'ancienne v0.2 : exécutable hors d'une `.app` (`cargo run`, `target/debug`,
@@ -373,7 +390,7 @@ pub fn info_plist_of(exe: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matter_home_server::backup::IdentityBrief;
+    use ostal_server::backup::IdentityBrief;
 
     fn present() -> IdentityState {
         IdentityState::Present(IdentityBrief {
@@ -472,14 +489,14 @@ mod tests {
         assert!(Blocker::DesktopV02.explain().contains("version 0.2"));
     }
 
-    const PS: &str = "    1    05-03:04:05 /sbin/launchd\n  501       01:02 /Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app\n  777    12:00:01 /usr/local/bin/matter-home-server\n  900       45:10 /Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop\nbruit\n";
+    const PS: &str = "    1    05-03:04:05 /sbin/launchd\n  501       01:02 /Applications/Ostal Server.app/Contents/MacOS/ostal-server-app\n  777    12:00:01 /usr/local/bin/ostal-server\n  900       45:10 /Applications/Ostal.app/Contents/MacOS/ostal\nbruit\n";
 
     #[test]
     fn parses_ps_with_spaces_in_paths() {
         let procs = parse_ps(PS);
         assert_eq!(procs.len(), 4);
         assert_eq!(procs[1].pid, 501);
-        assert!(procs[1].path.contains("Matter Home Server.app"));
+        assert!(procs[1].path.contains("Ostal Server.app"));
         assert_eq!(procs[1].elapsed, Some(Duration::from_secs(62)));
         assert_eq!(procs[2].elapsed, Some(Duration::from_secs(12 * 3600 + 1)));
         assert_eq!(
@@ -508,6 +525,19 @@ mod tests {
         assert_eq!(classify_holder(Some(777), &procs, true), Holder::Service);
         assert_eq!(classify_holder(None, &procs, false), Holder::OtherServer);
         assert_eq!(classify_holder(None, &procs[..1], false), Holder::Unknown);
+    }
+
+    #[test]
+    fn recognises_the_old_matter_home_server_holding_its_lock() {
+        let procs = parse_ps(
+            "  612       03:00 /Applications/Matter Home Server.app/Contents/MacOS/matter-home-server-app\n  613       03:00 /usr/local/bin/matter-home-server\n",
+        );
+        assert_eq!(classify_holder(Some(612), &procs, false), Holder::OldApp);
+        assert_eq!(classify_holder(Some(613), &procs, false), Holder::OldApp);
+        // Sans numéro lisible, un ancien serveur lancé à la main compte comme un autre serveur.
+        assert_eq!(classify_holder(None, &procs, false), Holder::OtherServer);
+        let b = Blocker::from_holder(Holder::OldApp);
+        assert!(b.explain().contains("Quittez-la"), "{}", b.explain());
     }
 
     const APP: &str = "/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop";
@@ -723,11 +753,11 @@ mod tests {
     fn recognises_app_bundle_executables() {
         assert!(is_app_bundle_executable(Path::new(APP)));
         assert!(!is_app_bundle_executable(Path::new(
-            "/x/target/debug/matter-home-desktop"
+            "/x/target/debug/ostal"
         )));
-        assert!(!is_app_bundle_executable(Path::new("matter-home-desktop")));
+        assert!(!is_app_bundle_executable(Path::new("ostal")));
         assert!(!is_app_bundle_executable(Path::new(
-            "/x/Contents/MacOS/matter-home-desktop"
+            "/x/Contents/MacOS/ostal"
         )));
         assert!(info_plist_of(Path::new("/x/target/debug/m")).is_none());
     }

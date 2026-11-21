@@ -1,17 +1,17 @@
 [package]
-name = "matter-home-server"
+name = "ostal-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Serveur Matter Home : pilote les appareils Matter over Thread, exécute les automatisations et garde l'historique (sans interface graphique)"
+description = "Serveur Ostal : pilote les appareils Matter over Thread, exécute les automatisations et garde l'historique (sans interface graphique)"
 license.workspace = true
 
 [lib]
-name = "matter_home_server"
+name = "ostal_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "matter-home-server"
+name = "ostal-server"
 path = "src/main.rs"
 
 [dependencies]
@@ -55,7 +55,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # Vignettes (#12) : décodage par VideoToolbox (caisse partagée avec le client) et encodage JPEG par
 # `jpeg-encoder`, en Rust pur, sans dépendance ni code C, licence MIT ou Apache-2.0. Ni FFmpeg ni
 # libjpeg : rien à embarquer dans l'application.
-matter-home-video = { path = "../video" }
+ostal-video = { path = "../video" }
 jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
 
 # Détection (#18) : ONNX Runtime par `ort` (MIT ou Apache-2.0), en `load-dynamic` : rien n'est lié

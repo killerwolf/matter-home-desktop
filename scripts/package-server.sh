@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Construit l'archive du serveur : dist/matter-home-server-<version>-macos.tar.gz
+# Construit l'archive du serveur : dist/ostal-server-<version>-macos.tar.gz
 #
 #   scripts/package-server.sh
 #
@@ -17,14 +17,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
-PACKAGE="matter-home-server"
-BIN="matter-home-server"
+PACKAGE="ostal-server"
+BIN="ostal-server"
 SRC="$ROOT/scripts/server"
 
 VERSION="$(awk -F'"' '/^version = /{print $2; exit}' "$ROOT/Cargo.toml")"
 MIN_X86_64="${MH_MIN_MACOS_X86_64:-10.15}"
 MIN_ARM64="${MH_MIN_MACOS_ARM64:-11.0}"
-NAME="matter-home-server-$VERSION-macos"
+NAME="ostal-server-$VERSION-macos"
 STAGE="$DIST/$NAME"
 ARCHIVE="$DIST/$NAME.tar.gz"
 
@@ -65,8 +65,8 @@ lipo -create -output "$STAGE/$BIN" "${BINARIES[@]}"
 chmod 755 "$STAGE/$BIN"
 cp "$SRC/install.sh" "$SRC/uninstall.sh" "$STAGE/"
 chmod 755 "$STAGE/install.sh" "$STAGE/uninstall.sh"
-cp "$SRC/dev.matter-home-desktop.server.plist.template" "$SRC/LISEZMOI.txt" "$STAGE/"
-chmod 644 "$STAGE/dev.matter-home-desktop.server.plist.template" "$STAGE/LISEZMOI.txt"
+cp "$SRC/dev.ostal.server-daemon.plist.template" "$SRC/LISEZMOI.txt" "$STAGE/"
+chmod 644 "$STAGE/dev.ostal.server-daemon.plist.template" "$STAGE/LISEZMOI.txt"
 
 # Signature ad hoc : pas un certificat Developer ID (payant), mais une signature valide et
 # stable plutôt qu'aucune. Elle ne dispense pas de l'autorisation du pare-feu (install.sh).
@@ -77,7 +77,7 @@ codesign --verify --strict "$STAGE/$BIN"
 # ---- vérifications ---------------------------------------------------------
 
 ARCHS="$(lipo -archs "$STAGE/$BIN")"
-printf 'matter-home-server %s (%s)\n' "$VERSION" "$ARCHS" > "$STAGE/VERSION"
+printf 'ostal-server %s (%s)\n' "$VERSION" "$ARCHS" > "$STAGE/VERSION"
 
 # La version minimale de chaque tranche, lue dans le binaire (LC_BUILD_VERSION ou
 # LC_VERSION_MIN_MACOSX) : une dépendance qui exigerait plus récent doit faire échouer le build.
@@ -99,7 +99,7 @@ done
 # Le binaire annonce la version du workspace (il s'exécute ici si la tranche de ce Mac existe).
 if ANNOUNCED="$("$STAGE/$BIN" --version 2>/dev/null)"; then
   echo "  $ANNOUNCED"
-  [ "$ANNOUNCED" = "matter-home-server $VERSION" ] ||
+  [ "$ANNOUNCED" = "ostal-server $VERSION" ] ||
     { echo "erreur : le binaire annonce « $ANNOUNCED » au lieu de la version $VERSION" >&2; exit 1; }
 else
   echo "  note : ce Mac ne peut pas exécuter le binaire ; version non vérifiée." >&2

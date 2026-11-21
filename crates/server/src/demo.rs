@@ -28,7 +28,7 @@ const PLUG: u64 = 0xD3_0004;
 /// Pont de démo (une TaHoma) et ses volets, avec des identifiants de la plage réservée
 /// aux appareils pontés, comme en mode réel.
 const BRIDGE: u64 = 0xD3_0005;
-// Maison d'essai, seulement avec `MATTER_HOME_DEMO_HOUSE=1` (captures d'écran du client) : des
+// Maison d'essai, seulement avec `OSTAL_DEMO_HOUSE=1` (captures d'écran du client) : des
 // lampes, une télécommande et un capteur injoignable de plus. Sans cette variable, rien ne change.
 const LAMP_LIVING: u64 = 0xD3_0010;
 const LAMP_BED: u64 = 0xD3_0011;
@@ -67,9 +67,9 @@ fn door_open(t: f64) -> bool {
     t.rem_euclid(120.0) < 20.0
 }
 
-/// La maison d'essai n'est activée qu'avec `MATTER_HOME_DEMO_HOUSE=1`.
+/// La maison d'essai n'est activée qu'avec `OSTAL_DEMO_HOUSE=1`.
 fn house_mode() -> bool {
-    std::env::var("MATTER_HOME_DEMO_HOUSE").as_deref() == Ok("1")
+    std::env::var("OSTAL_DEMO_HOUSE").as_deref() == Ok("1")
 }
 
 /// État des lampes de la maison d'essai (commandables : le clic d'une tuile les bascule).
@@ -759,7 +759,7 @@ pub fn demo_plan() -> crate::home::HomePlan {
 struct DemoActuator {
     events: EventSink,
     plug_on: Arc<AtomicBool>,
-    /// Lampes de la maison d'essai (vide hors `MATTER_HOME_DEMO_HOUSE=1`).
+    /// Lampes de la maison d'essai (vide hors `OSTAL_DEMO_HOUSE=1`).
     lamps: Lamps,
     shutters: Shutters,
 }

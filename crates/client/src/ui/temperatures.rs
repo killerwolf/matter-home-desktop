@@ -1,5 +1,5 @@
 //! Page Températures : un seul graphique, une courbe par thermomètre, période au choix.
-//! Les points viennent de l'historique lu sur le serveur (voir `matter_home_client::temperatures`).
+//! Les points viennent de l'historique lu sur le serveur (voir `ostal_client::temperatures`).
 
 use std::collections::HashSet;
 
@@ -8,8 +8,8 @@ use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, Polygon, VLine};
 
 use super::theme;
 use super::thermometer::local_time;
-use matter_home_client::series::TimeWindow;
-use matter_home_client::temperatures::{
+use ostal_client::series::TimeWindow;
+use ostal_client::temperatures::{
     axis_label, local_offset_s, period_range, round_marks, value_at, y_label, y_marks,
 };
 use protocol::format::format_temperature;
@@ -24,7 +24,7 @@ pub struct Curve {
     /// Points réduits à la largeur du graphique, du plus ancien au plus récent.
     pub points: Vec<(f64, f64)>,
     /// Points de la ligne : une densité unique sur toute la période (voir `line_points`).
-    pub line: Vec<matter_home_client::temperatures::LineSegment>,
+    pub line: Vec<ostal_client::temperatures::LineSegment>,
     /// Trou de données (s) au-delà duquel la ligne est coupée.
     pub gap_s: f64,
     /// Dernière température connue (état complet, tenu à jour par les événements).

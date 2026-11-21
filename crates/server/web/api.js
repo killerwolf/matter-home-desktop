@@ -4,8 +4,21 @@
 // serveur. Il ne part jamais dans une URL : en-tête Authorization pour le REST, sous-protocole
 // WebSocket pour le temps réel (un navigateur ne peut pas poser d'en-tête sur un WebSocket).
 export const PROTOCOL_VERSION = 3;
-const KEY = "matter-home.session";
-const SUBPROTOCOL = "matter-home.v1";
+const KEY = "ostal.session";
+const SUBPROTOCOL = "ostal.v1";
+
+// Avant le renommage en Ostal, les clés du stockage local commençaient par « matter-home. » :
+// la valeur est déplacée (pas copiée) sous la nouvelle clé, pour qu'une déconnexion ne laisse
+// pas l'ancien jeton derrière elle.
+export function adoptLegacyKey(key, legacyKey) {
+  try {
+    const old = localStorage.getItem(legacyKey);
+    if (old === null) return;
+    if (localStorage.getItem(key) === null) localStorage.setItem(key, old);
+    localStorage.removeItem(legacyKey);
+  } catch { /* stockage refusé : rien à reprendre */ }
+}
+adoptLegacyKey(KEY, "matter-home.session");
 
 let token = null;
 try { token = JSON.parse(localStorage.getItem(KEY) || "null")?.token ?? null; } catch { token = null; }

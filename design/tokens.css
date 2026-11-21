@@ -1,5 +1,5 @@
 /* Généré depuis design/tokens.json : ne pas modifier à la main.
-   Régénérer : cargo run -p matter-home-desktop --example tokens_css */
+   Régénérer : cargo run -p ostal --example tokens_css */
 :root {
   --color-accent: #0b6a94;
   --color-accent-soft: #e2f0f6;

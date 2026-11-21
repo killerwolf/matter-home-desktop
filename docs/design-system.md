@@ -1,6 +1,6 @@
 # Design system
 
-Ce document décrit le langage visuel du client Matter Home, issu de la refonte du ticket n° 13.
+Ce document décrit le langage visuel du client Ostal, issu de la refonte du ticket n° 13.
 La source de vérité est **`design/tokens.json`** : le client egui la lit au build, et la future app
 web mobile (ticket n° 15) lira `design/tokens.css`, généré depuis ce JSON. On ne copie jamais une
 couleur ou une taille ailleurs.
@@ -56,7 +56,7 @@ le texte. Une pièce sans capteur est grise (`no_sensor`, propre à chaque thèm
 `theme.rs` vérifient que le JSON se lit, que les paliers se suivent de 2 en 2 sans trou et que les
 textes restent lisibles (contraste d'au moins 4,5 environ) sur leurs fonds en clair comme en sombre.
 
-Le client suit le thème du système (clair ou sombre). Pour les essais : `MATTER_HOME_THEME=light`
+Le client suit le thème du système (clair ou sombre). Pour les essais : `OSTAL_THEME=light`
 ou `dark`.
 
 ## Les composants
@@ -111,7 +111,7 @@ composants.
 `design/tokens.css` est généré depuis `design/tokens.json` et commité :
 
 ```text
-cargo run -p matter-home-desktop --example tokens_css
+cargo run -p ostal --example tokens_css
 ```
 
 Un test (`tokens_css::tests::committed_css_is_up_to_date`) échoue si le CSS n'est plus à jour. Le

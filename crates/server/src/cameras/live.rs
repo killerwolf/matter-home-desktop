@@ -765,8 +765,8 @@ async fn relay(session: &Arc<Session>, hub: &Arc<Hub>, target: &Target) -> Relay
 
     session.clear_gop();
     let timeout = session.config.connect_timeout;
-    let mut options = SessionOptions::default()
-        .user_agent(format!("MatterHomeServer/{}", env!("CARGO_PKG_VERSION")));
+    let mut options =
+        SessionOptions::default().user_agent(format!("OstalServer/{}", env!("CARGO_PKG_VERSION")));
     if let Some(c) = &target.credentials {
         options = options.creds(Some(retina::client::Credentials {
             username: c.username.clone(),

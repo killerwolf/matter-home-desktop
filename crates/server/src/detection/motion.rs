@@ -6,7 +6,7 @@
 
 use protocol::wire::DetectionSettings;
 
-use matter_home_video::Image;
+use ostal_video::Image;
 
 /// Part minimale des pixels d'une boîte qui doivent avoir changé pour qu'elle « bouge ».
 pub const MOTION_IN_BOX: f32 = 0.02;

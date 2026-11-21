@@ -83,7 +83,7 @@ envoyé.
 ## Fichiers
 
 Dans `serveur/` (dossier 0700, fichiers 0600), **jamais exportés** dans une sauvegarde
-`.matterhome` (voir [Données](donnees.md)) :
+`.ostal` (voir [Données](donnees.md)) :
 
 - `push-vapid.json` : la clé privée VAPID du serveur, créée au premier lancement. Si elle disparaît
   ou devient illisible, une nouvelle est créée et **les abonnements sont oubliés** (ils étaient liés

@@ -6,7 +6,7 @@ use eframe::egui::{self, RichText};
 use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::{ago, Device, ViewRequests};
-use matter_home_client::series::{compute_stats, DeviceSeries, Series, TimeWindow};
+use ostal_client::series::{compute_stats, DeviceSeries, Series, TimeWindow};
 use protocol::events::now_unix;
 use protocol::format::{format_humidity, format_temperature};
 use protocol::wire::{Metric, WireMode};

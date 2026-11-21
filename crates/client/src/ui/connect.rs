@@ -8,8 +8,8 @@ use eframe::egui::{self, RichText};
 use protocol::wire::ErrorCode;
 
 use super::theme;
-use matter_home_client::net::tls::normalize_fingerprint;
-use matter_home_client::net::{Backend, Link, NetError, ServerAddr};
+use ostal_client::net::tls::normalize_fingerprint;
+use ostal_client::net::{Backend, Link, NetError, ServerAddr};
 
 enum Stage {
     Form,
@@ -206,7 +206,7 @@ impl ConnectScreen {
                 ui.add_space(theme::tokens().space.xl * 2.0);
                 ui.heading("Maison");
                 ui.label(
-                    RichText::new("Connexion à votre serveur Matter Home")
+                    RichText::new("Connexion à votre serveur Ostal")
                         .color(theme::palette(ui).text_secondary),
                 );
                 ui.add_space(theme::tokens().space.lg);
@@ -447,7 +447,7 @@ impl ConnectScreen {
         ui.label(
             "Le serveur présente un certificat qu'il a fabriqué lui-même. Comparez son empreinte \
              avec celle affichée au lancement du serveur (ou par la commande \
-             « matter-home-server fingerprint »). Si elles sont identiques, approuvez : seul ce \
+             « ostal-server fingerprint »). Si elles sont identiques, approuvez : seul ce \
              certificat sera accepté ensuite.",
         );
         ui.add_space(8.0);

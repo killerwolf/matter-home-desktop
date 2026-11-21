@@ -48,7 +48,7 @@ pub fn icon_kind(phase: &Phase, overview: &Overview) -> IconKind {
 
 /// L'infobulle de l'icône : le titre du résumé, puis ce qui ne va pas (une ligne par point).
 pub fn tooltip(overview: &Overview) -> String {
-    let mut text = format!("Matter Home Server : {}", overview.headline);
+    let mut text = format!("Ostal Server : {}", overview.headline);
     for check in overview.checks.iter().filter(|c| c.level.needs_attention()) {
         text.push_str(&format!("\n{} : {}", check.title, check.text));
     }
@@ -93,15 +93,15 @@ mod tests {
     fn tooltip_says_what_is_wrong_and_nothing_else() {
         assert_eq!(
             tooltip(&overview_of(&Phase::Running, &[])),
-            "Matter Home Server : Tout va bien"
+            "Ostal Server : Tout va bien"
         );
         assert_eq!(
             tooltip(&overview_of(&Phase::Running, &["Salon"])),
-            "Matter Home Server : 1 point à regarder\nAppareils : 4 sur 5 joignables · injoignable : Salon"
+            "Ostal Server : 1 point à regarder\nAppareils : 4 sur 5 joignables · injoignable : Salon"
         );
         assert_eq!(
             tooltip(&overview_of(&Phase::Blocked(Blocker::DesktopV02), &[])),
-            "Matter Home Server : Le serveur est à l'arrêt\nServeur : l'ancienne application de bureau tourne"
+            "Ostal Server : Le serveur est à l'arrêt\nServeur : l'ancienne application de bureau tourne"
         );
     }
 }

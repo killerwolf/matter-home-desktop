@@ -35,18 +35,34 @@ fois). Partez du Mac qui détient les données les plus récentes.";
 /// serveur seulement ; la sous-commande `import` refuse un import en attente).
 /// Rend le dossier de données à utiliser. Travaille sur le dossier de `persistence`.
 pub fn prologue(apply: bool) -> Result<PathBuf> {
+    prologue_with_migration(apply).map(|(dir, _)| dir)
+}
+
+/// [`prologue`], et le message de la copie des données de l'ancien nom si elle vient
+/// d'avoir lieu (pour le montrer, pas seulement le journaliser).
+pub fn prologue_with_migration(apply: bool) -> Result<(PathBuf, Option<String>)> {
     let mut notes: Vec<String> = Vec::new();
     notes.extend(backup::recover(&persistence::current_data_dir())?);
-    // Ancien nom « matter-demo » : son dossier de données est déplacé au premier lancement.
-    notes.extend(persistence::migrate_legacy_data_dir());
+    // Anciens noms (« Matter Home », « matter-demo ») : leur dossier de données est copié au
+    // premier lancement. Une copie nécessaire mais impossible arrête tout : sans elle, le
+    // dossier d'Ostal n'aurait pas d'identité et l'on proposerait d'en créer une nouvelle.
+    let migrated = persistence::migrate_legacy_data_dir()?;
+    notes.extend(migrated.clone());
     if apply {
         notes.extend(backup::apply_pending(&persistence::data_dir())?);
     }
     for m in &notes {
         log::warn!("{m}");
     }
-    Ok(persistence::data_dir())
+    Ok((persistence::data_dir(), migrated))
 }
+
+/// À montrer après la copie des données de « Matter Home » : l'ancienne application ne sert
+/// plus, et la rouvrir ne mènerait nulle part (son identité est neutralisée).
+pub const DELETE_OLD_APP: &str = "Les données de Matter Home ont été copiées dans Ostal Server. \
+Supprimez maintenant les anciennes applications « Matter Home Server » et « Matter Home Desktop » \
+du dossier Applications : elles ne servent plus. Leur dossier de données reste sur ce Mac, comme \
+sauvegarde.";
 
 /// L'identité Matter d'un dossier de données.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,8 +173,8 @@ impl std::fmt::Display for InitError {
             InitError::ImportPending(dir) => write!(
                 f,
                 "Un import est en attente ou interrompu dans {} : « init » ne crée pas de nouvelle \
-                 identité par-dessus. Relancez « matter-home-server import FICHIER » (ou démarrez le \
-                 serveur) pour le terminer, ou renoncez-y avec « matter-home-server import \
+                 identité par-dessus. Relancez « ostal-server import FICHIER » (ou démarrez le \
+                 serveur) pour le terminer, ou renoncez-y avec « ostal-server import \
                  --abandon ».",
                 dir.display()
             ),

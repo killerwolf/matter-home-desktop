@@ -6,7 +6,7 @@ use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoints};
 
 use super::thermometer::{history_status, local_time};
 use super::{ago, Device, ViewRequests};
-use matter_home_client::series::{compute_stats, DeviceSeries, Sample, Series, TimeWindow};
+use ostal_client::series::{compute_stats, DeviceSeries, Sample, Series, TimeWindow};
 use protocol::automation::CoverCommand;
 use protocol::events::{now_unix, CoverMotion};
 use protocol::format::{format_energy, format_position, format_power};

@@ -1,14 +1,14 @@
-//! Serveur Matter Home, sans fenêtre.
+//! Serveur Ostal, sans fenêtre.
 //!
-//! - `matter-home-server`                : mode normal (réseau réel) ; refuse de démarrer sans
+//! - `ostal-server`                : mode normal (réseau réel) ; refuse de démarrer sans
 //!   identité Matter (jamais de nouvelle fabric par accident)
-//! - `matter-home-server --demo`         : appareils simulés, dossier de données temporaire
-//! - `matter-home-server --discover`     : diagnostic en ligne de commande (mDNS)
-//! - `matter-home-server create-account` : crée le compte unique (mot de passe demandé sans écho)
-//! - `matter-home-server fingerprint`    : affiche l'empreinte du certificat TLS
-//! - `matter-home-server init`           : crée l'identité Matter d'une installation neuve
+//! - `ostal-server --demo`         : appareils simulés, dossier de données temporaire
+//! - `ostal-server --discover`     : diagnostic en ligne de commande (mDNS)
+//! - `ostal-server create-account` : crée le compte unique (mot de passe demandé sans écho)
+//! - `ostal-server fingerprint`    : affiche l'empreinte du certificat TLS
+//! - `ostal-server init`           : crée l'identité Matter d'une installation neuve
 //!   (sans sauvegarde à importer), puis quitte
-//! - `matter-home-server import FICHIER` : importe un `.matterhome` (v0.2.1 ou export du serveur)
+//! - `ostal-server import FICHIER` : importe une sauvegarde (`.matterhome` de la v0.2.1 ou de Matter Home, `.ostal` du serveur)
 //!   dans le dossier de données, puis quitte, sans démarrer Matter ni aucun réseau
 //!
 //! Le serveur quitte avec un code non nul sur une erreur fatale, pour qu'un superviseur
@@ -26,36 +26,36 @@ use std::time::Duration;
 
 use rand::RngCore;
 
-use matter_home_server::app::{Outcome, Server, ServerConfig};
-use matter_home_server::security::account::{self, AccountStore};
-use matter_home_server::security::{self, tls};
-use matter_home_server::{backup, matter, persistence};
+use ostal_server::app::{Outcome, Server, ServerConfig};
+use ostal_server::security::account::{self, AccountStore};
+use ostal_server::security::{self, tls};
+use ostal_server::{backup, matter, persistence};
 
 const HELP: &str = "\
-matter-home-server — serveur Matter Home (sans fenêtre)
+ostal-server — serveur Ostal (sans fenêtre)
 
 Usage :
-  matter-home-server [--listen ADRESSE:PORT] [--data-dir DOSSIER]
+  ostal-server [--listen ADRESSE:PORT] [--data-dir DOSSIER]
                                  lance le serveur (réseau réel). Refuse de démarrer si le dossier
                                  de données n'a pas d'identité Matter (code 78) : il n'en crée
                                  jamais une tout seul, voir « init » et « import »
-  matter-home-server --demo      lance le serveur avec des appareils simulés, dans un
+  ostal-server --demo      lance le serveur avec des appareils simulés, dans un
                                  dossier temporaire (écoute sur 127.0.0.1:8443)
-  matter-home-server --discover  liste les nœuds Matter vus en mDNS puis quitte
-  matter-home-server create-account --username NOM [--password-stdin] [--replace]
+  ostal-server --discover  liste les nœuds Matter vus en mDNS puis quitte
+  ostal-server create-account --username NOM [--password-stdin] [--replace]
                      [--data-dir DOSSIER]
                                  crée le compte unique ; le mot de passe est demandé sans
                                  écho, ou lu sur l'entrée standard avec --password-stdin
                                  (jamais en argument). --replace remplace le compte et ferme
                                  ses sessions (redémarrer ensuite le serveur)
-  matter-home-server fingerprint [--data-dir DOSSIER]
+  ostal-server fingerprint [--data-dir DOSSIER]
                                  affiche l'empreinte SHA-256 du certificat TLS
-  matter-home-server init [--data-dir DOSSIER]
+  ostal-server init [--data-dir DOSSIER]
                                  installation neuve SANS sauvegarde : crée l'identité Matter
                                  (une nouvelle fabric : aucun appareil n'est encore appairé).
                                  Refuse si une identité existe déjà, si des données existent
                                  sans identité, ou si un import a laissé une identité à côté
-  matter-home-server import FICHIER.matterhome [--yes] [--replace-identity] [--data-dir DOSSIER]
+  ostal-server import FICHIER.ostal [--yes] [--replace-identity] [--data-dir DOSSIER]
                                  importe une sauvegarde (même identité Matter, sans réappairage),
                                  y compris dans un dossier vide (premier déploiement). Refuse si
                                  un serveur tourne ; affiche le résumé et les identités (celle
@@ -68,13 +68,13 @@ Usage :
                                  interrompu se reprend en relançant la même commande. La v0.2.1
                                  doit être arrêtée sur TOUS vos Mac, celui-ci compris. Les
                                  anciennes données sont conservées dans « …avant-import-… ».
-  matter-home-server import --abandon [--data-dir DOSSIER]
+  ostal-server import --abandon [--data-dir DOSSIER]
                                  renonce à un import en attente ou interrompu : retire la
                                  sauvegarde en attente et met de côté le dossier préparé
                                  (« …import-abandonne-… », à supprimer à la main).
                                  Procédure : docs/migration.md
-  matter-home-server --version   affiche la version
-  matter-home-server --help      affiche cette aide
+  ostal-server --version   affiche la version
+  ostal-server --help      affiche cette aide
 
 Options : --listen accepte « adresse:port » ou un simple port (défaut : 0.0.0.0:8443, ou
 127.0.0.1:8443 avec --demo). --data-dir remplace le dossier de données standard (un chemin
@@ -87,9 +87,7 @@ Codes de sortie : 0 arrêt demandé, 1 erreur, 2 usage, 75 import à appliquer (
 78 identité Matter absente (importez ou « init »).
 Variables : RUST_LOG=debug pour des journaux détaillés.";
 
-use matter_home_server::setup::{
-    self, EXIT_IMPORT_STAGED, EXIT_NO_IDENTITY, OTHER_INSTANCES_REMINDER,
-};
+use ostal_server::setup::{self, EXIT_IMPORT_STAGED, EXIT_NO_IDENTITY, OTHER_INSTANCES_REMINDER};
 
 const DEFAULT_PORT: u16 = 8443;
 
@@ -100,7 +98,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("matter-home-server {}", env!("CARGO_PKG_VERSION"));
+        println!("ostal-server {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let log_file = match take_value(&mut args, "--log-file") {
@@ -111,7 +109,7 @@ fn main() -> ExitCode {
         env_logger::Env::default().default_filter_or("info,matc=warn,retina=off"),
     );
     if let Some(path) = &log_file {
-        match matter_home_server::logfile::RotatingLog::open(path) {
+        match ostal_server::logfile::RotatingLog::open(path) {
             Ok(file) => {
                 logger.target(env_logger::Target::Pipe(Box::new(file)));
             }
@@ -139,11 +137,11 @@ extern "C" {
     fn geteuid() -> u32;
 }
 
-/// Le processus tourne en root (ou le simule, pour les tests : `MATTER_HOME_TEST_FAKE_ROOT`).
+/// Le processus tourne en root (ou le simule, pour les tests : `OSTAL_TEST_FAKE_ROOT`).
 fn running_as_root() -> bool {
     // SAFETY : `geteuid` n'a ni argument ni effet de bord.
     let real = unsafe { geteuid() == 0 };
-    real || std::env::var_os("MATTER_HOME_TEST_FAKE_ROOT").is_some()
+    real || std::env::var_os("OSTAL_TEST_FAKE_ROOT").is_some()
 }
 
 /// `import`, `init`, `create-account` et le serveur écrivent dans le dossier de données de
@@ -264,7 +262,7 @@ fn run_server(args: &[String]) -> ExitCode {
     let _instance_lock = if demo {
         None
     } else {
-        match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+        match persistence::acquire_data_lock() {
             Ok(lock) => Some(lock),
             Err(e) => {
                 log::error!("{e:#}");
@@ -315,8 +313,8 @@ fn require_identity_in(data_dir: &std::path::Path) -> Result<(), ExitCode> {
             log::error!(
                 "aucune identité Matter dans {} : le serveur ne démarre pas, \
                  pour ne pas créer une nouvelle fabric. Importez votre sauvegarde avec \
-                 « matter-home-server import FICHIER.matterhome », ou, pour une installation \
-                 neuve sans sauvegarde, « matter-home-server init » (voir docs/installation-serveur.md).",
+                 « ostal-server import FICHIER.ostal », ou, pour une installation \
+                 neuve sans sauvegarde, « ostal-server init » (voir docs/installation-serveur.md).",
                 data_dir.display()
             );
             Err(ExitCode::from(EXIT_NO_IDENTITY))
@@ -344,18 +342,18 @@ fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
     }
     let mut config = ServerConfig::new(data_dir, listen, demo);
     // Réglages de diagnostic, pour les tests d'intégration (client lent) uniquement.
-    if let Some(n) = env_number("MATTER_HOME_TEST_BROADCAST_CAPACITY") {
+    if let Some(n) = env_number("OSTAL_TEST_BROADCAST_CAPACITY") {
         config.broadcast_capacity = n as usize;
     }
-    if let Some(ms) = env_number("MATTER_HOME_TEST_WRITE_TIMEOUT_MS") {
+    if let Some(ms) = env_number("OSTAL_TEST_WRITE_TIMEOUT_MS") {
         config.client_write_timeout = Duration::from_millis(ms);
     }
-    if let Some(ms) = env_number("MATTER_HOME_TEST_BODY_IDLE_MS") {
+    if let Some(ms) = env_number("OSTAL_TEST_BODY_IDLE_MS") {
         config.body_idle_timeout = Duration::from_millis(ms);
     }
     // Les essais ne dépendent ni d'iCloud ni de `/usr/bin/shortcuts` : raccourcis non signés.
-    if std::env::var_os("MATTER_HOME_TEST_UNSIGNED_SHORTCUTS").is_some() {
-        config.shortcut_signer = matter_home_server::shortcuts::Signer::Unsigned;
+    if std::env::var_os("OSTAL_TEST_UNSIGNED_SHORTCUTS").is_some() {
+        config.shortcut_signer = ostal_server::shortcuts::Signer::Unsigned;
     }
     let server = match Server::start(config) {
         Ok(server) => server,
@@ -375,7 +373,7 @@ fn serve(data_dir: PathBuf, listen: SocketAddr, demo: bool) -> ExitCode {
     }
     if !server.has_account {
         log::warn!(
-            "aucun compte : personne ne peut se connecter. Créez-le avec « matter-home-server create-account --username NOM »."
+            "aucun compte : personne ne peut se connecter. Créez-le avec « ostal-server create-account --username NOM »."
         );
     }
 
@@ -406,7 +404,7 @@ fn env_number(name: &str) -> Option<u64> {
 fn temp_demo_directory() -> PathBuf {
     let mut random = [0u8; 6];
     rand::thread_rng().fill_bytes(&mut random);
-    std::env::temp_dir().join(format!("matter-home-demo-{}", hex::encode(random)))
+    std::env::temp_dir().join(format!("ostal-demo-{}", hex::encode(random)))
 }
 
 /// En démo, un compte « demo » est créé s'il n'y en a pas, avec un mot de passe tiré au sort
@@ -486,28 +484,38 @@ fn run_create_account(args: &[String]) -> ExitCode {
     // Un import interrompu doit être repris AVANT de créer quoi que ce soit : `server_dir`
     // créerait un dossier de données qui ne contient que `serveur/`. Si un serveur tourne, il a
     // le verrou (et a déjà repris l'import à son démarrage) : on ne touche à rien d'autre.
-    let (_lock, data_dir) =
-        match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
-            // Le prologue peut déplacer l'ancien dossier « matter-demo » : c'est le dossier qu'il
-            // rend qu'il faut utiliser, pas celui lu avant.
-            Ok(lock) => match prologue(false) {
-                Ok(dir) => (Some(lock), dir),
-                Err(e) => {
-                    eprintln!("{e:#}");
-                    return ExitCode::FAILURE;
-                }
-            },
-            Err(_) => {
-                if backup::recovery_needed(&data_dir) {
-                    eprintln!(
+    let (_lock, data_dir) = match persistence::acquire_data_lock() {
+        // Le prologue peut copier l'ancien dossier (« Matter Home », « matter-demo ») : c'est
+        // le dossier qu'il rend qu'il faut utiliser, pas celui lu avant.
+        Ok(lock) => match prologue(false) {
+            Ok(dir) => (Some(lock), dir),
+            Err(e) => {
+                eprintln!("{e:#}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(e) => {
+            // L'ancienne application tient l'ancien verrou : ses données ne sont pas encore
+            // copiées, on n'écrit rien (ni dans l'ancien dossier, ni dans un nouveau vide).
+            if e.downcast_ref::<persistence::LockHeld>()
+                .is_some_and(|h| h.path != persistence::instance_lock_path())
+            {
+                eprintln!(
+                    "{e:#}\nQuittez l'ancienne application Matter Home Server, puis relancez \
+                         cette commande."
+                );
+                return ExitCode::FAILURE;
+            }
+            if backup::recovery_needed(&data_dir) {
+                eprintln!(
                     "Un import interrompu attend d'être repris, et un serveur tient le verrou. \
                      Arrêtez-le, puis relancez cette commande."
                 );
-                    return ExitCode::FAILURE;
-                }
-                (None, persistence::data_dir())
+                return ExitCode::FAILURE;
             }
-        };
+            (None, persistence::data_dir())
+        }
+    };
     let result = security::server_dir(&data_dir)
         .and_then(|dir| account::create(&dir, &username, &password, replace));
     match result {
@@ -570,14 +578,14 @@ fn run_import(args: &[String]) -> ExitCode {
         [] if abandon => None,
         [file] if !file.starts_with("--") && !abandon => Some(PathBuf::from(file)),
         _ if abandon => return usage_error("import --abandon n'accepte pas de fichier"),
-        [] => return usage_error("import attend le fichier .matterhome à importer"),
+        [] => return usage_error("import attend le fichier .ostal à importer"),
         [other, ..] if other.starts_with("--") => {
             return usage_error(&format!("Option inconnue : {other}"))
         }
         _ => return usage_error("import n'accepte qu'un seul fichier"),
     };
     // Rien de ce qui suit ne démarre Matter ni le réseau : ni `Server::start`, ni mDNS.
-    let _lock = match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+    let _lock = match persistence::acquire_data_lock() {
         Ok(lock) => lock,
         Err(e) => {
             eprintln!("{e:#}");
@@ -587,7 +595,10 @@ fn run_import(args: &[String]) -> ExitCode {
     let Some(file) = file else {
         // Pas de reprise d'abord : après une coupure entre les deux renommages, « abandonner »
         // remet les anciennes données en place au lieu de terminer l'import.
-        persistence::migrate_legacy_data_dir();
+        if let Err(e) = persistence::migrate_legacy_data_dir() {
+            eprintln!("{e:#}");
+            return ExitCode::FAILURE;
+        }
         return run_abandon(&persistence::data_dir());
     };
     let data_dir = match prologue(false) {
@@ -606,7 +617,7 @@ fn run_import(args: &[String]) -> ExitCode {
             eprintln!(
                 "Une autre sauvegarde est déjà en attente dans {} (import demandé par l'API, ou \
                  import d'un autre fichier interrompu). Lancez le serveur pour qu'il l'applique, \
-                 ou renoncez-y avec « matter-home-server import --abandon » : cela retire ce \
+                 ou renoncez-y avec « ostal-server import --abandon » : cela retire ce \
                  fichier et met de côté le dossier « …import-nouveau » déjà préparé, sous le nom \
                  « …import-abandonne-… ».",
                 backup::pending_path(&data_dir).display()
@@ -654,7 +665,7 @@ fn run_import(args: &[String]) -> ExitCode {
                 done.previous.display()
             );
             println!(
-                "Étapes suivantes : « matter-home-server create-account --username NOM » si le \
+                "Étapes suivantes : « ostal-server create-account --username NOM » si le \
                  compte n'existe pas encore, puis démarrer le serveur. N'ouvrez plus \
                  l'application de bureau avec ces appareils."
             );
@@ -744,7 +755,7 @@ fn run_init(args: &[String]) -> ExitCode {
     if let Some(unknown) = args.first() {
         return usage_error(&format!("Option inconnue : {unknown}"));
     }
-    let _lock = match persistence::acquire_instance_lock(&persistence::instance_lock_path()) {
+    let _lock = match persistence::acquire_data_lock() {
         Ok(lock) => lock,
         Err(e) => {
             eprintln!("{e:#}");
@@ -765,7 +776,7 @@ fn run_init(args: &[String]) -> ExitCode {
                  appairé : faites-le depuis le client.",
                 data_dir.display()
             );
-            println!("Étape suivante : « matter-home-server create-account --username NOM ».");
+            println!("Étape suivante : « ostal-server create-account --username NOM ».");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -816,7 +827,7 @@ fn run_fingerprint(args: &[String]) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    match tls::read_fingerprint(&data_dir.join(matter_home_server::persistence::SERVER_DIR)) {
+    match tls::read_fingerprint(&data_dir.join(ostal_server::persistence::SERVER_DIR)) {
         Ok(fingerprint) => {
             println!("{fingerprint}");
             ExitCode::SUCCESS

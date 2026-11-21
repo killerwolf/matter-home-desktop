@@ -17,7 +17,7 @@ use super::error::NetError;
 use super::http::{self, Request};
 use super::stream::{current, current_generation};
 use super::tls::Trust;
-use matter_home_video::Image;
+use ostal_video::Image;
 
 /// Pause entre deux images quand tout va bien.
 pub const REFRESH_EVERY: Duration = Duration::from_secs(20);

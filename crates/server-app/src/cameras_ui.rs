@@ -1,5 +1,5 @@
 //! Le dessin de l'onglet « Caméras » : liste, ajout, modification, suppression et bouton
-//! « Tester ». Les textes et le formulaire sont dans `matter_home_server_app::cameras`.
+//! « Tester ». Les textes et le formulaire sont dans `ostal_server_app::cameras`.
 //!
 //! Tout passe par le hub du serveur qui tourne (`Hub::add_camera` et les autres) : la liste est
 //! enregistrée en 0600, diffusée aux clients, et surveillée. Le test d'une saisie fait un
@@ -8,13 +8,13 @@
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, RichText};
-use matter_home_server::cameras::{CameraAdmin, CameraTest, StreamKind};
-use matter_home_server::hub::Hub;
-use matter_home_server_app::cameras::{
+use ostal_server::cameras::{CameraAdmin, CameraTest, StreamKind};
+use ostal_server::hub::Hub;
+use ostal_server_app::cameras::{
     dot_tone, problem_text, status_line, test_lines, test_lines_by_stream, Form, Tone, AQARA_HINT,
     AQARA_TITLE, BACKUP_NOTE, NO_SUB_NOTE, ZONES_HINT,
 };
-use matter_home_theme as theme;
+use ostal_theme as theme;
 use protocol::mode::HomeMode;
 use protocol::wire::{CameraBehavior, CameraPlacement, DetectedClass};
 
@@ -423,7 +423,7 @@ fn detection_ui(ui: &mut egui::Ui, form: &mut Form, hub: &Arc<Hub>) {
     .id_salt("camera_detection")
     .show(ui, |ui| {
         let status = hub.detection().status();
-        let (tone, line) = matter_home_server_app::cameras::detection_line(&status);
+        let (tone, line) = ostal_server_app::cameras::detection_line(&status);
         ui.colored_label(tone_color(ui, tone), line);
         if let Some(id) = form.editing {
             if status.watched.contains(&id) {

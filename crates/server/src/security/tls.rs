@@ -92,7 +92,7 @@ fn generate_pems() -> Result<(String, String)> {
     params.distinguished_name = rcgen::DistinguishedName::new();
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "Matter Home Server");
+        .push(rcgen::DnType::CommonName, "Ostal Server");
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2024 + VALID_YEARS, 1, 1);

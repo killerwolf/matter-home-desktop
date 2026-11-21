@@ -17,7 +17,7 @@
 use protocol::wire::DetectedClass;
 use serde::Deserialize;
 
-use matter_home_video::Image;
+use ostal_video::Image;
 
 /// Une détection, dans l'image d'origine.
 #[derive(Debug, Clone, Copy, PartialEq)]

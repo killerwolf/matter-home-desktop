@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Désinstalle le service Matter Home : arrête le service, retire le fichier de service et le
+# Désinstalle le service Ostal : arrête le service, retire le fichier de service et le
 # binaire. Vos DONNÉES (identité Matter, appareils, plan, règles, historique, compte) et vos
 # journaux ne sont JAMAIS supprimés, sauf si vous le demandez avec l'option --supprimer-donnees,
 # qui est un geste à part, avec sa propre confirmation.
@@ -25,8 +25,12 @@
 
 set -euo pipefail
 
-LABEL="dev.matter-home-desktop.server"
-BIN_NAME="matter-home-server"
+LABEL="dev.ostal.server-daemon"
+# Le même service, installé avant le renommage en Ostal : remplacé (installation) ou retiré
+# (désinstallation), jamais laissé à côté du nouveau.
+LEGACY_LABEL="dev.matter-home-desktop.server"
+LEGACY_BIN_NAME="matter-home-server"
+BIN_NAME="ostal-server"
 
 DRY=0
 [ "${MH_DRY_RUN:-0}" = "1" ] && DRY=1
@@ -72,7 +76,7 @@ BIN_FINAL="/usr/local/bin/$BIN_NAME"
 PLIST_FINAL="/Library/LaunchDaemons/$LABEL.plist"
 BIN_DEST="$PREFIX$BIN_FINAL"
 PLIST_DEST="$PREFIX$PLIST_FINAL"
-LOG_DIR="$USER_HOME/Library/Logs/MatterHomeServer"
+LOG_DIR="$USER_HOME/Library/Logs/OstalServer"
 
 fmt() {
   local out="" a
@@ -127,7 +131,7 @@ if [ -z "$DATA_DIR" ]; then
   if [ -f "$PLIST_DEST" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$PLIST_DEST" 2>/dev/null || true)" = "--data-dir" ]; then
     DATA_DIR="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$PLIST_DEST" 2>/dev/null || true)"
   fi
-  [ -n "$DATA_DIR" ] || DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+  [ -n "$DATA_DIR" ] || DATA_DIR="$USER_HOME/Library/Application Support/dev.ostal.OstalServer"
 fi
 case "$DATA_DIR" in /*) ;; *) die "le dossier de données doit être un chemin absolu : $DATA_DIR" ;; esac
 DATA_DIR="${DATA_DIR%/}"
@@ -139,7 +143,7 @@ if [ -n "$PREFIX" ]; then
   esac
 fi
 
-title "Matter Home — désinstallation du serveur"
+title "Ostal — désinstallation du serveur"
 [ "$DRY" = "1" ] && say "(mode à blanc : rien n'est supprimé, aucune commande système n'est lancée)"
 [ -n "$PREFIX" ] && say "(préfixe d'essai : $PREFIX — aucune commande système n'est lancée)"
 say "  service    : $PLIST_FINAL"
@@ -153,6 +157,11 @@ ask "Désinstaller le service ?" || { say "Désinstallation annulée : rien n'a 
 
 title "1. Arrêt du service"
 svc_step launchctl bootout "system/$LABEL" || true
+if [ -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" ]; then
+  say "  ancien service de Matter Home trouvé : il est arrêté et retiré (ses données restent)."
+  svc_step launchctl bootout "system/$LEGACY_LABEL" || true
+  fs_step rm -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" "$PREFIX/usr/local/bin/$LEGACY_BIN_NAME"
+fi
 
 title "2. Retrait du service et du binaire"
 for f in "$PLIST_DEST" "$BIN_DEST"; do
@@ -175,7 +184,7 @@ if [ "$WIPE" = "1" ]; then
     if [ "$DRY" = "0" ] && [ ! -f "$DATA_DIR/controller.json" ] && [ ! -d "$DATA_DIR/serveur" ]; then
       die "$DATA_DIR ne ressemble pas à un dossier de données du serveur (ni controller.json ni serveur/) : rien n'est supprimé."
     fi
-    say "  Ce dossier contient l'identité Matter de votre maison. Sans sauvegarde (.matterhome),"
+    say "  Ce dossier contient l'identité Matter de votre maison. Sans sauvegarde (.ostal),"
     say "  vos appareils devront être réappairés un par un. Cette suppression est IRRÉVERSIBLE."
     if [ "$DRY" = "0" ]; then
       [ -t 0 ] || die "pas de terminal : --supprimer-donnees demande une confirmation tapée, même avec --oui."

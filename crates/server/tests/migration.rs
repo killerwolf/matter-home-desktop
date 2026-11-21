@@ -18,11 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use common::{create_account, temp_dir, PASSWORD, USER};
-use matter_home_server::matter::certs::{generate_identity, JsonCertManager};
-use matter_home_server::{backup, persistence};
+use ostal_server::matter::certs::{generate_identity, JsonCertManager};
+use ostal_server::{backup, persistence};
 use protocol::automation::RuleSet;
 
-const BIN: &str = env!("CARGO_BIN_EXE_matter-home-server");
+const BIN: &str = env!("CARGO_BIN_EXE_ostal-server");
 
 /// Identifiants au-delà de 2^53 : un arrondi (JavaScript, `f64`) les corromprait.
 const BIG_NODE: u64 = 0x1234_5678_9ABC_DEF0;
@@ -280,7 +280,7 @@ fn fixture() -> Fixture {
     files.insert("regles.json".into(), rules.clone());
     files.extend(history.clone());
     let bundle = serde_json::to_string(&serde_json::json!({
-        "format": "matter-home-desktop-sauvegarde",
+        "format": "ostal-sauvegarde",
         "version": 1,
         "created": "2026-11-09T09:15:00.123456+01:00",
         "files": files,
@@ -381,14 +381,14 @@ fn mode(path: &Path) -> u32 {
 fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
     let fx = fixture();
     let (base, data) = workspace("migration");
-    let file = base.join("matter-home-2026-11-09.matterhome");
+    let file = base.join("ostal-2026-11-09.ostal");
     std::fs::write(&file, &fx.bundle).unwrap();
     let file_arg = file.to_str().unwrap();
 
     // Compte et certificat, comme après « create-account » puis un premier démarrage.
     let (status, text) = create_account(&data, USER, PASSWORD, &[]);
     assert!(status.success(), "{text}");
-    matter_home_server::security::tls::load_or_create(&data.join("serveur")).unwrap();
+    ostal_server::security::tls::load_or_create(&data.join("serveur")).unwrap();
     let fingerprint_before = run(&data, &["fingerprint"], Stdio::null());
     assert_eq!(
         fingerprint_before.code,
@@ -486,7 +486,7 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
         assert_eq!(*now, expected, "règle « {} »", before.name);
     }
     // Ce que le serveur validera au PUT suivant : tout passe, brouillons désactivés compris.
-    matter_home_server::validate::rules(&stored).unwrap();
+    ostal_server::validate::rules(&stored).unwrap();
 
     // Droits : fichiers 0600, dossier de données comme celui de départ.
     for rel in ["controller.json", "maison.json", "regles.json"] {
@@ -495,7 +495,7 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
     assert_eq!(mode(&data.join("serveur")), 0o700);
     // Rien ne traîne : ni import en attente, ni dossier de travail ; les anciennes données
     // (le dossier avec son compte seul) sont conservées à côté.
-    assert!(!data.join("import-en-attente.matterhome").exists());
+    assert!(!data.join("import-en-attente.ostal").exists());
     let leftovers = siblings(&data);
     assert!(
         leftovers
@@ -538,7 +538,7 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
 fn import_works_on_a_missing_data_dir_and_asks_for_the_account() {
     let fx = fixture();
     let (base, data) = workspace("migration-empty");
-    let file = base.join("sauvegarde.matterhome");
+    let file = base.join("sauvegarde.ostal");
     std::fs::write(&file, &fx.bundle).unwrap();
 
     assert!(!data.exists());
@@ -612,7 +612,7 @@ fn import_refuses_bad_input_without_touching_anything() {
 fn create_account_after_an_interrupted_import_resumes_it_first() {
     let fx = fixture();
     let (base, data) = workspace("migration-crash");
-    let file = base.join("sauvegarde.matterhome");
+    let file = base.join("sauvegarde.ostal");
     std::fs::write(&file, &fx.bundle).unwrap();
     let (status, text) = create_account(&data, USER, PASSWORD, &[]);
     assert!(status.success(), "{text}");
@@ -681,7 +681,7 @@ fn a_relative_data_dir_works_with_or_without_a_trailing_slash() {
     let fx = fixture();
     for (tag, arg) in [("rel", "donnees"), ("rel-slash", "donnees/")] {
         let (base, data) = workspace(tag);
-        let file = base.join("sauvegarde.matterhome");
+        let file = base.join("sauvegarde.ostal");
         std::fs::write(&file, &fx.bundle).unwrap();
         // Un compte d'abord, pour qu'il y ait un dossier existant à mettre de côté.
         let r = run_raw(&base, &["fingerprint", "--data-dir", arg]);
@@ -717,7 +717,7 @@ fn a_different_identity_needs_replace_identity_even_with_yes() {
     let first = fixture();
     let second = fixture();
     let (base, data) = workspace("migration-identity");
-    let (f1, f2) = (base.join("un.matterhome"), base.join("deux.matterhome"));
+    let (f1, f2) = (base.join("un.ostal"), base.join("deux.ostal"));
     std::fs::write(&f1, &first.bundle).unwrap();
     std::fs::write(&f2, &second.bundle).unwrap();
     let r = run(
@@ -793,7 +793,7 @@ fn a_different_identity_needs_replace_identity_even_with_yes() {
 fn import_resumes_the_same_file_and_can_abandon_another() {
     let fx = fixture();
     let (base, data) = workspace("migration-resume");
-    let file = base.join("sauvegarde.matterhome");
+    let file = base.join("sauvegarde.ostal");
     std::fs::write(&file, &fx.bundle).unwrap();
     let r = run(
         &data,
@@ -811,7 +811,7 @@ fn import_resumes_the_same_file_and_can_abandon_another() {
     );
     assert_eq!(resumed.code, Some(0), "{}", resumed.text);
     assert!(resumed.text.contains("repris"), "{}", resumed.text);
-    assert!(!data.join("import-en-attente.matterhome").exists());
+    assert!(!data.join("import-en-attente.ostal").exists());
 
     // Une autre sauvegarde (celle de l'API, par exemple) n'est pas la nôtre : refus clair.
     let other = fixture();
@@ -828,7 +828,7 @@ fn import_resumes_the_same_file_and_can_abandon_another() {
         "{}",
         refused.text
     );
-    assert!(data.join("import-en-attente.matterhome").exists());
+    assert!(data.join("import-en-attente.ostal").exists());
 
     // Dossier complet déjà préparé, comme après une coupure : renoncer le met de côté.
     let complete = data.with_file_name("donnees.import-nouveau");
@@ -851,7 +851,7 @@ fn import_resumes_the_same_file_and_can_abandon_another() {
     let kept = data.with_file_name(&aside[0]).join("controller.json");
     assert_eq!(std::fs::read(kept).unwrap(), other.controller.as_bytes());
     let mut expected = before;
-    expected.remove("import-en-attente.matterhome");
+    expected.remove("import-en-attente.ostal");
     assert_eq!(
         tree(&data),
         expected,
@@ -973,7 +973,7 @@ fn the_server_announces_its_version() {
     assert_eq!(r.code, Some(0));
     assert_eq!(
         r.text.trim(),
-        format!("matter-home-server {}", env!("CARGO_PKG_VERSION"))
+        format!("ostal-server {}", env!("CARGO_PKG_VERSION"))
     );
 }
 
@@ -983,7 +983,7 @@ fn the_server_announces_its_version() {
 fn write_commands_and_the_server_refuse_to_run_as_root() {
     let fx = fixture();
     let (base, data) = workspace("migration-root");
-    let file = base.join("sauvegarde.matterhome");
+    let file = base.join("sauvegarde.ostal");
     std::fs::write(&file, &fx.bundle).unwrap();
     let as_root = |args: &[&str]| {
         let out = Command::new(BIN)
@@ -991,7 +991,7 @@ fn write_commands_and_the_server_refuse_to_run_as_root() {
             .arg("--data-dir")
             .arg(&data)
             .env("HOME", base.join("home"))
-            .env("MATTER_HOME_TEST_FAKE_ROOT", "1")
+            .env("OSTAL_TEST_FAKE_ROOT", "1")
             .stdin(Stdio::null())
             .output()
             .unwrap();

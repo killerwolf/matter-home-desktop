@@ -26,7 +26,8 @@ NSGradient(colors: [NSColor(calibratedWhite: 0.99, alpha: 1),
     .draw(in: NSRect(x: 0, y: 0, width: width, height: height), angle: -90)
 
 // Consigne (repère AppKit : origine en bas à gauche ; le Finder compte depuis le haut).
-let title = "Glissez Matter Home Desktop dans Applications" as NSString
+// Commun aux deux DMG (Ostal et Ostal Server) : la consigne ne nomme pas l'application.
+let title = "Glissez l'application dans le dossier Applications" as NSString
 let style = NSMutableParagraphStyle()
 style.alignment = .center
 let attrs: [NSAttributedString.Key: Any] = [

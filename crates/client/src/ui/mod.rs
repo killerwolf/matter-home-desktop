@@ -32,18 +32,18 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 use sync::Failure;
 
-pub use matter_home_client::model::Device;
+pub use ostal_client::model::Device;
 
 /// Installe le thème (clair et sombre, celui du système) : à appeler une fois au démarrage.
 pub fn apply_theme(ctx: &egui::Context) {
     theme::apply(ctx);
 }
-use matter_home_client::model::{Change, Model};
-use matter_home_client::net::error::api_message;
-use matter_home_client::net::files::MAX_BACKUP_BYTES;
-use matter_home_client::net::{Backend, Body, Event, Link, NetError, Request, Response};
-use matter_home_client::series::{metrics_for, needs_fetch, DeviceSeries, TimeWindow};
-use matter_home_client::temperatures::{self as temps, TempFetch};
+use ostal_client::model::{Change, Model};
+use ostal_client::net::error::api_message;
+use ostal_client::net::files::MAX_BACKUP_BYTES;
+use ostal_client::net::{Backend, Body, Event, Link, NetError, Request, Response};
+use ostal_client::series::{metrics_for, needs_fetch, DeviceSeries, TimeWindow};
+use ostal_client::temperatures::{self as temps, TempFetch};
 use protocol::automation::{CoverCommand, OnOffCommand};
 use protocol::events::{now_unix, CoverMotion};
 use protocol::home::{HomePlan, Symbol};
@@ -1270,7 +1270,7 @@ impl MatterApp {
                 value,
                 at,
             } => {
-                let sample = matter_home_client::series::Sample { t: at, value };
+                let sample = ostal_client::series::Sample { t: at, value };
                 if let Some(series) = self.series.get_mut(&node_id) {
                     series.push_live(metric, sample);
                 }
@@ -1519,10 +1519,10 @@ impl MatterApp {
         let Some(dest) = rfd::FileDialog::new()
             .set_title("Exporter mes données")
             .set_file_name(format!(
-                "matter-home-{}.matterhome",
+                "ostal-{}.ostal",
                 chrono::Local::now().format("%Y%m%d")
             ))
-            .add_filter("Sauvegarde Matter Home", &["matterhome"])
+            .add_filter("Sauvegarde Ostal", &["ostal"])
             .save_file()
         else {
             return;
@@ -1541,7 +1541,8 @@ impl MatterApp {
     fn import_data(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .set_title("Importer des données")
-            .add_filter("Sauvegarde Matter Home", &["matterhome"])
+            // « matterhome » : les sauvegardes faites avant le renommage en Ostal.
+            .add_filter("Sauvegarde Ostal", &["ostal", "matterhome"])
             .pick_file()
         else {
             return;
@@ -2422,8 +2423,8 @@ impl MatterApp {
                             let full = server_address(server);
                             // À distance (autre adresse, ou Tailscale) : l'adresse réellement
                             // utilisée est dans l'infobulle.
-                            let used = matter_home_client::net::stream::active_address()
-                                .filter(|_| matter_home_client::net::stream::is_remote())
+                            let used = ostal_client::net::stream::active_address()
+                                .filter(|_| ostal_client::net::stream::is_remote())
                                 .map(|a| a.authority());
                             let shown = shorten(&full, MAX_ADDRESS_CHARS);
                             let suffix = if used.is_some() { " · à distance" } else { "" };
@@ -2458,7 +2459,7 @@ impl MatterApp {
                                     .color(p.on_warn)
                                     .background_color(p.warn),
                             )
-                            .on_hover_text("Pas de connexion au serveur Matter Home.");
+                            .on_hover_text("Pas de connexion au serveur Ostal.");
                         }
                     }
                 });

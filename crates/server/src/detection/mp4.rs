@@ -344,14 +344,14 @@ mod tests {
         assert_eq!(&file[avcc + 4..avcc + 9], &[1, 0x64, 0, 0x1f, 0xff]);
     }
 
-    /// Le démultiplexeur du client (`matter_home_video::mp4`, ticket n° 22) relit ce muxer : mêmes
+    /// Le démultiplexeur du client (`ostal_video::mp4`, ticket n° 22) relit ce muxer : mêmes
     /// images, mêmes instants (relatifs au début), mêmes images clés.
     #[test]
     fn the_client_demuxer_reads_this_muxer() {
         let samples = samples();
         let avcc = [1, 0x64, 0, 0x1f, 0xff];
         let file = mux(&avcc, 640, 360, &samples).unwrap();
-        let track = matter_home_video::mp4::parse(&file).unwrap();
+        let track = ostal_video::mp4::parse(&file).unwrap();
         assert_eq!((track.width, track.height), (640, 360));
         assert_eq!(track.avcc, avcc);
         assert_eq!(track.duration_ms, 466);

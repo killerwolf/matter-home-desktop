@@ -30,7 +30,7 @@ pub const PROTOCOL: u32 = protocol::wire::PROTOCOL_VERSION;
 pub const USER: &str = "hamdi";
 pub const PASSWORD: &str = "un-mot-de-passe-solide-pour-les-tests";
 
-const BIN: &str = env!("CARGO_BIN_EXE_matter-home-server");
+const BIN: &str = env!("CARGO_BIN_EXE_ostal-server");
 
 pub fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

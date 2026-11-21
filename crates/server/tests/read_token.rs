@@ -50,7 +50,7 @@ async fn ws_status(client: &Client, path: &str, token: &str, subprotocol: bool) 
     let value = if subprotocol {
         (
             "Sec-WebSocket-Protocol",
-            format!("matter-home.v1, bearer.{token}"),
+            format!("ostal.v1, bearer.{token}"),
         )
     } else {
         ("Authorization", format!("Bearer {token}"))
@@ -160,7 +160,7 @@ fn the_read_token_reads_state_and_events_and_nothing_else() {
                 None,
                 &[(
                     "Sec-WebSocket-Protocol",
-                    &format!("matter-home.v1, bearer.{read}"),
+                    &format!("ostal.v1, bearer.{read}"),
                 )],
             )
             .await;

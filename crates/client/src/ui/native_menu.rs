@@ -181,7 +181,7 @@ mod appkit {
         /// Cible des éléments de menu : traduit chaque clic en `MenuCommand`.
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
-        #[name = "MatterHomeMenuTarget"]
+        #[name = "OstalMenuTarget"]
         #[ivars = Ivars]
         struct Target;
 
@@ -337,7 +337,7 @@ mod appkit {
         let target = Target::new(mtm, Ivars { tx, ctx });
         let t = Some(&*target);
         let app = NSApplication::sharedApplication(mtm);
-        let name = "Matter Home Desktop";
+        let name = "Ostal";
 
         // Menu de l'application.
         let hide_others = item_to(

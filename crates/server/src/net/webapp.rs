@@ -117,6 +117,16 @@ static ASSETS: &[Asset] = &[
         content_type: "image/png",
         body: include_bytes!("../../web/icon-512.png"),
     },
+    Asset {
+        name: "apple-touch-icon.png",
+        content_type: "image/png",
+        body: include_bytes!("../../web/apple-touch-icon.png"),
+    },
+    Asset {
+        name: "favicon.png",
+        content_type: "image/png",
+        body: include_bytes!("../../web/favicon.png"),
+    },
 ];
 
 /// Politique de sécurité : tout vient de la même origine, aucun script ni style en ligne, aucune

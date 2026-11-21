@@ -24,8 +24,8 @@ use eframe::egui;
 use protocol::wire::{CameraStatus, StreamKind};
 
 use super::camera_text::{offline_since_now, problem_text};
-use matter_home_client::model::Model;
-use matter_home_client::net::stream::{StreamHandle, StreamState};
+use ostal_client::model::Model;
+use ostal_client::net::stream::{StreamHandle, StreamState};
 
 /// Délai minimal entre deux ouvertures de liaison pour une même caméra : un lecteur qui reprend
 /// après une panne ne boucle pas.
@@ -316,7 +316,7 @@ fn notice(state: &StreamState, status: &CameraStatus) -> Option<Notice> {
             busy: false,
         }),
         StreamState::ServerTooOld => say(
-            "Le serveur est trop ancien pour la lecture vidéo : mettez à jour Matter Home Server.",
+            "Le serveur est trop ancien pour la lecture vidéo : mettez à jour Ostal Server.",
             false,
         ),
         StreamState::CameraGone => say("Cette caméra n'existe plus sur le serveur.", false),

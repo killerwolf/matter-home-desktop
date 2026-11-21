@@ -1,7 +1,7 @@
 //! Lecture d'un clip d'événement dans l'application (ticket n° 22).
 //!
 //! Le clip (H.264 dans un MP4 du serveur) est téléchargé, lu par le démultiplexeur de
-//! `matter_home_video::mp4`, puis décodé par le décodeur des flux en direct (VideoToolbox) **dans un
+//! `ostal_video::mp4`, puis décodé par le décodeur des flux en direct (VideoToolbox) **dans un
 //! fil à part** : l'interface ne fait que tenir l'horloge de lecture et montrer l'image due.
 //!
 //! - **Mémoire bornée** : le fichier (compressé) reste en mémoire, mais les images décodées (RGB) ne
@@ -19,8 +19,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
-use matter_home_video::mp4::{self, Track};
-use matter_home_video::{Decoder, FrameSink, Image};
+use ostal_video::mp4::{self, Track};
+use ostal_video::{Decoder, FrameSink, Image};
 use protocol::wire::{StreamPacket, CODEC_H264};
 
 /// Images décodées gardées d'avance (en RGB : ~0,7 Mo chacune en 640×360, 6 Mo en 1080p).

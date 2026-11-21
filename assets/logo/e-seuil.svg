@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- E « Seuil » : une arche ouverte et un point, quelqu'un est là. -->
+  <defs><linearGradient id="fond" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#10232d"/><stop offset="1" stop-color="#163444"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#fond)"/>
+  <path d="M332.0 760 V470 A180.0 180.0 0 0 1 692.0 470 V760" fill="none" stroke="#f3efe6" stroke-width="64" stroke-linecap="round"/>
+  <circle cx="512" cy="668" r="58" fill="#f5b33f"/>
+</svg>

@@ -1,49 +1,49 @@
-//! Client de bureau Matter Home : l'interface, branchée sur `matter-home-server`.
+//! Client de bureau Ostal : l'interface, branchée sur `ostal-server`.
 //!
 //! Le client ne pilote rien lui-même et ne garde aucune donnée : tout vient du serveur (HTTPS
 //! et WebSocket, certificat épinglé). Sans serveur, il affiche « déconnecté ». Seuls l'adresse,
 //! l'empreinte du certificat et le jeton de session sont conservés (fichier en 0600).
 //!
-//! - `matter-home-desktop`           : lance l'interface
-//! - `matter-home-desktop --plan`    : ouvre directement le plan de la maison
-//! - `matter-home-desktop --rules`   : ouvre directement les automatisations
-//! - `matter-home-desktop --temperatures` : ouvre directement la page Températures
-//! - `matter-home-desktop --device X`: ouvre la fiche du premier appareil dont le nom contient X
+//! - `ostal`           : lance l'interface
+//! - `ostal --plan`    : ouvre directement le plan de la maison
+//! - `ostal --rules`   : ouvre directement les automatisations
+//! - `ostal --temperatures` : ouvre directement la page Températures
+//! - `ostal --device X`: ouvre la fiche du premier appareil dont le nom contient X
 
 mod ui;
 
 use std::sync::Arc;
 
 use eframe::egui;
-use matter_home_client::net::{Backend, Store};
-use matter_home_client::series::TimeWindow;
+use ostal_client::net::{Backend, Store};
+use ostal_client::series::TimeWindow;
 
 const HELP: &str = "\
-matter-home-desktop — client Matter Home (interface)
+ostal — client Ostal (interface)
 
 Usage :
-  matter-home-desktop             lance l'interface et se connecte au serveur
-  matter-home-desktop --plan      ouvre directement le plan de la maison
-  matter-home-desktop --rules     ouvre directement les automatisations
-  matter-home-desktop --temperatures  ouvre directement la page Températures
-  matter-home-desktop --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
-  matter-home-desktop --edit-plan ouvre le plan en mode Modifier
-  matter-home-desktop --cameras   ouvre directement la mosaïque des caméras
-  matter-home-desktop --camera X  ouvre en grand la première caméra dont le nom contient X
-  matter-home-desktop --add      ouvre directement la fenêtre « Ajouter un appareil »
-  matter-home-desktop --device X  ouvre la fiche du premier appareil dont le nom contient X
-  matter-home-desktop --version   affiche la version
-  matter-home-desktop --help      affiche cette aide
+  ostal             lance l'interface et se connecte au serveur
+  ostal --plan      ouvre directement le plan de la maison
+  ostal --rules     ouvre directement les automatisations
+  ostal --temperatures  ouvre directement la page Températures
+  ostal --period P  avec --temperatures : période affichée (1h, 24h ou 1w)
+  ostal --edit-plan ouvre le plan en mode Modifier
+  ostal --cameras   ouvre directement la mosaïque des caméras
+  ostal --camera X  ouvre en grand la première caméra dont le nom contient X
+  ostal --add      ouvre directement la fenêtre « Ajouter un appareil »
+  ostal --device X  ouvre la fiche du premier appareil dont le nom contient X
+  ostal --version   affiche la version
+  ostal --help      affiche cette aide
 
 Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
-serveur : matter-home-server --demo.
+serveur : ostal-server --demo.
 
-Variables : RUST_LOG=debug pour des journaux détaillés ; MATTER_HOME_THEME=light ou dark, MATTER_HOME_WINDOW=LxH
+Variables : RUST_LOG=debug pour des journaux détaillés ; OSTAL_THEME=light ou dark, OSTAL_WINDOW=LxH
 impose le thème (essais), sinon celui du système.";
 
 fn main() -> eframe::Result {
     // Journal filtré : jamais d'en-tête `Authorization`, même avec RUST_LOG=trace.
-    matter_home_client::logging::init();
+    ostal_client::logging::init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -51,7 +51,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("matter-home-desktop {}", env!("CARGO_PKG_VERSION"));
+        println!("ostal {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     // `--device` attend une valeur : on la met de côté avant de vérifier les options.
@@ -108,8 +108,8 @@ fn main() -> eframe::Result {
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
 
-    // MATTER_HOME_WINDOW=1300x800 : taille de la fenêtre (essais et captures d'écran).
-    let size = std::env::var("MATTER_HOME_WINDOW")
+    // OSTAL_WINDOW=1300x800 : taille de la fenêtre (essais et captures d'écran).
+    let size = std::env::var("OSTAL_WINDOW")
         .ok()
         .and_then(|v| {
             let (w, h) = v.split_once('x')?;
@@ -122,7 +122,7 @@ fn main() -> eframe::Result {
         .unwrap_or([1180.0, 760.0]);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Matter Home Desktop")
+            .with_title("Ostal")
             .with_inner_size(size)
             .with_min_inner_size([800.0, 520.0])
             // Sans icône, eframe remplace celle de l'application dans le Dock par le logo
@@ -131,15 +131,28 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Matter Home Desktop",
+        "Ostal",
         options,
         Box::new(move |cc| {
             // Le réseau tourne dans ses propres fils : chaque événement réveille l'interface.
             ui::apply_theme(&cc.egui_ctx);
             let ctx = cc.egui_ctx.clone();
-            let notify: matter_home_client::net::Notifier = Arc::new(move || ctx.request_repaint());
+            let notify: ostal_client::net::Notifier = Arc::new(move || ctx.request_repaint());
             let store = Store::default_location()
                 .ok_or("dossier de données de l'utilisateur introuvable")?;
+            // Premier lancement après le renommage en Ostal : la connexion de « Matter Home »
+            // (adresse, empreinte, jeton) est reprise ; l'ancien fichier reste en place.
+            if let Some(legacy) = Store::legacy_location() {
+                match store.adopt_legacy(&legacy) {
+                    Ok(true) => log::info!(
+                        "connexion reprise de {} vers {}",
+                        legacy.path().display(),
+                        store.path().display()
+                    ),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("{e}"),
+                }
+            }
             let (backend, events) = Backend::start(store, notify);
             let mut app = ui::MatterApp::new(backend, events);
             // Barre de menus du Mac (sans effet ailleurs) : la fenêtre existe, winit a posé son

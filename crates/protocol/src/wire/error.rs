@@ -36,7 +36,7 @@ pub enum ErrorCode {
     Busy,
     /// L'appairage a échoué (le détail donne la cause).
     PairingFailed,
-    /// Fichier d'import illisible ou qui n'est pas une sauvegarde Matter Home.
+    /// Fichier d'import illisible ou qui n'est pas une sauvegarde Ostal.
     InvalidImport,
     /// La sauvegarde porte une autre identité Matter (fabric) que celle du serveur : l'importer
     /// ferait oublier les appareils appairés. Il faut `replace_identity=1` explicite.

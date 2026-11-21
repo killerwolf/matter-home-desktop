@@ -11,10 +11,10 @@
 
 use super::widgets::{self, StepState};
 use super::*;
-use matter_home_server_app::controller::Notice;
-use matter_home_server_app::overview::Level;
-use matter_home_server_app::system::HelpPage;
-use matter_home_server_app::{descriptions, version};
+use ostal_server_app::controller::Notice;
+use ostal_server_app::overview::Level;
+use ostal_server_app::system::HelpPage;
+use ostal_server_app::{descriptions, version};
 use protocol::mode::HomeMode;
 
 /// Les étapes de la première installation.
@@ -111,6 +111,10 @@ impl App {
             });
             return;
         }
+        if let Some(migrated) = &st.migrated {
+            notice_label(ui, &Notice::Ok(migrated.clone()));
+            ui.add_space(8.0);
+        }
         match (&st.phase, &st.setup) {
             (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
                 self.identity_page(ui, st, unreadable.as_deref())
@@ -158,8 +162,8 @@ impl App {
                 let mut pick = false;
                 let mut abandon = false;
                 let picking = self.picking.is_some();
-                widgets::section(ui, "J'utilisais déjà Matter Home", |ui| {
-                    ui.label("Reprenez votre sauvegarde (un fichier « .matterhome », créé par l'ancienne application ou sur un autre Mac) : vos appareils, pièces et automatismes reviennent, rien n'est à réinstaller.");
+                widgets::section(ui, "J'utilisais déjà Ostal (ou Matter Home)", |ui| {
+                    ui.label("Reprenez votre sauvegarde (un fichier « .ostal », ou « .matterhome » s'il date d'avant le renommage, créé par l'ancienne application ou sur un autre Mac) : vos appareils, pièces et automatismes reviennent, rien n'est à réinstaller.");
                     ui.add_space(4.0);
                     if picking {
                         ui.horizontal(|ui| {
@@ -186,7 +190,7 @@ impl App {
                 if unreadable.is_none() {
                     let mut new_home = false;
                     widgets::section(ui, "C'est ma première installation", |ui| {
-                        ui.label("Vous partez de zéro : aucun appareil pour l'instant, vous les ajouterez ensuite depuis l'application Matter Home Desktop.");
+                        ui.label("Vous partez de zéro : aucun appareil pour l'instant, vous les ajouterez ensuite depuis l'application Ostal.");
                         ui.add_space(4.0);
                         new_home = ui.button("Créer une nouvelle maison…").clicked();
                     });
@@ -293,8 +297,8 @@ impl App {
     /// (qui peut être gros) se font dans un fil, le résultat revient par `picking`.
     fn pick_backup(&mut self, ctx: &egui::Context, st: &State) {
         let Some(file) = rfd::FileDialog::new()
-            .set_title("Choisir une sauvegarde Matter Home")
-            .add_filter("Sauvegarde Matter Home", &[backup::EXTENSION])
+            .set_title("Choisir une sauvegarde Ostal")
+            .add_filter("Sauvegarde Ostal", &backup::OPEN_EXTENSIONS)
             .pick_file()
         else {
             return;
@@ -329,7 +333,7 @@ impl App {
     fn account_page(&mut self, ui: &mut egui::Ui, st: &State, replace: bool) {
         if !replace {
             setup_header(ui, 2, "Créez votre compte");
-            ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Matter Home sur vos autres appareils (ordinateur, iPhone). Il n'y a qu'un seul compte : notez-le.");
+            ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Ostal sur vos autres appareils (ordinateur, iPhone). Il n'y a qu'un seul compte : notez-le.");
         } else {
             ui.label("Choisissez un nouvel identifiant et un nouveau mot de passe. Les appareils déjà connectés devront se reconnecter, et le serveur redémarre quelques secondes.");
         }
@@ -378,7 +382,7 @@ impl App {
 
     fn done_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
         setup_header(ui, 3, "C'est prêt : le serveur tourne");
-        ui.label("Ce Mac travaille maintenant en arrière-plan : son icône (une petite maison) reste dans la barre de menus, en haut de l'écran. Il vous reste à ouvrir Matter Home sur l'appareil que vous utilisez tous les jours.");
+        ui.label("Ce Mac travaille maintenant en arrière-plan : son icône (une arche avec un point) reste dans la barre de menus, en haut de l'écran. Il vous reste à ouvrir Ostal sur l'appareil que vous utilisez tous les jours.");
         ui.add_space(8.0);
         widgets::section(ui, "Connecter votre ordinateur", |ui| {
             self.desktop_steps(ui, st);
@@ -389,7 +393,7 @@ impl App {
                 if ui
                     .checkbox(
                         &mut on,
-                        "Lancer Matter Home Server à l'ouverture de session de ce Mac",
+                        "Lancer Ostal Server à l'ouverture de session de ce Mac",
                     )
                     .changed()
                 {
@@ -399,7 +403,7 @@ impl App {
             }
             widgets::hint(ui, SLEEP_NOTE);
         });
-        widgets::hint(ui, "Tout ceci se retrouve plus tard : icône de la barre de menus → « Ouvrir Matter Home Server… » (onglets Connexion et Réglages).");
+        widgets::hint(ui, "Tout ceci se retrouve plus tard : icône de la barre de menus → « Ouvrir Ostal Server… » (onglets Connexion et Réglages).");
         ui.add_space(8.0);
         if theme::primary_button(ui, "Terminer").clicked() {
             self.hide_window(ctx);
@@ -565,11 +569,11 @@ impl App {
                     });
                 }
                 ui.add_space(4.0);
-                widgets::hint(ui, "Le plus souvent : l'appareil est débranché, sa pile est vide, ou il est trop loin du Wi-Fi ou de son pont. Il revient tout seul dès qu'il répond de nouveau. Sinon, ouvrez-le dans Matter Home Desktop et cliquez « Reconnecter ».");
+                widgets::hint(ui, "Le plus souvent : l'appareil est débranché, sa pile est vide, ou il est trop loin du Wi-Fi ou de son pont. Il revient tout seul dès qu'il répond de nouveau. Sinon, ouvrez-le dans Ostal et cliquez « Reconnecter ».");
             }
         });
         widgets::section(ui, "Ajouter un appareil", |ui| {
-            ui.label("L'ajout ne se fait pas ici, mais dans l'application Matter Home Desktop (sur votre ordinateur), avec l'app Maison d'Apple :");
+            ui.label("L'ajout ne se fait pas ici, mais dans l'application Ostal (sur votre ordinateur), avec l'app Maison d'Apple :");
             ui.add_space(6.0);
             widgets::step(ui, 1, StepState::Todo, |ui| {
                 ui.label("Dans l'app Maison (iPhone, iPad ou Mac) : appui long sur l'appareil, puis Réglages (la roue dentée).");
@@ -578,15 +582,13 @@ impl App {
                 ui.label("Tout en bas : « Activer le mode jumelage ». Maison affiche un code à 11 chiffres, valable quelques minutes.");
             });
             widgets::step(ui, 3, StepState::Todo, |ui| {
-                ui.label(
-                    "Dans Matter Home Desktop : « + Ajouter », collez le code, puis « Appairer ».",
-                );
+                ui.label("Dans Ostal : « + Ajouter », collez le code, puis « Appairer ».");
             });
             widgets::hint(ui, "L'appareil reste aussi dans Maison. Un capteur sur pile doit être réveillé (appui sur son bouton) juste avant l'étape 2.");
         });
         let mut connect = false;
         widgets::section(ui, "Voir et piloter vos appareils", |ui| {
-            ui.label("Ce Mac ne fait que tourner en arrière-plan. Pour voir les températures, allumer une lampe ou créer un automatisme, ouvrez Matter Home sur votre ordinateur ou votre iPhone.");
+            ui.label("Ce Mac ne fait que tourner en arrière-plan. Pour voir les températures, allumer une lampe ou créer un automatisme, ouvrez Ostal sur votre ordinateur ou votre iPhone.");
             ui.add_space(4.0);
             connect = ui.button("Comment se connecter").clicked();
         });
@@ -617,17 +619,17 @@ impl App {
         });
         widgets::section(ui, "Détection (personnes, animaux, véhicules)", |ui| {
             let status = hub.detection().status();
-            let (tone, line) = matter_home_server_app::cameras::detection_line(&status);
+            let (tone, line) = ostal_server_app::cameras::detection_line(&status);
             let color = match tone {
-                matter_home_server_app::cameras::Tone::Good => p.ok,
-                matter_home_server_app::cameras::Tone::Bad => p.error,
-                matter_home_server_app::cameras::Tone::Neutral => p.text_secondary,
+                ostal_server_app::cameras::Tone::Good => p.ok,
+                ostal_server_app::cameras::Tone::Bad => p.error,
+                ostal_server_app::cameras::Tone::Neutral => p.text_secondary,
             };
             ui.horizontal(|ui| {
                 widgets::dot(ui, color, theme::tokens().size.dot + 2.0);
                 ui.add(egui::Label::new(line).wrap());
             });
-            widgets::hint(ui, "Une caméra n'est analysée que dans les modes où elle est en « Surveillance » (bouton « Modifier… » de la caméra). Chaque passage devient un événement, avec une capture et un clip, visible dans Matter Home.");
+            widgets::hint(ui, "Une caméra n'est analysée que dans les modes où elle est en « Surveillance » (bouton « Modifier… » de la caméra). Chaque passage devient un événement, avec une capture et un clip, visible dans Ostal.");
         });
         let mut open = false;
         widgets::section(ui, "Décrire les événements par IA (facultatif)", |ui| {
@@ -656,7 +658,7 @@ impl App {
     /// compte. (Aussi sur l'écran de fin de la première installation.)
     fn desktop_steps(&mut self, ui: &mut egui::Ui, st: &State) {
         widgets::step(ui, 1, StepState::Todo, |ui| {
-            ui.label("Installez et ouvrez l'application Matter Home Desktop sur votre ordinateur (Mac, Windows ou Linux), branché sur le même réseau que ce Mac.");
+            ui.label("Installez et ouvrez l'application Ostal sur votre ordinateur (Mac, Windows ou Linux), branché sur le même réseau que ce Mac.");
         });
         widgets::step(ui, 2, StepState::Todo, |ui| {
             ui.label("Dans son écran de connexion, saisissez cette adresse :");
@@ -704,7 +706,7 @@ impl App {
     /// L'accès à distance par Tailscale, pas à pas : chaque étape dit où on en est.
     fn remote_steps(&mut self, ui: &mut egui::Ui, st: &State) {
         let p = theme::palette(ui);
-        ui.label("Matter Home s'ouvre dans Safari sur l'iPhone, à la maison comme ailleurs. Rien n'est ouvert sur Internet : l'iPhone et ce Mac se retrouvent par Tailscale, un réseau privé gratuit pour un usage personnel.");
+        ui.label("Ostal s'ouvre dans Safari sur l'iPhone, à la maison comme ailleurs. Rien n'est ouvert sur Internet : l'iPhone et ce Mac se retrouvent par Tailscale, un réseau privé gratuit pour un usage personnel.");
         ui.add_space(6.0);
         let web = self.web.clone();
         let busy = self.web_job.as_ref().is_some_and(|(toggled, _)| *toggled);
@@ -791,11 +793,11 @@ impl App {
                     });
                 }
                 WebAccess::PortBusy => {
-                    ui.colored_label(p.warn, "Tailscale publie déjà autre chose depuis ce Mac (un autre « serve » occupe le port 443). Matter Home n'y touche pas : libérez-le dans Tailscale, puis vérifiez.");
+                    ui.colored_label(p.warn, "Tailscale publie déjà autre chose depuis ce Mac (un autre « serve » occupe le port 443). Ostal n'y touche pas : libérez-le dans Tailscale, puis vérifiez.");
                     recheck = ui.button("Vérifier de nouveau").clicked();
                 }
                 WebAccess::Funnel => {
-                    ui.colored_label(p.error, "Attention : Tailscale expose ce Mac à tout Internet (fonction « Funnel »). Matter Home ne l'active ni ne le coupe jamais : coupez-le dans Tailscale, puis vérifiez.");
+                    ui.colored_label(p.error, "Attention : Tailscale expose ce Mac à tout Internet (fonction « Funnel »). Ostal ne l'active ni ne le coupe jamais : coupez-le dans Tailscale, puis vérifiez.");
                     recheck = ui.button("Vérifier de nouveau").clicked();
                 }
                 _ => {
@@ -815,7 +817,7 @@ impl App {
             ui.label("Installez l'app Tailscale depuis l'App Store et connectez-vous avec le même compte que sur ce Mac.");
         });
         widgets::step(ui, 4, phone, |ui| {
-            ui.label(RichText::new("Ouvrir Matter Home dans Safari").strong());
+            ui.label(RichText::new("Ouvrir Ostal dans Safari").strong());
             match self.web.web_url() {
                 Some(url) => {
                     ui.label("Sur l'iPhone, ouvrez cette adresse dans Safari, puis entrez l'identifiant et le mot de passe de votre compte :");
@@ -847,11 +849,11 @@ impl App {
 
     /// Les notifications web push (ticket n° 17) : le réglage général et les appareils abonnés,
     /// révocables. L'abonnement lui-même se fait depuis l'app web de l'appareil.
-    fn push_section(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
+    fn push_section(&mut self, ui: &mut egui::Ui, hub: &Arc<ostal_server::hub::Hub>) {
         let p = theme::palette(ui);
         let push = hub.push();
         let status = push.status();
-        ui.label("Matter Home peut prévenir l'iPhone ou l'iPad, même app fermée : passage devant une caméra, pile faible, appareil injoignable, règle « Notifier ».");
+        ui.label("Ostal peut prévenir l'iPhone ou l'iPad, même app fermée : passage devant une caméra, pile faible, appareil injoignable, règle « Notifier ».");
         ui.add_space(4.0);
         let mut enabled = status.enabled;
         if ui
@@ -886,12 +888,12 @@ impl App {
             });
         }
         ui.add_space(4.0);
-        widgets::hint(ui, "Pour abonner un appareil : ouvrez Matter Home sur l'iPhone depuis son icône de l'écran d'accueil (étape 4 ci-dessus, iOS 16.4 ou plus), puis Appareils › Notifications. Les messages passent chiffrés par le service de notifications d'Apple.");
+        widgets::hint(ui, "Pour abonner un appareil : ouvrez Ostal sur l'iPhone depuis son icône de l'écran d'accueil (étape 4 ci-dessus, iOS 16.4 ou plus), puis Appareils › Notifications. Les messages passent chiffrés par le service de notifications d'Apple.");
     }
 
     /// Le jeton de mode, pas à pas. Le jeton n'est montré qu'à sa création ; ensuite le serveur
     /// n'en connaît que l'empreinte.
-    fn shortcuts_steps(&mut self, ui: &mut egui::Ui, hub: &Arc<matter_home_server::hub::Hub>) {
+    fn shortcuts_steps(&mut self, ui: &mut egui::Ui, hub: &Arc<ostal_server::hub::Hub>) {
         let p = theme::palette(ui);
         ui.label("L'iPhone peut passer la maison en « Absent » quand vous partez et en « Présent » quand vous rentrez, tout seul, avec l'app Raccourcis. Il lui faut un code secret (le « jeton de mode »), qui ne permet rien d'autre que changer le mode.");
         widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer les raccourcis » crée un nouveau code et les deux raccourcis tout prêts, sans rien taper.");
@@ -1027,7 +1029,7 @@ impl App {
         });
     }
 
-    fn generate_mode_token(&mut self, hub: &Arc<matter_home_server::hub::Hub>) {
+    fn generate_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
         self.mode_token_confirm = false;
         match hub.generate_mode_token() {
             Ok(token) => self.mode_token_shown = Some(token),
@@ -1056,7 +1058,7 @@ impl App {
                         self.form = AccountForm::default();
                     }
                 } else {
-                    ui.label("L'identifiant et le mot de passe demandés par Matter Home sur vos autres appareils. Il n'y a qu'un seul compte.");
+                    ui.label("L'identifiant et le mot de passe demandés par Ostal sur vos autres appareils. Il n'y a qu'un seul compte.");
                     if let Some(n) = &st.notice {
                         notice_label(ui, n);
                     }
@@ -1075,7 +1077,7 @@ impl App {
                 if ui
                     .checkbox(
                         &mut on,
-                        "Lancer Matter Home Server à l'ouverture de session de ce Mac",
+                        "Lancer Ostal Server à l'ouverture de session de ce Mac",
                     )
                     .changed()
                 {
@@ -1093,8 +1095,8 @@ impl App {
             widgets::hint(ui, SLEEP_NOTE);
         });
         widgets::section(ui, "Sauvegarde", |ui| {
-            ui.label("La sauvegarde se fait depuis Matter Home Desktop : menu Fichier → « Exporter mes données… ». Elle produit un fichier « .matterhome » à garder comme un secret (il contient les clés de la maison et les mots de passe des caméras).");
-            widgets::hint(ui, "Pour la reprendre sur un nouveau Mac : installez Matter Home Server, et choisissez « Reprendre une sauvegarde » au premier lancement.");
+            ui.label("La sauvegarde se fait depuis Ostal : menu Fichier → « Exporter mes données… ». Elle produit un fichier « .ostal » à garder comme un secret (il contient les clés de la maison et les mots de passe des caméras).");
+            widgets::hint(ui, "Pour la reprendre sur un nouveau Mac : installez Ostal Server, et choisissez « Reprendre une sauvegarde » au premier lancement.");
         });
         widgets::section(ui, "Dépannage", |ui| {
             ui.label("Le journal est le fichier où le serveur note ce qu'il fait. En cas de panne, c'est lui qu'on vous demandera.");

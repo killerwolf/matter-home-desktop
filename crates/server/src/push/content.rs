@@ -170,7 +170,7 @@ pub fn payload(
     let title = truncate(&clean(title), TITLE_MAX);
     PushPayload {
         title: if title.is_empty() {
-            "Matter Home".into()
+            "Ostal".into()
         } else {
             title
         },

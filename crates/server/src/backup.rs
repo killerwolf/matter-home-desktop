@@ -1,5 +1,5 @@
 //! Export et import de toutes les données de l'application dans un seul fichier
-//! (`.matterhome`), pour changer de Mac sans réappairer les appareils.
+//! (`.ostal`), pour changer de Mac sans réappairer les appareils.
 //!
 //! Le fichier est un JSON qui embarque les fichiers du dossier de données :
 //! `controller.json`, `maison.json`, `regles.json`, `cameras.json` (adresses et **mots de passe**
@@ -10,7 +10,7 @@
 //!
 //! L'import n'écrase rien tant que l'application tourne (elle réécrit ses fichiers) :
 //! il valide à fond la sauvegarde (identité du contrôleur, plan, règles), la dépose dans le
-//! dossier de données (`import-en-attente.matterhome`, créée en 0600, écriture atomique), et
+//! dossier de données (`import-en-attente.ostal`, créée en 0600, écriture atomique), et
 //! c'est le lancement suivant qui l'applique ([`apply_pending`]), avant tout chargement.
 //!
 //! L'application est atomique et survit à une coupure à n'importe quel instant. Le nouveau
@@ -46,11 +46,13 @@ use crate::persistence::{StoredState, FILE_NAME, SERVER_DIR};
 use crate::security::write_secret;
 
 /// Extension proposée dans les boîtes de dialogue.
-pub const EXTENSION: &str = "matterhome";
+pub const EXTENSION: &str = "ostal";
+/// Extensions acceptées à l'ouverture : la nouvelle, et celle de « Matter Home ».
+pub const OPEN_EXTENSIONS: [&str; 2] = [EXTENSION, crate::legacy::BACKUP_EXTENSION];
 
-const FORMAT: &str = "matter-home-desktop-sauvegarde";
+const FORMAT: &str = "ostal-sauvegarde";
 const VERSION: u32 = 1;
-const PENDING: &str = "import-en-attente.matterhome";
+const PENDING: &str = "import-en-attente.ostal";
 const PLAN: &str = "maison.json";
 const RULES: &str = "regles.json";
 const CAMERAS: &str = crate::cameras::FILE_NAME;
@@ -339,11 +341,10 @@ fn repair_rules(bundle: &mut Bundle) -> Vec<String> {
 
 fn parse(text: &str) -> Result<(Bundle, Summary), Invalid> {
     let mut bundle: Bundle = serde_json::from_str(text)
-        .map_err(|_| Invalid("ce fichier n'est pas une sauvegarde Matter Home".into()))?;
-    if bundle.format != FORMAT {
-        return Err(Invalid(
-            "ce fichier n'est pas une sauvegarde Matter Home".into(),
-        ));
+        .map_err(|_| Invalid("ce fichier n'est pas une sauvegarde Ostal".into()))?;
+    // Une sauvegarde de « Matter Home » a le même contenu, sous l'ancien marqueur.
+    if bundle.format != FORMAT && bundle.format != crate::legacy::BACKUP_FORMAT {
+        return Err(Invalid("ce fichier n'est pas une sauvegarde Ostal".into()));
     }
     if bundle.version > VERSION {
         return Err(Invalid(format!(
@@ -421,7 +422,7 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 /// Nom de fichier proposé à l'export.
 pub fn default_file_name() -> String {
     format!(
-        "matter-home-{}.{EXTENSION}",
+        "ostal-{}.{EXTENSION}",
         chrono::Local::now().format("%Y-%m-%d")
     )
 }
@@ -433,7 +434,7 @@ pub fn export(dir: &Path, dest: &Path) -> Result<Summary> {
     Ok(summary)
 }
 
-/// Sauvegarde de `dir` sous forme de texte (le contenu d'un fichier `.matterhome`).
+/// Sauvegarde de `dir` sous forme de texte (le contenu d'un fichier `.ostal`).
 /// Elle contient les clés privées en clair.
 pub fn export_to_string(dir: &Path) -> Result<(String, Summary)> {
     let mut files = BTreeMap::new();
@@ -880,7 +881,7 @@ pub fn abandon(dir: &Path) -> Result<Vec<String>> {
             format!(
                 "l'import a été coupé en plein échange et aucun dossier « …avant-import-… » \
                  n'est là pour remettre les anciennes données en place : impossible de \
-                 l'abandonner. Relancez « matter-home-server import FICHIER » pour le terminer \
+                 l'abandonner. Relancez « ostal-server import FICHIER » pour le terminer \
                  (le dossier préparé est {})",
                 complete.display()
             )
@@ -1093,7 +1094,7 @@ fn apply_pending_with(dir: &Path, hook: Hook<'_>) -> Result<Option<String>> {
                 "l'import en attente n'a pas pu être appliqué après {APPLY_ATTEMPTS} essais ; \
                  les données actuelles sont intactes et la sauvegarde reste en attente dans {p}. \
                  Pour réessayer : corrigez la cause (espace disque, droits) et relancez le \
-                 serveur. Pour y renoncer : arrêtez le service, lancez « matter-home-server \
+                 serveur. Pour y renoncer : arrêtez le service, lancez « ostal-server \
                  import --abandon --data-dir {d} » (il retire ce fichier, {p}, et met de côté \
                  le dossier préparé « …{NEW_SUFFIX} » en « …import-abandonne-… »), puis \
                  relancez le service, qui démarrera avec les données actuelles",
@@ -1142,7 +1143,7 @@ fn import_file_with(dir: &Path, src: &Path, hook: Hook<'_>) -> Result<Imported> 
             bail!(
                 "une autre sauvegarde est déjà en attente dans {p} (import demandé par l'API, ou \
                  import d'un autre fichier interrompu). Lancez le serveur pour qu'il l'applique, \
-                 ou renoncez-y avec « matter-home-server import --abandon --data-dir {d} »",
+                 ou renoncez-y avec « ostal-server import --abandon --data-dir {d} »",
                 p = pending.display(),
                 d = dir.display()
             );
@@ -1211,7 +1212,7 @@ mod tests {
     }
 
     fn sample_dir(base: &Path) -> PathBuf {
-        let dir = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        let dir = base.join("dev.ostal.OstalServer");
         std::fs::create_dir_all(dir.join("history")).unwrap();
         std::fs::write(dir.join(FILE_NAME), controller("Capteur")).unwrap();
         std::fs::write(dir.join(PLAN), plan_json()).unwrap();
@@ -1330,7 +1331,7 @@ mod tests {
     fn export_import_round_trip() {
         let base = temp("rt");
         let old = sample_dir(&base);
-        let file = base.join("sauvegarde.matterhome");
+        let file = base.join("sauvegarde.ostal");
         let summary = export(&old, &file).unwrap();
         assert_eq!(summary.devices, 1);
         assert_eq!(summary.history_files, 1);
@@ -1342,9 +1343,7 @@ mod tests {
         );
 
         // « Nouveau Mac » : dossier avec une ancienne identité à remplacer.
-        let new = base
-            .join("neuf")
-            .join("dev.matter-home-desktop.MatterHomeDesktop");
+        let new = base.join("neuf").join("dev.ostal.OstalServer");
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join(FILE_NAME), "ancien").unwrap();
         assert_eq!(stage_import(&new, &file).unwrap(), summary);
@@ -1381,7 +1380,7 @@ mod tests {
     #[test]
     fn rejects_bad_files() {
         let base = temp("bad");
-        let file = base.join("x.matterhome");
+        let file = base.join("x.ostal");
         std::fs::write(&file, "pas du json").unwrap();
         assert!(inspect(&file).is_err());
         std::fs::write(
@@ -1406,7 +1405,7 @@ mod tests {
         // Pas de controller.json : refusé, et un export sans appareil aussi.
         let empty = base.join("vide");
         std::fs::create_dir_all(&empty).unwrap();
-        assert!(export(&empty, &base.join("o.matterhome")).is_err());
+        assert!(export(&empty, &base.join("o.ostal")).is_err());
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -1534,11 +1533,9 @@ mod tests {
         crate::home_mode::save(&old, protocol::mode::HomeMode::Vacances).unwrap();
         let (text, _) = export_to_string(&old).unwrap();
         assert!(inspect_text(&text).is_ok());
-        let dest = base.join("export.matterhome");
+        let dest = base.join("export.ostal");
         export(&old, &dest).unwrap();
-        let new = base
-            .join("neuf")
-            .join("dev.matter-home-desktop.MatterHomeDesktop");
+        let new = base.join("neuf").join("dev.ostal.OstalServer");
         std::fs::create_dir_all(&new).unwrap();
         stage_import(&new, &dest).unwrap();
         apply_pending(&new).unwrap().unwrap();
@@ -1563,7 +1560,7 @@ mod tests {
         let old = sample_dir(&base);
         let cameras = camera_file(&["Entrée", "Jardin"]);
         std::fs::write(old.join(crate::cameras::FILE_NAME), &cameras).unwrap();
-        let file = base.join("sauvegarde.matterhome");
+        let file = base.join("sauvegarde.ostal");
         let summary = export(&old, &file).unwrap();
         assert_eq!(summary.cameras, 2);
         assert!(
@@ -1578,9 +1575,7 @@ mod tests {
             .unwrap()
             .contains("mdp-de-la-camera"));
 
-        let new = base
-            .join("neuf")
-            .join("dev.matter-home-desktop.MatterHomeDesktop");
+        let new = base.join("neuf").join("dev.ostal.OstalServer");
         std::fs::create_dir_all(&new).unwrap();
         stage_import(&new, &file).unwrap();
         apply_pending(&new).unwrap().unwrap();
@@ -2038,8 +2033,8 @@ mod tests {
         // Import réel : le fichier écrit contient les mêmes règles, `enabled` seul a changé.
         let base = temp("drafts");
         let dir = base.join("donnees");
-        std::fs::write(base.join("sauvegarde.matterhome"), &text).unwrap();
-        let done = import_file(&dir, &base.join("sauvegarde.matterhome")).unwrap();
+        std::fs::write(base.join("sauvegarde.ostal"), &text).unwrap();
+        let done = import_file(&dir, &base.join("sauvegarde.ostal")).unwrap();
         assert_eq!(done.summary.disabled_rules.len(), 4);
         let stored: RuleSet =
             serde_json::from_str(&std::fs::read_to_string(dir.join(RULES)).unwrap()).unwrap();
@@ -2166,7 +2161,7 @@ mod tests {
     fn import_file_works_on_a_missing_or_account_only_data_dir() {
         let imported = controller("Importé");
         let base = temp("fresh");
-        let src = base.join("v021.matterhome");
+        let src = base.join("v021.ostal");
         std::fs::write(
             &src,
             bundle_text(&[
@@ -2211,7 +2206,7 @@ mod tests {
     fn import_file_refuses_cleanly() {
         let base = temp("refuse");
         let dir = sample_dir(&base);
-        let bad = base.join("pas-une-sauvegarde.matterhome");
+        let bad = base.join("pas-une-sauvegarde.ostal");
         std::fs::write(&bad, "{\"format\":\"autre\"}").unwrap();
         let before = tree(&dir);
         let before_names = listing(&base);
@@ -2220,7 +2215,7 @@ mod tests {
         assert_eq!(tree(&dir), before);
         assert_eq!(listing(&base), before_names);
 
-        let good = base.join("bonne.matterhome");
+        let good = base.join("bonne.ostal");
         std::fs::write(&good, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
         stage_import_text(&dir, &bundle_text(&[(FILE_NAME, controller("Via API"))])).unwrap();
         let e = import_file(&dir, &good).unwrap_err();
@@ -2235,7 +2230,7 @@ mod tests {
     fn a_failed_import_file_leaves_nothing_pending() {
         let base = temp("failfile");
         let dir = sample_dir(&base);
-        let src = base.join("bonne.matterhome");
+        let src = base.join("bonne.ostal");
         std::fs::write(&src, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
         let before = tree(&dir);
         let e = import_file_with(&dir, &src, &mut |step| {
@@ -2359,7 +2354,7 @@ mod tests {
         }
         // Sans dossier « …avant-import-… » : on ne ment pas, on explique.
         let base = temp("abandon-swap-none");
-        let dir = base.join("dev.matter-home-desktop.MatterHomeDesktop");
+        let dir = base.join("dev.ostal.OstalServer");
         let (_, complete) = marker_names(&dir);
         std::fs::create_dir_all(&complete).unwrap();
         std::fs::write(complete.join(FILE_NAME), controller("Autre")).unwrap();
@@ -2376,7 +2371,7 @@ mod tests {
         let base = temp("resume");
         let dir = sample_dir(&base);
         let text = bundle_text(&[(FILE_NAME, controller("Importé"))]);
-        let src = base.join("a.matterhome");
+        let src = base.join("a.ostal");
         std::fs::write(&src, &text).unwrap();
         for step in ["fichier-0", "construit", "publie", "ecarte"] {
             let _ = std::fs::remove_dir_all(&dir);
@@ -2428,7 +2423,7 @@ mod tests {
         let base = temp("mode");
         let dir = sample_dir(&base);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let src = base.join("a.matterhome");
+        let src = base.join("a.ostal");
         std::fs::write(&src, bundle_text(&[(FILE_NAME, controller("Importé"))])).unwrap();
         import_file(&dir, &src).unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -2447,7 +2442,7 @@ mod tests {
     fn identities_are_described_for_the_confirmation() {
         let base = temp("brief");
         let dir = sample_dir(&base);
-        let src = base.join("a.matterhome");
+        let src = base.join("a.ostal");
         let mut other = controller("Salon").replace("\"fabric_id\":1", "\"fabric_id\":255");
         other = other.replace("\"node_id\":7", "\"node_id\":16");
         std::fs::write(&src, bundle_text(&[(FILE_NAME, other)])).unwrap();

@@ -12,7 +12,7 @@
 //! - **Disque** : `cameras.json` dans le dossier de données (0700), créé en **0600** dès sa
 //!   création et écrit de façon atomique (fichier temporaire, `fsync`, renommage), comme les clés
 //!   de `controller.json`. Le mot de passe y est en clair : le fichier est un secret au même
-//!   titre. Il est **inclus dans la sauvegarde `.matterhome`** (`backup.rs`), comme ces clés.
+//!   titre. Il est **inclus dans la sauvegarde `.ostal`** (`backup.rs`), comme ces clés.
 //! - **Adresse sans identifiants** : un utilisateur colle souvent `rtsp://user:mdp@ip:554/…`.
 //!   L'adresse enregistrée n'a **jamais** de `user:mdp@` : les identifiants passent dans leurs
 //!   champs (voir [`CameraDraft`]). `retina` refuse d'ailleurs une adresse qui en porte.

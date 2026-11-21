@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2};
-use matter_home_client::model::Device;
+use ostal_client::model::Device;
 use protocol::automation::CoverCommand;
 use protocol::events::CoverMotion;
 use protocol::home::{HomePlan, OpeningKind, Symbol};

@@ -10,10 +10,42 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Modifié
+
+- **Matter Home s'appelle désormais Ostal.** L'application de bureau devient « Ostal »
+  (`dev.ostal.app`), l'application de la barre de menus « Ostal Server » (`dev.ostal.server`),
+  avec un nouveau logo, « Seuil » (une arche ouverte et un point allumé), y compris dans la
+  barre de menus et pour l'app web. Le mot « Matter » ne désigne plus que le protocole.
+  Binaires `ostal`, `ostal-server`, `ostal-server-app` ; variables `OSTAL_*` (au lieu de
+  `MATTER_HOME_*`) ; sauvegardes `.ostal` ; fichiers de version `Ostal-<version>-<arch>.dmg`,
+  `OstalServer-<version>-universal.dmg` et `ostal-server-<version>-macos.tar.gz` ; widget
+  Scriptable `ostal.js` ; étiquette de fabric « Ostal Server » (réécrite une fois sur chaque
+  appareil).
+- **Rien n'est perdu au passage** : au premier lancement, Ostal Server **copie** le dossier de
+  données de Matter Home (`dev.matter-home-desktop.MatterHomeDesktop` →
+  `dev.ostal.OstalServer`), vérifie la copie et garde l'ancien dossier comme sauvegarde ; même
+  identité Matter, aucun appareil à réappairer. Dans l'ancien dossier, seul `controller.json`
+  est renommé (`controller.json.copie-vers-ostal`, réversible) : l'ancienne application rouverte
+  par erreur ne repart pas avec la même fabric. L'application de bureau reprend de même sa
+  connexion (`dev.ostal.OstalClient`), Ostal Server le réglage « ouverture à la connexion » (son
+  agent remplace celui de Matter Home, qui est retiré). Les sauvegardes `.matterhome`
+  s'importent toujours ; l'app web garde sa session et ses réglages. Voir
+  [Données](docs/donnees.md#après-le-renommage-de-matter-home-en-ostal).
+- **À faire après la mise à jour** : quitter Matter Home Server (tant qu'il tourne, Ostal
+  Server refuse de démarrer et le dit), installer Ostal et Ostal Server depuis les DMG, ouvrir
+  Ostal Server une fois, puis supprimer « Matter Home Server » et « Matter Home Desktop » du
+  dossier Applications. Nouvel identifiant d'application : macOS redemande les autorisations
+  (notifications, pare-feu, réseau local selon la version) et signale le nouvel élément ouvert
+  à la connexion. Sur l'iPhone, l'adresse ne change pas : pour voir le nouveau nom et le
+  nouveau logo, retirez l'app web de l'écran d'accueil puis ajoutez-la de nouveau (réabonnez
+  ensuite l'appareil aux notifications), et réinstallez widget et raccourcis depuis l'app web
+  si vous voulez qu'ils s'appellent Ostal (les anciens continuent de marcher). Pour le service
+  installé au Terminal, `install.sh` remplace l'ancien service.
+
 ### Corrigé
 
-- Matter Home Desktop : le Dock montre de nouveau l'icône de l'application (la maison bleue)
-  au lieu du logo d'egui une fois l'application ouverte.
+- Ostal (application de bureau) : le Dock montre de nouveau l'icône de l'application au lieu
+  du logo d'egui une fois l'application ouverte.
 
 ## [1.4.0] - 2026-11-21
 

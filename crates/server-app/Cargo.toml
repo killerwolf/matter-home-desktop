@@ -1,24 +1,24 @@
 [package]
-name = "matter-home-server-app"
+name = "ostal-server-app"
 version.workspace = true
 edition.workspace = true
 # Le plus élevé des `rust-version` de l'arbre de dépendances (eframe 0.37, egui, emath… : 1.95).
 rust-version = "1.95"
-description = "Matter Home Server : le serveur Matter Home en application de barre de menus (macOS)"
+description = "Ostal Server : le serveur Ostal en application de barre de menus (macOS)"
 license.workspace = true
 
 [lib]
-name = "matter_home_server_app"
+name = "ostal_server_app"
 path = "src/lib.rs"
 
 [[bin]]
-name = "matter-home-server-app"
+name = "ostal-server-app"
 path = "src/main.rs"
 
 [dependencies]
-matter-home-server = { path = "../server" }
+ostal-server = { path = "../server" }
 protocol = { path = "../protocol" }
-matter-home-theme = { path = "../theme" }
+ostal-theme = { path = "../theme" }
 eframe = "0.37"
 rfd = "0.17.2"
 tray-icon = "=0.26.1"

@@ -20,7 +20,7 @@ test("seule l'adresse en .ts.net convient ; sinon, un conseil", () => {
 test("les noms des raccourcis sont sans accent et les mêmes dans le widget", () => {
   assert.deepEqual(SHORTCUT_NAMES, ["Mode absent", "Mode present"]);
   for (const name of SHORTCUT_NAMES) assert.match(name, /^[\x20-\x7e]+$/);
-  const widget = readFileSync(new URL("./raccourcis/matter-home.js", import.meta.url), "utf8");
+  const widget = readFileSync(new URL("./raccourcis/ostal.js", import.meta.url), "utf8");
   assert.match(widget, /const RACCOURCI_ABSENT = "Mode absent";/);
   assert.match(widget, /const RACCOURCI_PRESENT = "Mode present";/);
 });

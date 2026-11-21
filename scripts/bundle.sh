@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Construit « Matter Home Desktop.app » et, au besoin, le DMG qui la distribue.
+# Construit « Ostal.app » et, au besoin, le DMG qui la distribue.
 #
-#   scripts/bundle.sh          # dist/Matter Home Desktop.app
-#   scripts/bundle.sh --dmg    # ...et dist/MatterHomeDesktop-<version>-<arch>.dmg
+#   scripts/bundle.sh          # dist/Ostal.app
+#   scripts/bundle.sh --dmg    # ...et dist/Ostal-<version>-<arch>.dmg
 #
 # Les deux architectures sont compilées et fusionnées en un binaire universel quand
 # les deux cibles sont installées (`rustup target add x86_64-apple-darwin`) ; sinon
@@ -13,14 +13,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
-NAME="Matter Home Desktop"
+NAME="Ostal"
 # Seul le client est livré en .app (le serveur, sans fenêtre, a son propre binaire).
-PACKAGE="matter-home-desktop"
-BIN="matter-home-desktop"
+PACKAGE="ostal"
+BIN="ostal"
 APP="$DIST/$NAME.app"
 
 VERSION="$(awk -F'"' '/^version = /{print $2; exit}' "$ROOT/Cargo.toml")"
-BUNDLE_ID="dev.matter-home-desktop.app"
+BUNDLE_ID="dev.ostal.app"
 MIN_MACOS="12.0"
 
 log() { printf '\033[1m▸\033[0m %s\n' "$*"; }
@@ -82,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Licence MIT</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Matter Home Desktop communique avec vos appareils Matter sur le réseau local pour les appairer, lire leurs mesures et les commander.</string>
+  <string>Ostal communique avec vos appareils Matter sur le réseau local pour les appairer, lire leurs mesures et les commander.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_matter._tcp</string>
@@ -105,7 +105,7 @@ echo "  $APP  ($(du -sh "$APP" | cut -f1))"
 if [ "${1:-}" = "--dmg" ]; then
   # Le nom dit ce qu'il contient : un build local d'une seule architecture ne peut
   # pas être confondu avec le DMG universel publié par la CI.
-  DMG="$DIST/MatterHomeDesktop-$VERSION-$FLAVOUR.dmg"
+  DMG="$DIST/Ostal-$VERSION-$FLAVOUR.dmg"
   log "Construction de $(basename "$DMG")"
   rm -f "$DMG"
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Installe le serveur Matter Home comme service launchd (LaunchDaemon) : il démarre avec le Mac,
+# Installe le serveur Ostal comme service launchd (LaunchDaemon) : il démarre avec le Mac,
 # sans qu'aucune session soit ouverte, et il est relancé s'il plante.
 #
 # À lancer depuis le dossier de l'archive, en tant que VOUS-MÊME (jamais avec « sudo ») :
@@ -25,7 +25,7 @@
 #                      mise à jour, le dossier du service déjà installé est repris et ne peut
 #                      pas être changé ici (désinstallez d'abord)
 #   --ignorer-application-ouverte
-#                      n'arrête pas l'installation si « matter-home-desktop » est ouvert (à
+#                      n'arrête pas l'installation si « ostal » est ouvert (à
 #                      n'utiliser que si c'est le client de la version 1, pas la v0.2.1)
 #   --oui              ne demande aucune confirmation
 #   --demarrer         démarre le service à la fin sans le demander (s'il peut démarrer)
@@ -36,15 +36,20 @@
 
 set -euo pipefail
 
-LABEL="dev.matter-home-desktop.server"
+LABEL="dev.ostal.server-daemon"
+# Le même service, installé avant le renommage en Ostal : remplacé (installation) ou retiré
+# (désinstallation), jamais laissé à côté du nouveau.
+LEGACY_LABEL="dev.matter-home-desktop.server"
+LEGACY_BIN_NAME="matter-home-server"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_NAME="matter-home-server"
+BIN_NAME="ostal-server"
 TEMPLATE="$HERE/$LABEL.plist.template"
 
 DRY=0
 [ "${MH_DRY_RUN:-0}" = "1" ] && DRY=1
 PREFIX="${MH_PREFIX:-}"
 DATA_DIR=""
+DATA_DIR_FROM_OPTION=0
 ASSUME_YES=0
 START="ask"
 IGNORE_APP=0
@@ -62,7 +67,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --a-blanc) DRY=1 ;;
     --prefixe) [ $# -ge 2 ] || die "--prefixe attend un dossier"; PREFIX="$2"; shift ;;
-    --donnees) [ $# -ge 2 ] || die "--donnees attend un dossier"; DATA_DIR="$2"; shift ;;
+    --donnees) [ $# -ge 2 ] || die "--donnees attend un dossier"; DATA_DIR="$2"; DATA_DIR_FROM_OPTION=1; shift ;;
     --oui) ASSUME_YES=1 ;;
     --demarrer) START="yes" ;;
     --ne-pas-demarrer) START="no" ;;
@@ -98,13 +103,23 @@ PLIST_FINAL="/Library/LaunchDaemons/$LABEL.plist"
 BIN_DEST="$PREFIX$BIN_FINAL"
 PLIST_DEST="$PREFIX$PLIST_FINAL"
 PLISTBUDDY=/usr/libexec/PlistBuddy
-DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.ostal.OstalServer"
+# Dossier de données de « Matter Home », l'ancien nom (v0.2.1 à v1.4).
+LEGACY_DEFAULT_DATA_DIR="$USER_HOME/Library/Application Support/dev.matter-home-desktop.MatterHomeDesktop"
+LEGACY_DATA_FOUND=0
 # Mise à jour : le dossier de données du service déjà installé fait foi, jamais celui qu'on
 # déduirait de HOME ou d'une option : le service ne doit pas être redirigé vers un autre dossier.
 INSTALLED_DATA_DIR=""
 if [ -f "$PLIST_DEST" ] \
   && [ "$($PLISTBUDDY -c 'Print :ProgramArguments:1' "$PLIST_DEST" 2>/dev/null || true)" = "--data-dir" ]; then
   INSTALLED_DATA_DIR="$($PLISTBUDDY -c 'Print :ProgramArguments:2' "$PLIST_DEST" 2>/dev/null || true)"
+fi
+# Passage du service de Matter Home à celui d'Ostal : le nouveau service garde le dossier de
+# données de l'ancien (même identité Matter, rien à copier ni à réappairer).
+LEGACY_PLIST="$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist"
+if [ -z "$INSTALLED_DATA_DIR" ] && [ -f "$LEGACY_PLIST" ] \
+  && [ "$($PLISTBUDDY -c 'Print :ProgramArguments:1' "$LEGACY_PLIST" 2>/dev/null || true)" = "--data-dir" ]; then
+  INSTALLED_DATA_DIR="$($PLISTBUDDY -c 'Print :ProgramArguments:2' "$LEGACY_PLIST" 2>/dev/null || true)"
 fi
 if [ -n "$DATA_DIR" ]; then
   case "$DATA_DIR" in /*) ;; *) die "--donnees doit être un chemin absolu" ;; esac
@@ -121,7 +136,7 @@ else
   DATA_DIR="$DEFAULT_DATA_DIR"
 fi
 DATA_DIR_FROM_SERVICE="${DATA_DIR_FROM_SERVICE:-0}"
-LOG_DIR="$USER_HOME/Library/Logs/MatterHomeServer"
+LOG_DIR="$USER_HOME/Library/Logs/OstalServer"
 LOG_FILE="$LOG_DIR/server.log"
 FALLBACK_LOG="$LOG_DIR/launchd.log"
 
@@ -186,10 +201,12 @@ sedrep() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
 # ---- 1. le binaire ---------------------------------------------------------
 
-title "Matter Home — installation du serveur"
+title "Ostal — installation du serveur"
 
 # La v0.2.1 (même nom de programme que le client) ne prend pas le verrou du serveur : ouverte sur
 # ce Mac avec les mêmes données, elle chasserait le serveur (deux instances, une même identité).
+# (C'est l'ancien nom du programme, d'avant le renommage en Ostal : le client actuel s'appelle
+# « ostal » et n'est pas concerné.)
 if [ "$IGNORE_APP" = "0" ] && "$PGREP" -x matter-home-desktop >/dev/null 2>&1; then
   die "l'application « Matter Home Desktop » est ouverte sur ce Mac.
 Si c'est la v0.2.1 (l'ancienne application, avec ses appareils), elle doit être QUITTÉE avant d'installer le serveur : ne lancez jamais deux instances avec la même identité Matter. Quittez-la (Cmd+Q) puis relancez ./install.sh.
@@ -229,10 +246,32 @@ else
   else
     say "  Le dossier n'existe pas encore : ce script ne le crée pas à vide."
   fi
-  say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
-  say "  que vous n'aurez pas, avec ce même compte utilisateur :"
-  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
-  say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
+  if [ "$DATA_DIR" != "$LEGACY_DEFAULT_DATA_DIR" ] && [ -f "$LEGACY_DEFAULT_DATA_DIR/controller.json" ]; then
+    # Les données de « Matter Home » (l'ancien nom) sont sur ce Mac : c'est ce dossier-là qu'il
+    # faut reprendre, jamais une nouvelle identité.
+    LEGACY_DATA_FOUND=1
+    LEGACY_ADVICE="vos données de « Matter Home » (l'ancien nom d'Ostal), avec leur identité Matter, sont dans :
+    $LEGACY_DEFAULT_DATA_DIR
+  Reprenez ce dossier tel quel (rien à copier ni à réappairer) en relançant :
+    ./install.sh --donnees \"$LEGACY_DEFAULT_DATA_DIR\"
+  Ne lancez PAS « $BIN_NAME init » : il créerait une seconde maison (une nouvelle fabric), et vos appareils appairés ne seraient plus reconnus."
+    if [ "$DATA_DIR_FROM_SERVICE" = "1" ]; then
+      # Le service installé ne change jamais de dossier : il faut le désinstaller d'abord.
+      die "le service Ostal déjà installé utilise un dossier sans identité ($DATA_DIR), alors que
+  $LEGACY_ADVICE
+  Désinstallez d'abord ce service (./uninstall.sh, qui garde les données), puis relancez la commande ci-dessus."
+    elif [ "$DATA_DIR_FROM_OPTION" = "0" ]; then
+      # Rien n'est encore écrit : on s'arrête ici plutôt que d'installer un service sur un
+      # dossier vide (il faudrait ensuite le désinstaller pour changer de dossier).
+      die "$LEGACY_ADVICE"
+    fi
+    warn "$LEGACY_ADVICE"
+  else
+    say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
+    say "  que vous n'aurez pas, avec ce même compte utilisateur :"
+    say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
+    say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
+  fi
 fi
 [ -f "$DATA_DIR/serveur/compte.json" ] && HAS_ACCOUNT=1
 if [ "$HAS_ACCOUNT" = "1" ]; then
@@ -263,7 +302,7 @@ ask "Continuer ?" || { say "Installation annulée : rien n'a été modifié."; e
 
 # ---- 4. le fichier de service ----------------------------------------------
 
-TMP_PLIST="$(mktemp "${TMPDIR:-/tmp}/matter-home-server.plist.XXXXXX")"
+TMP_PLIST="$(mktemp "${TMPDIR:-/tmp}/ostal-server.plist.XXXXXX")"
 trap 'rm -f "$TMP_PLIST"' EXIT
 sed \
   -e "s|__LABEL__|$(sedrep "$(xml "$LABEL")")|g" \
@@ -298,6 +337,11 @@ done
 # ---- 6. installation (sudo) ------------------------------------------------
 
 title "6. Installation"
+if [ -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" ]; then
+  say "  ancien service de Matter Home trouvé : il est arrêté et retiré (ses données restent)."
+  svc_step launchctl bootout "system/$LEGACY_LABEL" || true
+  fs_step rm -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" "$PREFIX/usr/local/bin/$LEGACY_BIN_NAME"
+fi
 if [ -f "$PLIST_DEST" ]; then
   svc_step launchctl bootout "system/$LABEL" || true
 fi
@@ -374,9 +418,9 @@ say "    Si FileVault est activé, après un redémarrage le service ne démarre
 say "    déverrouillé (mot de passe à saisir à l'écran) : prévoyez-le après chaque redémarrage."
 echo
 say "  Réseau local — Réglages Système → Confidentialité et sécurité → Réseau local :"
-say "    le client (Matter Home Desktop) doit y être activé : macOS le demande à son premier"
+say "    le client (Ostal) doit y être activé : macOS le demande à son premier"
 say "    lancement, acceptez, sinon il ne voit rien. Pour le serveur, regardez si"
-say "    « matter-home-server » apparaît dans cette liste et laissez-le activé ; un programme"
+say "    « ostal-server » apparaît dans cette liste et laissez-le activé ; un programme"
 say "    lancé en service n'affiche pas de fenêtre de demande, et ce réglage n'a pas pu être"
 say "    vérifié sur tous les macOS (si le serveur ne voit aucun appareil, c'est la première chose"
 say "    à regarder, avec le pare-feu)."
@@ -392,8 +436,14 @@ CAN_START=0
 [ "$HAS_IDENTITY" = "1" ] && CAN_START=1
 if [ "$CAN_START" = "0" ]; then
   say "  Le service est installé mais pas démarré : il n'y a pas encore d'identité Matter."
-  say "  Importez vos données ou lancez « $BIN_NAME init » (voir ci-dessus), créez le compte, puis :"
-  say "    sudo launchctl bootstrap system $PLIST_FINAL"
+  if [ "$LEGACY_DATA_FOUND" = "1" ]; then
+    say "  Vos données de Matter Home sont sur ce Mac : relancez"
+    say "    ./install.sh --donnees \"$LEGACY_DEFAULT_DATA_DIR\""
+    say "  (et non « $BIN_NAME init », qui créerait une seconde maison)."
+  else
+    say "  Importez vos données ou lancez « $BIN_NAME init » (voir ci-dessus), créez le compte, puis :"
+    say "    sudo launchctl bootstrap system $PLIST_FINAL"
+  fi
 else
   DO_START=0
   case "$START" in

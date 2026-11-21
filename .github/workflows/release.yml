@@ -48,7 +48,7 @@ jobs:
       - name: Build the app bundle
         run: scripts/bundle.sh
 
-      # L'application de la barre de menus (Matter Home Server.app), construite elle aussi.
+      # L'application de la barre de menus (Ostal Server.app), construite elle aussi.
       - name: Build the menu bar server app
         run: scripts/bundle-server-app.sh
 
@@ -99,8 +99,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           # Le nom complet (1.0.0-rc.7) pour le menu de l'app serveur, lu au build par
-          # option_env!("MATTER_HOME_VERSION") ; Cargo.toml, lui, n'a que 1.0.0.
-          echo "MATTER_HOME_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # option_env!("OSTAL_VERSION") ; Cargo.toml, lui, n'a que 1.0.0.
+          echo "OSTAL_VERSION=$VERSION" >> "$GITHUB_ENV"
           # Un tag de pré-version (v1.0.0-rc.1) construit la version 1.0.0 : le suffixe -rc.N
           # n'apparaît que dans le tag et le titre de la release, pas dans les noms de fichiers.
           VERSION="${VERSION%%-*}"
@@ -113,9 +113,9 @@ jobs:
       - name: Build the DMG
         run: scripts/bundle.sh --dmg
 
-      # Matter Home Server : l'application de la barre de menus, universelle (macOS 10.15
+      # Ostal Server : l'application de la barre de menus, universelle (macOS 10.15
       # minimum côté Intel, 11.0 côté Apple Silicon), signée « ad hoc » :
-      # dist/MatterHomeServer-<version>-universal.dmg.
+      # dist/OstalServer-<version>-universal.dmg.
       # --with-detection : modèles YOLOX (Apache-2.0) et ONNX Runtime (MIT) embarqués, téléchargés
       # depuis leurs versions officielles et vérifiés par empreinte SHA-256 épinglée
       # (scripts/detection-assets.sha256 ; la construction échoue sinon).
@@ -123,7 +123,7 @@ jobs:
         run: scripts/bundle-server-app.sh --dmg --with-detection
 
       # Binaire universel (les deux cibles sont installées), macOS 10.15 minimum côté Intel,
-      # signature ad hoc : dist/matter-home-server-<version>-macos.tar.gz.
+      # signature ad hoc : dist/ostal-server-<version>-macos.tar.gz.
       - name: Build the server archive
         run: scripts/package-server.sh
 
@@ -156,7 +156,7 @@ jobs:
           fi
 
           gh release create "${GITHUB_REF_NAME}" \
-            dist/*.dmg dist/matter-home-server-*-macos.tar.gz dist/matter-home-server-*-macos.tar.gz.sha256 \
+            dist/*.dmg dist/ostal-server-*-macos.tar.gz dist/ostal-server-*-macos.tar.gz.sha256 \
             --title "${GITHUB_REF_NAME}" \
             ${{ steps.channel.outputs.prerelease }} \
             "${NOTES[@]}"
@@ -164,10 +164,10 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: matter-home-desktop-mac
+          name: ostal-mac
           path: |
             dist/*.dmg
-            dist/matter-home-server-*-macos.tar.gz
-            dist/matter-home-server-*-macos.tar.gz.sha256
+            dist/ostal-server-*-macos.tar.gz
+            dist/ostal-server-*-macos.tar.gz.sha256
           retention-days: 30
           if-no-files-found: ignore
