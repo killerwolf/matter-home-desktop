@@ -43,7 +43,7 @@ comme option avancée.
 Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fenêtre s'ouvre, en
 trois étapes numérotées :
 
-1. **Reprendre une sauvegarde** (fichier `.ostal`, exporté depuis la v0.2.1 ou depuis un
+1. **Reprendre une sauvegarde** (fichier `.ostal`, ou `.matterhome` exporté depuis la v0.2.1 ou un
    autre serveur) : l'application affiche le contenu du fichier et la comparaison des identités.
    Cochez que l'ancienne application est arrêtée partout, puis confirmez. Aucun appareil à
    réappairer. L'application ne remplace **jamais** une identité Matter différente sans que vous

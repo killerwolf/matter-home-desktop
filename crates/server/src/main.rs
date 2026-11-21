@@ -8,7 +8,7 @@
 //! - `ostal-server fingerprint`    : affiche l'empreinte du certificat TLS
 //! - `ostal-server init`           : crée l'identité Matter d'une installation neuve
 //!   (sans sauvegarde à importer), puis quitte
-//! - `ostal-server import FICHIER` : importe un `.ostal` (v0.2.1 ou export du serveur)
+//! - `ostal-server import FICHIER` : importe une sauvegarde (`.matterhome` de la v0.2.1 ou de Matter Home, `.ostal` du serveur)
 //!   dans le dossier de données, puis quitte, sans démarrer Matter ni aucun réseau
 //!
 //! Le serveur quitte avec un code non nul sur une erreur fatale, pour qu'un superviseur

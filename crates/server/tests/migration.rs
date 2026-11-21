@@ -1,4 +1,4 @@
-//! Étape 5 : migration d'un `.ostal` de la v0.2.1 vers le serveur, de bout en bout, avec le
+//! Étape 5 : migration d'un `.matterhome` de la v0.2.1 vers le serveur, de bout en bout, avec le
 //! vrai binaire et sans aucun réseau.
 //!
 //! Sécurité : chaque test a son dossier de données et son HOME factices, dans le dossier
@@ -31,7 +31,7 @@ const BRIDGED_A: u64 = 0xFFFF_FFF0_0000_0001;
 const BRIDGED_B: u64 = 0xFFFF_FFF0_0000_0002;
 
 struct Fixture {
-    /// Le fichier `.ostal` tel que la v0.2.1 l'écrit.
+    /// Le fichier `.matterhome` tel que la v0.2.1 l'écrit.
     bundle: String,
     controller: String,
     plan: String,

@@ -37,6 +37,10 @@
 set -euo pipefail
 
 LABEL="dev.ostal.server-daemon"
+# Le même service, installé avant le renommage en Ostal : remplacé (installation) ou retiré
+# (désinstallation), jamais laissé à côté du nouveau.
+LEGACY_LABEL="dev.matter-home-desktop.server"
+LEGACY_BIN_NAME="matter-home-server"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_NAME="ostal-server"
 TEMPLATE="$HERE/$LABEL.plist.template"
@@ -231,7 +235,7 @@ else
   fi
   say "  Le serveur ne crée jamais d'identité tout seul : il refusera de démarrer (code 78) tant"
   say "  que vous n'aurez pas, avec ce même compte utilisateur :"
-  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.ostal"
+  say "    - repris vos données de la v0.2.1 :  $BIN_NAME import FICHIER.matterhome"
   say "    - ou, installation neuve sans sauvegarde :  $BIN_NAME init"
 fi
 [ -f "$DATA_DIR/serveur/compte.json" ] && HAS_ACCOUNT=1
@@ -298,6 +302,11 @@ done
 # ---- 6. installation (sudo) ------------------------------------------------
 
 title "6. Installation"
+if [ -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" ]; then
+  say "  ancien service de Matter Home trouvé : il est arrêté et retiré (ses données restent)."
+  svc_step launchctl bootout "system/$LEGACY_LABEL" || true
+  fs_step rm -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" "$PREFIX/usr/local/bin/$LEGACY_BIN_NAME"
+fi
 if [ -f "$PLIST_DEST" ]; then
   svc_step launchctl bootout "system/$LABEL" || true
 fi

@@ -26,6 +26,10 @@
 set -euo pipefail
 
 LABEL="dev.ostal.server-daemon"
+# Le même service, installé avant le renommage en Ostal : remplacé (installation) ou retiré
+# (désinstallation), jamais laissé à côté du nouveau.
+LEGACY_LABEL="dev.matter-home-desktop.server"
+LEGACY_BIN_NAME="matter-home-server"
 BIN_NAME="ostal-server"
 
 DRY=0
@@ -153,6 +157,11 @@ ask "Désinstaller le service ?" || { say "Désinstallation annulée : rien n'a 
 
 title "1. Arrêt du service"
 svc_step launchctl bootout "system/$LABEL" || true
+if [ -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" ]; then
+  say "  ancien service de Matter Home trouvé : il est arrêté et retiré (ses données restent)."
+  svc_step launchctl bootout "system/$LEGACY_LABEL" || true
+  fs_step rm -f "$PREFIX/Library/LaunchDaemons/$LEGACY_LABEL.plist" "$PREFIX/usr/local/bin/$LEGACY_BIN_NAME"
+fi
 
 title "2. Retrait du service et du binaire"
 for f in "$PLIST_DEST" "$BIN_DEST"; do

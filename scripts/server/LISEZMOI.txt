@@ -18,7 +18,7 @@ Installer, en bref (dans l'application Terminal, sur le Mac du serveur)
        cd ~/Downloads/ostal-server-*-macos
        xattr -dr com.apple.quarantine .
   2. Reprendre vos données de la v0.2.1 (ou, installation neuve : ./ostal-server init) :
-       ./ostal-server import ~/chemin/ostal-AAAA-MM-JJ.ostal
+       ./ostal-server import ~/chemin/matter-home-AAAA-MM-JJ.matterhome
        ./ostal-server create-account --username NOM
   3. Installer le service :
        ./install.sh

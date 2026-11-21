@@ -7,7 +7,7 @@ Pour installer le serveur lui-même, voir [installation-serveur.md](installation
 page ne parle que des données.
 
 > **Avec l'application Ostal Server (le plus simple)** : à la première ouverture, la fenêtre
-> de configuration propose **Reprendre une sauvegarde** : choisissez le fichier `.ostal`
+> de configuration propose **Reprendre une sauvegarde** : choisissez le fichier `.matterhome`
 > (étape 1 ci-dessous), l'application montre son contenu et compare l'identité du fichier à celle
 > du dossier, vous confirmez, puis vous créez le compte. Les mêmes gardes que la ligne de commande
 > s'appliquent (jamais d'identité remplacée sans votre accord explicite, import atomique, reprise
@@ -26,7 +26,7 @@ page ne parle que des données.
 ## Procédure
 
 1. **Exporter depuis la v0.2.1** : menu **Fichier → Exporter mes données…**, puis enregistrez le
-   fichier `.ostal`. Il contient les clés privées de votre maison : ne le partagez pas.
+   fichier `.matterhome`. Il contient les clés privées de votre maison : ne le partagez pas.
 2. **Quitter la v0.2.1** (Cmd+Q) sur **tous** vos Mac qui l'ont utilisée, y compris celui où vous
    venez d'exporter.
 3. **Copier le fichier** sur le Mac du serveur (AirDrop, clé USB), dans un endroit que vous
@@ -38,7 +38,7 @@ page ne parle que des données.
    (une fois le service installé, le programme est aussi dans `/usr/local/bin` : la commande s'écrit
    alors sans `./`)
 5. **Importer** (le serveur, ou le service, ne doit pas tourner) :
-   `./ostal-server import ~/chemin/ostal-2026-11-09.ostal`
+   `./ostal-server import ~/chemin/matter-home-2026-11-09.matterhome`
    La commande vérifie le fichier, affiche le résumé (appareils, pièces, règles, date), **l'identité
    du fichier et celle du dossier** (numéro de fabric et liste des appareils), rappelle d'arrêter la
    v0.2.1 partout et demande confirmation (`--yes` pour ne pas la demander). Elle applique l'import

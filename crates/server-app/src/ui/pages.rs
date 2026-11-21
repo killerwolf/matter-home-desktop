@@ -158,8 +158,8 @@ impl App {
                 let mut pick = false;
                 let mut abandon = false;
                 let picking = self.picking.is_some();
-                widgets::section(ui, "J'utilisais déjà Ostal", |ui| {
-                    ui.label("Reprenez votre sauvegarde (un fichier « .ostal », créé par l'ancienne application ou sur un autre Mac) : vos appareils, pièces et automatismes reviennent, rien n'est à réinstaller.");
+                widgets::section(ui, "J'utilisais déjà Ostal (ou Matter Home)", |ui| {
+                    ui.label("Reprenez votre sauvegarde (un fichier « .ostal », ou « .matterhome » s'il date d'avant le renommage, créé par l'ancienne application ou sur un autre Mac) : vos appareils, pièces et automatismes reviennent, rien n'est à réinstaller.");
                     ui.add_space(4.0);
                     if picking {
                         ui.horizontal(|ui| {
