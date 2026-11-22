@@ -116,6 +116,7 @@ pub fn api_message(
         ErrorCode::MethodNotAllowed => {
             "Le serveur ne connaît pas cette opération (versions différentes ?).".into()
         }
+        ErrorCode::Forbidden => "Ce compte n'a pas le droit de faire cela.".into(),
         ErrorCode::RequestTimeout => {
             "Le serveur n'a pas reçu la demande à temps. Réessayez.".into()
         }
@@ -153,6 +154,7 @@ mod tests {
         let all = [
             ErrorCode::Unauthorized,
             ErrorCode::InvalidCredentials,
+            ErrorCode::Forbidden,
             ErrorCode::TooManyAttempts,
             ErrorCode::VersionIncompatible,
             ErrorCode::BadRequest,

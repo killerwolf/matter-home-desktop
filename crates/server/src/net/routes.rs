@@ -28,6 +28,7 @@ use protocol::wire::{
 
 use super::AppState;
 use crate::audit::{Action, ConnRef, Entry, ModeCause, Origin, Outcome, Who};
+use crate::rights::Capability;
 use crate::security::account::Verdict;
 use crate::security::sessions::{clean_installation, ConnectionRecord, SessionInfo};
 use crate::security::user_tokens::TokenInfo;
@@ -310,6 +311,20 @@ impl FromRequestParts<AppState> for Ctx {
             Some(session) => session_who(state, session, peer, &parts.headers),
             None => Who::default(),
         }))
+    }
+}
+
+/// Le point de passage des droits : toute route qui modifie la maison appelle ceci avant d'agir
+/// (avant même de lire le corps ou de chercher l'équipement). En V1 la réponse est toujours oui.
+pub(super) fn require(state: &AppState, user_id: &str, capability: Capability) -> ApiResult<()> {
+    if state.hub.rights().can(user_id, capability) {
+        Ok(())
+    } else {
+        Err(ApiError::with_detail(
+            ErrorCode::Forbidden,
+            "ce compte n'a pas le droit de faire cela",
+        )
+        .into())
     }
 }
 
@@ -835,6 +850,7 @@ async fn put_mode(
     let ip = peer.ip();
     let actor =
         authenticate_mode_request(&state, ip, "changement de mode", request.headers()).await?;
+    require(&state, &actor.user_id, Capability::ChangeMode)?;
     let who = actor_who(&state, &actor, ip, request.headers());
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let ModeRequest { mode, source } = serde_json::from_slice(&bytes).map_err(|_| {
@@ -886,6 +902,7 @@ async fn put_presence(
 ) -> ApiResult<Json<PresenceResponse>> {
     let ip = peer.ip();
     let actor = authenticate_mode_request(&state, ip, "présence", request.headers()).await?;
+    require(&state, &actor.user_id, Capability::ChangeMode)?;
     let who = actor_who(&state, &actor, ip, request.headers());
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let PresenceRequest { state: wanted } = serde_json::from_slice(&bytes).map_err(|_| {
@@ -1099,8 +1116,10 @@ async fn get_plan(State(state): State<AppState>) -> Json<TextIds<HomePlan>> {
 
 async fn put_plan(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     ApiJson(TextIds(plan)): ApiJson<TextIds<HomePlan>>,
 ) -> ApiResult<Json<TextIds<HomePlan>>> {
+    require(&state, &session.user_id, Capability::EditPlan)?;
     let hub = state.hub.clone();
     blocking(move || hub.set_plan(plan)).await?;
     Ok(Json(TextIds(state.hub.plan())))
@@ -1113,8 +1132,10 @@ async fn get_rules(State(state): State<AppState>) -> Json<TextIds<RuleSet>> {
 async fn put_rules(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     ApiJson(TextIds(rules)): ApiJson<TextIds<RuleSet>>,
 ) -> ApiResult<Json<TextIds<RuleSet>>> {
+    require(&state, &session.user_id, Capability::EditAutomations)?;
     let hub = state.hub.clone();
     let result = blocking(move || hub.set_rules(rules)).await;
     audit(
@@ -1129,8 +1150,10 @@ async fn put_rules(
 async fn test_rule(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::EditAutomations)?;
     let id = parse_id(&id)?;
     let name = state
         .hub
@@ -1158,8 +1181,10 @@ async fn test_rule(
 async fn pair(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     ApiJson(request): ApiJson<PairRequest>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::Pair)?;
     // Le code d'appairage est un secret : il n'entre jamais au journal d'audit.
     let result = state.hub.pair(&request.code);
     audit(
@@ -1171,7 +1196,12 @@ async fn pair(
     Ok(accepted())
 }
 
-async fn retry(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
+async fn retry(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ControlDevices)?;
     state.hub.retry(parse_id(&id)?)?;
     Ok(accepted())
 }
@@ -1179,8 +1209,10 @@ async fn retry(State(state): State<AppState>, Path(id): Path<String>) -> ApiResu
 async fn forget(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::Pair)?;
     let id = parse_id(&id)?;
     let name = state.hub.device_name(id);
     let result = state.hub.forget(id);
@@ -1197,9 +1229,11 @@ async fn forget(
 
 async fn customize(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<CustomizeRequest>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::EditPlan)?;
     state.hub.customize(parse_id(&id)?, request)?;
     Ok(accepted())
 }
@@ -1207,9 +1241,11 @@ async fn customize(
 async fn on_off(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<OnOffRequest>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ControlDevices)?;
     let id = parse_id(&id)?;
     let name = state.hub.device_name(id);
     let result = state.hub.set_on_off(id, request.command);
@@ -1228,9 +1264,11 @@ async fn on_off(
 async fn cover(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<CoverRequest>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ControlDevices)?;
     let id = parse_id(&id)?;
     let name = state.hub.device_name(id);
     let result = state.hub.set_cover(id, request.command);
@@ -1285,8 +1323,10 @@ async fn history_csv(
 
 async fn clear_history(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ControlDevices)?;
     state.hub.clear_history(parse_id(&id)?)?;
     Ok(accepted())
 }
@@ -1302,7 +1342,12 @@ fn attachment(content_type: &'static str, file_name: &str, body: String) -> Resp
     response
 }
 
-async fn export(State(state): State<AppState>, Ctx(who): Ctx) -> ApiResult<Response> {
+async fn export(
+    State(state): State<AppState>,
+    Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
+) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ExportImport)?;
     let hub = state.hub.clone();
     let result = blocking(move || hub.export()).await;
     audit(&state, Entry::new(Action::Export, &who).outcome(&result)).await;
@@ -1324,9 +1369,11 @@ struct ImportQuery {
 async fn import(
     State(state): State<AppState>,
     Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
     q: Result<Query<ImportQuery>, axum::extract::rejection::QueryRejection>,
     ApiBytes(body): ApiBytes,
 ) -> ApiResult<Response> {
+    require(&state, &session.user_id, Capability::ExportImport)?;
     let flag = |value: Option<String>, name: &str| match value.as_deref() {
         None | Some("0" | "false" | "") => Ok(false),
         Some("1" | "true") => Ok(true),

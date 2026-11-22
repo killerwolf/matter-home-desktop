@@ -17,16 +17,18 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
 use protocol::wire::{
     self, ApiError, ErrorCode, EventsResponse, EVENTS_DEFAULT_LIMIT, EVENTS_MAX_LIMIT,
 };
 
-use super::routes::ApiErr;
+use super::routes::{require, ApiErr};
 use super::AppState;
 use crate::detection::Part;
+use crate::rights::Capability;
+use crate::security::sessions::SessionInfo;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -98,7 +100,12 @@ async fn one(State(state): State<AppState>, Path(id): Path<String>) -> Result<Re
     event.map(|e| Json(e).into_response()).ok_or_else(not_found)
 }
 
-async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response, ApiErr> {
+async fn remove(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiErr> {
+    require(&state, &session.user_id, Capability::ControlDevices)?;
     let id = checked(&id)?.to_string();
     let detection = state.hub.detection().clone();
     let removed = tokio::task::spawn_blocking(move || detection.store().delete(&id))

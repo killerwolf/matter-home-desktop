@@ -147,6 +147,8 @@ pub struct Hub {
     presence: crate::presence::Presence,
     /// Le journal d'audit (`serveur/audit/`) : voir `audit.rs`.
     audit: Arc<crate::audit::AuditLog>,
+    /// Ce que chaque compte a le droit de faire : voir `rights.rs`.
+    rights: crate::rights::Rights,
     /// Les raccourcis préparés pour l'iPhone (ils portent le jeton de mode de la personne), en
     /// mémoire.
     shortcut_downloads: crate::shortcuts::Downloads,
@@ -270,6 +272,7 @@ impl Hub {
             tokens,
             presence,
             audit: Arc::new(audit),
+            rights: crate::rights::Rights::new(),
             shortcut_downloads: Default::default(),
             tx,
             commands: Mutex::new(Some(config.commands)),
@@ -292,6 +295,11 @@ impl Hub {
             stopping: AtomicBool::new(false),
             import_staged: AtomicBool::new(false),
         }
+    }
+
+    /// Les droits des comptes (V1 : tout le monde peut tout faire).
+    pub fn rights(&self) -> &crate::rights::Rights {
+        &self.rights
     }
 
     /// Le journal d'audit.

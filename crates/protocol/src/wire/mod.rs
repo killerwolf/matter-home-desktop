@@ -316,6 +316,7 @@ mod tests {
         let codes = [
             (ErrorCode::Unauthorized, "unauthorized", 401),
             (ErrorCode::InvalidCredentials, "invalid_credentials", 401),
+            (ErrorCode::Forbidden, "forbidden", 403),
             (ErrorCode::TooManyAttempts, "too_many_attempts", 429),
             (ErrorCode::VersionIncompatible, "version_incompatible", 426),
             (ErrorCode::BadRequest, "bad_request", 400),

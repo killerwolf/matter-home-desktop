@@ -118,7 +118,7 @@ première connexion (`protocol::discovery`, `ostal_server::announce`, `ostal_cli
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
 effet (ou leur échec) arrive en événements. Les erreurs possibles : `not_found` (appareil ou
-règle inconnu), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
+règle inconnu), `forbidden` (403, le compte n'a pas ce droit ; jamais en V1), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
 (405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `identity_mismatch` (409), `invalid_import`
 (400), `unavailable`… Toute erreur, y compris 405 et 413, a le corps `{"error": {"code": …}}`.
 

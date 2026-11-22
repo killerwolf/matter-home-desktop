@@ -10,6 +10,13 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Préparation des droits (multi-comptes, étape 5)
+
+- Invisible pour l'instant : chaque route qui modifie la maison (commande d'un équipement, mode,
+  présence, plan, automatisations, appairage, export et import, réglage des notifications) demande
+  d'abord si le compte en a le droit. Tous les comptes gardent les mêmes droits ; le code d'erreur
+  `forbidden` (403) existe déjà pour le jour où l'on restreindra un compte. Rien à migrer.
+
 ### Journal d'audit (multi-comptes, étape 4)
 
 - Un journal note qui a fait quoi, depuis quel téléphone ou ordinateur : connexion réussie ou

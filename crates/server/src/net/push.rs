@@ -13,9 +13,10 @@ use protocol::wire::{
     PushSubscriptionView, PushUpdateRequest,
 };
 
-use super::routes::{ApiErr, ApiJson};
+use super::routes::{require, ApiErr, ApiJson};
 use super::AppState;
 use crate::push::PushError;
+use crate::rights::Capability;
 use crate::security::sessions::SessionInfo;
 
 pub fn router() -> Router<AppState> {
@@ -80,6 +81,7 @@ async fn settings(
     Extension(session): Extension<SessionInfo>,
     ApiJson(request): ApiJson<PushSettingsRequest>,
 ) -> Result<Json<PushStatus>, ApiErr> {
+    require(&state, &session.user_id, Capability::EditAutomations)?;
     let push = state.hub.push().clone();
     blocking(move || push.set_enabled(request.enabled)).await?;
     Ok(Json(state.hub.push().status_for(&session.user_id)))

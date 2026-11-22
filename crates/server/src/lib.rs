@@ -22,6 +22,7 @@ pub mod net;
 pub mod persistence;
 pub mod presence;
 pub mod push;
+pub mod rights;
 pub mod scrub;
 pub mod security;
 pub mod setup;
