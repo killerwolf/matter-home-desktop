@@ -36,6 +36,16 @@ Les téléchargements de chaque version sont sur la
   mais selon la règle de la maison : la maison passe en Absent seulement si personne d'autre n'est
   à la maison, et en Présent seulement depuis Absent ou Vacances (une arrivée la nuit ne réveille pas
   la maison). Une session ne fait que déclarer.
+- « Je pars » et « Je rentre » disent ce que la maison est devenue : `PUT /api/presence` répond aussi
+  `mode` (le mode actuel) et `message` (par exemple « Maison en mode Absent. » ou « Sam est encore à
+  la maison : la maison reste en Présent. »), et la notification du raccourci affiche cette phrase au
+  lieu d'un « C'est noté » fixe : on sait si la maison est armée. Les raccourcis déjà installés
+  marchent encore (ils affichent l'ancien texte).
+- Couper une connexion : les confirmations (app web, fenêtre du serveur) disent que les raccourcis et
+  le widget installés depuis elle cessent aussi de marcher ; dans la fenêtre du serveur, la coupure
+  se fait sans figer la fenêtre (« Coupure de … »). Une coupure qui arrive pendant la préparation de
+  raccourcis ne laisse plus de jeton neuf pour la connexion coupée. Un identifiant de connexion ne
+  peut plus avoir la forme d'un identifiant interne (32 caractères hexadécimaux).
 - Ostal Server : le code secret et le widget de la fenêtre sont ceux du premier compte.
 - Les commandes `user add`, `user passwd`, `user disable` et `user enable`, et la fenêtre du serveur,
   prennent un verrou (`serveur/comptes.lock`) : deux modifications simultanées des comptes ne se

@@ -198,7 +198,11 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   un compteur partagé aurait bloqué le bon Raccourci), seulement une ligne au journal par échec.
 - **Où est la personne** (ajouté après la 2.0, sans changer la version du protocole) :
   `PUT /api/presence` `{"state": "home" | "away"}`, avec une session ou le jeton de mode de la personne
-  (mêmes règles que `PUT /api/mode`), répond `200 {"state", "changed"}`. Le serveur retient la dernière
+  (mêmes règles que `PUT /api/mode`), répond `200 {"state", "changed", "mode", "message"}` : `mode` est le mode actuel de la maison une fois
+  la règle appliquée, `message` une phrase française qui dit ce qui s'est passé (« Maison en mode
+  Absent. », « Sam est encore à la maison : la maison reste en Présent. », « Mode Nuit : la maison ne
+  change pas. » ; le prénom est le nom affiché, jamais un identifiant). Les raccourcis « Je pars » et
+  « Je rentre » l'affichent tel quel. Un client plus ancien ignore les deux champs. Le serveur retient la dernière
   déclaration de chacun (`serveur/presence.json`). Provisoirement, avec un jeton de mode (raccourci),
   « away » passe aussi la maison en Absent et « home » en Présent, comme les raccourcis d'avant ; une
   session ne fait que déclarer.

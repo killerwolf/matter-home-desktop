@@ -274,6 +274,20 @@ impl StillWanted {
         let flag = self.0.clone();
         move || flag.load(Ordering::SeqCst)
     }
+
+    /// La sonde passée au hub, vérifiée sous le verrou `Change`, juste avant d'installer : la requête
+    /// attend toujours **et** la session qui la demande vit encore. Une coupure de la connexion
+    /// (`DELETE /api/me/installations/{id}`) qui se termine entre l'authentification et
+    /// l'installation ne laisse donc pas un jeton neuf pour une connexion déjà coupée.
+    fn probe_live(
+        &self,
+        state: &AppState,
+        session: &SessionInfo,
+    ) -> impl Fn() -> bool + Send + 'static {
+        let wanted = self.probe();
+        let (auth, session) = (state.auth.clone(), session.clone());
+        move || wanted() && auth.is_live(&session)
+    }
 }
 
 impl Drop for StillWanted {
@@ -312,7 +326,7 @@ async fn mode_shortcuts(
     let installation = installation_of(&state, &session);
     let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
-    let still_wanted = wanted.probe();
+    let still_wanted = wanted.probe_live(&state, &session);
     let ids = blocking(move || {
         hub.prepare_mode_shortcuts(
             &user_id,
@@ -368,7 +382,7 @@ async fn widget(
     let installation = installation_of(&state, &session);
     let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
-    let still_wanted = wanted.probe();
+    let still_wanted = wanted.probe_live(&state, &session);
     let script = blocking(move || {
         hub.prepare_widget(
             &user_id,

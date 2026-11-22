@@ -197,6 +197,9 @@ pub fn check_username(username: &str) -> Result<()> {
     if !ok {
         bail!("nom d'utilisateur invalide (1 à {MAX_USERNAME_LEN} caractères, sans espace en bordure ni caractère de contrôle)");
     }
+    if looks_like_internal_id(username) {
+        bail!("nom d'utilisateur invalide : 32 caractères hexadécimaux, la forme d'un identifiant interne");
+    }
     Ok(())
 }
 
@@ -318,10 +321,21 @@ fn write_users(dir: &Path, file: &UsersFile) -> Result<()> {
 }
 
 fn find_index(file: &UsersFile, key: &str) -> Option<usize> {
+    // L'identifiant interne d'abord : un identifiant de connexion ne peut pas lui ressembler (voir
+    // `looks_like_internal_id`), donc jamais de collision.
+    if let Some(i) = file.users.iter().position(|u| u.id == key) {
+        return Some(i);
+    }
     let wanted = username_key(key);
     file.users
         .iter()
-        .position(|u| u.id == key || username_key(&u.username) == wanted)
+        .position(|u| username_key(&u.username) == wanted)
+}
+
+/// Un identifiant interne est 32 caractères hexadécimaux : un identifiant de connexion qui en a la
+/// forme est refusé à la création, pour ne jamais être pris pour l'identifiant d'un autre compte.
+fn looks_like_internal_id(s: &str) -> bool {
+    s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Les utilisateurs de `dir` (migre l'ancien compte au passage).
@@ -856,6 +870,13 @@ mod tests {
         assert_eq!(again.users().len(), 2);
         assert_eq!(std::fs::read(dir.join(FILE_NAME)).unwrap(), before);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_username_cannot_look_like_an_internal_id() {
+        assert!(check_username("sam").is_ok());
+        assert!(check_username(&"a1".repeat(16)).is_err());
+        assert!(check_username(&"a1".repeat(15)).is_ok());
     }
 
     #[test]

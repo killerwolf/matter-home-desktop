@@ -690,18 +690,37 @@ async fn put_presence(
     // Présent, pour que les téléphones n'aient rien à réinstaller, mais selon la règle de la maison
     // (`presence::mode_after`) : Absent seulement quand personne d'autre n'est là, Présent seulement
     // depuis Absent ou Vacances (jamais depuis Nuit). Une session, elle, ne fait que déclarer.
-    if actor.by_mode_token {
+    let followed = if actor.by_mode_token {
         let hub = state.hub.clone();
         let state_for_accounts = state.clone();
         let user_id = actor.user_id.clone();
-        blocking(move || {
-            hub.follow_presence(&user_id, wanted, |id| {
-                state_for_accounts.auth.accounts.is_active(id)
+        Some(
+            blocking(move || {
+                hub.follow_presence(&user_id, wanted, |id| {
+                    state_for_accounts.auth.accounts.is_active(id)
+                })
             })
-            .map(|_| ())
-        })
-        .await?;
-    }
+            .await?,
+        )
+    } else {
+        None
+    };
+    // La réponse dit toujours ce qu'est devenue la maison : « Je pars » ne doit jamais laisser croire
+    // qu'elle est armée quand quelqu'un d'autre est déclaré à la maison.
+    let (mode, message) = match &followed {
+        Some(f) => {
+            let names: Vec<String> = f
+                .others_home
+                .iter()
+                .filter_map(|id| state.auth.accounts.display_name(id))
+                .collect();
+            (f.mode, crate::presence::message(wanted, f, &names))
+        }
+        None => (
+            state.hub.mode(),
+            "C'est noté : la maison ne change pas de mode.".to_string(),
+        ),
+    };
     let who = state
         .auth
         .accounts
@@ -717,6 +736,8 @@ async fn put_presence(
     Ok(Json(PresenceResponse {
         state: wanted,
         changed,
+        mode,
+        message,
     }))
 }
 
@@ -726,11 +747,15 @@ struct PresenceRequest {
     state: crate::presence::Whereabouts,
 }
 
-/// Réponse de `PUT /api/presence` (200). `changed` est faux si la personne l'avait déjà dit.
+/// Réponse de `PUT /api/presence` (200). `changed` est faux si la personne l'avait déjà dit ;
+/// `mode` est le mode actuel de la maison et `message` une phrase française qui dit ce qui s'est
+/// passé (le raccourci l'affiche telle quelle).
 #[derive(serde::Serialize)]
 struct PresenceResponse {
     state: crate::presence::Whereabouts,
     changed: bool,
+    mode: protocol::mode::HomeMode,
+    message: String,
 }
 
 async fn logout(

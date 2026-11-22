@@ -1228,7 +1228,7 @@ async function loadConnections() {
 const THIS_DEVICE = { iphone: "Cet iPhone", ipad: "Cet iPad", android: "Ce téléphone", computer: "Cet ordinateur" };
 
 async function cutConnection(c) {
-  const text = `${c.name} devra se reconnecter avec son identifiant et son mot de passe.`;
+  const text = "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.";
   if (!await askConfirm({ title: "Couper cette connexion ?", text, action: "Couper" })) return;
   connUi.busy = true;
   connUi.error = "";
@@ -1248,7 +1248,7 @@ function renderConnections() {
   const body = $("#sheet-body");
   body.dataset.id = "connections";
   body.replaceChildren();
-  body.appendChild(make("p", "ev-note", "Les téléphones et ordinateurs où votre compte est ouvert. Couper une connexion la ferme tout de suite : ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe."));
+  body.appendChild(make("p", "ev-note", "Les téléphones et ordinateurs où votre compte est ouvert. Couper une connexion la ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher : ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe."));
   if (connUi.error) body.appendChild(make("p", "error", connUi.error));
   if (!connUi.list) { if (!connUi.error) body.appendChild(make("p", "w-note", "Chargement…")); return; }
   body.appendChild(make("h3", "", "Ouvertes sur votre compte"));

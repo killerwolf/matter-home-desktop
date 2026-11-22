@@ -644,7 +644,10 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             )
             .await;
         assert_eq!(r.status, 200, "{}", r.text());
-        assert_eq!(r.json(), json!({"state": "away", "changed": true}));
+        assert_eq!(
+            r.json(),
+            json!({"state": "away", "changed": true, "mode": "absent", "message": "Maison en mode Absent."})
+        );
         let r = client
             .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "absent"}))
             .await;

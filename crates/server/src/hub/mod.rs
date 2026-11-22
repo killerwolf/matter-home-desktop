@@ -844,18 +844,25 @@ impl Hub {
     /// Après la déclaration de `user_id` par un raccourci : met la maison dans le mode que la
     /// règle de [`crate::presence::mode_after`] en tire, ou la laisse telle quelle. `is_active` :
     /// le compte existe-t-il et est-il actif ? (Une personne désactivée ne compte pas comme
-    /// « à la maison ».) Rend `true` si le mode a changé.
+    /// « à la maison ».) Rend le mode final et ce qui l'a retenu, pour le dire à la personne.
     pub fn follow_presence(
         &self,
         user_id: &str,
         state: crate::presence::Whereabouts,
         is_active: impl Fn(&str) -> bool,
-    ) -> ApiResult<bool> {
+    ) -> ApiResult<crate::presence::Followed> {
         let declared = self.presence.all();
-        match crate::presence::mode_after(user_id, state, self.mode(), &declared, is_active) {
-            Some(mode) => self.set_mode(mode, ModeSource::Shortcut),
-            None => Ok(false),
-        }
+        let others_home = crate::presence::others_at_home(user_id, &declared, &is_active);
+        let changed =
+            match crate::presence::mode_after(user_id, state, self.mode(), &declared, is_active) {
+                Some(mode) => self.set_mode(mode, ModeSource::Shortcut)?,
+                None => false,
+            };
+        Ok(crate::presence::Followed {
+            mode: self.mode(),
+            changed,
+            others_home,
+        })
     }
 
     /// Ce que chacun a déclaré en dernier.

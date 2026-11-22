@@ -82,7 +82,7 @@ impl Confirmation {
             ),
             Confirmation::CutConnection { name } => (
                 format!("Couper la connexion « {name} » ?"),
-                "Elle se ferme tout de suite. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
+                "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
                 "Couper",
             ),
         };

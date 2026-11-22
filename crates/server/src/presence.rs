@@ -54,12 +54,60 @@ pub fn mode_after(
     let away_or_holiday = matches!(current, HomeMode::Absent | HomeMode::Vacances);
     match wanted {
         Whereabouts::Away => {
-            let someone_else_is_home = declared.iter().any(|d| {
-                d.user_id != user_id && d.state == Whereabouts::Home && is_active(&d.user_id)
-            });
+            let someone_else_is_home = !others_at_home(user_id, declared, is_active).is_empty();
             (!someone_else_is_home && !away_or_holiday).then_some(HomeMode::Absent)
         }
         Whereabouts::Home => away_or_holiday.then_some(HomeMode::Present),
+    }
+}
+
+/// Les autres personnes actives déclarées « à la maison » (identifiants internes).
+pub fn others_at_home(
+    user_id: &str,
+    declared: &[Declared],
+    is_active: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    declared
+        .iter()
+        .filter(|d| d.user_id != user_id && d.state == Whereabouts::Home && is_active(&d.user_id))
+        .map(|d| d.user_id.clone())
+        .collect()
+}
+
+/// Ce que devient la maison après la déclaration d'une personne par un raccourci.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Followed {
+    /// Le mode de la maison une fois la règle appliquée.
+    pub mode: HomeMode,
+    /// Le mode vient-il de changer ?
+    pub changed: bool,
+    /// Les autres personnes déclarées à la maison (identifiants internes) au moment de la règle.
+    pub others_home: Vec<String>,
+}
+
+/// La phrase, en français, qui dit à la personne ce qui s'est passé. `names` : prénoms (noms
+/// affichés) de `Followed::others_home`, jamais d'identifiant interne.
+pub fn message(wanted: Whereabouts, followed: &Followed, names: &[String]) -> String {
+    let mode = followed.mode;
+    let label = mode.label();
+    if followed.changed {
+        return format!("Maison en mode {label}.");
+    }
+    match (wanted, mode) {
+        (_, HomeMode::Nuit) => "Mode Nuit : la maison ne change pas.".into(),
+        (Whereabouts::Away, HomeMode::Vacances) => {
+            "Mode Vacances : la maison ne change pas.".into()
+        }
+        (Whereabouts::Away, HomeMode::Absent) => "Maison en mode Absent.".into(),
+        (Whereabouts::Away, _) if !names.is_empty() => {
+            let (verb, who) = match names {
+                [one] => ("est", one.clone()),
+                [init @ .., last] => ("sont", format!("{} et {last}", init.join(", "))),
+                [] => unreachable!(),
+            };
+            format!("{who} {verb} encore à la maison : la maison reste en {label}.")
+        }
+        _ => format!("Maison en mode {label}."),
     }
 }
 
@@ -164,6 +212,41 @@ impl Presence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_message_says_what_became_of_the_house() {
+        let followed = |mode, changed| Followed {
+            mode,
+            changed,
+            others_home: vec![],
+        };
+        let one = vec!["Sam".to_string()];
+        let two = vec!["Sam".to_string(), "Léa".to_string()];
+        assert_eq!(
+            message(Whereabouts::Away, &followed(HomeMode::Absent, true), &[]),
+            "Maison en mode Absent."
+        );
+        assert_eq!(
+            message(Whereabouts::Away, &followed(HomeMode::Present, false), &one),
+            "Sam est encore à la maison : la maison reste en Présent."
+        );
+        assert_eq!(
+            message(Whereabouts::Away, &followed(HomeMode::Nuit, false), &two),
+            "Mode Nuit : la maison ne change pas."
+        );
+        assert_eq!(
+            message(Whereabouts::Away, &followed(HomeMode::Present, false), &two),
+            "Sam et Léa sont encore à la maison : la maison reste en Présent."
+        );
+        assert_eq!(
+            message(Whereabouts::Away, &followed(HomeMode::Vacances, false), &[]),
+            "Mode Vacances : la maison ne change pas."
+        );
+        assert_eq!(
+            message(Whereabouts::Home, &followed(HomeMode::Present, true), &[]),
+            "Maison en mode Présent."
+        );
+    }
 
     #[test]
     fn the_last_word_of_each_person_is_kept_and_a_repeat_changes_nothing() {

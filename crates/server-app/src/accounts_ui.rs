@@ -76,6 +76,9 @@ pub struct AccountsUi {
     rows: Vec<ConnectionRow>,
     /// « Couper » demandé pendant le dessin : (nom, identifiant), traité à la fin de l'image.
     cut: Option<(String, String)>,
+    /// Coupure en cours sur un fil à part (elle peut attendre jusqu'à une minute une signature de
+    /// raccourcis : la fenêtre ne doit pas se figer) : nom de la connexion et résultat à venir.
+    cutting: Option<(String, Receiver<Notice>)>,
 }
 
 impl AccountsUi {
@@ -185,6 +188,7 @@ impl AccountsUi {
         hub: Option<&Arc<Hub>>,
     ) -> bool {
         self.poll(data_dir);
+        self.poll_cut();
         let (now, offset) = accounts::clock();
         self.rows = auth
             .map(|a| accounts::connection_rows(a, &self.users, now, offset))
@@ -203,13 +207,20 @@ impl AccountsUi {
             View::Connections => leave = self.connections_page(ui),
         }
         if let Some((name, id)) = self.cut.take() {
-            self.cut_connection(auth, hub, &name, &id);
+            self.cut_connection(ctx, auth, hub, &name, &id);
         }
         if busy {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Un instant…");
+            });
+        }
+        if let Some((name, _)) = &self.cutting {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("Coupure de « {name} »…"));
             });
         }
         leave
@@ -226,27 +237,57 @@ impl AccountsUi {
         }
     }
 
-    /// Coupe une connexion après confirmation, et le dit.
+    /// Coupe une connexion après confirmation, sur un fil à part, et le dit quand c'est fini.
     fn cut_connection(
         &mut self,
+        ctx: &egui::Context,
         auth: Option<&Arc<Auth>>,
         hub: Option<&Arc<Hub>>,
         name: &str,
         id: &str,
     ) {
         let Some(auth) = auth else { return };
+        if self.cutting.is_some() {
+            return;
+        }
         if !confirm::ask(&Confirmation::CutConnection { name: name.into() }) {
             return;
         }
-        self.notice = Some(
-            match accounts::cut_connection(auth, hub.map(|h| &**h), id) {
+        let (auth, hub, ctx) = (auth.clone(), hub.cloned(), ctx.clone());
+        let (name_owned, id) = (name.to_string(), id.to_string());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let name = name_owned;
+            let notice = match accounts::cut_connection(&auth, hub.as_deref(), &id) {
                 Ok(true) => Notice::Ok(format!("Connexion « {name} » coupée.")),
                 Ok(false) => Notice::Err("Cette connexion était déjà fermée.".into()),
                 Err(e) => Notice::Err(format!(
-                "Connexion « {name} » fermée, mais ses raccourcis n'ont pas pu être coupés : {e}"
-            )),
-            },
-        );
+                    "Connexion « {name} » fermée, mais ses raccourcis n'ont pas pu être coupés : {e}"
+                )),
+            };
+            let _ = tx.send(notice);
+            ctx.request_repaint();
+        });
+        self.notice = None;
+        self.cutting = Some((name.to_string(), rx));
+    }
+
+    /// Reprend le résultat d'une coupure terminée.
+    fn poll_cut(&mut self) {
+        let Some((_, rx)) = &self.cutting else { return };
+        match rx.try_recv() {
+            Ok(notice) => {
+                self.notice = Some(notice);
+                self.cutting = None;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.notice = Some(Notice::Err(
+                    "La coupure s'est interrompue : vérifiez la liste des connexions.".into(),
+                ));
+                self.cutting = None;
+            }
+        }
     }
 
     /// « Réglages › Comptes » : « Réglages » ramène en arrière.

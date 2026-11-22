@@ -100,13 +100,23 @@ impl HomeShortcut {
         }
     }
 
-    /// Ce que dit la notification quand le serveur a répondu.
-    fn done_text(self) -> &'static str {
+    /// La clé de la réponse qui dit que le serveur a bien répondu. Pour « Je pars » et « Je rentre »,
+    /// c'est `message` : la phrase du serveur dit ce que la maison est devenue (armée, ou laissée en
+    /// Présent parce que quelqu'un d'autre est là), et la notification l'affiche telle quelle.
+    fn reply_key(self) -> &'static str {
         match self {
-            HomeShortcut::Leaving => "C'est noté : vous êtes parti.",
-            HomeShortcut::Arriving => "C'est noté : vous êtes à la maison.",
-            HomeShortcut::Nuit => "Maison en mode Nuit.",
-            HomeShortcut::Vacances => "Maison en mode Vacances.",
+            HomeShortcut::Leaving | HomeShortcut::Arriving => "message",
+            HomeShortcut::Nuit | HomeShortcut::Vacances => self.request().key,
+        }
+    }
+
+    /// Ce que dit la notification quand le serveur a répondu. `None` : la phrase vient du serveur
+    /// (clé `message`).
+    fn done_text(self) -> Option<&'static str> {
+        match self {
+            HomeShortcut::Leaving | HomeShortcut::Arriving => None,
+            HomeShortcut::Nuit => Some("Maison en mode Nuit."),
+            HomeShortcut::Vacances => Some("Maison en mode Vacances."),
         }
     }
 
@@ -360,8 +370,8 @@ fn conditional(group: &str, mode: i64, input: Option<Plist>) -> Plist {
 /// de mode **de la personne** : tous deux écrits en dur, aucune question à l'import.
 ///
 /// `PUT {address}/api/presence` ou `/api/mode` avec `Authorization: Bearer <jeton>` et un corps
-/// JSON d'un champ ; notification de réussite seulement si la réponse a la clé attendue (`state`
-/// ou `mode`), sinon la réponse du serveur.
+/// JSON d'un champ ; notification de réussite seulement si la réponse a la clé attendue (`message` pour
+/// « Je pars » et « Je rentre », qu'elle affiche ; `mode` pour Nuit et Vacances), sinon la réponse du serveur.
 pub fn shortcut_plist(which: HomeShortcut, address: &str, token: &str) -> String {
     let (request, value, group) = (uuid(), uuid(), uuid());
     let what = which.request();
@@ -387,12 +397,18 @@ pub fn shortcut_plist(which: HomeShortcut, address: &str, token: &str) -> String
             vec![
                 ("UUID", s(&value)),
                 ("WFInput", attachment(reply())),
-                ("WFDictionaryKey", s(what.key)),
+                ("WFDictionaryKey", s(which.reply_key())),
                 ("WFGetDictionaryValueType", s("Value")),
             ],
         ),
         conditional(&group, 0, Some(output(&value, "Valeur du dictionnaire"))),
-        notify(s(which.done_text())),
+        notify(match which.done_text() {
+            Some(text) => s(text),
+            None => tok(
+                &OBJ.to_string(),
+                vec![output(&value, "Valeur du dictionnaire")],
+            ),
+        }),
         conditional(&group, 1, None),
         notify(tok(&format!("{}{OBJ}", which.failed_text()), vec![reply()])),
         conditional(&group, 2, None),
@@ -787,12 +803,15 @@ mod tests {
         assert!(leaving.contains("<string>https://m.ts.net/api/presence</string>"));
         assert!(!leaving.contains("/api/mode"));
         assert!(leaving.contains("<string>away</string>"));
-        assert!(leaving.contains("<key>WFDictionaryKey</key><string>state</string>"));
-        assert!(leaving.contains("C'est noté : vous êtes parti."));
+        // La notification affiche la phrase du serveur (`message`), pas un texte fixe : « Je pars »
+        // ne doit pas laisser croire que la maison est armée quand elle ne l'est pas.
+        assert!(leaving.contains("<key>WFDictionaryKey</key><string>message</string>"));
+        assert!(!leaving.contains("C'est noté"));
         assert!(leaving.contains(&format!("<string>Bearer {TOKEN}</string>")));
         let arriving = shortcut_plist(HomeShortcut::Arriving, "https://m.ts.net", TOKEN);
         assert!(arriving.contains("<string>home</string>"));
-        assert!(arriving.contains("C'est noté : vous êtes à la maison."));
+        assert!(arriving.contains("<key>WFDictionaryKey</key><string>message</string>"));
+        assert!(!arriving.contains("C'est noté"));
         assert!(!arriving.contains("/api/mode"));
     }
 

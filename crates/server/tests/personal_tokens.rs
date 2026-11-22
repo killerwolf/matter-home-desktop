@@ -194,7 +194,10 @@ fn a_2_0_0_folder_keeps_its_shortcuts_widget_and_old_clients_and_the_migration_i
         // « Je pars » fait ce que faisait Absent.
         assert_eq!(mode_of(&client, OLD_SESSION).await, "nuit");
         let r = put_presence(&client, OLD_MODE, "away").await;
-        assert_eq!(r.json(), json!({"state": "away", "changed": true}));
+        assert_eq!(
+            r.json(),
+            json!({"state": "away", "changed": true, "mode": "absent", "message": "Maison en mode Absent."})
+        );
         assert_eq!(mode_of(&client, OLD_SESSION).await, "absent");
         // Réinstaller depuis une connexion nouvelle ajoute un jeton, sans toucher à l'ancien.
         let session = client.login().await;
@@ -527,6 +530,55 @@ fn cutting_a_connection_cuts_its_shortcuts_and_widget_and_only_those() {
                 .status,
             404
         );
+    });
+}
+
+/// `PUT /api/presence` dit toujours ce qu'est devenue la maison : le mode et une phrase, avec le
+/// prénom de la personne qui retient l'armement (jamais un identifiant interne).
+#[test]
+fn leaving_home_tells_whether_the_house_changed() {
+    let dir = temp_dir("tokens-presence-message");
+    let server = start(&dir);
+    let client = server.client();
+    assert!(user(
+        &dir,
+        &["add", "--username", "sam", "--display-name", "Sam"],
+        Some(SAM_PASSWORD)
+    ));
+    runtime().block_on(async {
+        let hamdi = client.login().await;
+        let sam = client.login_as("sam", SAM_PASSWORD, PROTOCOL).await.json()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let hamdi_mode = install_shortcuts(&client, &hamdi).await;
+        let sam_mode = install_shortcuts(&client, &sam).await;
+
+        // Sam est déclaré à la maison : le « Je pars » de Hamdi n'arme pas, et le dit.
+        assert_eq!(put_presence(&client, &sam_mode, "home").await.status, 200);
+        let r = put_presence(&client, &hamdi_mode, "away").await.json();
+        assert_eq!(r["mode"], "present");
+        assert_eq!(
+            r["message"],
+            "Sam est encore à la maison : la maison reste en Présent."
+        );
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
+
+        // Sam part à son tour : la maison est armée, et le message le confirme.
+        let r = put_presence(&client, &sam_mode, "away").await.json();
+        assert_eq!(r["mode"], "absent");
+        assert_eq!(r["message"], "Maison en mode Absent.");
+        assert_eq!(mode_of(&client, &hamdi).await, "absent");
+
+        // Rentrer la nuit ne réveille pas la maison, et le message le dit.
+        assert_eq!(put_mode(&client, &sam_mode, "nuit").await.status, 200);
+        let r = put_presence(&client, &hamdi_mode, "home").await.json();
+        assert_eq!(r["mode"], "nuit");
+        assert_eq!(r["message"], "Mode Nuit : la maison ne change pas.");
+        // Une session ne fait que déclarer : le mode est rendu, sans l'avoir changé.
+        let r = put_presence(&client, &hamdi, "away").await.json();
+        assert_eq!(r["mode"], "nuit");
+        assert!(r["message"].is_string());
     });
 }
 
