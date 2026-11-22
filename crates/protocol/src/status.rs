@@ -37,8 +37,9 @@ impl Point {
     }
 }
 
-/// « Lampe d'Adam est injoignable. », « A et B sont injoignables. », « A, B et 1 autre sont
-/// injoignables. » ; pour des caméras, « La caméra X est injoignable. » et « Les caméras … ».
+/// Le nom est entre guillemets français : « « Lampe d'Adam » est injoignable. »,
+/// « « A » et « B » sont injoignables. », « « A », « B » et 1 autre sont injoignables. » ; pour des
+/// caméras, « La caméra « X » est injoignable. » et « Les caméras … ».
 fn unreachable_phrase(names: &[String], cameras: bool) -> String {
     let (one, many) = if cameras {
         ("La caméra ", "Les caméras ")
@@ -47,12 +48,12 @@ fn unreachable_phrase(names: &[String], cameras: bool) -> String {
     };
     match names {
         [] => String::new(),
-        [a] => format!("{one}{a} est injoignable."),
-        [a, b] => format!("{many}{a} et {b} sont injoignables."),
+        [a] => format!("{one}« {a} » est injoignable."),
+        [a, b] => format!("{many}« {a} » et « {b} » sont injoignables."),
         [a, b, rest @ ..] => {
             let others = rest.len();
             let plural = if others > 1 { "autres" } else { "autre" };
-            format!("{many}{a}, {b} et {others} {plural} sont injoignables.")
+            format!("{many}« {a} », « {b} » et {others} {plural} sont injoignables.")
         }
     }
 }
@@ -120,7 +121,10 @@ mod tests {
     fn one_point_one_device() {
         let points = [Point::Devices(names(&["Lampe d'Adam"]))];
         assert_eq!(headline(count(&points)), "Une chose à regarder");
-        assert_eq!(detail(&points).unwrap(), "Lampe d'Adam est injoignable.");
+        assert_eq!(
+            detail(&points).unwrap(),
+            "« Lampe d'Adam » est injoignable."
+        );
     }
 
     #[test]
@@ -129,7 +133,7 @@ mod tests {
         assert_eq!(headline(count(&points)), "Une chose à regarder");
         assert_eq!(
             detail(&points).unwrap(),
-            "Lampe d'Adam et Prise TV sont injoignables."
+            "« Lampe d'Adam » et « Prise TV » sont injoignables."
         );
     }
 
@@ -142,13 +146,13 @@ mod tests {
         ]))];
         assert_eq!(
             detail(&three).unwrap(),
-            "Lampe d'Adam, Prise TV et 1 autre sont injoignables."
+            "« Lampe d'Adam », « Prise TV » et 1 autre sont injoignables."
         );
         let four = [Point::Devices(names(&["A", "B", "C", "D"]))];
         assert_eq!(headline(count(&four)), "Une chose à regarder");
         assert_eq!(
             detail(&four).unwrap(),
-            "A, B et 2 autres sont injoignables."
+            "« A », « B » et 2 autres sont injoignables."
         );
     }
 
@@ -156,16 +160,19 @@ mod tests {
     fn one_point_cameras() {
         let one = [Point::Cameras(names(&["Jardin"]))];
         assert_eq!(headline(count(&one)), "Une chose à regarder");
-        assert_eq!(detail(&one).unwrap(), "La caméra Jardin est injoignable.");
+        assert_eq!(
+            detail(&one).unwrap(),
+            "La caméra « Jardin » est injoignable."
+        );
         let two = [Point::Cameras(names(&["Entrée", "Jardin"]))];
         assert_eq!(
             detail(&two).unwrap(),
-            "Les caméras Entrée et Jardin sont injoignables."
+            "Les caméras « Entrée » et « Jardin » sont injoignables."
         );
         let three = [Point::Cameras(names(&["A", "B", "C"]))];
         assert_eq!(
             detail(&three).unwrap(),
-            "Les caméras A, B et 1 autre sont injoignables."
+            "Les caméras « A », « B » et 1 autre sont injoignables."
         );
     }
 
@@ -179,7 +186,7 @@ mod tests {
         assert_eq!(headline(count(&points)), "Deux choses à regarder");
         assert_eq!(
             detail(&points).unwrap(),
-            "Lampe d'Adam et Prise TV sont injoignables."
+            "« Lampe d'Adam » et « Prise TV » sont injoignables."
         );
     }
 
@@ -194,7 +201,7 @@ mod tests {
         // Pas d'appareil : les caméras passent avant les autres points.
         assert_eq!(
             detail(&points).unwrap(),
-            "La caméra Jardin est injoignable."
+            "La caméra « Jardin » est injoignable."
         );
         assert_eq!(headline(4), "4 choses à regarder");
         // Sans appareil ni caméra : la phrase du premier autre point.

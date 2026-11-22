@@ -373,6 +373,12 @@ struct AccountForm {
     confirm: String,
 }
 
+/// La cause affichée quand un fichier choisi n'est pas une sauvegarde (le détail va au journal).
+const BACKUP_UNUSABLE: &str = "Ce fichier n'est pas une sauvegarde Ostal utilisable.";
+
+/// La cause affichée quand l'ouverture à la connexion ne peut pas être modifiée.
+const LOGIN_FAILED: &str = "Le démarrage à l'ouverture de session n'a pas pu être modifié.";
+
 /// Lit et compare une sauvegarde (hors du fil principal).
 fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, String> {
     let inspected = backup::inspect(&file).map(|s| s.describe());
@@ -385,9 +391,10 @@ fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, 
             replace_ack: false,
             stopped_ack: false,
         }),
-        (Err(e), _) | (_, Err(e)) => Err(format!(
-            "Ce fichier n'est pas une sauvegarde utilisable : {e:#}"
-        )),
+        (Err(e), _) | (_, Err(e)) => {
+            log::warn!("sauvegarde illisible : {e:#}");
+            Err(BACKUP_UNUSABLE.into())
+        }
     }
 }
 
@@ -414,11 +421,15 @@ enum Retry {
     RevokeReadToken,
     DeleteModeToken,
     GenerateModeToken,
+    Login(bool),
+    Mode(protocol::mode::HomeMode),
 }
 
 struct App {
     handle: Handle,
     demo: bool,
+    /// Dernier débordement mesuré du contenu, en px (démo seulement).
+    last_overflow: i32,
     tray: TrayIcon,
     actions: Receiver<Action>,
     shown_menu: Vec<Entry>,
@@ -489,6 +500,7 @@ impl App {
         let app = Self {
             handle,
             demo,
+            last_overflow: i32::MIN,
             tray,
             actions,
             shown_menu: Vec::new(),
@@ -584,7 +596,8 @@ impl App {
         match agent::apply_default(&dir, &marker, &exe, self.demo) {
             agent::DefaultOutcome::Failed(e) => {
                 log::warn!("ouverture à la connexion non activée : {e}");
-                self.local_notice = Some(Notice::Err(e));
+                self.local_notice = Some(Notice::Err(LOGIN_FAILED.into()));
+                self.local_retry = Some(Retry::Login(true));
             }
             agent::DefaultOutcome::Enabled => {
                 log::info!("ouverture à la connexion activée par défaut");
@@ -618,10 +631,18 @@ impl App {
                     .transpose()
                 {
                     Ok(_) => None,
-                    Err(e) => Some(Notice::Err(format!("{e:#}"))),
+                    Err(e) => {
+                        log::warn!("choix de démarrage non enregistré : {e:#}");
+                        Some(Notice::Err(LOGIN_FAILED.into()))
+                    }
                 };
+                self.local_retry = self.local_notice.as_ref().map(|_| Retry::Login(on));
             }
-            Err(e) => self.local_notice = Some(Notice::Err(format!("{e:#}"))),
+            Err(e) => {
+                log::warn!("démarrage à l'ouverture de session non modifié : {e:#}");
+                self.local_notice = Some(Notice::Err(LOGIN_FAILED.into()));
+                self.local_retry = Some(Retry::Login(on));
+            }
         }
         self.login_checked_at = std::time::Instant::now() - Duration::from_secs(60);
         self.refresh_login();
@@ -779,10 +800,18 @@ impl App {
     /// Change le mode de la maison (menu ou vue d'ensemble).
     fn set_mode(&mut self, st: &State, mode: protocol::mode::HomeMode) {
         if let Some(hub) = &st.hub {
-            if let Err(e) = hub.0.set_mode(mode, protocol::mode::ModeSource::ServerApp) {
-                log::warn!("mode non changé : {e:?}");
-                self.local_notice = Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
-            }
+            self.set_mode_on(&hub.0.clone(), mode);
+        }
+    }
+
+    /// Change le mode sur le hub ; en cas d'échec, une cause et « Réessayer ».
+    fn set_mode_on(&mut self, hub: &Arc<ostal_server::hub::Hub>, mode: protocol::mode::HomeMode) {
+        if let Err(e) = hub.set_mode(mode, protocol::mode::ModeSource::ServerApp) {
+            log::warn!("mode non changé : {e:?}");
+            self.local_notice = Some(Notice::Err(
+                "Le mode n'a pas pu être enregistré : le serveur n'a pas pu enregistrer ce changement.".into(),
+            ));
+            self.local_retry = Some(Retry::Mode(mode));
         }
     }
 
@@ -910,8 +939,14 @@ impl eframe::App for App {
             if effects.open_window {
                 self.show_window(ctx);
             }
-            // `--open` : la fenêtre s'ouvre sur l'onglet demandé dès que le serveur tourne.
-            if st.phase == Phase::Running && !self.show_done {
+            // `--open` : la fenêtre s'ouvre sur l'onglet demandé dès que le serveur tourne (ou
+            // qu'il est à l'arrêt : état Arrêt des captures).
+            let ready = match st.phase {
+                Phase::Running => !self.show_done,
+                Phase::Blocked(_) | Phase::Problem(_) => true,
+                _ => false,
+            };
+            if ready {
                 if let Some(tab) = self.open_at_start.take() {
                     self.open_tab(tab);
                     self.show_window(ctx);
@@ -961,9 +996,21 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)))
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.content(ui, &ctx, &st));
+                // Le défilement masquerait un débordement : en démo, on le mesure et on le journalise.
+                if self.demo {
+                    let overflow = (out.content_size.y - out.inner_rect.height()).round() as i32;
+                    if overflow != self.last_overflow {
+                        self.last_overflow = overflow;
+                        log::info!(
+                            "mesure : contenu {:.0} px pour {:.0} px visibles (débordement {overflow} px)",
+                            out.content_size.y,
+                            out.inner_rect.height()
+                        );
+                    }
+                }
             });
     }
 }
@@ -1149,7 +1196,9 @@ mod tests {
         let file = dir.join("faux.ostal");
         std::fs::write(&file, "ce n'est pas une sauvegarde").unwrap();
         let err = inspect_backup(&dir, file).err().expect("refusé");
-        assert!(err.contains("pas une sauvegarde utilisable"), "{err}");
+        // Une phrase en français : ni chemin ni erreur système (le détail va au journal).
+        assert_eq!(err, BACKUP_UNUSABLE);
+        assert!(!err.contains("faux.ostal") && !err.contains(':'), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

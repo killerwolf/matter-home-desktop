@@ -586,8 +586,10 @@ impl MatterApp {
         let address = self
             .server
             .as_deref()
+            .or(self.saved_address.as_deref())
             .map(server_address)
             .unwrap_or_default();
+        let never_reached = !self.ever_connected;
         let (mut change, mut again) = (false, false);
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(theme::tokens().space.xl);
@@ -625,7 +627,7 @@ impl MatterApp {
                                         .size(theme::tokens().font.size.heading)
                                         .strong(),
                                 );
-                                ui.label("Liaison perdue : le serveur ne répond plus.");
+                                ui.label(lost_reason_text(never_reached, &address));
                                 ui.label(
                                     RichText::new(
                                         "Le Mac serveur est peut-être en veille ou éteint : \
@@ -666,6 +668,20 @@ impl MatterApp {
         if again {
             self.backend.reconnect();
         }
+    }
+}
+
+/// La première ligne de la carte « Plus de connexion à la maison » : la liaison perdue, ou une
+/// adresse où aucun serveur n'a encore répondu.
+pub(super) fn lost_reason_text(never_reached: bool, address: &str) -> String {
+    if never_reached {
+        if address.is_empty() {
+            "Aucun serveur n'a répondu.".into()
+        } else {
+            format!("Aucun serveur n'a répondu à {address}.")
+        }
+    } else {
+        "Liaison perdue : le serveur ne répond plus.".into()
     }
 }
 

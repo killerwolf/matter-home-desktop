@@ -165,7 +165,7 @@ mod tests {
         );
         assert_eq!(
             tooltip(&overview_of(&Phase::Running, &["Salon"])),
-            "Ostal Server : Une chose à regarder\nAppareils : 4 sur 5 joignables · Salon est injoignable"
+            "Ostal Server : Une chose à regarder\nAppareils : 4 sur 5 joignables · « Salon » est injoignable"
         );
         assert_eq!(
             tooltip(&overview_of(&Phase::Blocked(Blocker::DesktopV02), &[])),

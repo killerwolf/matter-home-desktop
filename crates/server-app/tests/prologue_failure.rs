@@ -39,6 +39,7 @@ fn a_failed_prologue_releases_the_locks_and_says_to_quit() {
             listen: "127.0.0.1:0".parse().unwrap(),
             demo: true,
             demo_setup: true,
+            demo_blocked: false,
             temp_data_dir: false,
             log_path: base.join("journal.log"),
             args: vec![],

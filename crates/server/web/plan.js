@@ -10,7 +10,7 @@ import { formatTemperature, roomAverages, symbolOf, tempClass, tileOf } from "./
 const NS = "http://www.w3.org/2000/svg";
 export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau.";
 
-const PAD = 28; // marge autour du plan à l'ajustement (px)
+const PAD = 16; // marge autour du plan à l'ajustement (px) : le plan remplit le cadre
 const MARGIN_M = 0.5; // marge autour des pièces et objets (m)
 const MAX_FIT = 90; // pas plus de 90 px par mètre à l'ajustement
 const ZOOM_OUT = 0.6; // jusqu'à 0,6 fois l'ajustement
@@ -110,6 +110,8 @@ const html = (tag, className, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
+const textW = (text, px) => text.length * px * 0.55; // largeur estimée d'un texte (px)
+const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 const short = (text, n = 12) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
 
 const DECOR_ICONS = {
@@ -198,6 +200,63 @@ export function mountPlan(root, ctx) {
   let destroyed = false;
   let raf = 0;
 
+  // ---- étiquettes qui ne se chevauchent pas ----
+  // Les pictogrammes restent toujours visibles. Les noms de pièce cherchent un coin libre ; le nom
+  // court d'un appareil (puis sa valeur) disparaît quand il en toucherait un autre : les appareils
+  // allumés ou injoignables passent d'abord, les objets décoratifs en dernier. En zoomant, tout revient.
+  const declutter = (k) => {
+    const placed = [];
+    const free = (b) => !placed.some((o) => hit(o, b));
+    const at = items.map((i) => ({ i, px: view.tx + view.s * i.x, py: view.ty + view.s * i.y }));
+    for (const { i, px, py } of at) {
+      const r = i.r * k + 2;
+      placed.push({ x0: px - r, y0: py - r, x1: px + r, y1: py + r });
+    }
+    for (const l of labels) {
+      const left = view.tx + view.s * l.x;
+      const top = view.ty + view.s * l.y;
+      const shown = view.s * l.w >= 70;
+      l.node.style.visibility = shown ? "visible" : "hidden";
+      if (!shown) continue;
+      const w = textW(l.node.textContent, 13);
+      const right = left + view.s * l.w;
+      const bottom = top + view.s * l.h;
+      // En haut à gauche, puis en bas à gauche, en haut à droite, en bas à droite.
+      const spots = [
+        { anchor: "start", x: left + 6, y: top + 15, x0: left + 6 },
+        { anchor: "start", x: left + 6, y: bottom - 7, x0: left + 6 },
+        { anchor: "end", x: right - 6, y: top + 15, x0: right - 6 - w },
+        { anchor: "end", x: right - 6, y: bottom - 7, x0: right - 6 - w },
+      ];
+      const fits = (c) => c.x0 + w <= right && c.y - 12 >= top - 2 && c.y + 4 <= bottom + 2;
+      const spot = spots.find((c) => fits(c) && free({ x0: c.x0, y0: c.y - 12, x1: c.x0 + w, y1: c.y + 4 })) ?? spots[0];
+      l.node.setAttribute("text-anchor", spot.anchor);
+      l.node.setAttribute("x", String(spot.x));
+      l.node.setAttribute("y", String(spot.y));
+      placed.push({ x0: spot.x0, y0: spot.y - 12, x1: spot.x0 + w, y1: spot.y + 4 });
+    }
+    const rank = ({ i }) => (i.decor ? 2 : /\b(lit|warn|err)\b/.test(i.node.getAttribute("class") ?? "") ? 0 : 1);
+    for (const e of at.map((a, n) => ({ ...a, n })).sort((a, b) => rank(a) - rank(b) || a.n - b.n)) {
+      const [name, value] = e.i.texts.map(([node]) => node);
+      const base = e.py + e.i.r * k;
+      const box = (node, off, px) => {
+        const w = textW(node.textContent, px);
+        return { x0: e.px - w / 2, y0: base + off - 11, x1: e.px + w / 2, y1: base + off + 3 };
+      };
+      const hasName = name.textContent !== "";
+      const nameBox = hasName ? box(name, e.i.texts[0][1], 12) : null;
+      const nameOk = hasName && free(nameBox);
+      name.style.visibility = nameOk ? "visible" : "hidden";
+      if (nameOk) placed.push(nameBox);
+      if (value) {
+        const valueBox = value.textContent !== "" ? box(value, e.i.texts[1][1], 11) : null;
+        const valueOk = nameOk && valueBox != null && free(valueBox);
+        value.style.visibility = valueOk ? "visible" : "hidden";
+        if (valueOk) placed.push(valueBox);
+      }
+    }
+  };
+
   // ---- vue ----
   const apply = () => {
     raf = 0;
@@ -211,11 +270,7 @@ export function mountPlan(root, ctx) {
       i.body.setAttribute("transform", `scale(${k})`);
       for (const [node, off] of i.texts) node.setAttribute("y", String(i.r * k + off));
     }
-    for (const l of labels) {
-      l.node.setAttribute("x", String(view.tx + view.s * l.x + 6));
-      l.node.setAttribute("y", String(view.ty + view.s * l.y + 15));
-      l.node.style.visibility = view.s * l.w < 70 ? "hidden" : "visible";
-    }
+    declutter(k);
   };
   const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
   const setView = (next) => {
@@ -313,7 +368,7 @@ export function mountPlan(root, ctx) {
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 14 }, "pbg"), icon);
     group.append(body, name);
-    return { node: group, x: item.x, y: item.y, body, r: 14, texts: [[name, 15]], update() {} };
+    return { node: group, x: item.x, y: item.y, body, r: 14, decor: true, texts: [[name, 15]], update() {} };
   }
 
   function cameraItem(item) {
@@ -361,7 +416,7 @@ export function mountPlan(root, ctx) {
       const label = el("text", {}, "plabel");
       label.textContent = r.name;
       layer.appendChild(label);
-      labels.push({ node: label, x: r.x, y: r.y, w: r.w });
+      labels.push({ node: label, x: r.x, y: r.y, w: r.w, h: r.h });
     }
     // Les champs des caméras sous les objets, les objets par-dessus.
     for (const i of floor.items ?? []) {

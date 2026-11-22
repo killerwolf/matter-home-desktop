@@ -10,6 +10,13 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Refonte (préversion, itération 3)
+
+- Intégration : formatage, clippy (`-D warnings`), tests Rust et tests node repris sur les trois
+  surfaces ; le cache du service worker de l'app web est à `ostal-shell-v15` (tests du serveur
+  alignés).
+- Préversion : la version n'est toujours pas incrémentée.
+
 ### Refonte (préversion, itération 2)
 
 - Intégration : formatage, clippy et tests repris sur les trois surfaces ; le cache du service worker

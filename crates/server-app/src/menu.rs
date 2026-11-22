@@ -225,7 +225,7 @@ mod tests {
             infos(&menu),
             [
                 "Deux choses à regarder",
-                "Salon est injoignable.",
+                "« Salon » est injoignable.",
                 "Caméras : 2 caméras en service · détection indisponible",
                 "Accès à distance : une autorisation reste à donner",
             ]

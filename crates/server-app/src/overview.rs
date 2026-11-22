@@ -156,6 +156,9 @@ pub fn is_thermal_pause(reason: &str) -> bool {
 /// connectent).
 pub fn devices_sentence(health: &Health) -> String {
     let n = health.online;
+    if n == 0 && health.total > 0 {
+        return format!("Aucun appareil sur {} n'est joignable.", health.total);
+    }
     let mut text = format!(
         "{n} appareil{} sur {} {}.",
         plural(n),
@@ -341,7 +344,7 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
             },
             Tab::Cameras,
         );
-        // En milieu de ligne : « la caméra Garage est injoignable ».
+        // En milieu de ligne : « la caméra « Garage » est injoignable ».
         let phrase = clause(Point::Cameras(cameras.unreachable.clone()).phrase());
         let mut letters = phrase.chars();
         let lower: String = letters
@@ -644,9 +647,9 @@ mod tests {
         assert_eq!(o.level, Level::Warn);
         assert_eq!(
             o.checks[0].text,
-            "12 sur 13 joignables · Salon est injoignable"
+            "12 sur 13 joignables · « Salon » est injoignable"
         );
-        assert_eq!(o.detail.as_deref(), Some("Salon est injoignable."));
+        assert_eq!(o.detail.as_deref(), Some("« Salon » est injoignable."));
         assert_eq!(o.detail_from, Some("Appareils"));
         assert_eq!(
             o.fix,
@@ -672,11 +675,11 @@ mod tests {
         assert_eq!(o.headline, "3 choses à regarder");
         assert_eq!(
             o.checks[0].text,
-            "1 sur 5 joignables · A, B et 2 autres sont injoignables"
+            "1 sur 5 joignables · « A », « B » et 2 autres sont injoignables"
         );
         assert_eq!(
             o.checks[1].text,
-            "1 sur 3 en service · les caméras Entrée et Jardin sont injoignables · détection suspendue (le Mac est trop chaud)"
+            "1 sur 3 en service · les caméras « Entrée » et « Jardin » sont injoignables · détection suspendue (le Mac est trop chaud)"
         );
         assert_eq!(o.fix.as_ref().map(|f| f.tab), Some(Tab::Devices));
         // Le lien d'autorisation n'est jamais écrit dans le résumé.
@@ -724,7 +727,7 @@ mod tests {
         assert_eq!(check.level, Level::Warn);
         assert_eq!(
             check.text,
-            "1 sur 4 en service · la caméra Garage est injoignable · 1 éteinte dans ce mode · 1 pas encore vérifiée"
+            "1 sur 4 en service · la caméra « Garage » est injoignable · 1 éteinte dans ce mode · 1 pas encore vérifiée"
         );
         // Toutes répondent : la forme courte.
         assert_eq!(cameras_check(&cameras(2, &[])).text, "2 caméras en service");
@@ -776,6 +779,16 @@ mod tests {
         assert_eq!(
             devices_sentence(&health(1, &[])),
             "1 appareil sur 1 est joignable."
+        );
+        let none = Health {
+            total: 3,
+            online: 0,
+            unreachable: vec!["Salon".into()],
+            ..Health::default()
+        };
+        assert_eq!(
+            devices_sentence(&none),
+            "Aucun appareil sur 3 n'est joignable."
         );
         assert_eq!(
             devices_sentence(&health(5, &["Salon"])),

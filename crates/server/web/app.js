@@ -1263,9 +1263,16 @@ function renderPush() {
         steps.appendChild(li);
       });
       const inner = make("div", "step-body");
-      inner.append(make("p", "", support.text), steps);
+      inner.append(make("strong", "", "Ajouter Ostal à l'écran d'accueil"), make("p", "", support.text), steps);
       callout.appendChild(inner);
       body.appendChild(callout);
+      // Les conditions au-dessus du bouton, grisé tant qu'Ostal n'est pas ouvert depuis l'écran d'accueil.
+      note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");
+      const inactive = make("button", "primary", "Activer les notifications sur cet appareil");
+      inactive.type = "button";
+      inactive.disabled = true;
+      body.appendChild(inactive);
+      note("Inactif dans Safari : ouvrez Ostal depuis l'icône de l'écran d'accueil pour l'activer.");
     } else note(support.text, support.reason === "ios-too-old" ? "error" : "w-note");
   } else if (!mine) {
     note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");
@@ -1810,6 +1817,11 @@ $("#login-form").addEventListener("submit", async (event) => {
   const submit = formEl.querySelector("button[type=submit]");
   if (submit.disabled) return; // pas de double envoi
   submit.disabled = true;
+  // Dès la première tentative, « Session expirée » s'efface : la phrase d'accueil revient, et c'est
+  // le résultat de cette tentative (ou rien) qui s'affiche, jamais les deux messages ensemble.
+  $("#login-info").hidden = true;
+  $("#login-intro").hidden = false;
+  setLoginError("");
   try {
     await api.login(String(form.get("username")), String(form.get("password")));
     formEl.reset();

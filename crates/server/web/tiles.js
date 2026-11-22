@@ -215,16 +215,17 @@ export const formatTemperature = oneDecimal;
 // textes, mot pour mot, essayés par tiles.test.mjs avec les mêmes cas.
 // ---------------------------------------------------------------------------
 
-/** « Lampe d'Adam est injoignable. », « A et B sont injoignables. », « A, B et 1 autre sont
- *  injoignables. » ; pour des caméras, « La caméra X est injoignable. » et « Les caméras … ». */
+/** Le nom est entre guillemets français : « « Lampe d'Adam » est injoignable. »,
+ *  « « A » et « B » sont injoignables. », « « A », « B » et 1 autre sont injoignables. » ; pour des
+ *  caméras, « La caméra « X » est injoignable. » et « Les caméras … ». */
 export function unreachablePhrase(names, cameras = false) {
   const one = cameras ? "La caméra " : "";
   const many = cameras ? "Les caméras " : "";
   if (names.length === 0) return "";
-  if (names.length === 1) return `${one}${names[0]} est injoignable.`;
-  if (names.length === 2) return `${many}${names[0]} et ${names[1]} sont injoignables.`;
+  if (names.length === 1) return `${one}« ${names[0]} » est injoignable.`;
+  if (names.length === 2) return `${many}« ${names[0]} » et « ${names[1]} » sont injoignables.`;
   const others = names.length - 2;
-  return `${many}${names[0]}, ${names[1]} et ${others} ${others > 1 ? "autres" : "autre"} sont injoignables.`;
+  return `${many}« ${names[0]} », « ${names[1]} » et ${others} ${others > 1 ? "autres" : "autre"} sont injoignables.`;
 }
 
 /** Le titre pour `n` points (catégories) à regarder. */

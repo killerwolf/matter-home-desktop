@@ -185,6 +185,8 @@ struct Toast {
 }
 
 const TOAST_LIFETIME: Duration = Duration::from_secs(20);
+/// Au plus 5 toasts à l'écran : le plus ancien part quand un sixième arrive.
+const MAX_TOASTS: usize = 5;
 /// Attente maximale des réponses du plan et des règles à la fermeture de la fenêtre.
 const EXIT_FLUSH: Duration = Duration::from_millis(1500);
 
@@ -268,6 +270,9 @@ pub struct MatterApp {
     /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
     /// même si le serveur n'a jamais répondu.
     saved_address: Option<String>,
+    /// Un serveur a répondu pendant cette session : sinon, « Plus de connexion à la maison »
+    /// dit que l'adresse n'a jamais été jointe plutôt que « Liaison perdue ».
+    ever_connected: bool,
     /// Serveur auquel appartient un brouillon gardé pendant une coupure : s'il change, le
     /// brouillon est abandonné plutôt qu'envoyé ailleurs.
     draft_server: Option<String>,
@@ -305,6 +310,7 @@ impl MatterApp {
         let saved_address = backend.saved_url();
         Self {
             saved_address,
+            ever_connected: false,
             backend,
             events,
             link: Link::Connecting,
@@ -1243,6 +1249,7 @@ impl MatterApp {
                     self.push_log(format!("Connecté au serveur (version {server_version})."));
                 }
                 self.server = Some(server.clone());
+                self.ever_connected = true;
                 self.draft_server = None;
                 self.connect.connected();
             }
@@ -1393,14 +1400,7 @@ impl MatterApp {
                 self.push_log(format!("Notification : {title} — {message}"));
                 // Client ouvert : une vraie notification du système en plus du toast.
                 (self.notifier)(&title, &message);
-                self.toasts.push(Toast {
-                    title,
-                    message,
-                    until: Instant::now() + TOAST_LIFETIME,
-                });
-                if self.toasts.len() > 5 {
-                    self.toasts.remove(0);
-                }
+                self.toast(&title, message);
             }
             Change::RuleRun(run) => {
                 self.push_log(format!(
@@ -2006,7 +2006,7 @@ impl MatterApp {
             message,
             until: Instant::now() + TOAST_LIFETIME,
         });
-        if self.toasts.len() > 5 {
+        if self.toasts.len() > MAX_TOASTS {
             self.toasts.remove(0);
         }
     }

@@ -143,10 +143,12 @@ pub fn status_line(
     let mut clicked = false;
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = t.space.sm;
-        ui.add_sized(
-            [112.0, 18.0],
-            egui::Label::new(RichText::new(title).strong()),
-        );
+        // Libellé aligné à gauche dans sa colonne (add_sized le centrerait).
+        ui.allocate_ui_with_layout(Vec2::new(112.0, 18.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_min_size(Vec2::new(112.0, 18.0));
+            ui.set_max_width(112.0);
+            ui.add(egui::Label::new(RichText::new(title).strong()));
+        });
         ui.vertical(|ui| {
             ui.set_width((ui.available_width() - right - 8.0).max(120.0));
             ui.spacing_mut().item_spacing.y = 4.0;

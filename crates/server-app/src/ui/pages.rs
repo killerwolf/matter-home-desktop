@@ -167,7 +167,10 @@ impl App {
                 } else if again {
                     let retry = self.local_retry.take();
                     self.local_notice = None;
-                    if let (Some(retry), Some(hub)) = (retry, st.hub.as_ref().map(|h| h.0.clone()))
+                    if let Some(Retry::Login(on)) = retry {
+                        self.set_login(on);
+                    } else if let (Some(retry), Some(hub)) =
+                        (retry, st.hub.as_ref().map(|h| h.0.clone()))
                     {
                         self.run_retry(retry, &hub);
                     }
@@ -181,7 +184,7 @@ impl App {
     fn fail(&mut self, what: &str, detail: impl std::fmt::Debug, retry: Option<Retry>) {
         log::warn!("{what} : {detail:?}");
         self.local_notice = Some(Notice::Err(format!(
-            "{what} : le serveur n'a pas pu enregistrer ce changement. Vérifiez l'espace libre sur le Mac, puis réessayez."
+            "{what} : le serveur n'a pas pu enregistrer ce changement."
         )));
         self.local_retry = retry;
     }
@@ -194,6 +197,8 @@ impl App {
             Retry::RevokeReadToken => self.revoke_read(hub),
             Retry::DeleteModeToken => self.delete_mode_token(hub),
             Retry::GenerateModeToken => self.generate_mode_token(hub),
+            Retry::Login(on) => self.set_login(on),
+            Retry::Mode(mode) => self.set_mode_on(hub, mode),
         }
     }
 
@@ -457,6 +462,7 @@ impl App {
             }
             Ok(Err(message)) => {
                 self.local_notice = Some(Notice::Err(message));
+                self.local_retry = None;
                 self.picking = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -578,7 +584,7 @@ impl App {
                 // propose de réessayer.
                 let mut retry = false;
                 widgets::section(ui, "Pourquoi, et quoi faire", |ui| {
-                    ui.label("Le serveur s'est arrêté après une erreur. Vérifiez l'espace disque du Mac, puis réessayez.");
+                    ui.label(ostal_server_app::controller::STOPPED_AFTER_ERROR);
                     ui.add_space(6.0);
                     retry = theme::primary_button(ui, "Réessayer").clicked();
                 });
@@ -941,7 +947,7 @@ impl App {
             return self.needs_server(ui);
         };
         let summaries = [
-            None,
+            Some("Adresse et code de vérification".to_string()),
             Some(match &self.web {
                 WebAccess::On { .. } => "Activé".to_string(),
                 WebAccess::Checking => "vérification…".to_string(),

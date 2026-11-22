@@ -36,6 +36,7 @@ fn empty_folder_goes_through_identity_then_account_then_runs() {
             listen: "127.0.0.1:0".parse().unwrap(),
             demo: true,
             demo_setup: true,
+            demo_blocked: false,
             temp_data_dir: false,
             log_path: dir.join("journal.log"),
             args: vec![],

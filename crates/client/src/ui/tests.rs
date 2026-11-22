@@ -2432,7 +2432,7 @@ fn the_status_phrase_follows_the_devices_and_the_link() {
     assert!(
         watch
             .detail
-            .starts_with("Lampe d'Adam est injoignable depuis "),
+            .starts_with("« Lampe d'Adam » est injoignable depuis "),
         "{}",
         watch.detail
     );
@@ -2447,6 +2447,33 @@ fn the_status_phrase_follows_the_devices_and_the_link() {
     let lost = f.app.status_phrase();
     assert_eq!(lost.tone, shell::Tone::Lost);
     assert_eq!(lost.lead, "Plus de connexion à la maison");
+}
+
+/// Jamais joint : la carte ne parle pas de « liaison perdue » mais d'une adresse sans réponse.
+#[test]
+fn a_never_reached_server_has_its_own_lost_text() {
+    assert_eq!(
+        shell::lost_reason_text(true, "127.0.0.1:9"),
+        "Aucun serveur n'a répondu à 127.0.0.1:9."
+    );
+    assert_eq!(
+        shell::lost_reason_text(false, "127.0.0.1:9"),
+        "Liaison perdue : le serveur ne répond plus."
+    );
+    let f = Fixture::new();
+    assert!(!f.app.ever_connected);
+}
+
+/// Les toasts : 5 au plus, chacun gardé 20 s.
+#[test]
+fn toasts_are_capped_at_five_and_live_twenty_seconds() {
+    let mut f = Fixture::new();
+    for i in 0..8 {
+        f.app.toast("Titre", format!("n°{i}"));
+    }
+    assert_eq!(f.app.toasts.len(), 5);
+    assert_eq!(f.app.toasts[0].message, "n°3");
+    assert_eq!(TOAST_LIFETIME, Duration::from_secs(20));
 }
 
 /// Une erreur de commande reste affichée (plus de limite de 20 s), porte la commande à renvoyer,

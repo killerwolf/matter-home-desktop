@@ -23,31 +23,31 @@ const other = (text) => ({ kind: "other", text });
 {
   const s = summarize([devices("Lampe d'Adam")], 10);
   assert.equal(s.title, "Une chose à regarder");
-  assert.equal(s.detail, "Lampe d'Adam est injoignable.");
+  assert.equal(s.detail, "« Lampe d'Adam » est injoignable.");
 }
 
 // Un point, deux appareils.
 {
   const s = summarize([devices("Lampe d'Adam", "Prise TV")], 10);
   assert.equal(s.title, "Une chose à regarder");
-  assert.equal(s.detail, "Lampe d'Adam et Prise TV sont injoignables.");
+  assert.equal(s.detail, "« Lampe d'Adam » et « Prise TV » sont injoignables.");
 }
 
 // Un point, trois appareils ou plus : « et 1 autre », « et 2 autres ».
 {
-  assert.equal(summarize([devices("Lampe d'Adam", "Prise TV", "Frigo")], 10).detail, "Lampe d'Adam, Prise TV et 1 autre sont injoignables.");
+  assert.equal(summarize([devices("Lampe d'Adam", "Prise TV", "Frigo")], 10).detail, "« Lampe d'Adam », « Prise TV » et 1 autre sont injoignables.");
   const four = summarize([devices("A", "B", "C", "D")], 10);
   assert.equal(four.title, "Une chose à regarder");
-  assert.equal(four.detail, "A, B et 2 autres sont injoignables.");
+  assert.equal(four.detail, "« A », « B » et 2 autres sont injoignables.");
 }
 
 // Un point, des caméras.
 {
   const one = summarize([cameras("Jardin")], 10);
   assert.equal(one.title, "Une chose à regarder");
-  assert.equal(one.detail, "La caméra Jardin est injoignable.");
-  assert.equal(summarize([cameras("Entrée", "Jardin")], 10).detail, "Les caméras Entrée et Jardin sont injoignables.");
-  assert.equal(summarize([cameras("A", "B", "C")], 10).detail, "Les caméras A, B et 1 autre sont injoignables.");
+  assert.equal(one.detail, "La caméra « Jardin » est injoignable.");
+  assert.equal(summarize([cameras("Entrée", "Jardin")], 10).detail, "Les caméras « Entrée » et « Jardin » sont injoignables.");
+  assert.equal(summarize([cameras("A", "B", "C")], 10).detail, "Les caméras « A », « B » et 1 autre sont injoignables.");
 }
 
 // Deux points (appareils et caméras) : « Deux choses à regarder », et le détail commence par les
@@ -55,14 +55,14 @@ const other = (text) => ({ kind: "other", text });
 {
   const s = summarize([cameras("Jardin"), devices("Lampe d'Adam", "Prise TV")], 10);
   assert.equal(s.title, "Deux choses à regarder");
-  assert.equal(s.detail, "Lampe d'Adam et Prise TV sont injoignables.");
+  assert.equal(s.detail, "« Lampe d'Adam » et « Prise TV » sont injoignables.");
 }
 
 // Trois points ou plus : le nombre en chiffres, la phrase du premier point (les caméras avant les autres).
 {
   const s = summarize([other("L'accès à distance est coupé."), cameras("Jardin"), other("La détection est suspendue par la chaleur.")], 10);
   assert.equal(s.title, "3 choses à regarder");
-  assert.equal(s.detail, "La caméra Jardin est injoignable.");
+  assert.equal(s.detail, "La caméra « Jardin » est injoignable.");
   assert.equal(headline(4), "4 choses à regarder");
   assert.equal(summarize([other("A."), other("B."), other("C.")], 10).detail, "A.");
 }
@@ -97,7 +97,7 @@ assert.equal(unreachablePhrase([]), "");
   ]);
   const s = statusSummary(home, []);
   assert.equal(s.title, "Une chose à regarder");
-  assert.equal(s.detail, "Lampe d'Adam est injoignable.");
+  assert.equal(s.detail, "« Lampe d'Adam » est injoignable.");
   assert.equal(s.ok, false);
   assert.equal(s.count, 1);
 
@@ -109,8 +109,8 @@ assert.equal(unreachablePhrase([]), "");
 
   const two = statusSummary(home, [{ name: "Jardin", status: { state: "unreachable" } }, { name: "Entrée", status: { state: "online" } }]);
   assert.equal(two.title, "Deux choses à regarder");
-  assert.equal(two.detail, "Lampe d'Adam est injoignable.");
-  assert.equal(statusSummary(new Map(), [{ name: "Jardin", status: { state: "unreachable" } }]).detail, "La caméra Jardin est injoignable.");
+  assert.equal(two.detail, "« Lampe d'Adam » est injoignable.");
+  assert.equal(statusSummary(new Map(), [{ name: "Jardin", status: { state: "unreachable" } }]).detail, "La caméra « Jardin » est injoignable.");
   assert.equal(statusSummary(new Map(), undefined).detail, "Aucun appareil.");
 }
 
