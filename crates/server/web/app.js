@@ -10,7 +10,7 @@ import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
-import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
+import { DEFAULT_MODE, MODES, cameraOff, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
 import { copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
 
@@ -76,7 +76,16 @@ function applyEvent(e) {
     case "cover_motion": if (d(e.node_id)) d(e.node_id).cover_motion = e.motion; break;
     case "plan_changed": state.plan = e.plan; scheduleRender(true); return;
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
-    case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
+    case "mode_changed": {
+      // Un changement venu d'ailleurs (raccourci, automatisation, autre app) : une notification
+      // brève dit d'où il vient. Pas pour celui que cette app vient de demander.
+      const notice = e.mode !== state.mode ? modeChangeNotice(e.mode, e.source, modeRequested) : null;
+      if (e.mode === modeRequested) modeRequested = null;
+      if (isMode(e.mode)) state.mode = e.mode;
+      if (notice) toast(notice, "status");
+      scheduleRender(true);
+      return;
+    }
     case "detection": {
       // Un passage commence (« en cours »), se met à jour, se termine, ou reçoit sa description
       // (même `id` à chaque fois) : en tête de liste, sans relancer les vidéos de l'onglet. La
@@ -119,10 +128,10 @@ function clearExpect(id) {
   scheduleRender(false);
 }
 
-function toast(text) {
+function toast(text, role = "alert") {
   const node = document.createElement("div");
-  node.className = "banner toast";
-  node.setAttribute("role", "alert");
+  node.className = role === "status" ? "banner info toast" : "banner toast";
+  node.setAttribute("role", role);
   node.textContent = text;
   document.body.appendChild(node);
   setTimeout(() => node.remove(), 4000);
@@ -1276,6 +1285,8 @@ const TITLES = { devices: "Appareils", plan: "Plan", temps: "Températures", cam
 // Le mode de la maison : une pastille en haut, un tap ouvre les quatre choix
 // ---------------------------------------------------------------------------
 const modeChip = $("#mode-chip");
+/** Le mode que cette app vient de demander (pas de notification pour lui). */
+let modeRequested = null;
 const modeMenu = $("#mode-menu");
 
 for (const m of MODES) {
@@ -1293,6 +1304,7 @@ function renderModeChip() {
   if (modeChip.hidden) closeModeMenu(false);
   const label = modeLabel(state.mode);
   modeChip.textContent = `Mode : ${label}`;
+  modeChip.classList.toggle("present", state.mode === "present");
   modeChip.setAttribute("aria-label", `Mode de la maison : ${label}. Changer de mode.`);
   for (const item of modeMenu.children) item.setAttribute("aria-checked", String(item.dataset.mode === state.mode));
 }
@@ -1315,10 +1327,12 @@ function openModeMenu() {
 async function chooseMode(id) {
   closeModeMenu(true);
   if (id === state.mode) return;
+  modeRequested = id;
   try {
-    const result = await api.request("PUT", "/api/mode", { mode: id });
+    const result = await api.request("PUT", "/api/mode", { mode: id, source: { kind: "web" } });
     if (isMode(result?.mode)) { state.mode = result.mode; scheduleRender(true); }
   } catch (error) {
+    modeRequested = null;
     toast(error.detail || "Le mode n'a pas pu être changé.");
   }
 }

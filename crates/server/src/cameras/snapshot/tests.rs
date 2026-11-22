@@ -309,12 +309,14 @@ async fn a_camera_that_is_off_serves_no_image_not_even_a_cached_one() {
     let image = service.get(&live, &hub, id).await.unwrap();
     assert!(jpeg_size(&image.jpeg).is_some());
     // Le cache est encore frais (15 s), mais la caméra s'éteint : plus d'image.
-    hub.set_mode(HomeMode::Nuit).unwrap();
+    hub.set_mode(HomeMode::Nuit, protocol::mode::ModeSource::Other)
+        .unwrap();
     assert_eq!(
         service.get(&live, &hub, id).await.unwrap_err(),
         SnapshotError::Off
     );
     // Elle redevient disponible avec le mode suivant.
-    hub.set_mode(HomeMode::Present).unwrap();
+    hub.set_mode(HomeMode::Present, protocol::mode::ModeSource::Other)
+        .unwrap();
     assert!(service.get(&live, &hub, id).await.is_ok());
 }

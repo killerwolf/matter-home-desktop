@@ -5,7 +5,7 @@
 use eframe::egui::{Color32, Painter, Pos2, Rect, Stroke, Vec2};
 
 use super::plan::opening::{self, OpeningIcon};
-use super::theme::{self, Palette};
+use super::theme::Palette;
 
 /// Ce que dit l'icône d'une tuile.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,7 +30,6 @@ pub enum IconKind {
 /// Dessine l'icône, centrée en `center`, dans un carré de `size` pixels. `fade` (0 à 1) estompe
 /// tout (appareil injoignable).
 pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: IconKind, pal: &Palette, fade: f32) {
-    let tile = theme::tokens().tile;
     let ink = pal.text_secondary.gamma_multiply(fade);
     let stroke = Stroke::new(size / 15.0, ink);
     let at = |x: f32, y: f32| center + Vec2::new(x, y) * size;
@@ -40,7 +39,7 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: IconKind, pal: &P
             let glass = at(0.0, -0.08);
             let r = 0.34 * size;
             if on {
-                let warm = tile.on_tint.gamma_multiply(fade);
+                let warm = pal.lueur.gamma_multiply(fade);
                 painter.circle_filled(glass, r, warm);
                 // Six rayons sur le haut de l'ampoule.
                 for k in 0..7 {

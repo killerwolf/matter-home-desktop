@@ -465,11 +465,14 @@ fn an_off_camera_is_refused_in_that_mode_only() {
     assert!(hub.acquire_camera_viewer(outdoor).is_some());
     assert_eq!(hub.camera_off_message(), "caméra éteinte en mode Présent");
     // Absent : l'intérieure surveille, donc se regarde comme avant.
-    assert!(hub.set_mode(HomeMode::Absent).unwrap());
+    assert!(hub
+        .set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap());
     assert!(!hub.camera_is_off(indoor));
     assert!(hub.camera_target(indoor, StreamKind::Sub).is_some());
     // Nuit : éteinte de nouveau. Une caméra inconnue n'est pas « éteinte » (c'est un 404).
-    hub.set_mode(HomeMode::Nuit).unwrap();
+    hub.set_mode(HomeMode::Nuit, protocol::mode::ModeSource::Other)
+        .unwrap();
     assert!(hub.camera_is_off(indoor));
     assert!(!hub.camera_is_off(indoor + 1));
     // Éteinte : aucune vérification (ni connexion) et l'état affiché est `Off`, pas l'ancien.
@@ -484,10 +487,12 @@ fn an_off_camera_is_refused_in_that_mode_only() {
     };
     assert_eq!(status(indoor), CameraStatus::Off);
     assert_ne!(status(outdoor), CameraStatus::Off);
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     assert!(hub.camera_probe_target(indoor).is_some());
     assert_ne!(status(indoor), CameraStatus::Off);
-    hub.set_mode(HomeMode::Nuit).unwrap();
+    hub.set_mode(HomeMode::Nuit, protocol::mode::ModeSource::Other)
+        .unwrap();
     // Le moteur a été prévenu de chaque vrai changement, et d'eux seuls.
     let mut sent = Vec::new();
     while let Ok(c) = rx.try_recv() {
@@ -496,10 +501,10 @@ fn an_off_camera_is_refused_in_that_mode_only() {
     assert_eq!(
         sent,
         [
-            "SetHomeMode(Absent)",
-            "SetHomeMode(Nuit)",
-            "SetHomeMode(Absent)",
-            "SetHomeMode(Nuit)"
+            "SetHomeMode { mode: Absent, source: Other }",
+            "SetHomeMode { mode: Nuit, source: Other }",
+            "SetHomeMode { mode: Absent, source: Other }",
+            "SetHomeMode { mode: Nuit, source: Other }"
         ]
     );
     std::fs::remove_dir_all(dir).unwrap();

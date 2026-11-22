@@ -8,6 +8,31 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Modifié
+
+- **Nouvelle palette « Nuit et Lueur »**, celle du logo Seuil, dans l'app de bureau, l'app web et
+  la fenêtre du serveur : neutres légèrement bleutés, texte Nuit (`#10232d`) en clair, fond nuit
+  profonde en sombre. Nouveaux tokens `lueur`, `on_lueur` et `lueur_text` : une lampe allumée et
+  le mode **Présent** (pastille du mode) prennent la Lueur (`#f5b33f`). L'alerte (`warn`) passe à
+  un orange plus rouge (`#b4500e`), pour ne plus se confondre avec une lampe allumée : Lueur veut
+  dire « allumé », jamais « attention ». L'échelle de température ne change pas. Tous les textes
+  gardent un contraste d'au moins 4,5 (testé).
+
+### Ajouté
+
+- **Logotype Ostal** : le logo Seuil et le mot « Ostal » en Outfit SemiBold, en tracés, en
+  variantes claire et sombre (`assets/logo/ostal-logotype-*.svg`). Il apparaît en haut du README et
+  sur l'écran de connexion de l'app web.
+- **Chaque changement de mode dit d'où il vient** : raccourci iPhone (jeton de mode), app web, app
+  de bureau, fenêtre du serveur, automatisation (avec le nom de la règle) ou autre. Le journal du
+  serveur et celui de l'app de bureau l'écrivent (« Mode : Absent (raccourci iPhone) ») ; l'app web
+  montre une notification brève quand le mode change ailleurs ; une règle « Quand le mode
+  devient… » peut l'écrire dans sa notification avec la nouvelle variable `{source}`. Protocole
+  compatible : `mode_changed` et `PUT /api/mode` gagnent un champ facultatif `source`, que les
+  anciens clients ignorent ; un client ne peut annoncer que ce que son jeton permet.
+
 ## [2.0.0] - 2026-11-21
 
 ### Modifié

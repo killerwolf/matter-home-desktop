@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::automation::{CoverCommand, OnOffCommand, Rule};
 use crate::home::Symbol;
-use crate::mode::HomeMode;
+use crate::mode::{HomeMode, ModeSource};
 
 /// Commandes envoyées par l'interface.
 #[derive(Debug, Clone)]
@@ -28,7 +28,8 @@ pub enum Command {
     TestRule(u64),
     /// Le mode de la maison vient de changer (déjà enregistré par le serveur) : le moteur
     /// d'automatisations le retient et déclenche les règles « Quand le mode devient… ».
-    SetHomeMode(HomeMode),
+    /// `source` : d'où vient le changement (`{source}` dans les notifications des règles).
+    SetHomeMode { mode: HomeMode, source: ModeSource },
     /// Un passage détecté sur une caméra vient de se terminer (ticket n° 18) : le moteur
     /// d'automatisations déclenche les règles « Quand … est détecté ».
     /// `opening` : le passage commence (toutes les règles qui le couvrent) ; sinon, une classe
@@ -220,11 +221,18 @@ pub enum Event {
         message: String,
         at: f64,
     },
-    /// Le mode global de la maison a changé (le client le met à son journal).
-    HomeModeChanged(HomeMode),
+    /// Le mode global de la maison a changé (le client le met à son journal, avec sa source si
+    /// le serveur la donne).
+    HomeModeChanged {
+        mode: HomeMode,
+        source: Option<ModeSource>,
+    },
     /// Une règle demande ce mode (`Action::SetMode`) : le serveur le prend en compte comme une
-    /// demande d'API (rien ne part vers les clients sous cette forme).
-    HomeModeRequested(HomeMode),
+    /// demande d'API (rien ne part vers les clients sous cette forme). `rule` : son nom.
+    HomeModeRequested {
+        mode: HomeMode,
+        rule: String,
+    },
     PairingProgress(String),
     PairingDone {
         node_id: u64,

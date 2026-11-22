@@ -55,9 +55,118 @@ impl HomeMode {
     }
 }
 
+/// D'où vient un changement de mode : écrit au journal du serveur et des clients, diffusé avec
+/// `mode_changed` et disponible dans les notifications des règles (`{source}`).
+///
+/// Sur le fil : `{"kind": "shortcut"}`, `{"kind": "rule", "name": "Nuit à 23 h"}`… Une valeur
+/// inconnue (serveur plus récent) se lit comme `Other` : un ancien client ne casse pas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ModeSource {
+    /// Un raccourci de l'iPhone (requête portant le jeton de mode).
+    Shortcut,
+    /// L'app web.
+    Web,
+    /// L'app de bureau.
+    Desktop,
+    /// La fenêtre du serveur (app de la barre de menus).
+    ServerApp,
+    /// Une automatisation (« Alors : changer le mode »), avec le nom de la règle.
+    Rule {
+        #[serde(default)]
+        name: String,
+    },
+    /// Un widget de l'iPhone qui le dit lui-même (avec le jeton de mode). Le widget Scriptable ne
+    /// fait que lire ; les boutons de mode de l'écran d'accueil lancent les raccourcis, qui
+    /// arrivent comme `Shortcut`.
+    Widget,
+    /// Un client qui ne dit rien (ancienne version) ou une source inconnue.
+    #[serde(other)]
+    Other,
+}
+
+impl ModeSource {
+    /// En quelques mots, pour le journal et les notifications : « raccourci iPhone »,
+    /// « automatisation « Nuit à 23 h » »…
+    pub fn label(&self) -> String {
+        match self {
+            ModeSource::Shortcut => "raccourci iPhone".into(),
+            ModeSource::Web => "app web".into(),
+            ModeSource::Desktop => "app de bureau".into(),
+            ModeSource::ServerApp => "fenêtre du serveur".into(),
+            ModeSource::Rule { name } if name.is_empty() => "automatisation".into(),
+            ModeSource::Rule { name } => format!("automatisation « {name} »"),
+            ModeSource::Widget => "widget iPhone".into(),
+            ModeSource::Other => "autre".into(),
+        }
+    }
+
+    /// Ce qu'un client peut annoncer lui-même dans `PUT /api/mode`, selon son jeton : avec le
+    /// jeton de mode, raccourci ou widget (raccourci par défaut) ; avec une session, app web ou
+    /// app de bureau (autre par défaut). Jamais une automatisation ni la fenêtre du serveur.
+    pub fn claimed(declared: Option<ModeSource>, mode_token: bool) -> ModeSource {
+        match (mode_token, declared) {
+            (true, Some(ModeSource::Widget)) => ModeSource::Widget,
+            (true, _) => ModeSource::Shortcut,
+            (false, Some(s @ (ModeSource::Web | ModeSource::Desktop))) => s,
+            (false, _) => ModeSource::Other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_sources_on_the_wire() {
+        let rule = ModeSource::Rule {
+            name: "Nuit à 23 h".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&rule).unwrap(),
+            serde_json::json!({"kind": "rule", "name": "Nuit à 23 h"})
+        );
+        assert_eq!(
+            serde_json::to_value(ModeSource::Shortcut).unwrap(),
+            serde_json::json!({"kind": "shortcut"})
+        );
+        for source in [
+            ModeSource::Shortcut,
+            ModeSource::Web,
+            ModeSource::Desktop,
+            ModeSource::ServerApp,
+            rule.clone(),
+            ModeSource::Widget,
+            ModeSource::Other,
+        ] {
+            let json = serde_json::to_string(&source).unwrap();
+            assert_eq!(serde_json::from_str::<ModeSource>(&json).unwrap(), source);
+        }
+        // Un serveur plus récent : une source inconnue se lit « autre ».
+        let unknown: ModeSource = serde_json::from_str(r#"{"kind":"montre","extra":1}"#).unwrap();
+        assert_eq!(unknown, ModeSource::Other);
+        assert_eq!(rule.label(), "automatisation « Nuit à 23 h »");
+        assert_eq!(ModeSource::Shortcut.label(), "raccourci iPhone");
+    }
+
+    #[test]
+    fn clients_cannot_claim_any_source() {
+        use ModeSource::*;
+        let rule = || Rule { name: "x".into() };
+        // Jeton de mode : raccourci, ou widget s'il le dit ; jamais autre chose.
+        assert_eq!(ModeSource::claimed(None, true), Shortcut);
+        assert_eq!(ModeSource::claimed(Some(Widget), true), Widget);
+        assert_eq!(ModeSource::claimed(Some(Web), true), Shortcut);
+        assert_eq!(ModeSource::claimed(Some(rule()), true), Shortcut);
+        // Session : app web ou de bureau ; un ancien client (rien) ou une prétention → autre.
+        assert_eq!(ModeSource::claimed(Some(Web), false), Web);
+        assert_eq!(ModeSource::claimed(Some(Desktop), false), Desktop);
+        assert_eq!(ModeSource::claimed(None, false), Other);
+        assert_eq!(ModeSource::claimed(Some(Shortcut), false), Other);
+        assert_eq!(ModeSource::claimed(Some(ServerApp), false), Other);
+        assert_eq!(ModeSource::claimed(Some(rule()), false), Other);
+    }
 
     #[test]
     fn keys_round_trip_through_json_and_default_is_present() {

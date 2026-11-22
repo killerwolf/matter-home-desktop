@@ -41,6 +41,17 @@ static ASSETS: &[Asset] = &[
         "text/css; charset=utf-8",
         "../../../../design/tokens.css"
     ),
+    // Le logotype (écran de connexion), le même fichier que celui du dépôt.
+    text!(
+        "logotype-clair.svg",
+        "image/svg+xml",
+        "../../../../assets/logo/ostal-logotype-clair.svg"
+    ),
+    text!(
+        "logotype-sombre.svg",
+        "image/svg+xml",
+        "../../../../assets/logo/ostal-logotype-sombre.svg"
+    ),
     text!(
         "app.js",
         "text/javascript; charset=utf-8",

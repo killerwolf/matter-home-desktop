@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1b1b1b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f5f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b151b" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Maison">
@@ -38,7 +38,10 @@
 
 <section id="login" hidden>
   <form id="login-form" method="post" autocomplete="on">
-    <h1>Ostal</h1>
+    <h1><picture>
+      <source srcset="logotype-sombre.svg" media="(prefers-color-scheme: dark)">
+      <img src="logotype-clair.svg" alt="Ostal" width="149" height="48">
+    </picture></h1>
     <p class="muted">Connectez-vous avec le compte du serveur.</p>
     <label>Identifiant
       <input name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>

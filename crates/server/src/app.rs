@@ -250,8 +250,9 @@ fn pump_events(rx: mpsc::Receiver<Event>, hub: &Hub, stop: &AtomicBool, fatal: &
             fatal.store(true, Ordering::SeqCst);
         }
         // Une règle demande un mode (`Action::SetMode`) : même chemin qu'une demande d'API.
-        if let Event::HomeModeRequested(mode) = &event {
-            if let Err(e) = hub.set_mode(*mode) {
+        if let Event::HomeModeRequested { mode, rule } = &event {
+            let source = protocol::mode::ModeSource::Rule { name: rule.clone() };
+            if let Err(e) = hub.set_mode(*mode, source) {
                 log::warn!("mode demandé par une règle non appliqué : {e:?}");
             }
             return;

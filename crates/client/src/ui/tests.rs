@@ -2309,11 +2309,38 @@ fn the_home_mode_follows_the_server_and_changes_are_requested_not_assumed() {
     snap.mode = Some(HomeMode::Absent);
     f.connect(snap);
     assert_eq!(f.app.model.mode, HomeMode::Absent);
+    // Un ancien serveur ne dit pas d'où vient le changement.
+    f.live(WireEvent::ModeChanged {
+        mode: HomeMode::Present,
+        source: None,
+    });
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Présent")));
+    // Le journal dit d'où il vient : raccourci, automatisation (avec son nom)…
+    f.live(WireEvent::ModeChanged {
+        mode: HomeMode::Absent,
+        source: Some(protocol::mode::ModeSource::Shortcut),
+    });
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Absent (raccourci iPhone)")));
     f.live(WireEvent::ModeChanged {
         mode: HomeMode::Nuit,
+        source: Some(protocol::mode::ModeSource::Rule {
+            name: "Nuit à 23 h".into(),
+        }),
     });
     assert_eq!(f.app.model.mode, HomeMode::Nuit);
-    assert!(f.app.log.back().is_some_and(|l| l.contains("Mode : Nuit")));
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Nuit (automatisation « Nuit à 23 h »)")));
 
     f.app.set_mode(HomeMode::Vacances);
     let sent = pending_of(

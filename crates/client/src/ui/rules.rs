@@ -1428,7 +1428,7 @@ impl RulesView {
                 ui.close();
             }
         });
-        ui.small("Variables dans les textes : {appareil}, {valeur}, {heure}, {regle} ; pour une détection aussi {description} et {niveau} (la règle attend alors la description).");
+        ui.small("Variables dans les textes : {appareil}, {valeur}, {heure}, {regle} ; pour une détection aussi {description} et {niveau} (la règle attend alors la description) ; pour un changement de mode, {source} (raccourci iPhone, app web…).");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Pas plus d'une exécution toutes les");
