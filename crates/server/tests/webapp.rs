@@ -634,8 +634,8 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             assert_eq!(client.request("GET", &other, None, None).await.status, 404);
         }
         secrets.push(mode_token.clone());
-        // Le raccourci marche de bout en bout : « Je pars » dit où l'on est sans toucher au mode,
-        // « Mode nuit » change le mode de toute la maison.
+        // Le raccourci marche de bout en bout : « Je pars » dit où l'on est et, interrupteur éteint
+        // (défaut), met la maison en Absent comme avant ; « Mode nuit » change le mode de toute la maison.
         let r = client
             .send_json(
                 "PUT",
@@ -647,8 +647,8 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         assert_eq!(r.status, 200, "{}", r.text());
         assert_eq!(
             r.json(),
-            json!({"state": "away", "changed": true, "mode": "present",
-                   "message": "C'est noté. Le mode automatique est désactivé : la maison reste en Présent."})
+            json!({"state": "away", "changed": true, "mode": "absent",
+                   "message": "Maison en mode Absent."})
         );
         let r = client
             .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "absent"}))

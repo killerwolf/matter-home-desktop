@@ -1819,7 +1819,7 @@ function renderWidgets(manualText = "") {
   h3.id = "titre-raccourcis";
   modes.appendChild(h3);
   modes.appendChild(make("p", "w-note", "Installés sur cet iPhone, pour vous seul."));
-  modes.appendChild(make("p", "w-note", "« Je pars » et « Je rentre » disent seulement où vous êtes. La maison passe en Absent quand le dernier est parti, et repasse en Présent dès que quelqu'un rentre."));
+  modes.appendChild(make("p", "w-note", "« Je pars » et « Je rentre » disent où vous êtes et changent le mode de la maison : Absent au départ, Présent au retour (Nuit et Vacances sont respectés). Si l'administrateur a allumé « Changer le mode de la maison selon la présence », la maison ne passe en Absent que quand le dernier est parti."));
   const here = tokenHere(widgetsUi.tokens, "mode");
   if (here) status(modes, `Installés ${sinceText(here.created)}`.trim() + ".");
   modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer mes raccourcis", "primary", installShortcuts, busy || !info.usable));

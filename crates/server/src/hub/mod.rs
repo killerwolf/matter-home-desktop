@@ -957,12 +957,29 @@ impl Hub {
             .map_err(|e| internal("présence", &e))
     }
 
+    /// Une autre personne active est-elle déclarée à la maison, à l'instant même ? (Lu au moment de
+    /// l'appel : à appeler sous le verrou du mode pour décider d'un départ.)
+    pub(crate) fn someone_else_home(
+        &self,
+        user_id: &str,
+        is_active: impl Fn(&str) -> bool,
+    ) -> bool {
+        !crate::presence::others_at_home(user_id, &self.presence.all(), is_active).is_empty()
+    }
+
     /// Après la déclaration de `user_id` par un raccourci : met la maison dans le mode que la règle
-    /// de [`crate::presence::auto_mode`] en tire, ou la laisse telle quelle. **Rien ne change** tant
-    /// que l'interrupteur « Changer le mode de la maison selon la présence » est éteint, ou
-    /// qu'aucun téléphone n'est relié à un compte actif (la règle est la même que pour le Wi-Fi).
-    /// `is_active` : le compte existe-t-il et est-il actif ? (Une personne désactivée ne compte pas
-    /// comme « à la maison ».) Rend le mode final et ce qui l'a retenu, pour le dire à la personne.
+    /// de [`crate::presence::auto_mode`] en tire.
+    ///
+    /// - Interrupteur « Changer le mode de la maison selon la présence » **éteint** : le comportement
+    ///   d'avant. « Je pars » met la maison en Absent et « Je rentre » en Présent, directement
+    ///   (Nuit et Vacances sont respectés : un départ ne les quitte pas, une arrivée sort de
+    ///   Vacances mais pas de Nuit), sans regarder qui d'autre est là ;
+    /// - interrupteur **allumé** (avec ou sans box) : un départ n'arme la maison que si personne
+    ///   d'autre n'est déclaré ou vu à la maison, et si la box, quand elle sert de source, répond.
+    ///
+    /// Dans les deux cas, la décision se prend sous le verrou du mode. `is_active` : le compte
+    /// existe-t-il et est-il actif ? (Une personne désactivée ne compte pas comme « à la maison ».)
+    /// Rend le mode final et ce qui l'a retenu, pour le dire à la personne.
     pub fn follow_presence(
         &self,
         user_id: &str,
@@ -971,38 +988,52 @@ impl Hub {
         who: &crate::audit::Who,
     ) -> ApiResult<crate::presence::Followed> {
         use crate::presence::{auto_mode, Movement, Whereabouts};
-        let declared = self.presence.all();
-        let others_home = crate::presence::others_at_home(user_id, &declared, &is_active);
-        let auto =
-            self.wifi.auto_mode() && self.wifi.phones().iter().any(|p| is_active(&p.user_id));
+        let auto = self.wifi.auto_mode();
         let movement = match state {
-            Whereabouts::Home => Some(Movement::Arrival),
-            Whereabouts::Away if others_home.is_empty() => Some(Movement::LastDeparture),
-            Whereabouts::Away => None,
+            Whereabouts::Home => Movement::Arrival,
+            Whereabouts::Away => Movement::LastDeparture,
         };
         // Box injoignable ou mot de passe refusé : « qui est là » vient de relevés peut-être périmés
         // (quelqu'un a pu rentrer sans que la box le voie). On n'arme jamais la maison sur eux : le
-        // mode est figé. Une arrivée, elle, ne fait que désarmer.
+        // mode est figé. Une arrivée, elle, ne fait que désarmer. Sans box, ou sans téléphone relié,
+        // la box n'est pas une source : seuls comptent les raccourcis.
+        let wifi_source =
+            self.wifi.status().linked && self.wifi.phones().iter().any(|p| is_active(&p.user_id));
         let box_down = auto
-            && movement == Some(Movement::LastDeparture)
+            && wifi_source
+            && movement == Movement::LastDeparture
             && self.wifi.status().link != crate::wifi::Link::Ok;
-        let changed = match movement {
-            _ if box_down => false,
-            // Le mode change tout seul, par la règle de présence : le journal l'attribue à celui
-            // qui a dit partir ou rentrer, d'où l'origine « automatique ».
-            Some(movement) if auto => self
-                .set_mode_if(
-                    |current| auto_mode(movement, current),
-                    ModeSource::Shortcut,
-                    crate::audit::ModeCause {
-                        who: who.clone(),
-                        origin: crate::audit::Origin::Automatic,
-                        detail: None,
+        let changed = if box_down {
+            false
+        } else {
+            // Le journal attribue le changement à celui qui a dit partir ou rentrer ; avec la règle
+            // allumée, l'origine est « automatique », sinon c'est le raccourci lui-même.
+            self.set_mode_if(
+                |current| {
+                    if auto
+                        && movement == Movement::LastDeparture
+                        && self.someone_else_home(user_id, &is_active)
+                    {
+                        return None;
+                    }
+                    auto_mode(movement, current)
+                },
+                ModeSource::Shortcut,
+                crate::audit::ModeCause {
+                    who: who.clone(),
+                    origin: if auto {
+                        crate::audit::Origin::Automatic
+                    } else {
+                        crate::audit::Origin::Shortcut
                     },
-                )?
-                .is_some(),
-            _ => false,
+                    detail: None,
+                },
+            )?
+            .is_some()
         };
+        // Relu après la décision, pour que la phrase dise ce que la décision a vu.
+        let others_home =
+            crate::presence::others_at_home(user_id, &self.presence.all(), &is_active);
         Ok(crate::presence::Followed {
             mode: self.mode(),
             changed,

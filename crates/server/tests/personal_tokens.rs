@@ -191,13 +191,13 @@ fn a_2_0_0_folder_keeps_its_shortcuts_widget_and_old_clients_and_the_migration_i
             assert!(!text.contains(&secret));
         }
         // L'ancien jeton de mode sait aussi dire où l'on est. Le mode automatique est éteint après la
-        // mise à jour : « Je pars » est noté, la maison ne change pas (et le dit).
+        // mise à jour : « Je pars » agit comme avant, mais Nuit est respecté (et le raccourci le dit).
         assert_eq!(mode_of(&client, OLD_SESSION).await, "nuit");
         let r = put_presence(&client, OLD_MODE, "away").await;
         assert_eq!(
             r.json(),
             json!({"state": "away", "changed": true, "mode": "nuit",
-                   "message": "C'est noté. Le mode automatique est désactivé : la maison reste en Nuit."})
+                   "message": "Mode Nuit : la maison ne change pas."})
         );
         assert_eq!(mode_of(&client, OLD_SESSION).await, "nuit");
         // La présence par le Wi-Fi : l'ancienne session (sans identifiant de connexion) la lit sans
@@ -353,9 +353,9 @@ fn each_person_installs_sees_and_revokes_only_their_own_and_a_disabled_person_lo
         // Un jeton n'est pas une session : il n'ouvre pas la liste des jetons.
         assert_eq!(client.get("/api/tokens", &sam_mode_again).await.status, 401);
 
-        // Hamdi a dit « Je rentre » et Sam « Je pars » : quelqu'un est encore là, la maison reste
-        // Présent.
-        assert_eq!(mode_of(&client, &hamdi).await, "present");
+        // Interrupteur éteint (défaut) : comme avant, le « Je pars » de Sam met la maison en Absent,
+        // sans regarder qui d'autre est là.
+        assert_eq!(mode_of(&client, &hamdi).await, "absent");
 
         // Désactiver Sam : ses raccourcis et son widget ne marchent plus ; la maison reste à Hamdi.
         assert!(user(&dir, &["disable", "--username", "sam"], None));
@@ -365,7 +365,7 @@ fn each_person_installs_sees_and_revokes_only_their_own_and_a_disabled_person_lo
         );
         assert_eq!(put_mode(&client, &sam_mode_again, "nuit").await.status, 401);
         assert_eq!(client.get("/api/state", &sam_read).await.status, 401);
-        assert_eq!(mode_of(&client, &hamdi).await, "present");
+        assert_eq!(mode_of(&client, &hamdi).await, "absent");
         // Réactivé, ils reviennent (ils n'ont pas été supprimés).
         assert!(user(&dir, &["enable", "--username", "sam"], None));
         assert_eq!(

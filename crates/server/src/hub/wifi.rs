@@ -117,6 +117,8 @@ impl Hub {
     }
 
     /// La règle du mode automatique, pour ce que le relevé vient de changer. Rend le mode pris.
+    /// Cette règle-ci ne vaut que pour la source Wi-Fi : sans téléphone relié à un compte actif,
+    /// un relevé n'a rien à dire.
     fn apply_wifi_rule(
         &self,
         changes: &[(String, Whereabouts)],
@@ -141,14 +143,6 @@ impl Hub {
                 (id, Movement::Arrival, "arrivée")
             } else {
                 let (id, _) = changes.iter().find(|(_, s)| *s == Whereabouts::Away)?;
-                // Quelqu'un d'autre est déclaré à la maison (par le Wi-Fi, un raccourci ou l'app) :
-                // la maison n'est pas vide.
-                let someone_home =
-                    !presence::others_at_home("", &self.presence.all(), |id| people.is_active(id))
-                        .is_empty();
-                if someone_home {
-                    return None;
-                }
                 (id, Movement::LastDeparture, "départ")
             };
         let cause = ModeCause {
@@ -156,8 +150,17 @@ impl Hub {
             origin: Origin::Automatic,
             detail: Some(detail.to_string()),
         };
+        // Le départ se décide sous le verrou du mode : quelqu'un d'autre déclaré à la maison (par le
+        // Wi-Fi, un raccourci ou l'app) au dernier moment, et la maison n'est pas armée.
         match self.set_mode_if(
-            |current| presence::auto_mode(movement, current),
+            |current| {
+                if movement == Movement::LastDeparture
+                    && self.someone_else_home("", |id| people.is_active(id))
+                {
+                    return None;
+                }
+                presence::auto_mode(movement, current)
+            },
             ModeSource::Presence,
             cause,
         ) {
@@ -227,6 +230,22 @@ impl Hub {
                 } else {
                     "auto_off"
                 }));
+        }
+        Ok(())
+    }
+
+    /// Le délai avant de compter un départ vu seulement sur le Wi-Fi (minutes), noté au journal quand
+    /// il change. Appelé par la page Présence d'Ostal Server.
+    pub fn wifi_set_away_delay(&self, minutes: u32, who: &Who) -> Result<(), &'static str> {
+        let before = self.wifi.status().away_delay_min;
+        self.wifi.set_away_delay_min(minutes)?;
+        let after = self.wifi.status().away_delay_min;
+        if before != after {
+            self.audit.record(
+                Entry::new(Action::BoxSetting, who)
+                    .target(after.to_string())
+                    .detail("delay"),
+            );
         }
         Ok(())
     }
@@ -450,9 +469,9 @@ mod tests {
         assert!(!status.auto_mode);
         assert_eq!(status.link, Link::None);
         assert!(hub.wifi().phones().is_empty());
-        // Activer l'interrupteur sans box est refusé.
-        assert!(hub.wifi_set_auto_mode(true, &Who::server_app()).is_err());
-        assert!(!hub.wifi().auto_mode());
+        // L'interrupteur peut être allumé sans box : la règle ne suit alors que les raccourcis.
+        hub.wifi_set_auto_mode(true, &Who::server_app()).unwrap();
+        assert!(hub.wifi().auto_mode() && hub.wifi().status().auto_mode);
         // Aucun relevé sans box : rien n'est tenté, rien ne change.
         let crew = Crew::new(&[("sam", "Sam")]);
         let report = hub.wifi_poll_at(1.0, &crew, true);
@@ -679,9 +698,13 @@ mod tests {
         use Whereabouts::*;
         // (interrupteur, mode au départ, ce qu'on dit, mode attendu)
         let cases = [
-            (false, Present, Away, Present),
-            (false, Absent, Home, Absent),
-            (false, Vacances, Home, Vacances),
+            // Éteint : le comportement d'avant, direct (Nuit et Vacances respectés).
+            (false, Present, Away, Absent),
+            (false, Absent, Home, Present),
+            (false, Vacances, Home, Present),
+            (false, Nuit, Away, Nuit),
+            (false, Nuit, Home, Nuit),
+            (false, Vacances, Away, Vacances),
             (true, Present, Away, Absent),
             (true, Nuit, Away, Nuit),
             (true, Vacances, Away, Vacances),
@@ -732,7 +755,7 @@ mod tests {
             .unwrap();
         assert!(followed.changed && !followed.box_down);
         assert_eq!(r.mode(), HomeMode::Present);
-        // Sans téléphone relié à un compte actif, l'interrupteur allumé ne fait toujours rien.
+        // Sans téléphone relié à un compte actif, la règle marche avec les seuls raccourcis.
         let r = rig("wifi-shortcut-nophone");
         r.auto(true);
         r.hub
@@ -746,8 +769,8 @@ mod tests {
             .hub
             .follow_presence("sam", Away, |id| r.crew.is_active(id), &Who::default())
             .unwrap();
-        assert!(!followed.auto && !followed.changed);
-        assert_eq!(r.mode(), HomeMode::Present);
+        assert!(followed.auto && followed.changed && !followed.box_down);
+        assert_eq!(r.mode(), HomeMode::Absent);
         // Quelqu'un d'autre est à la maison : la maison n'est pas armée.
         let r = rig("wifi-shortcut-other");
         r.auto(true);
@@ -762,6 +785,117 @@ mod tests {
         assert!(!followed.changed);
         assert_eq!(followed.others_home, vec!["lea".to_string()]);
         assert_eq!(r.mode(), HomeMode::Present);
+    }
+
+    #[test]
+    fn shortcuts_work_without_a_box_and_say_what_the_house_became() {
+        use Whereabouts::{Away, Home};
+        let dir = temp("wifi-nobox");
+        let (hub, _rx) = hub_with(&dir, 16);
+        let crew = Crew::new(&[("sam", "Sam"), ("lea", "Léa")]);
+        let active = |id: &str| crew.is_active(id);
+        let who = Who::default();
+        // Interrupteur éteint, sans box : comme avant, « Je pars » met la maison en Absent.
+        let f = hub.follow_presence("sam", Away, active, &who).unwrap();
+        assert!(!f.auto && f.changed && !f.box_down);
+        assert_eq!(hub.mode(), HomeMode::Absent);
+        assert_eq!(presence::message(Away, &f, &[]), "Maison en mode Absent.");
+        let f = hub.follow_presence("sam", Home, active, &who).unwrap();
+        assert!(f.changed);
+        assert_eq!(hub.mode(), HomeMode::Present);
+        // Éteint, la personne n'a pas à attendre les autres : l'ancien comportement.
+        hub.presence
+            .declare_at("lea", Home, Source::Shortcut, 10.0)
+            .unwrap();
+        hub.follow_presence("sam", Away, active, &who).unwrap();
+        assert_eq!(hub.mode(), HomeMode::Absent);
+        hub.follow_presence("sam", Home, active, &who).unwrap();
+        // Allumé sans box : la règle suit les seuls raccourcis. Léa est là : pas d'armement.
+        hub.wifi_set_auto_mode(true, &Who::server_app()).unwrap();
+        let f = hub.follow_presence("sam", Away, active, &who).unwrap();
+        assert!(f.auto && !f.changed && !f.box_down);
+        assert_eq!(f.others_home, vec!["lea".to_string()]);
+        assert_eq!(hub.mode(), HomeMode::Present);
+        // Léa part à son tour : la dernière personne a dit partir, la maison s'arme (sans box, la
+        // règle « aucun téléphone relié » ne s'applique pas).
+        hub.presence
+            .declare_at("lea", Away, Source::Shortcut, 20.0)
+            .unwrap();
+        let f = hub.follow_presence("lea", Away, active, &who).unwrap();
+        assert!(f.changed, "{f:?}");
+        assert_eq!(hub.mode(), HomeMode::Absent);
+        assert_eq!(presence::message(Away, &f, &[]), "Maison en mode Absent.");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Une déclaration « à la maison » arrive après la décision de partir mais avant son application
+    /// (le verrou du mode est tenu ailleurs) : la maison n'est pas armée.
+    #[test]
+    fn a_declaration_arriving_before_a_departure_is_applied_blocks_it() {
+        use std::sync::Arc;
+        use Whereabouts::{Away, Home};
+        // Le chemin des raccourcis.
+        let r = Arc::new(rig("wifi-race-shortcut"));
+        r.auto(true);
+        r.set_mode(HomeMode::Present);
+        let guard = r.hub.write_lock.lock().unwrap();
+        let worker = {
+            let r = r.clone();
+            std::thread::spawn(move || {
+                r.hub
+                    .follow_presence("sam", Away, |id| r.crew.is_active(id), &Who::default())
+                    .unwrap()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        r.hub
+            .presence
+            .declare_at("lea", Home, Source::Shortcut, r.t0)
+            .unwrap();
+        drop(guard);
+        let followed = worker.join().unwrap();
+        assert!(!followed.changed);
+        assert_eq!(followed.others_home, vec!["lea".to_string()]);
+        assert_eq!(r.mode(), HomeMode::Present);
+        // Le chemin du relevé Wi-Fi.
+        let r = Arc::new(rig("wifi-race-poll"));
+        r.auto(true);
+        r.set_mode(HomeMode::Present);
+        let guard = r.hub.write_lock.lock().unwrap();
+        let worker = {
+            let r = r.clone();
+            std::thread::spawn(move || r.hub.apply_wifi_rule(&[("sam".to_string(), Away)], &r.crew))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        r.hub
+            .presence
+            .declare_at("lea", Home, Source::Shortcut, r.t0)
+            .unwrap();
+        drop(guard);
+        assert_eq!(worker.join().unwrap(), None);
+        assert_eq!(r.mode(), HomeMode::Present);
+    }
+
+    #[test]
+    fn the_away_delay_change_is_journaled() {
+        let r = rig("wifi-delay-journal");
+        let who = Who::server_app();
+        r.hub.wifi_set_away_delay(10, &who).unwrap();
+        r.hub.wifi_set_away_delay(25, &who).unwrap();
+        assert_eq!(r.hub.wifi().status().away_delay_min, 25);
+        let lines = r.hub.audit().read(&Filter {
+            until: Some(r.t0 + 1_000_000.0),
+            ..Filter::default()
+        });
+        let delays: Vec<_> = lines
+            .iter()
+            .filter(|e| e.action == Action::BoxSetting && e.detail.as_deref() == Some("delay"))
+            .collect();
+        // Redire la même valeur ne change rien, donc ne s'écrit pas.
+        assert_eq!(delays.len(), 1, "{delays:?}");
+        assert_eq!(delays[0].target.as_deref(), Some("25"));
+        let (_, text) = crate::audit::describe(delays[0]);
+        assert_eq!(text, "Délai avant de compter un départ réglé sur 25 min");
     }
 
     #[test]
@@ -931,12 +1065,12 @@ mod tests {
         // Les réglages affichables ne portent pas le mot de passe.
         let shown = format!("{:?} {:?}", r.hub.wifi().status(), r.hub.wifi().url());
         assert!(!shown.contains("mot-de-passe-de-la-box"), "{shown}");
-        // Délier efface le mot de passe du fichier et éteint l'interrupteur.
+        // Délier efface le mot de passe du fichier ; l'interrupteur, lui, ne dépend pas de la box.
         r.auto(true);
         r.hub.wifi_unlink(&Who::server_app()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("mot-de-passe-de-la-box"), "{text}");
-        assert!(text.contains("\"auto_mode\": false"));
+        assert!(text.contains("\"auto_mode\": true"));
         assert!(!r.hub.wifi().status().linked);
         // Le journal des réglages ne dit pas le mot de passe non plus.
         let lines = r.hub.audit().read(&Filter {

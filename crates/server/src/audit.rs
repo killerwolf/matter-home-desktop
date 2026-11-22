@@ -758,6 +758,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             "password" => "Mot de passe de la box changé".to_string(),
             "auto_on" => "Mode automatique selon la présence activé".to_string(),
             "auto_off" => "Mode automatique selon la présence désactivé".to_string(),
+            "delay" => format!("Délai avant de compter un départ réglé sur {target} min"),
             _ => "Réglage de la box".to_string(),
         },
         Action::Other => "Action inconnue".to_string(),

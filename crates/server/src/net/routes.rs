@@ -935,10 +935,10 @@ async fn put_presence(
         }),
     )
     .await;
-    // Un raccourci « Je pars » ou « Je rentre » suit la règle de la maison (`presence::auto_mode`),
-    // la même que le Wi-Fi et seulement si l'interrupteur « Changer le mode de la maison selon la
-    // présence » est allumé : Absent quand la dernière personne part (depuis Présent seulement),
-    // Présent à l'arrivée (depuis Absent ou Vacances ; jamais depuis Nuit). Une session, elle, ne
+    // Un raccourci « Je pars » ou « Je rentre » change le mode selon `presence::auto_mode` (Absent
+    // depuis Présent seulement, Présent depuis Absent ou Vacances, jamais depuis Nuit). Interrupteur
+    // « Changer le mode de la maison selon la présence » éteint : directement, comme avant. Allumé :
+    // un départ n'arme la maison que si personne d'autre n'est à la maison. Une session, elle, ne
     // fait que déclarer.
     let followed = if actor.by_mode_token {
         let hub = state.hub.clone();

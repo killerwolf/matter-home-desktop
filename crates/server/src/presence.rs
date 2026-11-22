@@ -121,8 +121,8 @@ pub struct Followed {
     pub changed: bool,
     /// Les autres personnes déclarées à la maison (identifiants internes) au moment de la règle.
     pub others_home: Vec<String>,
-    /// Le mode automatique est-il actif (interrupteur allumé, au moins un téléphone relié) ?
-    /// Sinon la maison ne change jamais : on le dit à la personne.
+    /// L'interrupteur du mode automatique est-il allumé ? Éteint, « Je pars » et « Je rentre »
+    /// mettent la maison en Absent et en Présent directement, sans regarder qui est là.
     pub auto: bool,
     /// Un départ n'a pas armé la maison parce que la box ne répond pas : « qui est là » vient alors
     /// de relevés peut-être dépassés, et le mode reste figé.
@@ -134,11 +134,6 @@ pub struct Followed {
 pub fn message(wanted: Whereabouts, followed: &Followed, names: &[String]) -> String {
     let mode = followed.mode;
     let label = mode.label();
-    if !followed.auto {
-        return format!(
-            "C'est noté. Le mode automatique est désactivé : la maison reste en {label}."
-        );
-    }
     if followed.box_down {
         return format!("La box ne répond pas : la maison reste en {label}.");
     }
@@ -371,17 +366,17 @@ mod tests {
             message(Whereabouts::Away, &down, &[]),
             "La box ne répond pas : la maison reste en Présent."
         );
-        // Interrupteur éteint : la maison ne change jamais, et le raccourci le dit.
+        // Interrupteur éteint : « Je pars » met la maison en Absent, et le raccourci le dit.
         let off = Followed {
-            mode: HomeMode::Present,
-            changed: false,
+            mode: HomeMode::Absent,
+            changed: true,
             others_home: vec![],
             auto: false,
             box_down: false,
         };
         assert_eq!(
             message(Whereabouts::Away, &off, &[]),
-            "C'est noté. Le mode automatique est désactivé : la maison reste en Présent."
+            "Maison en mode Absent."
         );
     }
 

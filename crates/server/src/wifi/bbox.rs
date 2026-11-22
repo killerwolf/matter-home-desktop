@@ -9,8 +9,10 @@
 //! Même chemin réseau que les notifications et les descriptions : le `curl` du système, un
 //! environnement vide, sans proxy. L'adresse et le mot de passe passent par l'entrée standard
 //! (`-K -`), jamais en argument (visible dans `ps`). La box a un certificat auto-signé : la
-//! vérification TLS n'est désactivée (`-k`) que pour cette adresse locale, saisie par
-//! l'administrateur de la maison.
+//! vérification TLS n'est désactivée (`insecure`) que pour l'adresse par défaut (`mabbox.bytel.fr`)
+//! ou une adresse IP privée (RFC 1918, `fe80::/10`, `fd00::/8`). Toute autre adresse https garde la
+//! vérification du certificat : le mot de passe d'administration ne part jamais vers un serveur
+//! qu'on ne peut pas authentifier.
 
 use std::io::Write as _;
 use std::process::Stdio;
@@ -86,6 +88,24 @@ pub fn check_url(text: &str) -> Result<String, &'static str> {
     Ok(format!("{}://{host}{port}", url.scheme()))
 }
 
+/// Le certificat de la box est auto-signé : on ne s'en passe que pour l'adresse par défaut ou une
+/// adresse IP privée (RFC 1918, lien local `fe80::/10`, `fd00::/8`). Ailleurs, il est vérifié.
+fn accepts_self_signed(url: &str) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("mabbox.bytel.fr"),
+        Some(url::Host::Ipv4(ip)) => Ipv4Addr::is_private(&ip),
+        Some(url::Host::Ipv6(ip)) => {
+            let first = Ipv6Addr::segments(&ip)[0];
+            first & 0xffc0 == 0xfe80 || first & 0xff00 == 0xfd00
+        }
+        None => false,
+    }
+}
+
 /// La vraie box, par `curl`. Garde le cookie de session en mémoire (jamais sur disque).
 pub struct CurlBox {
     timeout: Duration,
@@ -153,7 +173,7 @@ impl CurlBox {
 
     fn config(url: &str, path: &str, cookie: Option<&str>, form: Option<&str>) -> Option<String> {
         let mut text = format!("url = {}\n", quoted(&format!("{url}{path}")).ok()?);
-        if url.starts_with("https://") {
+        if url.starts_with("https://") && accepts_self_signed(url) {
             text.push_str("insecure\n");
         }
         if let Some(cookie) = cookie {
@@ -356,6 +376,39 @@ mod tests {
             "file:///etc/passwd",
         ] {
             assert!(check_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tls_is_only_unchecked_for_the_default_address_or_a_private_ip() {
+        let insecure = |url: &str| {
+            CurlBox::config(url, "/api/v1/hosts", None, None)
+                .unwrap()
+                .contains("insecure\n")
+        };
+        for ok in [
+            "https://mabbox.bytel.fr",
+            "https://MaBBox.Bytel.fr",
+            "https://192.168.1.254",
+            "https://10.0.0.1:8443",
+            "https://172.16.5.1",
+            "https://172.31.255.1",
+            "https://[fe80::1]",
+            "https://[fd12:3456::1]",
+        ] {
+            assert!(insecure(ok), "{ok}");
+        }
+        for checked in [
+            "https://box.example.com",
+            "https://mabbox.bytel.fr.evil.example",
+            "https://8.8.8.8",
+            "https://172.32.0.1",
+            "https://100.64.0.1",
+            "https://[2001:db8::1]",
+            "https://[fc00::1]",
+            "http://192.168.1.254",
+        ] {
+            assert!(!insecure(checked), "{checked}");
         }
     }
 

@@ -269,7 +269,7 @@ impl Wifi {
         Status {
             linked: st.config.linked(),
             link: st.link,
-            auto_mode: st.config.auto_mode && st.config.linked(),
+            auto_mode: st.config.auto_mode,
             active_hosts: st.hosts.iter().filter(|h| h.active).count(),
             last_ok: st.last_ok,
             away_delay_min: st.config.away_delay_min,
@@ -313,8 +313,8 @@ impl Wifi {
         Ok(())
     }
 
-    /// Délie la box : le mot de passe est effacé et le mode automatique **désactivé**. Les
-    /// téléphones attribués restent.
+    /// Délie la box : le mot de passe est effacé. Les téléphones attribués restent, et
+    /// l'interrupteur du mode automatique aussi (il marche avec les seuls raccourcis).
     pub fn unlink(&self) -> Result<(), LinkError> {
         let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.api.reset();
@@ -322,7 +322,6 @@ impl Wifi {
         let mut config = st.config.clone();
         config.url.clear();
         config.password.clear();
-        config.auto_mode = false;
         self.save_config(&config).map_err(|e| {
             log::error!("réglages de la box non enregistrés : {e:#}");
             LinkError::Storage
@@ -335,13 +334,10 @@ impl Wifi {
         Ok(())
     }
 
-    /// L'interrupteur « Changer le mode de la maison selon la présence ». On ne l'active que si la
-    /// box est reliée.
+    /// L'interrupteur « Changer le mode de la maison selon la présence ». Il peut être allumé sans
+    /// box : la règle ne s'appuie alors que sur les raccourcis « Je pars » et « Je rentre ».
     pub fn set_auto_mode(&self, on: bool) -> Result<(), &'static str> {
         let mut st = self.lock();
-        if on && !st.config.linked() {
-            return Err("Reliez d'abord la box de la maison.");
-        }
         let mut config = st.config.clone();
         config.auto_mode = on;
         self.save_config(&config).map_err(|e| {
@@ -365,10 +361,9 @@ impl Wifi {
         Ok(())
     }
 
-    /// L'interrupteur est-il activé (et la box reliée) ?
+    /// L'interrupteur est-il activé ? (Avec ou sans box.)
     pub fn auto_mode(&self) -> bool {
-        let st = self.lock();
-        st.config.auto_mode && st.config.linked()
+        self.lock().config.auto_mode
     }
 
     // ---- relevé --------------------------------------------------------------------------------

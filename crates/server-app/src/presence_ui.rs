@@ -438,21 +438,17 @@ impl PresenceUi {
 
     fn auto_card(&mut self, ui: &mut egui::Ui, hub: &Arc<Hub>, snap: &Snapshot, busy: bool) {
         let mut on = snap.status.auto_mode;
-        let linked = snap.status.linked;
         widgets::card(ui, |ui| {
             let changed = ui
                 .add_enabled(
-                    linked && !busy,
+                    !busy,
                     egui::Checkbox::new(&mut on, "Changer le mode de la maison selon la présence"),
                 )
                 .changed();
             widgets::hint(
                 ui,
-                "Absent quand plus personne n'est là, Présent dès qu'une personne arrive. Nuit et Vacances restent à la main.",
+                "Absent quand plus personne n'est là, Présent dès qu'une personne arrive. Nuit et Vacances restent à la main. Éteint, « Je pars » et « Je rentre » changent le mode directement. Marche aussi sans box, avec les seuls raccourcis.",
             );
-            if !linked {
-                widgets::hint(ui, "Reliez d'abord la box de la maison.");
-            }
             ui.label(&snap.who_is_home);
             if changed {
                 if let Err(e) = hub.wifi_set_auto_mode(on, &Who::server_app()) {

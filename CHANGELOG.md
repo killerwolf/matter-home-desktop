@@ -26,9 +26,16 @@ Les téléchargements de chaque version sont sur la
 - Nouvel interrupteur « Changer le mode de la maison selon la présence », **éteint par défaut** (aussi
   après la mise à jour) : Absent quand la dernière personne part, Présent dès qu'une arrive ; Nuit et
   Vacances restent à la main (une absence ne les quitte jamais, une arrivée pendant Vacances remet
-  Présent). Changement : « Je pars » et « Je rentre » suivent maintenant cet interrupteur : éteint, ils
-  notent la présence sans changer le mode (le raccourci le dit). Chaque changement automatique est au
-  journal avec la personne concernée.
+  Présent). « Je pars » et « Je rentre » : interrupteur éteint, comme avant (« Je pars » met la maison
+  en Absent, « Je rentre » en Présent, Nuit et Vacances respectés), et la présence est quand même
+  notée ; allumé, un départ n'arme la maison que si personne d'autre n'est à la maison. L'interrupteur
+  peut être allumé sans box reliée : la règle suit alors les seuls raccourcis (« aucun téléphone relié,
+  jamais » ne vaut que pour le Wi-Fi), et délier la box ne l'éteint plus. Le raccourci dit ce que la
+  maison est devenue. Chaque changement automatique est au journal avec la personne concernée, ainsi que
+  le changement du délai de départ.
+- La box : la vérification du certificat n'est désactivée que pour `mabbox.bytel.fr` ou une adresse IP
+  privée ; toute autre adresse https garde la vérification. Un départ vu pendant qu'une déclaration « à la
+  maison » arrive n'arme plus la maison (la décision se prend sous le verrou du mode).
 
 ### Préparation des droits (multi-comptes, étape 5)
 
