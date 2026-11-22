@@ -12,11 +12,15 @@ pub mod error;
 pub mod events;
 pub mod files;
 pub mod http;
+pub mod installation;
 pub mod snapshot;
 pub mod store;
 pub mod stream;
 pub mod tls;
 mod ws;
+
+#[doc(hidden)]
+pub use ws::set_home_check_interval;
 
 use std::sync::Arc;
 

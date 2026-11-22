@@ -3829,6 +3829,7 @@ name = "ostal-server-app"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "eframe",
  "env_logger",
  "log",

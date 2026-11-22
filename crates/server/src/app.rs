@@ -66,6 +66,7 @@ pub enum Outcome {
 
 pub struct Server {
     hub: Arc<Hub>,
+    auth: Arc<Auth>,
     net: Option<NetServer>,
     backend: Option<Backend>,
     pump: Option<JoinHandle<()>>,
@@ -140,7 +141,7 @@ impl Server {
                 shortcut_signer: config.shortcut_signer,
             },
             hub.clone(),
-            auth,
+            auth.clone(),
             identity.config.clone(),
         ) {
             Ok(net) => net,
@@ -169,6 +170,7 @@ impl Server {
         Ok(Server {
             addr: net.addr,
             hub,
+            auth,
             net: Some(net),
             backend: Some(backend),
             pump: Some(pump),
@@ -184,6 +186,12 @@ impl Server {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// Comptes et sessions du serveur qui tourne : Ostal Server y lit les connexions ouvertes et
+    /// les coupe (les sessions ne vivent qu'ici, en mémoire, avec leur fichier).
+    pub fn auth(&self) -> &Arc<Auth> {
+        &self.auth
     }
 
     /// Une erreur fatale ou un import à appliquer sont-ils survenus ? (Sans attendre.)

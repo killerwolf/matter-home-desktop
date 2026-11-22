@@ -70,6 +70,19 @@ pub struct State {
     pub migrated: Option<String>,
     /// `Some` tant que le serveur tourne.
     pub hub: Option<HubHandle>,
+    /// Comptes et sessions du serveur qui tourne : les connexions ouvertes se lisent et se
+    /// coupent ici.
+    pub auth: Option<AuthHandle>,
+}
+
+/// Les sessions du serveur qui tourne (voir `accounts::connections`). `Debug` n'en montre rien.
+#[derive(Clone)]
+pub struct AuthHandle(pub Arc<ostal_server::net::Auth>);
+
+impl std::fmt::Debug for AuthHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthHandle")
+    }
 }
 
 /// Le hub du serveur qui tourne, pour la fenêtre des caméras (qui les modifie directement : c'est
@@ -239,6 +252,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<DataLock>)) -> Han
         demo: config.demo,
         migrated: None,
         hub: None,
+        auth: None,
     }));
     let (tx, rx) = mpsc::channel();
     let exited = ExitSignal::default();
@@ -328,6 +342,7 @@ impl Controller {
             s.health = Health::default();
             s.desktop_doubt = false;
             s.hub = None;
+            s.auth = None;
         });
         let demo_skips_setup = self.cfg.demo && !self.cfg.demo_setup;
         if self.cfg.demo && self.cfg.demo_blocked {
@@ -443,6 +458,7 @@ impl Controller {
                     s.fingerprint = Some(server.fingerprint.clone());
                     s.setup = None;
                     s.hub = Some(HubHandle(server.hub().clone()));
+                    s.auth = Some(AuthHandle(server.auth().clone()));
                 });
                 self.server = Some(server);
             }
@@ -457,7 +473,10 @@ impl Controller {
 
     fn stop_server(&mut self) -> bool {
         self.sleep = None;
-        self.set(|s| s.hub = None);
+        self.set(|s| {
+            s.hub = None;
+            s.auth = None;
+        });
         match self.server.take() {
             Some(server) => {
                 self.set(|s| s.phase = Phase::Stopping);

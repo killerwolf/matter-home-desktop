@@ -431,6 +431,15 @@ impl MatterApp {
             .show(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    // Mes connexions : « ‹ Maison » ramène à la maison, le seul sous-onglet
+                    // de cette page est actif.
+                    if self.view == View::Connections {
+                        if tab_link(ui, false, connected, "‹ Maison").clicked() {
+                            self.view = View::Devices;
+                        }
+                        tab_link(ui, true, connected, View::Connections.title());
+                        return;
+                    }
                     for view in View::ALL {
                         if tab_link(ui, self.view == view, connected, view.title()).clicked() {
                             if view != self.view {

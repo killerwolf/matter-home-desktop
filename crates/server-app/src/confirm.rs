@@ -28,6 +28,8 @@ pub enum Confirmation {
     RemoveApiKey,
     /// Désactiver le compte d'une personne du foyer.
     DisableAccount { name: String },
+    /// Couper la connexion d'un téléphone ou d'un ordinateur.
+    CutConnection { name: String },
 }
 
 /// Ce que l'alerte affiche.
@@ -77,6 +79,11 @@ impl Confirmation {
                 format!("Désactiver le compte de {name} ?"),
                 "Ses connexions et ses raccourcis cessent de marcher tout de suite. Le compte reste là : vous pouvez le réactiver.".into(),
                 "Désactiver",
+            ),
+            Confirmation::CutConnection { name } => (
+                format!("Couper la connexion « {name} » ?"),
+                "Elle se ferme tout de suite. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
+                "Couper",
             ),
         };
         Dialog {
@@ -136,6 +143,9 @@ mod tests {
             },
             Confirmation::RemoveApiKey,
             Confirmation::DisableAccount { name: "Sam".into() },
+            Confirmation::CutConnection {
+                name: "iPhone de Sam".into(),
+            },
         ]
     }
 

@@ -18,14 +18,15 @@ use protocol::automation::RuleSet;
 use protocol::home::HomePlan;
 use protocol::mode::ModeSource;
 use protocol::wire::{
-    self, Accepted, ApiError, CamerasResponse, CoverRequest, CustomizeRequest, ErrorBody,
-    ErrorCode, HistoryQuery, HistoryResponse, ImportResponse, LoginRequest, LoginResponse,
-    ModeRequest, ModeResponse, OnOffRequest, PairRequest, Snapshot, TextIds, VersionInfo,
+    self, Accepted, ApiError, CamerasResponse, ConnectionView, ConnectionsResponse, CoverRequest,
+    CustomizeRequest, ErrorBody, ErrorCode, HistoryQuery, HistoryResponse, ImportResponse,
+    LoginRequest, LoginResponse, ModeRequest, ModeResponse, OnOffRequest, PairRequest, Snapshot,
+    TextIds, VersionInfo, Via,
 };
 
 use super::AppState;
 use crate::security::account::Verdict;
-use crate::security::sessions::SessionInfo;
+use crate::security::sessions::{clean_installation, SessionInfo};
 
 /// Taille maximale d'un corps JSON ordinaire (plan, règles, commandes).
 const JSON_LIMIT: usize = 1024 * 1024;
@@ -39,6 +40,8 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/logout", post(logout))
+        .route("/api/me/installations", get(my_connections))
+        .route("/api/me/installations/{id}", delete(cut_connection))
         .route("/api/state", get(full_state))
         .route("/api/ws", get(super::ws::upgrade))
         .route("/api/rule-runs", get(rule_runs))
@@ -252,29 +255,88 @@ async fn blocking<T: Send + 'static>(
 // Authentification
 // ---------------------------------------------------------------------------
 
-async fn version() -> Json<VersionInfo> {
+/// Ce que demande un client à `GET /api/version` : la version qu'il parle.
+#[derive(serde::Deserialize)]
+struct VersionQuery {
+    protocol: Option<u32>,
+}
+
+/// La version du protocole dans laquelle le serveur répond à un client qui parle `asked` (`None` :
+/// il ne le dit pas, c'est un client d'avant la version 4, donc la version 3). `None` en retour :
+/// aucune version commune.
+pub(super) fn negotiate(asked: Option<u32>) -> Option<u32> {
+    let asked = asked.unwrap_or(wire::MIN_PROTOCOL_VERSION);
+    (wire::MIN_PROTOCOL_VERSION..=wire::PROTOCOL_VERSION)
+        .contains(&asked)
+        .then_some(asked)
+}
+
+async fn version(
+    query: Result<Query<VersionQuery>, axum::extract::rejection::QueryRejection>,
+) -> Json<VersionInfo> {
+    let asked = query.ok().and_then(|Query(q)| q.protocol);
     Json(VersionInfo {
-        protocol_version: wire::PROTOCOL_VERSION,
+        // Un client de version 3 (2.0.0, 2.1.0-beta.1) compare ce nombre au sien et refuse tout
+        // autre : on lui répond « 3 ». Une version que nous ne parlons pas reçoit la nôtre, pour
+        // que le client dise laquelle est en cause.
+        protocol_version: negotiate(asked).unwrap_or(wire::PROTOCOL_VERSION),
         server_version: SERVER_VERSION.to_string(),
     })
+}
+
+/// D'où vient la requête : par Tailscale (adresse du tailnet, ou `tailscale serve` qui relaie
+/// depuis cette machine en laissant son nom `….ts.net` et ses en-têtes d'identité), sinon sur place.
+/// Une indication pour s'y retrouver, jamais une décision de sécurité.
+pub(super) fn via_of(peer: std::net::IpAddr, headers: &HeaderMap) -> Via {
+    let host_is_tailnet = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|h| {
+            h.rsplit_once(':')
+                .map_or(h, |(name, port)| {
+                    if port.chars().all(|c| c.is_ascii_digit()) {
+                        name
+                    } else {
+                        h
+                    }
+                })
+                .to_ascii_lowercase()
+                .ends_with(".ts.net")
+        });
+    let serve_headers = headers.contains_key("tailscale-user-login");
+    let peer = peer.to_canonical();
+    let in_tailnet = match peer {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 100 && (o[1] & 0xc0) == 64
+        }
+        std::net::IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    };
+    if in_tailnet || host_is_tailnet || serve_headers {
+        Via::Tailscale
+    } else {
+        Via::Local
+    }
 }
 
 async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    if request.protocol_version != wire::PROTOCOL_VERSION {
+    let Some(version) = negotiate(Some(request.protocol_version)) else {
         return Err(ApiError::with_detail(
             ErrorCode::VersionIncompatible,
             format!(
-                "le serveur parle la version {} du protocole, le client la version {}",
+                "le serveur parle les versions {} à {} du protocole, le client la version {}",
+                wire::MIN_PROTOCOL_VERSION,
                 wire::PROTOCOL_VERSION,
                 request.protocol_version
             ),
         )
         .into());
-    }
+    };
     if request.username.len() > 256 || request.password.len() > 1024 {
         return Err(ApiError::new(ErrorCode::InvalidCredentials).into());
     }
@@ -305,14 +367,26 @@ async fn login(
         Verdict::Valid(granted) => {
             state.auth.limiter.record_success(ip);
             state.auth.limiter.record_user_success(&request.username);
-            let session = state.auth.sessions.create(&granted.user_id, granted.epoch);
+            // Un client d'avant la version 4 ne dit rien de lui : connexion « inconnue ».
+            let installation = clean_installation(request.installation);
+            let session = state.auth.sessions.create_from(
+                &granted.user_id,
+                granted.epoch,
+                installation,
+                via_of(ip, &headers),
+            );
             log::info!("connexion acceptée pour {ip}");
             Ok(Json(LoginResponse {
                 token: session.token,
                 expires_at: session.expires_at,
                 max_expires_at: session.max_expires_at,
-                protocol_version: wire::PROTOCOL_VERSION,
+                protocol_version: version,
                 server_version: SERVER_VERSION.to_string(),
+                tailnet_urls: if version >= 4 {
+                    super::tailnet_urls(state.listen)
+                } else {
+                    Vec::new()
+                },
             }))
         }
         Verdict::Invalid => {
@@ -447,9 +521,13 @@ async fn require_session(
         };
         return (StatusCode::FORBIDDEN, Json(body)).into_response();
     }
+    let via = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| via_of(c.0.ip(), request.headers()));
     let session = bearer(request.headers())
         .or_else(|| ws_subprotocol_token(request.method(), request.uri().path(), request.headers()))
-        .and_then(|token| state.auth.authenticate(token));
+        .and_then(|token| state.auth.authenticate_from(token, via));
     if let Some(info) = session {
         request.extensions_mut().insert(info);
         return next.run(request).await;
@@ -540,6 +618,52 @@ async fn logout(
 ) -> StatusCode {
     state.auth.sessions.revoke(&session.id);
     StatusCode::NO_CONTENT
+}
+
+/// `GET /api/me/installations` : les connexions ouvertes sur le compte de la personne (jamais
+/// celles des autres), la plus récente d'abord.
+async fn my_connections(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<ConnectionsResponse> {
+    let connections = state
+        .auth
+        .sessions
+        .connections()
+        .into_iter()
+        .filter(|c| c.user_id == session.user_id)
+        .map(|c| ConnectionView {
+            current: c.session_id == session.id,
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            device: c.device,
+            last_seen: c.last_seen,
+            via: c.via,
+            unknown: c.unknown,
+        })
+        .collect();
+    Json(ConnectionsResponse { connections })
+}
+
+/// `DELETE /api/me/installations/{id}` : coupe une connexion de la personne. Le jeton de cette
+/// connexion cesse de marcher tout de suite ; ses flux ouverts se ferment. Les connexions des
+/// autres comptes ne se coupent pas d'ici (404, comme si elles n'existaient pas).
+async fn cut_connection(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if state
+        .auth
+        .sessions
+        .cut_connection(Some(&session.user_id), &id)
+        == 0
+    {
+        return Err(ApiError::new(ErrorCode::NotFound).into());
+    }
+    log::info!("connexion coupée par son propriétaire");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

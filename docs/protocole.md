@@ -9,6 +9,12 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 
 ## Règles
 
+- **Connexions (version 4)** : le login peut porter `installation` (`{id, kind: web|mac, device:
+  iphone|ipad|android|computer, name}`) ; sans elle, la connexion est « inconnue ». Le serveur parle
+  les versions 3 et 4 et répond dans celle du client : `GET /api/version?protocol=4` (sans le
+  paramètre : 3, comme avant), la réponse du login et le `hello` du WebSocket (`?protocol=`). Les
+  clients de version 3 (2.0.0, 2.1.0-beta.1) ne voient donc jamais un « 4 ». `tailnet_urls` (version 4
+  seulement) : adresses Tailscale directes du serveur (`https://100.x.y.z:port`, même certificat).
 - **Version** : `protocol_version` (2 aujourd'hui). `GET /api/version` la donne sans jeton ;
   la connexion et le WebSocket (`?protocol=2`) l'exigent identique, sinon l'erreur
   `version_incompatible` (HTTP 426). Ajouter un champ optionnel ne change pas la version ;
@@ -76,7 +82,9 @@ aux essais et aux tests.
 | Méthode et chemin | Rôle |
 |---|---|
 | `GET /api/version` | version du protocole et du serveur (sans jeton) |
-| `POST /api/login` | `{username, password, protocol_version}` → `{token, expires_at, …}` (sans jeton) |
+| `POST /api/login` | `{username, password, protocol_version, installation?}` → `{token, expires_at, …, tailnet_urls?}` (sans jeton) |
+| `GET /api/me/installations` | les connexions ouvertes sur le compte de la personne : `{connections: [{id, name, kind, device, last_seen, via, current, unknown}]}` |
+| `DELETE /api/me/installations/{id}` | coupe une connexion de la personne (204, ou 404) : son jeton cesse de marcher, ses flux se ferment |
 | `POST /api/logout` | révoque le jeton (204) ; le WebSocket de cette session se ferme |
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
 | `GET /api/ws?protocol=2` | temps réel (WebSocket) |

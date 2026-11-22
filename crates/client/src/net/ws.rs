@@ -20,7 +20,7 @@ use protocol::wire::{ErrorBody, ErrorCode, ServerMessage, VersionInfo};
 
 use super::backend::{pick_address, Creds, Shared};
 use super::error::{api_message, NetError};
-use super::http::{self, Request};
+use super::http;
 use super::tls::{self, Trust};
 use super::{Event, Link};
 
@@ -38,6 +38,23 @@ const SNAPSHOT_LIMIT: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Une liaison restée établie aussi longtemps remet l'attente à zéro.
 const STABLE_AFTER: Duration = Duration::from_secs(10);
+/// Joint par une autre adresse que la principale (à distance), le client regarde à cette cadence
+/// si l'adresse de la maison répond de nouveau, pour y revenir (plus rapide).
+const HOME_CHECK_EVERY: Duration = Duration::from_secs(30);
+/// Cadence réelle, en millisecondes (les essais la raccourcissent).
+static HOME_CHECK_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(HOME_CHECK_EVERY.as_millis() as u64);
+
+/// Change la cadence du coup d'œil sur l'adresse de la maison (essais seulement).
+#[doc(hidden)]
+pub fn set_home_check_interval(every: Duration) {
+    HOME_CHECK_MS.store(
+        every.as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+/// Délai accordé à ce coup d'œil.
+const HOME_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Pourquoi une connexion s'est terminée.
 #[derive(Debug)]
@@ -203,9 +220,14 @@ fn connect_and_stream(shared: &Arc<Shared>, generation: u64, creds: &Creds) -> E
     let trust = Trust::Pinned(creds.fingerprint.clone());
 
     // 1. Version du protocole, annoncée avant toute chose.
-    let version = http::exec(&creds.addr, &trust, None, &Request::get("/api/version"))
-        .and_then(http::Response::into_result)
-        .and_then(|r| r.json::<VersionInfo>());
+    let version = http::exec(
+        &creds.addr,
+        &trust,
+        None,
+        &super::backend::version_request(shared.protocol()),
+    )
+    .and_then(http::Response::into_result)
+    .and_then(|r| r.json::<VersionInfo>());
     match version {
         Ok(v) if v.protocol_version != shared.protocol() => {
             return Ended::Incompatible(format!(
@@ -281,6 +303,7 @@ fn connect_and_stream(shared: &Arc<Shared>, generation: u64, creds: &Creds) -> E
     let mut last_heard = opened;
     let mut connected_announced = false;
     let mut greeted = false;
+    let mut last_home_check = Instant::now();
     let mut announced_version: Option<String> = None;
     let mut expected_seq: Option<u64> = None;
     loop {
@@ -291,6 +314,22 @@ fn connect_and_stream(shared: &Arc<Shared>, generation: u64, creds: &Creds) -> E
         }
         if last_heard.elapsed() >= SILENCE_LIMIT {
             return Ended::Lost("le serveur ne répond plus".into());
+        }
+        // Joint à distance : l'adresse de la maison répond-elle de nouveau ? (Même certificat :
+        // on ne la croit que si elle présente l'empreinte approuvée.) Alors on se reconnecte,
+        // et la reconnexion choisit la première adresse qui répond, donc celle de la maison.
+        if connected_announced
+            && creds.addr != creds.primary
+            && last_home_check.elapsed()
+                >= Duration::from_millis(HOME_CHECK_MS.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            last_home_check = Instant::now();
+            if tls::connect_until(&creds.primary, &trust, Instant::now() + HOME_CHECK_TIMEOUT)
+                .is_ok()
+            {
+                log::info!("le serveur est de nouveau joignable sur le réseau de la maison");
+                return Ended::Resync;
+            }
         }
         if !connected_announced && opened.elapsed() >= SNAPSHOT_LIMIT {
             return Ended::Lost("le serveur n'a pas envoyé l'état complet".into());

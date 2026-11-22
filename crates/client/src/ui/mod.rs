@@ -8,6 +8,7 @@
 mod camera_text;
 mod cameras;
 mod connect;
+mod connections;
 mod customize;
 mod devices;
 mod events;
@@ -50,9 +51,9 @@ use protocol::events::{now_unix, CoverMotion};
 use protocol::home::{HomePlan, Symbol};
 use protocol::mode::{HomeMode, ModeSource};
 use protocol::wire::{
-    CoverRequest, CustomizeRequest, HistoryResponse, IdentityInfo, ImportIdentity, ImportResponse,
-    ImportSummary, ModeRequest, OnOffRequest, PairRequest, Snapshot, TextIds, WireEvent,
-    WireStatus, HISTORY_MAX_LIMIT,
+    CoverRequest, CustomizeRequest, ErrorCode, HistoryResponse, IdentityInfo, ImportIdentity,
+    ImportResponse, ImportSummary, ModeRequest, OnOffRequest, PairRequest, Snapshot, TextIds,
+    WireEvent, WireStatus, HISTORY_MAX_LIMIT,
 };
 
 /// Ce que les vues d'un appareil demandent à l'application (elles ne parlent pas au réseau).
@@ -71,6 +72,8 @@ enum View {
     Temperatures,
     Cameras,
     Rules,
+    /// Mes connexions : hors de la barre d'onglets (Fichier › Mes connexions…).
+    Connections,
 }
 
 impl View {
@@ -91,6 +94,7 @@ impl View {
             View::Rules => "Automatisations",
             View::Temperatures => "Températures",
             View::Cameras => "Caméras",
+            View::Connections => "Mes connexions",
         }
     }
 }
@@ -148,6 +152,12 @@ enum Pending {
         bytes: Arc<Vec<u8>>,
     },
     ImportApply,
+    /// La liste de « Mes connexions ».
+    Connections,
+    /// Couper une connexion (son nom, pour le dire).
+    CutConnection {
+        name: String,
+    },
 }
 
 /// Fenêtre ouverte par le menu Fichier → Exporter / Importer.
@@ -265,6 +275,8 @@ pub struct MatterApp {
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
     select_on_arrival: Option<String>,
     data_dialog: Option<DataDialog>,
+    /// La page « Mes connexions ».
+    connections: connections::Page,
     /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
     server: Option<String>,
     /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
@@ -356,6 +368,7 @@ impl MatterApp {
             device_edit: None,
             select_on_arrival: None,
             data_dialog: None,
+            connections: connections::Page::new(),
             server: None,
             draft_server: None,
             test_after_save: None,
@@ -473,6 +486,12 @@ impl MatterApp {
             match command {
                 native_menu::MenuCommand::Export => self.export_data(),
                 native_menu::MenuCommand::Import => self.import_data(),
+                native_menu::MenuCommand::Connections => {
+                    self.close_detail();
+                    self.connections.notice = None;
+                    self.view = View::Connections;
+                    self.load_connections();
+                }
                 native_menu::MenuCommand::Logout => self.backend.logout(),
                 native_menu::MenuCommand::Quit => {
                     // Fenêtre visible et au premier plan : la question « modifications non
@@ -1606,6 +1625,73 @@ impl MatterApp {
                     },
                 });
             }
+            Pending::Connections => {
+                self.connections.loaded(
+                    result
+                        .and_then(|r| r.json::<protocol::wire::ConnectionsResponse>())
+                        .map_err(|e| {
+                            // Un serveur d'avant la version 4 ne connaît pas la route.
+                            if e.api_code() == Some(ErrorCode::NotFound) {
+                                "Ce serveur ne gère pas encore les connexions : mettez-le à jour."
+                                    .to_string()
+                            } else {
+                                e.message()
+                            }
+                        }),
+                );
+            }
+            Pending::CutConnection { name } => {
+                match result {
+                    Ok(_) => self
+                        .connections
+                        .say(true, format!("Connexion « {name} » coupée.")),
+                    // Déjà coupée : la liste relue le montre.
+                    Err(e) if e.api_code() == Some(ErrorCode::NotFound) => self
+                        .connections
+                        .say(false, "Cette connexion était déjà fermée.".into()),
+                    Err(e) => self.connections.say(false, e.message()),
+                }
+                self.load_connections();
+            }
+        }
+    }
+
+    /// Relit la liste de « Mes connexions ».
+    fn load_connections(&mut self) {
+        self.connections.load = connections::Load::Loading;
+        if self
+            .request(Pending::Connections, Request::get("/api/me/installations"))
+            .is_none()
+        {
+            self.connections.loaded(Err(
+                "Plus de connexion : la liste n'a pas pu être lue.".into()
+            ));
+        }
+    }
+
+    /// Coupe une connexion de cette personne (déjà confirmée dans la page).
+    fn cut_connection(&mut self, id: &str, name: String) {
+        self.connections.notice = None;
+        let path = format!("/api/me/installations/{id}");
+        if self
+            .request(
+                Pending::CutConnection { name },
+                Request::new("DELETE", path),
+            )
+            .is_none()
+        {
+            self.connections
+                .say(false, "Plus de connexion : rien n'a été coupé.".into());
+        }
+    }
+
+    /// La page « Mes connexions », à la place de la vue courante.
+    fn connections_page(&mut self, ui: &mut egui::Ui) {
+        let (now, offset) = connections::clock();
+        match self.connections.show(ui, now, offset) {
+            connections::Action::None => {}
+            connections::Action::Reload => self.load_connections(),
+            connections::Action::Cut { id, name } => self.cut_connection(&id, name),
         }
     }
 
@@ -2810,6 +2896,7 @@ impl eframe::App for MatterApp {
                     plan::PlanAction::None => {}
                 },
                 View::Temperatures => self.temperatures_page(ui),
+                View::Connections => self.connections_page(ui),
                 View::Cameras => {
                     // Les événements à droite, la mosaïque (ou la caméra ouverte) à gauche.
                     egui::Panel::right("events-panel")

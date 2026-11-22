@@ -10,6 +10,24 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Connexions (multi-comptes, étape 2)
+
+- Chaque téléphone ou ordinateur où un compte est ouvert est une « connexion » : le login envoie
+  son identifiant (gardé par l'app), son type (app web, app Mac) et son nom (« iPhone de Hamdi »).
+  Protocole 4 : le serveur répond dans la version que parle le client, donc la 2.0.0 et la 2.1.0-beta.1
+  (version 3, sans connexion) continuent de marcher et apparaissent comme « connexion inconnue ».
+- Les connexions se rangent dans `sessions.json` (dernier accès, sur place ou par Tailscale), à côté
+  de ce qui existe ; rien n'est migré ni supprimé. Se reconnecter depuis la même installation remplace
+  sa session. Routes `GET /api/me/installations` et `DELETE /api/me/installations/{id}`.
+- App web : feuille « Mes connexions » (nom, dernier accès, où, « Couper »). Le cache du service
+  worker passe à `ostal-shell-v16`.
+- App Ostal sur Mac : Fichier › « Mes connexions… » (page « ‹ Maison · Mes connexions »).
+- Ostal Server : « Voir toutes les connexions » dans Réglages › Comptes, avec « Couper », et les
+  connexions de chaque personne dans sa fiche.
+- Le serveur donne au client ses adresses Tailscale directes après la connexion (même certificat,
+  rien de nouveau à approuver) ; l'app Mac revient sur l'adresse de la maison dès qu'elle répond de
+  nouveau.
+
 ### Comptes nominatifs (multi-comptes, étape 1)
 
 - Serveur : plusieurs comptes, un par personne du foyer (`comptes.json` : identifiant, nom affiché,

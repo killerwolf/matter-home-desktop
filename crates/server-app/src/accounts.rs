@@ -8,8 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
+use ostal_server::net::Auth;
 use ostal_server::persistence::SERVER_DIR;
 use ostal_server::security::account::{self, User};
+use protocol::wire::{connection_kind_label, last_seen_label, via_label};
 
 /// Le message quand le fichier des comptes ne peut pas être lu (le détail va au journal).
 pub const UNREADABLE: &str = "Les comptes n'ont pas pu être lus.";
@@ -105,6 +107,103 @@ pub fn set_active(data_dir: &Path, user_id: &str, active: bool) -> Result<User, 
 /// Ce compte est-il le seul à pouvoir encore se connecter ?
 pub fn is_last_active(users: &[User], id: &str) -> bool {
     users.iter().filter(|u| u.active).count() <= 1 && users.iter().any(|u| u.id == id && u.active)
+}
+
+/// Une connexion ouverte, prête à être dessinée (Réglages › Comptes › Toutes les connexions).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionRow {
+    /// Pour la couper.
+    pub id: String,
+    /// Identifiant interne du compte ; vide pour une connexion inconnue (app pas encore à jour),
+    /// qu'on ne range sous aucune personne, comme dans la maquette.
+    pub user_id: String,
+    /// « Hamdi », ou « — » pour une connexion inconnue.
+    pub person: String,
+    /// « iPhone de Hamdi », « Connexion inconnue ».
+    pub name: String,
+    /// « App web · iPhone ».
+    pub detail: String,
+    /// « Maintenant », « 18:31 », « Hier, 22:10 ».
+    pub seen: String,
+    /// « Sur place » ou « À distance (Tailscale) ».
+    pub via: &'static str,
+    pub unknown: bool,
+}
+
+/// Les connexions ouvertes de toute la maison, la plus récente d'abord. `now` (secondes Unix) et
+/// `utc_offset_s` (heure locale) ne servent qu'à écrire « Hier, 22:10 ».
+pub fn connection_rows(
+    auth: &Auth,
+    users: &[User],
+    now: f64,
+    utc_offset_s: i64,
+) -> Vec<ConnectionRow> {
+    auth.sessions
+        .connections()
+        .into_iter()
+        .map(|c| {
+            let owner = users.iter().find(|u| u.id == c.user_id);
+            ConnectionRow {
+                id: c.id,
+                user_id: if c.unknown {
+                    String::new()
+                } else {
+                    c.user_id.clone()
+                },
+                person: match (c.unknown, owner) {
+                    (false, Some(u)) => u.display_name.clone(),
+                    _ => "—".to_string(),
+                },
+                name: c.name,
+                detail: connection_kind_label(c.kind, c.device, c.unknown),
+                seen: last_seen_label(c.last_seen, now, utc_offset_s),
+                via: via_label(c.via),
+                unknown: c.unknown,
+            }
+        })
+        .collect()
+}
+
+/// L'heure et le décalage locaux d'aujourd'hui.
+pub fn clock() -> (f64, i64) {
+    use chrono::Offset;
+    let local = chrono::Local::now();
+    (
+        local.timestamp() as f64,
+        i64::from(local.offset().fix().local_minus_utc()),
+    )
+}
+
+/// Coupe la connexion `id` (n'importe quelle personne : c'est la fenêtre du serveur). Rend `true`
+/// si elle existait encore.
+pub fn cut_connection(auth: &Auth, id: &str) -> bool {
+    auth.sessions.cut_connection(None, id) > 0
+}
+
+/// « 3 connexions », « 1 connexion », « aucune connexion ».
+pub fn count_label(n: usize) -> String {
+    match n {
+        0 => "aucune connexion".into(),
+        1 => "1 connexion".into(),
+        n => format!("{n} connexions"),
+    }
+}
+
+/// « 7 connexions ouvertes, dont une inconnue. »
+pub fn summary(rows: &[ConnectionRow]) -> String {
+    let unknown = rows.iter().filter(|r| r.unknown).count();
+    let mut text = match rows.len() {
+        0 => return "Aucune connexion ouverte pour l'instant.".into(),
+        1 => "1 connexion ouverte".to_string(),
+        n => format!("{n} connexions ouvertes"),
+    };
+    match unknown {
+        0 => {}
+        1 => text.push_str(", dont une inconnue"),
+        n => text.push_str(&format!(", dont {n} inconnues")),
+    }
+    text.push('.');
+    text
 }
 
 #[cfg(test)]
@@ -212,6 +311,68 @@ mod tests {
         let data = temp("bad");
         std::fs::write(dir(&data).join("comptes.json"), "pas du json").unwrap();
         assert_eq!(list(&data).unwrap_err(), UNREADABLE);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn connections_are_listed_for_the_house_and_cut_one_by_one() {
+        use ostal_server::security::account::AccountStore;
+        use ostal_server::security::sessions::SessionStore;
+        use protocol::wire::{ConnectionKind, DeviceClass, Installation, Via};
+        let data = temp("conns");
+        account::create(&dir(&data), "hamdi", PW, false).unwrap();
+        let sam = add(&data, &form("Sam", "sam", PW, PW)).unwrap();
+        let server_dir = dir(&data);
+        let auth = Auth::new(
+            AccountStore::open(&server_dir).unwrap(),
+            SessionStore::open(&server_dir).unwrap(),
+        );
+        let users = list(&data).unwrap();
+        let hamdi = users.iter().find(|u| u.username == "hamdi").unwrap();
+        let inst = |id: &str, name: &str, device| Installation {
+            id: id.into(),
+            kind: ConnectionKind::Web,
+            device,
+            name: name.into(),
+        };
+        auth.sessions.create_from(
+            &hamdi.id,
+            0,
+            Some(inst("iphone-h-01", "iPhone de Hamdi", DeviceClass::Iphone)),
+            Via::Local,
+        );
+        auth.sessions.create_from(
+            &sam.id,
+            0,
+            Some(inst("mac-sam-001", "Mac de Sam", DeviceClass::Computer)),
+            Via::Tailscale,
+        );
+        auth.sessions.create(&sam.id, 0);
+
+        let (now, offset) = clock();
+        let rows = connection_rows(&auth, &users, now, offset);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(summary(&rows), "3 connexions ouvertes, dont une inconnue.");
+        let mac = rows.iter().find(|r| r.name == "Mac de Sam").unwrap();
+        assert_eq!(
+            (mac.person.as_str(), mac.via),
+            ("Sam", "À distance (Tailscale)")
+        );
+        assert_eq!(mac.seen, "Maintenant");
+        let unknown = rows.iter().find(|r| r.unknown).unwrap();
+        assert_eq!(
+            (unknown.person.as_str(), unknown.user_id.as_str()),
+            ("—", "")
+        );
+        assert_eq!(unknown.detail, "App pas encore à jour");
+
+        assert!(cut_connection(&auth, &mac.id));
+        assert!(!cut_connection(&auth, &mac.id));
+        assert!(cut_connection(&auth, &unknown.id));
+        assert_eq!(connection_rows(&auth, &users, now, offset).len(), 1);
+        assert_eq!(count_label(0), "aucune connexion");
+        assert_eq!(count_label(1), "1 connexion");
+        assert_eq!(count_label(3), "3 connexions");
         let _ = std::fs::remove_dir_all(data);
     }
 }

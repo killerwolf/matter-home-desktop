@@ -96,6 +96,12 @@ fn a_2_0_0_data_folder_keeps_working_and_the_account_becomes_the_first_user() {
     runtime().block_on(async {
         // La session de la 2.0.0 marche telle quelle, et le mot de passe aussi.
         assert_eq!(client.get("/api/state", OLD_TOKEN).await.status, 200);
+        // Elle apparaît comme une « connexion inconnue » : aucune installation dans l'ancien fichier.
+        let resp = client.get("/api/me/installations", OLD_TOKEN).await;
+        assert_eq!(resp.status, 200, "{}", resp.text());
+        let list = resp.json()["connections"].as_array().unwrap().clone();
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0]["unknown"], true);
         assert_eq!(
             client.login_as("Hamdi", PASSWORD, PROTOCOL).await.status,
             200

@@ -18,6 +18,7 @@
 
 mod api;
 mod camera;
+mod connection;
 mod convert;
 mod detection;
 mod error;
@@ -28,6 +29,7 @@ mod text_ids;
 
 pub use api::*;
 pub use camera::*;
+pub use connection::{kind_label as connection_kind_label, last_seen_label, via_label};
 pub use detection::*;
 pub use error::*;
 pub use message::*;
@@ -47,7 +49,14 @@ pub use text_ids::{as_text_ids, parse_id, text_id, IdError, TextIds};
 /// - 3 : mode global de la maison (#8) : `Trigger::Mode`, `Condition::Mode` et `Action::SetMode`
 ///   dans les règles n'ont pas de variante de repli : un client de version 2 qui recevrait de telles
 ///   règles ne saurait plus lire l'état complet. Il est refusé d'emblée (426, `version_incompatible`).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// - 4 : connexions (étape 2 de « multi-comptes ») : le login envoie l'`Installation` du client
+///   (identifiant, type, nom), `GET`/`DELETE /api/me/installations`, `tailnet_urls` dans la réponse
+///   du login. Tout cela est facultatif : un client de version 3 reste accepté (sa connexion est
+///   « inconnue »). Le serveur répond dans la version que le client annonce (`/api/version?protocol=`,
+///   login, WebSocket), de sorte qu'un client 3 ne voit jamais un « 4 ».
+pub const PROTOCOL_VERSION: u32 = 4;
+/// Plus ancienne version du protocole que le serveur accepte encore.
+pub const MIN_PROTOCOL_VERSION: u32 = 3;
 
 /// Fenêtre maximale d'une lecture d'historique (la rétention du serveur : 7 jours).
 pub const HISTORY_MAX_WINDOW_S: u64 = 7 * 24 * 3600;
@@ -387,11 +396,45 @@ mod tests {
     }
 
     #[test]
+    fn an_old_login_without_installation_still_reads_and_new_fields_stay_optional() {
+        // Corps d'un client 2.0.0 : ni installation, ni rien de plus.
+        let old: LoginRequest =
+            serde_json::from_str(r#"{"username":"a","password":"b","protocol_version":3}"#)
+                .unwrap();
+        assert!(old.installation.is_none());
+        // Un client plus récent peut annoncer un type ou un appareil que nous ne connaissons pas.
+        let new: LoginRequest = serde_json::from_str(
+            r#"{"username":"a","password":"b","protocol_version":4,
+                "installation":{"id":"x","kind":"tv","device":"frigo","name":"n"}}"#,
+        )
+        .unwrap();
+        let i = new.installation.unwrap();
+        assert_eq!(
+            (i.kind, i.device),
+            (ConnectionKind::Other, DeviceClass::Other)
+        );
+        // Sans adresse Tailscale, la réponse du login ne porte pas le champ (ancien client).
+        let response = LoginResponse {
+            token: "t".into(),
+            expires_at: 1.0,
+            max_expires_at: 2.0,
+            protocol_version: 3,
+            server_version: "x".into(),
+            tailnet_urls: Vec::new(),
+        };
+        assert!(!serde_json::to_string(&response)
+            .unwrap()
+            .contains("tailnet_urls"));
+        const { assert!(MIN_PROTOCOL_VERSION <= PROTOCOL_VERSION) };
+    }
+
+    #[test]
     fn secrets_never_appear_in_debug() {
         let login = LoginRequest {
             username: "hamdi".into(),
             password: "tres-secret".into(),
             protocol_version: 1,
+            installation: None,
         };
         assert!(!format!("{login:?}").contains("tres-secret"));
         let pair = PairRequest {

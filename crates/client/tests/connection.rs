@@ -739,3 +739,118 @@ fn a_second_address_takes_over_when_the_first_does_not_answer() {
     again.wait_link(T, |l| matches!(l, Link::Connected { .. }));
     again.wait_for(T, |e| matches!(e, Event::Snapshot(_)).then_some(()));
 }
+
+#[test]
+fn this_mac_is_a_named_connection_with_a_stable_id_and_old_protocol_stays_unknown() {
+    let dir = temp_dir("install");
+    let server = Server::start(&dir);
+    let path = store_path(&dir);
+    let mut client = TestClient::new(path.clone());
+    connect_first_time(&mut client, &server);
+    let list = |client: &mut TestClient| -> Vec<serde_json::Value> {
+        let resp = client
+            .call(Request::get("/api/me/installations"))
+            .expect("liste des connexions");
+        resp.json::<serde_json::Value>().unwrap()["connections"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let first = list(&mut client);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0]["kind"], "mac");
+    assert_eq!(first[0]["device"], "computer");
+    assert_eq!(first[0]["current"], true);
+    assert_eq!(first[0]["unknown"], false);
+    let id = first[0]["id"].as_str().unwrap().to_string();
+    assert!(!first[0]["name"].as_str().unwrap().is_empty());
+
+    // Se déconnecter puis se reconnecter depuis ce Mac : la même connexion, pas une de plus.
+    client.backend.logout();
+    client.wait_link(T, |l| matches!(l, Link::LoggedOut { .. }));
+    client.backend.login_saved(USER, PASSWORD);
+    client.wait_for(T, |e| matches!(e, Event::Snapshot(_)).then_some(()));
+    let second = list(&mut client);
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_eq!(second[0]["id"].as_str().unwrap(), id);
+    drop(client);
+
+    // Un client qui parle encore la version 3 ne dit rien de lui : connexion inconnue, et il marche.
+    let mut old = TestClient::with_protocol(dir.join("ancien").join("connexion.json"), Some(3));
+    connect_first_time(&mut old, &server);
+    let mine = {
+        let resp = old.call(Request::get("/api/me/installations")).unwrap();
+        resp.json::<serde_json::Value>().unwrap()["connections"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    // La connexion de ce Mac (fermée à l'instant, mais sa session reste ouverte côté serveur) et
+    // celle de l'ancien client, qui ne dit rien de lui.
+    assert_eq!(mine.len(), 2, "{mine:?}");
+    let unknown: Vec<_> = mine.iter().filter(|c| c["unknown"] == true).collect();
+    assert_eq!(unknown.len(), 1);
+    assert_eq!(unknown[0]["name"], "Connexion inconnue");
+    assert_eq!(unknown[0]["current"], true);
+}
+
+#[test]
+fn back_on_the_home_network_the_client_returns_to_the_main_address() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    let dir = temp_dir("home");
+    let server = Server::start(&dir);
+    let path = store_path(&dir);
+    // L'adresse « maison » est d'abord morte : un port réservé puis libéré.
+    let home_port = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let home = format!("https://127.0.0.1:{home_port}");
+    ostal_client::net::set_home_check_interval(Duration::from_millis(500));
+    let mut client = TestClient::new(path.clone());
+    client.backend.set_alt_urls(vec![server.url()]);
+    client
+        .backend
+        .login(&home, &server.fingerprint, USER, PASSWORD);
+    client.wait_link(T, |l| matches!(l, Link::Connected { .. }));
+
+    // La maison redevient joignable : un relais TCP vers le même serveur (même certificat).
+    let upstream = server.addr;
+    let relay = TcpListener::bind(("127.0.0.1", home_port)).unwrap();
+    std::thread::spawn(move || {
+        for incoming in relay.incoming().map_while(Result::ok) {
+            std::thread::spawn(move || {
+                let Ok(out) = TcpStream::connect(upstream) else {
+                    return;
+                };
+                let (mut a, mut b) = (incoming.try_clone().unwrap(), out.try_clone().unwrap());
+                let (mut c, mut d) = (incoming, out);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = a.read(&mut buf) {
+                        if n == 0 || b.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                });
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = d.read(&mut buf) {
+                    if n == 0 || c.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let notice = client.wait_for(Duration::from_secs(30), |e| match e {
+        Event::Notice(text) if text.contains("Retour à l'adresse principale") => {
+            Some(text.clone())
+        }
+        _ => None,
+    });
+    assert!(notice.contains(&home_port.to_string()), "{notice}");
+    client.wait_link(T, |l| matches!(l, Link::Connected { .. }));
+    ostal_client::net::set_home_check_interval(Duration::from_secs(30));
+}

@@ -22,6 +22,85 @@ pub struct LoginRequest {
     pub password: String,
     /// Version du protocole parlée par le client.
     pub protocol_version: u32,
+    /// Le téléphone ou l'ordinateur qui se connecte (protocole 4). Absent chez un client plus
+    /// ancien (2.0.0, 2.1.0-beta.1) : sa connexion est alors « inconnue ».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<Installation>,
+}
+
+/// Sorte de client d'une connexion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionKind {
+    /// L'app web, dans un navigateur.
+    Web,
+    /// L'app Ostal sur Mac.
+    Mac,
+    /// Une valeur qu'une version plus récente aurait ajoutée.
+    #[serde(other)]
+    Other,
+}
+
+/// Sorte d'appareil d'une connexion : « iPhone », « Android »…
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceClass {
+    Iphone,
+    Ipad,
+    Android,
+    Computer,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+/// Une connexion telle que le client la déclare à l'ouverture de session. Le type et le nom
+/// servent à s'y retrouver (traçabilité), jamais à décider d'un droit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Installation {
+    /// Identifiant tiré au hasard à la première ouverture de l'app, gardé ensuite : se reconnecter
+    /// depuis la même app retrouve la même connexion.
+    pub id: String,
+    pub kind: ConnectionKind,
+    #[serde(default)]
+    pub device: DeviceClass,
+    /// « iPhone de Hamdi », « Mac du salon ».
+    pub name: String,
+}
+
+/// Où se trouvait le client à son dernier accès.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    /// Sur le réseau de la maison.
+    Local,
+    /// Par Tailscale.
+    Tailscale,
+}
+
+/// Une connexion ouverte, vue de l'API : `GET /api/me/installations`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionView {
+    /// Pour la couper (`DELETE /api/me/installations/{id}`).
+    pub id: String,
+    pub name: String,
+    pub kind: ConnectionKind,
+    #[serde(default)]
+    pub device: DeviceClass,
+    /// Dernier accès (secondes Unix).
+    pub last_seen: f64,
+    pub via: Via,
+    /// C'est la connexion qui pose la question : on ne la coupe pas d'ici.
+    pub current: bool,
+    /// Le client n'a pas dit qui il est (app pas encore à jour) : « Connexion inconnue ».
+    #[serde(default)]
+    pub unknown: bool,
+}
+
+/// Réponse de `GET /api/me/installations`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionsResponse {
+    pub connections: Vec<ConnectionView>,
 }
 
 // Pas de `Debug` dérivé : le mot de passe ne doit jamais finir dans un journal.
@@ -45,6 +124,10 @@ pub struct LoginResponse {
     pub max_expires_at: f64,
     pub protocol_version: u32,
     pub server_version: String,
+    /// Adresses Tailscale **directes** du serveur (`https://100.x.y.z:port`), pour joindre la
+    /// maison de loin avec le même certificat. Absent chez un serveur plus ancien.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tailnet_urls: Vec<String>,
 }
 
 impl std::fmt::Debug for LoginResponse {

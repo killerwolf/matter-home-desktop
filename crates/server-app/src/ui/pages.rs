@@ -1349,7 +1349,10 @@ impl App {
         let p = theme::palette(ui);
         if st.phase == Phase::Running {
             if self.accounts.is_open() {
-                if self.accounts.show(ui, ctx, &st.data_dir) {
+                if self
+                    .accounts
+                    .show(ui, ctx, &st.data_dir, st.auth.as_ref().map(|a| &a.0))
+                {
                     self.accounts.reset();
                 }
                 return;

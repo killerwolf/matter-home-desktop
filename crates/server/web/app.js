@@ -12,6 +12,7 @@ import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
+import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
 import { SHORTCUT_NAMES, copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -422,11 +423,13 @@ function renderDevices() {
       const out = make("div", "section-title");
       const notif = make("button", "ghost", "Notifications");
       notif.id = "notifications";
+      const connections = make("button", "ghost", "Mes connexions");
+      connections.id = "connections";
       const widgets = make("button", "ghost", "Widgets et raccourcis");
       widgets.id = "widgets";
       const logout = make("button", "ghost", "Se déconnecter");
       logout.id = "logout";
-      out.append(notif, widgets, logout);
+      out.append(notif, connections, widgets, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -971,6 +974,7 @@ function closeSheet() {
   sheetId = null;
   pushUi.open = false;
   modeUi.open = false;
+  connUi.open = false;
   if (wasOpen) {
     const target = sheetOpener;
     sheetOpener = null;
@@ -1190,6 +1194,86 @@ async function openNotifications() {
     pushUi.error = error?.status === 404 ? "Ce serveur ne gère pas encore les notifications : mettez-le à jour." : (error?.detail || "Réglages indisponibles pour l'instant.");
   }
   if (pushUi.open) renderPush();
+}
+
+// ---------------------------------------------------------------------------
+// Mes connexions : les téléphones et ordinateurs où le compte est ouvert (GET
+// /api/me/installations), avec « Couper ». La connexion de cet appareil n'a pas de bouton.
+// ---------------------------------------------------------------------------
+const connUi = { open: false, list: null, error: "", busy: false };
+
+async function openConnections() {
+  closeSheet();
+  connUi.open = true;
+  connUi.list = null;
+  connUi.error = "";
+  $("#sheet-title").textContent = "Mes connexions";
+  renderConnections();
+  showSheet("tall");
+  await loadConnections();
+}
+
+async function loadConnections() {
+  try {
+    connUi.list = (await api.request("GET", "/api/me/installations")).connections;
+    connUi.error = "";
+  } catch (error) {
+    connUi.error = error?.status === 404
+      ? "Ce serveur ne gère pas encore les connexions : mettez-le à jour."
+      : (error?.detail || "Liste indisponible pour l'instant.");
+  }
+  if (connUi.open) renderConnections();
+}
+
+const THIS_DEVICE = { iphone: "Cet iPhone", ipad: "Cet iPad", android: "Ce téléphone", computer: "Cet ordinateur" };
+
+async function cutConnection(c) {
+  const text = `${c.name} devra se reconnecter avec son identifiant et son mot de passe.`;
+  if (!await askConfirm({ title: "Couper cette connexion ?", text, action: "Couper" })) return;
+  connUi.busy = true;
+  connUi.error = "";
+  renderConnections();
+  try {
+    await api.request("DELETE", `/api/me/installations/${encodeURIComponent(c.id)}`);
+  } catch (error) {
+    // Déjà coupée (404) : la liste relue le montre. Le reste est dit.
+    if (error?.status !== 404) connUi.error = error?.detail || "Échec, réessayez.";
+  } finally {
+    connUi.busy = false;
+  }
+  await loadConnections();
+}
+
+function renderConnections() {
+  const body = $("#sheet-body");
+  body.dataset.id = "connections";
+  body.replaceChildren();
+  body.appendChild(make("p", "ev-note", "Les téléphones et ordinateurs où votre compte est ouvert. Couper une connexion la ferme tout de suite : ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe."));
+  if (connUi.error) body.appendChild(make("p", "error", connUi.error));
+  if (!connUi.list) { if (!connUi.error) body.appendChild(make("p", "w-note", "Chargement…")); return; }
+  body.appendChild(make("h3", "", "Ouvertes sur votre compte"));
+  if (!connUi.list.length) body.appendChild(make("p", "w-note", "Aucune connexion ouverte pour l'instant."));
+  const ul = make("ul", "conn-list");
+  for (const c of sortConnections(connUi.list)) {
+    const li = make("li", "conn");
+    const who = make("div", "who");
+    who.appendChild(make("strong", "", c.name));
+    who.appendChild(make("span", "", `${kindLabel(c)} · Dernier accès : ${lastSeenLabel(c.last_seen)}`));
+    who.appendChild(make("span", "", `Où : ${viaLabel(c.via)}`));
+    li.appendChild(who);
+    if (c.current) {
+      li.appendChild(make("span", "conn-here", `✓ ${THIS_DEVICE[c.device] ?? "Cet appareil"}`));
+    } else {
+      const cut = make("button", "btn", "Couper");
+      cut.type = "button";
+      cut.setAttribute("aria-label", `Couper ${c.name}`);
+      cut.disabled = connUi.busy;
+      cut.addEventListener("click", () => cutConnection(c));
+      li.appendChild(cut);
+    }
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
 }
 
 function checkbox(label, checked, onChange) {
@@ -1900,6 +1984,7 @@ view.addEventListener("contextmenu", (e) => {
 view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   if (e.target.closest("#notifications")) { openNotifications(); return; }
+  if (e.target.closest("#connections")) { openConnections(); return; }
   if (e.target.closest("#widgets")) { openWidgets(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
