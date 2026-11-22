@@ -97,10 +97,6 @@ pub enum Cmd {
         username: String,
         password: String,
     },
-    ReplaceAccount {
-        username: String,
-        password: String,
-    },
     Quit,
 }
 
@@ -121,11 +117,6 @@ impl std::fmt::Debug for Cmd {
             Cmd::NewHome => f.write_str("NewHome"),
             Cmd::CreateAccount { username, .. } => f
                 .debug_struct("CreateAccount")
-                .field("username", username)
-                .field("password", &"***")
-                .finish(),
-            Cmd::ReplaceAccount { username, .. } => f
-                .debug_struct("ReplaceAccount")
                 .field("username", username)
                 .field("password", &"***")
                 .finish(),
@@ -636,19 +627,8 @@ impl Controller {
             }
             Cmd::CreateAccount { username, password } if in_setup => {
                 return self.operation("Création du compte…", |_| {
-                    create_account(&username, &password, false).map(|()| "Compte créé.".to_string())
+                    create_account(&username, &password).map(|()| "Compte créé.".to_string())
                 });
-            }
-            Cmd::ReplaceAccount { username, password } => {
-                let result = create_account(&username, &password, true);
-                match result {
-                    Ok(()) => {
-                        self.set(|s| s.notice = Some(Notice::Ok("Compte remplacé : les anciennes connexions sont fermées, le serveur redémarre.".into())));
-                        self.stop_or_exit();
-                        return Some(Next::Reboot);
-                    }
-                    Err(e) => self.set(|s| s.notice = Some(Notice::Err(e))),
-                }
             }
             other => log::warn!("commande ignorée dans cet état : {other:?}"),
         }
@@ -769,11 +749,12 @@ fn new_home() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn create_account(username: &str, password: &str, replace: bool) -> Result<(), String> {
+/// Le premier compte (première installation). Les suivants se créent dans Réglages › Comptes.
+fn create_account(username: &str, password: &str) -> Result<(), String> {
     setup::check_credentials(username, password)?;
     let dir = persistence::data_dir();
     security::server_dir(&dir)
-        .and_then(|d| account::create(&d, username, password, replace))
+        .and_then(|d| account::create(&d, username, password, false))
         .map(|_| ())
         .map_err(|e| format!("{e:#}"))
 }
@@ -842,20 +823,13 @@ mod tests {
     #[test]
     fn debug_never_shows_a_password() {
         let secret = "tres-secret-123";
-        for cmd in [
-            Cmd::CreateAccount {
-                username: "hamdi".into(),
-                password: secret.into(),
-            },
-            Cmd::ReplaceAccount {
-                username: "hamdi".into(),
-                password: secret.into(),
-            },
-        ] {
-            let text = format!("{cmd:?}");
-            assert!(!text.contains(secret), "{text}");
-            assert!(text.contains("hamdi") && text.contains("***"), "{text}");
-        }
+        let cmd = Cmd::CreateAccount {
+            username: "hamdi".into(),
+            password: secret.into(),
+        };
+        let text = format!("{cmd:?}");
+        assert!(!text.contains(secret), "{text}");
+        assert!(text.contains("hamdi") && text.contains("***"), "{text}");
         assert_eq!(format!("{:?}", Cmd::Quit), "Quit");
     }
 

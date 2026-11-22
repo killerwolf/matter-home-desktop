@@ -26,6 +26,8 @@ pub enum Confirmation {
     DeleteCamera { name: String },
     /// Retirer la clé d'API des descriptions par IA.
     RemoveApiKey,
+    /// Désactiver le compte d'une personne du foyer.
+    DisableAccount { name: String },
 }
 
 /// Ce que l'alerte affiche.
@@ -70,6 +72,11 @@ impl Confirmation {
                 "Retirer la clé ?".into(),
                 "Les événements ne seront plus décrits.".into(),
                 "Retirer",
+            ),
+            Confirmation::DisableAccount { name } => (
+                format!("Désactiver le compte de {name} ?"),
+                "Ses connexions et ses raccourcis cessent de marcher tout de suite. Le compte reste là : vous pouvez le réactiver.".into(),
+                "Désactiver",
             ),
         };
         Dialog {
@@ -128,11 +135,12 @@ mod tests {
                 name: "Entrée".into(),
             },
             Confirmation::RemoveApiKey,
+            Confirmation::DisableAccount { name: "Sam".into() },
         ]
     }
 
     #[test]
-    fn the_six_destructive_gestures_each_ask_first() {
+    fn the_destructive_gestures_each_ask_first() {
         for what in all() {
             let mut shown = 0;
             let done = ask_with(&what, |d| {

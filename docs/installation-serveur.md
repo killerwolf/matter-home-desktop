@@ -257,7 +257,9 @@ puis, dans le Terminal, dans le dossier de l'archive :
 ./ostal-server init
 ```
 
-Dans les deux cas, créez ensuite **le compte** (un seul : celui que le client demandera) :
+Dans les deux cas, créez ensuite **le premier compte** (celui que le client demandera ; les comptes
+des autres personnes se créent ensuite avec `ostal-server user add`, ou dans Réglages › Comptes d'Ostal
+Server) :
 
 ```bash
 ./ostal-server create-account --username votre-nom

@@ -98,7 +98,9 @@ impl Server {
     }
 
     pub fn start_with(dir: &Path, env: &[(&str, &str)]) -> Server {
-        if !dir.join("serveur").join("compte.json").exists() {
+        if !dir.join("serveur").join("comptes.json").exists()
+            && !dir.join("serveur").join("compte.json").exists()
+        {
             let (status, text) = create_account(dir, USER, PASSWORD, &[]);
             assert!(status.success(), "{text}");
         }

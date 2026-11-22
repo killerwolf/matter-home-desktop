@@ -1101,7 +1101,7 @@ fn log_never_contains_secrets() {
     // Le fichier des sessions ne contient que des empreintes.
     let sessions = std::fs::read_to_string(dir.join("serveur/sessions.json")).unwrap();
     assert!(!sessions.contains(&token));
-    let account = std::fs::read_to_string(dir.join("serveur/compte.json")).unwrap();
+    let account = std::fs::read_to_string(dir.join("serveur/comptes.json")).unwrap();
     assert!(!account.contains(PASSWORD) && account.contains("$argon2id$"));
 }
 

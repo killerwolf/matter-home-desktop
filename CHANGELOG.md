@@ -10,6 +10,21 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Comptes nominatifs (multi-comptes, étape 1)
+
+- Serveur : plusieurs comptes, un par personne du foyer (`comptes.json` : identifiant, nom affiché,
+  mot de passe haché argon2id, rôle administrateur pour tous en V1, actif ou désactivé). Au premier
+  démarrage, l'ancien compte unique devient le premier utilisateur, avec le même identifiant
+  interne : ses sessions, ses raccourcis et les anciens clients continuent de marcher. Les anciens
+  fichiers (`compte.json`, `sessions.json`) restent en place.
+- Sessions rattachées à leur utilisateur (32 au plus par personne). Un nouveau mot de passe ou une
+  désactivation coupe tout de suite les sessions de ce compte, et d'elles seules, même serveur ouvert.
+- Limiteur d'échecs de connexion aussi par identifiant, en plus de l'adresse.
+- Ligne de commande : `ostal-server user add | list | passwd | disable | enable` (`create-account`
+  reste, pour le premier compte).
+- Ostal Server : Réglages › Comptes (liste, « Ajouter un compte », fiche d'un compte : nouveau mot de
+  passe, désactiver ou réactiver). « Remplacer le compte » disparaît : le serveur ne redémarre plus.
+
 ### Refonte (préversion, finitions)
 
 - App web : le plan de la maison est affiné (`plan.js` et ses tests).

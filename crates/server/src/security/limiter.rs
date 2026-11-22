@@ -4,6 +4,12 @@
 //! réseau local pourrait enfermer le propriétaire dehors sans fin. Une attaque répartie sur
 //! plusieurs adresses est seulement ralentie (une vérification argon2 à la fois, un petit
 //! délai après chaque échec : voir `net::routes`).
+//!
+//! En plus de l'adresse, les échecs sont comptés **par identifiant** : une attaque répartie sur
+//! plusieurs adresses contre un même compte finit par être ralentie. Ce second compteur est plus
+//! tolérant (10 échecs, attente plafonnée à 5 minutes) : quelqu'un du réseau qui vise exprès
+//! l'identifiant d'un autre ne peut pas l'enfermer dehors longtemps. Les identifiants inconnus
+//! sont comptés comme les autres (on ne révèle pas lesquels existent).
 //! État en mémoire : un redémarrage le remet à zéro (un attaquant distant ne peut pas
 //! redémarrer le serveur).
 
@@ -21,6 +27,11 @@ const MAX_DELAY: Duration = Duration::from_secs(15 * 60);
 const FORGET_AFTER: Duration = Duration::from_secs(3600);
 /// Nombre maximal d'adresses suivies (mémoire bornée).
 const MAX_TRACKED_IPS: usize = 1024;
+/// Même chose par identifiant : plus tolérant, attente plus courte (voir l'en-tête).
+const USER_FREE_FAILURES: u32 = 10;
+const USER_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
+const MAX_TRACKED_USERS: usize = 1024;
+const MAX_USER_KEY_CHARS: usize = 64;
 
 #[derive(Default, Clone, Copy)]
 struct Entry {
@@ -45,12 +56,12 @@ impl Entry {
             .filter(|d| !d.is_zero())
     }
 
-    fn fail(&mut self, now: Instant, free: u32) {
+    fn fail(&mut self, now: Instant, free: u32, max_delay: Duration) {
         self.failures += 1;
         self.last_failure = Some(now);
         if self.failures >= free {
             let doublings = (self.failures - free).min(10);
-            let delay = BASE_DELAY.saturating_mul(1 << doublings).min(MAX_DELAY);
+            let delay = BASE_DELAY.saturating_mul(1 << doublings).min(max_delay);
             self.locked_until = Some(now + delay);
         }
     }
@@ -59,6 +70,15 @@ impl Entry {
 #[derive(Default)]
 pub struct LoginLimiter {
     per_ip: Mutex<HashMap<IpAddr, Entry>>,
+    per_user: Mutex<HashMap<String, Entry>>,
+}
+
+/// Clé d'un identifiant : sans casse, bornée (la mémoire ne dépend pas de ce qu'envoie le client).
+fn user_key(username: &str) -> String {
+    super::account::username_key(username)
+        .chars()
+        .take(MAX_USER_KEY_CHARS)
+        .collect()
 }
 
 impl LoginLimiter {
@@ -80,6 +100,55 @@ impl LoginLimiter {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&ip);
+    }
+
+    /// `Err(attente)` si cet identifiant est en attente (quelle que soit l'adresse).
+    pub fn check_user(&self, username: &str) -> Result<(), Duration> {
+        self.check_user_at(username, Instant::now())
+    }
+
+    pub fn record_user_failure(&self, username: &str) -> Option<Duration> {
+        self.record_user_failure_at(username, Instant::now())
+    }
+
+    pub fn record_user_success(&self, username: &str) {
+        self.per_user
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&user_key(username));
+    }
+
+    fn check_user_at(&self, username: &str, now: Instant) -> Result<(), Duration> {
+        let mut per_user = self.per_user.lock().unwrap_or_else(|e| e.into_inner());
+        let wait = per_user.get_mut(&user_key(username)).and_then(|e| {
+            e.expire(now);
+            e.retry_after(now)
+        });
+        match wait {
+            Some(wait) => Err(wait),
+            None => Ok(()),
+        }
+    }
+
+    fn record_user_failure_at(&self, username: &str, now: Instant) -> Option<Duration> {
+        let key = user_key(username);
+        let mut per_user = self.per_user.lock().unwrap_or_else(|e| e.into_inner());
+        if per_user.len() >= MAX_TRACKED_USERS && !per_user.contains_key(&key) {
+            per_user.retain(|_, e| e.retry_after(now).is_some());
+            if per_user.len() >= MAX_TRACKED_USERS {
+                let soonest = per_user
+                    .iter()
+                    .min_by_key(|(_, e)| e.locked_until)
+                    .map(|(k, _)| k.clone());
+                if let Some(soonest) = soonest {
+                    per_user.remove(&soonest);
+                }
+            }
+        }
+        let entry = per_user.entry(key).or_default();
+        entry.expire(now);
+        entry.fail(now, USER_FREE_FAILURES, USER_MAX_DELAY);
+        entry.retry_after(now)
     }
 
     fn check_at(&self, ip: IpAddr, now: Instant) -> Result<(), Duration> {
@@ -113,7 +182,7 @@ impl LoginLimiter {
         }
         let entry = per_ip.entry(ip).or_default();
         entry.expire(now);
-        entry.fail(now, IP_FREE_FAILURES);
+        entry.fail(now, IP_FREE_FAILURES, MAX_DELAY);
         entry.retry_after(now)
     }
 }
@@ -206,5 +275,50 @@ mod tests {
             l.record_failure_at(fresh, t0);
         }
         assert!(l.check_at(fresh, t0).is_err());
+    }
+
+    #[test]
+    fn failures_are_also_counted_per_username_across_addresses() {
+        let l = LoginLimiter::new();
+        let t0 = Instant::now();
+        // Dix adresses différentes visent le même identifiant : aucune n'atteint sa limite.
+        for n in 0..USER_FREE_FAILURES as u8 {
+            assert!(l.record_failure_at(ip(n), t0).is_none());
+            l.record_user_failure_at("Sam", t0);
+        }
+        // Mais l'identifiant, lui, est en attente, quelle que soit l'adresse ou la casse.
+        assert_eq!(l.check_user_at("sam", t0).unwrap_err(), BASE_DELAY);
+        assert!(l.check_at(ip(200), t0).is_ok());
+        // Un autre identifiant n'est pas touché.
+        assert!(l.check_user_at("lea", t0).is_ok());
+        // L'attente est plafonnée plus bas que celle des adresses.
+        let mut t = t0;
+        for _ in 0..30 {
+            t += USER_MAX_DELAY + Duration::from_secs(1);
+            l.record_user_failure_at("sam", t);
+        }
+        assert_eq!(l.check_user_at("sam", t).unwrap_err(), USER_MAX_DELAY);
+        l.record_user_success("SAM");
+        assert!(l.check_user_at("sam", t).is_ok());
+    }
+
+    #[test]
+    fn tracked_usernames_stay_bounded() {
+        let l = LoginLimiter::new();
+        let t0 = Instant::now();
+        for n in 0..(MAX_TRACKED_USERS + 300) {
+            for _ in 0..USER_FREE_FAILURES {
+                l.record_user_failure_at(&format!("inconnu-{n}"), t0);
+            }
+        }
+        assert!(l.per_user.lock().unwrap().len() <= MAX_TRACKED_USERS);
+        let long = "x".repeat(10_000);
+        l.record_user_failure_at(&long, t0);
+        assert!(l
+            .per_user
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|k| k.chars().count() <= MAX_USER_KEY_CHARS));
     }
 }

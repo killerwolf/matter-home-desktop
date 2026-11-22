@@ -4,7 +4,8 @@
 //!   identité Matter (jamais de nouvelle fabric par accident)
 //! - `ostal-server --demo`         : appareils simulés, dossier de données temporaire
 //! - `ostal-server --discover`     : diagnostic en ligne de commande (mDNS)
-//! - `ostal-server create-account` : crée le compte unique (mot de passe demandé sans écho)
+//! - `ostal-server create-account` : crée le premier compte (mot de passe demandé sans écho)
+//! - `ostal-server user …`         : comptes nominatifs (`add`, `list`, `passwd`, `disable`, `enable`)
 //! - `ostal-server fingerprint`    : affiche l'empreinte du certificat TLS
 //! - `ostal-server init`           : crée l'identité Matter d'une installation neuve
 //!   (sans sauvegarde à importer), puis quitte
@@ -44,10 +45,25 @@ Usage :
   ostal-server --discover  liste les nœuds Matter vus en mDNS puis quitte
   ostal-server create-account --username NOM [--password-stdin] [--replace]
                      [--data-dir DOSSIER]
-                                 crée le compte unique ; le mot de passe est demandé sans
+                                 crée le premier compte ; le mot de passe est demandé sans
                                  écho, ou lu sur l'entrée standard avec --password-stdin
-                                 (jamais en argument). --replace remplace le compte et ferme
-                                 ses sessions (redémarrer ensuite le serveur)
+                                 (jamais en argument). --replace remplace TOUS les comptes
+                                 par celui-là et ferme toutes les sessions. Pour en ajouter
+                                 d'autres : « user add »
+  ostal-server user add --username ID [--display-name NOM] [--password-stdin]
+                     [--data-dir DOSSIER]
+                                 ajoute un compte (accès complet pour tous en V1)
+  ostal-server user list [--data-dir DOSSIER]
+                                 liste les comptes (jamais de mot de passe)
+  ostal-server user passwd --username ID [--password-stdin] [--data-dir DOSSIER]
+                                 définit un nouveau mot de passe et ferme toutes les sessions
+                                 de ce compte, sans toucher aux autres
+  ostal-server user disable --username ID [--data-dir DOSSIER]
+  ostal-server user enable --username ID [--data-dir DOSSIER]
+                                 désactive (ferme ses sessions) ou réactive un compte ; le
+                                 dernier compte actif ne peut pas être désactivé.
+                                 Ces commandes agissent aussi sur un serveur qui tourne,
+                                 sans redémarrage
   ostal-server fingerprint [--data-dir DOSSIER]
                                  affiche l'empreinte SHA-256 du certificat TLS
   ostal-server init [--data-dir DOSSIER]
@@ -126,6 +142,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("create-account") => refuse_root("« create-account »")
             .map_or_else(|c| c, |()| run_create_account(&args[1..])),
+        Some("user") => refuse_root("« user »").map_or_else(|c| c, |()| run_user(&args[1..])),
         Some("fingerprint") => run_fingerprint(&args[1..]),
         Some("init") => refuse_root("« init »").map_or_else(|c| c, |()| run_init(&args[1..])),
         Some("import") => refuse_root("« import »").map_or_else(|c| c, |()| run_import(&args[1..])),
@@ -481,17 +498,44 @@ fn run_create_account(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Un import interrompu doit être repris AVANT de créer quoi que ce soit : `server_dir`
-    // créerait un dossier de données qui ne contient que `serveur/`. Si un serveur tourne, il a
-    // le verrou (et a déjà repris l'import à son démarrage) : on ne touche à rien d'autre.
-    let (_lock, data_dir) = match persistence::acquire_data_lock() {
+    let (_lock, dir) = match prepare_accounts_dir(data_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match account::create(&dir, &username, &password, replace) {
+        Ok(replaced) => {
+            println!(
+                "Compte « {username} » {}.",
+                if replaced { "remplacé" } else { "créé" }
+            );
+            if replaced {
+                println!("Les sessions ouvertes sont fermées.");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Prépare le dossier `serveur/` pour une commande sur les comptes. Un import interrompu doit
+/// être repris AVANT de créer quoi que ce soit : `server_dir` créerait un dossier de données qui
+/// ne contient que `serveur/`. Si un serveur tourne, il a le verrou (et a déjà repris l'import à
+/// son démarrage) : on ne touche à rien d'autre que `serveur/`, ce qui est voulu, les commandes
+/// sur les comptes agissent aussi sur un serveur ouvert.
+fn prepare_accounts_dir(
+    data_dir: PathBuf,
+) -> Result<(Option<persistence::DataLock>, PathBuf), ExitCode> {
+    let (lock, data_dir) = match persistence::acquire_data_lock() {
         // Le prologue peut copier l'ancien dossier (« Matter Home », « matter-demo ») : c'est
         // le dossier qu'il rend qu'il faut utiliser, pas celui lu avant.
         Ok(lock) => match prologue(false) {
             Ok(dir) => (Some(lock), dir),
             Err(e) => {
                 eprintln!("{e:#}");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         },
         Err(e) => {
@@ -504,31 +548,126 @@ fn run_create_account(args: &[String]) -> ExitCode {
                     "{e:#}\nQuittez l'ancienne application Matter Home Server, puis relancez \
                          cette commande."
                 );
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
             if backup::recovery_needed(&data_dir) {
                 eprintln!(
                     "Un import interrompu attend d'être repris, et un serveur tient le verrou. \
                      Arrêtez-le, puis relancez cette commande."
                 );
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
             (None, persistence::data_dir())
         }
     };
-    let result = security::server_dir(&data_dir)
-        .and_then(|dir| account::create(&dir, &username, &password, replace));
-    match result {
-        Ok(replaced) => {
-            println!(
-                "Compte « {username} » {}.",
-                if replaced { "remplacé" } else { "créé" }
-            );
-            if replaced {
-                println!("Les sessions ouvertes sont fermées : redémarrez le serveur s'il tourne.");
-            }
-            ExitCode::SUCCESS
+    match security::server_dir(&data_dir) {
+        Ok(dir) => Ok((lock, dir)),
+        Err(e) => {
+            eprintln!("{e:#}");
+            Err(ExitCode::FAILURE)
         }
+    }
+}
+
+/// `user add|list|passwd|disable|enable` : comptes nominatifs.
+fn run_user(args: &[String]) -> ExitCode {
+    let Some((action, rest)) = args.split_first() else {
+        return usage_error("user attend add, list, passwd, disable ou enable");
+    };
+    let mut args = rest.to_vec();
+    let from_stdin = take_flag(&mut args, "--password-stdin");
+    let display_name = match take_value(&mut args, "--display-name") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    let username = match take_value(&mut args, "--username") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    let data_dir = match data_dir_for_command(&mut args) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    if let Some(unknown) = args.first() {
+        return usage_error(&format!("Option inconnue : {unknown}"));
+    }
+    let action = action.as_str();
+    if !matches!(action, "add" | "list" | "passwd" | "disable" | "enable") {
+        return usage_error(&format!("user {action} : commande inconnue"));
+    }
+    if action != "add" && display_name.is_some() {
+        return usage_error("--display-name ne sert qu'avec « user add »");
+    }
+    if action == "list" && username.is_some() {
+        return usage_error("user list n'accepte pas --username");
+    }
+    if !matches!(action, "add" | "passwd") && from_stdin {
+        return usage_error("--password-stdin ne sert qu'avec « user add » et « user passwd »");
+    }
+    let username = match (action, username) {
+        ("list", _) => String::new(),
+        (_, Some(u)) => u,
+        (_, None) => return usage_error("--username est obligatoire"),
+    };
+    let password = if matches!(action, "add" | "passwd") {
+        match read_password(from_stdin) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let (_lock, dir) = match prepare_accounts_dir(data_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let password = password.unwrap_or_default();
+    let result: anyhow::Result<()> = (|| {
+        match action {
+            "add" => {
+                let user = account::add(&dir, &username, display_name.as_deref(), &password)?;
+                println!("Compte « {} » créé ({}).", user.username, user.display_name);
+            }
+            "list" => {
+                let users = account::list(&dir)?;
+                if users.is_empty() {
+                    println!("Aucun compte.");
+                }
+                for u in users {
+                    println!(
+                        "{}\t{}\t{}",
+                        u.username,
+                        u.display_name,
+                        if u.active { "actif" } else { "désactivé" }
+                    );
+                }
+            }
+            "passwd" => {
+                let user = account::set_password(&dir, &username, &password)?;
+                println!(
+                    "Mot de passe de « {} » changé : ses sessions ouvertes sont fermées.",
+                    user.username
+                );
+            }
+            "disable" => {
+                let user = account::set_active(&dir, &username, false)?;
+                println!(
+                    "Compte « {} » désactivé : ses sessions ouvertes sont fermées.",
+                    user.username
+                );
+            }
+            _ => {
+                let user = account::set_active(&dir, &username, true)?;
+                println!("Compte « {} » réactivé.", user.username);
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e:#}");
             ExitCode::FAILURE

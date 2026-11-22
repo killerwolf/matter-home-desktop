@@ -7,6 +7,7 @@
 //! - `--listen ADRESSE:PORT`  : adresse d'écoute (défaut 0.0.0.0:8443 ; en démo 127.0.0.1:0)
 //! - `--open ONGLET`          : ouvre la fenêtre sur cet onglet au lancement (essais, captures)
 
+mod accounts_ui;
 mod cameras_ui;
 mod descriptions_ui;
 mod ui;

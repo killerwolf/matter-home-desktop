@@ -279,7 +279,7 @@ async fn login(
         return Err(ApiError::new(ErrorCode::InvalidCredentials).into());
     }
     let ip = peer.ip();
-    check_not_locked(&state, ip)?;
+    check_not_locked(&state, ip, &request.username)?;
     // Argon2 coûte du temps et de la mémoire : une vérification à la fois, pour tout le
     // serveur. C'est ce qui limite le débit d'une attaque répartie sur plusieurs adresses,
     // sans jamais refuser un mot de passe correct : les demandes font la queue (dans l'ordre
@@ -294,18 +294,18 @@ async fn login(
         // Deuxième contrôle, une fois la place obtenue : des tentatives lancées en parallèle
         // passent toutes le premier, mais celles qui attendaient voient l'attente décidée par
         // les échecs des précédentes. Sans lui, la limite serait contournable en simultané.
-        check_not_locked(&state, ip)?;
+        check_not_locked(&state, ip, &request.username)?;
         let auth = state.auth.clone();
-        tokio::task::spawn_blocking(move || {
-            auth.accounts.verify(&request.username, &request.password)
-        })
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::Internal))?
+        let (username, password) = (request.username.clone(), request.password);
+        tokio::task::spawn_blocking(move || auth.accounts.verify(&username, &password))
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?
     };
     match verdict {
-        Verdict::Valid(account_id) => {
+        Verdict::Valid(granted) => {
             state.auth.limiter.record_success(ip);
-            let session = state.auth.sessions.create(&account_id);
+            state.auth.limiter.record_user_success(&request.username);
+            let session = state.auth.sessions.create(&granted.user_id, granted.epoch);
             log::info!("connexion acceptée pour {ip}");
             Ok(Json(LoginResponse {
                 token: session.token,
@@ -316,7 +316,9 @@ async fn login(
             }))
         }
         Verdict::Invalid => {
-            let wait = state.auth.limiter.record_failure(ip);
+            let by_ip = state.auth.limiter.record_failure(ip);
+            let by_user = state.auth.limiter.record_user_failure(&request.username);
+            let wait = by_ip.max(by_user);
             log::warn!("connexion refusée pour {ip} : identifiants incorrects");
             // Petit délai avant de répondre (hors de la file des vérifications : il ne retarde
             // personne d'autre) : un échec coûte un peu de temps à celui qui le provoque.
@@ -328,8 +330,11 @@ async fn login(
     }
 }
 
-fn check_not_locked(state: &AppState, ip: std::net::IpAddr) -> ApiResult<()> {
-    if let Err(wait) = state.auth.limiter.check(ip) {
+/// Refuse si l'adresse **ou** l'identifiant demandé est en attente après trop d'échecs.
+fn check_not_locked(state: &AppState, ip: std::net::IpAddr, username: &str) -> ApiResult<()> {
+    let by_ip = state.auth.limiter.check(ip).err();
+    let by_user = state.auth.limiter.check_user(username).err();
+    if let Some(wait) = by_ip.max(by_user) {
         log::warn!("connexion refusée pour {ip} : trop de tentatives");
         return Err(too_many(wait.as_secs().max(1)).into());
     }
@@ -444,10 +449,7 @@ async fn require_session(
     }
     let session = bearer(request.headers())
         .or_else(|| ws_subprotocol_token(request.method(), request.uri().path(), request.headers()))
-        .and_then(|token| {
-            let account_id = state.auth.accounts.account_id()?;
-            state.auth.sessions.validate(token, &account_id)
-        });
+        .and_then(|token| state.auth.authenticate(token));
     if let Some(info) = session {
         request.extensions_mut().insert(info);
         return next.run(request).await;
@@ -501,12 +503,7 @@ async fn put_mode(
     let Some(token) = bearer(request.headers()).map(str::to_owned) else {
         return Err(ApiError::new(ErrorCode::Unauthorized).into());
     };
-    let is_session = state
-        .auth
-        .accounts
-        .account_id()
-        .and_then(|account_id| state.auth.sessions.validate(&token, &account_id))
-        .is_some();
+    let is_session = state.auth.authenticate(&token).is_some();
     if !is_session && !state.hub.verify_mode_token(&token) {
         log::warn!("changement de mode refusé pour {ip} : jeton invalide");
         tokio::time::sleep(FAILURE_PAUSE).await;

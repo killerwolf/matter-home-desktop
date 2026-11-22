@@ -137,14 +137,14 @@ impl App {
             (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
                 self.identity_page(ui, st, unreadable.as_deref())
             }
-            (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st, false),
+            (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st),
             (Phase::Running, _) if self.show_done => self.done_page(ui, ctx, st),
             _ => match self.tab {
                 Tab::Overview => self.overview_page(ui, st),
                 Tab::Devices => self.devices_page(ui, st),
                 Tab::Cameras => self.cameras_page(ui, ctx, st),
                 Tab::Connect => self.connect_page(ui, st),
-                Tab::Settings => self.settings_page(ui, st),
+                Tab::Settings => self.settings_page(ui, ctx, st),
             },
         }
         self.show_local_notice(ui, st);
@@ -470,13 +470,11 @@ impl App {
         }
     }
 
-    fn account_page(&mut self, ui: &mut egui::Ui, st: &State, replace: bool) {
-        if !replace {
-            setup_header(ui, 2, "Créez votre compte");
-            ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Ostal sur vos autres appareils (ordinateur, iPhone). Il n'y a qu'un seul compte : notez-le.");
-        } else {
-            ui.label("Choisissez un nouvel identifiant et un nouveau mot de passe. Les appareils déjà connectés devront se reconnecter, et le serveur redémarre quelques secondes.");
-        }
+    /// Le premier compte, à la première installation. Les autres se créent ensuite dans
+    /// Réglages › Comptes.
+    fn account_page(&mut self, ui: &mut egui::Ui, st: &State) {
+        setup_header(ui, 2, "Créez votre compte");
+        ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Ostal sur vos autres appareils (ordinateur, iPhone). Notez-les : vous pourrez ajouter les comptes des autres personnes de la maison ensuite, dans Réglages › Comptes.");
         if let Some(n) = &st.notice {
             ui.add_space(6.0);
             notice_label(ui, n);
@@ -499,13 +497,8 @@ impl App {
             }
         }
         ui.add_space(8.0);
-        let label = if replace {
-            "Remplacer le compte"
-        } else {
-            "Créer le compte"
-        };
         if ui
-            .add_enabled(check.is_ok(), egui::Button::new(label))
+            .add_enabled(check.is_ok(), egui::Button::new("Créer le compte"))
             .clicked()
         {
             let (username, password) = (
@@ -513,14 +506,10 @@ impl App {
                 std::mem::take(&mut self.form.password),
             );
             self.form.confirm.clear();
-            let _ = self.handle.tx.send(if replace {
-                Cmd::ReplaceAccount { username, password }
-            } else {
-                Cmd::CreateAccount { username, password }
-            });
-            if replace {
-                self.change_account = false;
-            }
+            let _ = self
+                .handle
+                .tx
+                .send(Cmd::CreateAccount { username, password });
         }
     }
 
@@ -1356,28 +1345,22 @@ impl App {
 
     // ---- réglages ------------------------------------------------------------------------------
 
-    fn settings_page(&mut self, ui: &mut egui::Ui, st: &State) {
+    fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
         let p = theme::palette(ui);
         if st.phase == Phase::Running {
-            widgets::section(ui, "Compte", |ui| {
-                if self.change_account {
-                    self.account_page(ui, st, true);
-                    if ui.button("Annuler").clicked() {
-                        self.change_account = false;
-                        // Aucun mot de passe ne reste en mémoire dans le formulaire.
-                        self.form = AccountForm::default();
-                    }
-                } else {
-                    ui.label("L'identifiant et le mot de passe demandés par Ostal sur vos autres appareils. Il n'y a qu'un seul compte.");
-                    if let Some(n) = &st.notice {
-                        notice_label(ui, n);
-                    }
-                    if ui
-                        .button("Changer l'identifiant ou le mot de passe…")
-                        .clicked()
-                    {
-                        self.change_account = true;
-                    }
+            if self.accounts.is_open() {
+                if self.accounts.show(ui, ctx, &st.data_dir) {
+                    self.accounts.reset();
+                }
+                return;
+            }
+            widgets::section(ui, "Comptes", |ui| {
+                ui.label("Chaque personne de la maison a son compte : l'identifiant et le mot de passe qu'elle entre sur son téléphone ou son ordinateur.");
+                if let Some(n) = &st.notice {
+                    notice_label(ui, n);
+                }
+                if ui.button("Gérer les comptes…").clicked() {
+                    self.accounts.open();
                 }
             });
         }

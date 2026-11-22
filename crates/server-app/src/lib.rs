@@ -4,6 +4,7 @@
 //! veille, modèle du menu) est ici et se teste ; `main.rs` ne fait que brancher l'interface
 //! (icône de barre de menus et fenêtre egui) sur le [`controller`].
 
+pub mod accounts;
 pub mod agent;
 pub mod cameras;
 pub mod confirm;

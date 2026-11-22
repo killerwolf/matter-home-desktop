@@ -30,7 +30,7 @@ use tower::ServiceExt;
 use crate::hub::Hub;
 use crate::security::account::AccountStore;
 use crate::security::limiter::LoginLimiter;
-use crate::security::sessions::SessionStore;
+use crate::security::sessions::{SessionInfo, SessionStore};
 
 /// Connexions simultanées au plus ; au-delà, les nouvelles sont fermées aussitôt.
 const MAX_CONNECTIONS: usize = 128;
@@ -82,12 +82,40 @@ pub struct Auth {
 
 impl Auth {
     pub fn new(accounts: AccountStore, sessions: SessionStore) -> Self {
+        // Sessions coupées pendant que le serveur était arrêté (mot de passe changé, compte
+        // désactivé en ligne de commande) : on les retire dès le démarrage.
+        let cut = sessions.retain_valid(|user, epoch| accounts.is_current(user, epoch));
+        if cut > 0 {
+            log::info!("{cut} session(s) coupée(s) depuis le dernier démarrage retirée(s)");
+        }
         Self {
             accounts,
             sessions,
             limiter: LoginLimiter::new(),
             hash_slots: Semaphore::new(1),
         }
+    }
+}
+
+impl Auth {
+    /// Reconnaît un jeton de session : session valable **et** utilisateur toujours actif, à la
+    /// bonne époque (un changement de mot de passe ou une désactivation coupe ses sessions).
+    pub fn authenticate(&self, token: &str) -> Option<SessionInfo> {
+        let info = self.sessions.validate(token)?;
+        if self.accounts.is_current(&info.user_id, info.epoch) {
+            Some(info)
+        } else {
+            // Coupée : on la retire pour de bon.
+            self.sessions.revoke(&info.id);
+            None
+        }
+    }
+
+    /// Cette session est-elle encore vivante ? (Pour les flux ouverts : déconnexion, expiration,
+    /// compte désactivé ou mot de passe changé ferment le flux.)
+    pub fn is_live(&self, session: &SessionInfo) -> bool {
+        self.sessions.is_valid(&session.id)
+            && self.accounts.is_current(&session.user_id, session.epoch)
     }
 }
 

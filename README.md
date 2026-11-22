@@ -19,7 +19,7 @@ tout reste en local, sans cloud.
 | **Serveur** (`ostal-server`) | Tourne en continu, sans fenêtre, sur un Mac du réseau local (un ancien Mac convient). Il pilote les appareils, exécute les automatisations, garde les données et l'historique. | Service macOS qui démarre avec le Mac |
 | **Client** (« Ostal ») | L'application avec fenêtre : elle affiche et commande, sans stocker de données. On y saisit l'adresse du serveur, un identifiant et un mot de passe. | N'importe quel Mac du réseau |
 
-Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un seul compte, aucun cloud.
+Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un compte par personne du foyer, aucun cloud.
 Vous venez de la v0.2.1 ? [Reprenez vos données](docs/migration.md) sans réappairer un seul appareil.
 
 <table>

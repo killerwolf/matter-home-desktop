@@ -37,8 +37,11 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 Le serveur génère au premier lancement un certificat auto-signé (`serveur/tls-cert.pem`, clé
 en 0600), le garde d'un lancement à l'autre, affiche et journalise son **empreinte SHA-256**
 (`ostal-server fingerprint` la redonne). Le client la mémorise à la première connexion
-et refuse tout autre certificat. Le compte unique se crée sur le serveur
-(`create-account`) ; le mot de passe est haché en argon2id. Après 5 échecs depuis une adresse,
+et refuse tout autre certificat. Les comptes (un par personne du foyer, `serveur/comptes.json`)
+se créent sur le serveur (`create-account` pour le premier, `user add` ensuite, ou Réglages › Comptes
+dans Ostal Server) ; le mot de passe est haché en argon2id. Un nouveau mot de passe ou une
+désactivation coupe les sessions de ce compte, et d'elles seules. Les échecs sont aussi comptés
+par identifiant (10 échecs, attente plafonnée à 5 min). Après 5 échecs depuis une adresse,
 la connexion de **cette adresse** est mise en attente 30 s, doublée à chaque échec (15 min au
 plus) : `too_many_attempts` (HTTP 429, `Retry-After`). Il n'y a **pas** de blocage global : une
 attaque répartie sur plusieurs adresses ne peut pas enfermer le propriétaire dehors. Elle est

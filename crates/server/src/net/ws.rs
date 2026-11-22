@@ -55,14 +55,11 @@ pub async fn upgrade(
         ))
         .into_response();
     };
-    let Some(account_id) = state.auth.accounts.account_id() else {
-        return ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response();
-    };
     ws.protocols(super::routes::WS_SUBPROTOCOLS)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            client_loop(socket, state, session, account_id).await;
+            client_loop(socket, state, session).await;
         })
 }
 
@@ -93,12 +90,7 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str, timeout:
     let _ = send(socket, Message::Close(Some(frame)), timeout).await;
 }
 
-async fn client_loop(
-    mut socket: WebSocket,
-    state: AppState,
-    session: SessionInfo,
-    account_id: String,
-) {
+async fn client_loop(mut socket: WebSocket, state: AppState, session: SessionInfo) {
     let timeout = state.client_write_timeout;
     let hello = ServerMessage::Hello {
         protocol_version: wire::PROTOCOL_VERSION,
@@ -164,7 +156,7 @@ async fn client_loop(
             }
             _ = session_check.tick() => {
                 // Déconnexion, expiration ou remplacement du compte : le flux s'arrête.
-                if !state.auth.sessions.is_valid(&session.id, &account_id) {
+                if !state.auth.is_live(&session) {
                     close(&mut socket, 1008, "session terminée", timeout).await;
                     return;
                 }

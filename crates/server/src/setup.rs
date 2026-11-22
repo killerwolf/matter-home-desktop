@@ -81,12 +81,10 @@ pub fn identity_state(data_dir: &Path) -> IdentityState {
     }
 }
 
-/// Le compte unique existe-t-il ? (Lecture seule : ne crée aucun dossier.)
+/// Un compte existe-t-il (comptes nominatifs, ou compte unique d'avant la migration) ?
+/// (Lecture seule : ne crée aucun dossier, ne migre rien.)
 pub fn account_exists(data_dir: &Path) -> bool {
-    data_dir
-        .join(persistence::SERVER_DIR)
-        .join(account::FILE_NAME)
-        .is_file()
+    account::any_account_file(&data_dir.join(persistence::SERVER_DIR))
 }
 
 /// Un import est-il en attente, ou interrompu ?
