@@ -887,6 +887,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Couleur d'effacement de la fenêtre : le fond du thème actif, jamais le gris sombre d'eframe.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     fn on_exit(&mut self) {
         // Cmd+Q ou fin de session : arrêt propre du serveur avant de sortir.
         let _ = self.handle.tx.send(Cmd::Quit);
@@ -993,8 +998,15 @@ impl eframe::App for App {
             }
         }
         // Le corps : 16 px en haut et en bas, 20 px sur les côtés (kit.md §5).
+        // Le fond est celui du thème : un cadre sans remplissage laisserait voir la couleur
+        // d'effacement de la fenêtre (gris très sombre), invisible en sombre mais noir en clair.
+        let bg = theme::palette(ui).bg;
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)))
+            .frame(
+                egui::Frame::new()
+                    .fill(bg)
+                    .inner_margin(egui::Margin::symmetric(20, 16)),
+            )
             .show(ui, |ui| {
                 let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
