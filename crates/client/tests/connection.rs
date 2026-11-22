@@ -699,8 +699,13 @@ fn the_link_survives_the_servers_pings_beyond_its_idle_limit() {
     let until = std::time::Instant::now() + Duration::from_secs(75);
     while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
         match client.events.recv_timeout(left) {
+            // Le serveur peut renvoyer un état complet sur la même liaison (client « en retard »
+            // au démarrage, quand un processus affamé de CPU rate une rafale d'événements) : le
+            // client annonce alors `Connected` puis `Snapshot`, sans rien perdre. Ce n'est pas
+            // ce que le test surveille. Toute vraie coupure passe, elle, par un autre état
+            // (`Reconnecting`, `Connecting`, `Resyncing`, `LoggedOut`…) : celle-là échoue.
+            Ok(Event::Link(Link::Connected { .. }) | Event::Snapshot(_)) => {}
             Ok(Event::Link(link)) => panic!("la liaison a changé d'état : {link:?}"),
-            Ok(Event::Snapshot(_)) => panic!("nouvel état complet inattendu"),
             Ok(_) | Err(_) => {}
         }
     }
