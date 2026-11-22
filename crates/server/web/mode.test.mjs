@@ -35,6 +35,7 @@ assert.equal(sourceLabel({ kind: "server_app" }), "fenêtre du serveur");
 assert.equal(sourceLabel({ kind: "rule", name: "Nuit à 23 h" }), "automatisation « Nuit à 23 h »");
 assert.equal(sourceLabel({ kind: "rule" }), "automatisation");
 assert.equal(sourceLabel({ kind: "widget" }), "widget iPhone");
+assert.equal(sourceLabel({ kind: "presence" }), "présence (Wi-Fi)");
 assert.equal(sourceLabel({ kind: "other" }), "autre");
 assert.equal(sourceLabel({ kind: "montre" }), "");
 assert.equal(sourceLabel(undefined), "");

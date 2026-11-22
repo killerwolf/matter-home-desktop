@@ -35,6 +35,11 @@ tungstenite = { version = "0.29", default-features = false, features = ["handsha
 # Autorités racines publiques (Mozilla), pour valider le certificat Let's Encrypt de Tailscale
 # derrière `tailscale serve` (adresse `*.ts.net` sur le port 443, voir `net/tls.rs`).
 webpki-roots = "1"
+# Trouver le serveur sur le réseau de la maison (Bonjour) : l'API publique mDNS de `matc`, la même
+# que celle dont se sert le serveur pour s'annoncer. Déjà dans le Cargo.lock (aucune caisse de plus) ;
+# `tokio` ne sert qu'au petit runtime du fil de recherche (`net/discovery.rs`).
+matc = "0.1.3"
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
 # Empreinte SHA-256 du certificat du serveur.
 sha2 = "0.10"
 # Sélecteur de fichier du système (export, import, CSV), déjà utilisé par la v0.2.1.

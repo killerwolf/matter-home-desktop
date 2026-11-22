@@ -112,6 +112,16 @@ static ASSETS: &[Asset] = &[
         "text/javascript; charset=utf-8",
         "../../web/widgets.js"
     ),
+    text!(
+        "connections.js",
+        "text/javascript; charset=utf-8",
+        "../../web/connections.js"
+    ),
+    text!(
+        "presence.js",
+        "text/javascript; charset=utf-8",
+        "../../web/presence.js"
+    ),
     text!("sw.js", "text/javascript; charset=utf-8", "../../web/sw.js"),
     text!(
         "manifest.webmanifest",

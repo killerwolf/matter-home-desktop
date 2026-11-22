@@ -28,9 +28,19 @@ fn login_succeeds_and_is_refused() {
     let client = server.client();
     runtime().block_on(async {
         // La version est publique.
-        let version = client.request("GET", "/api/version", None, None).await;
+        let version = client
+            .request(
+                "GET",
+                &format!("/api/version?protocol={PROTOCOL}"),
+                None,
+                None,
+            )
+            .await;
         assert_eq!(version.status, 200);
         assert_eq!(version.json()["protocol_version"], PROTOCOL);
+        // Sans le paramètre : la version 3, celle que compare un client d'avant la 4.
+        let old = client.request("GET", "/api/version", None, None).await;
+        assert_eq!(old.json()["protocol_version"], 3);
 
         let ok = client.login_as(USER, PASSWORD, PROTOCOL).await;
         assert_eq!(ok.status, 200, "{}", ok.text());
@@ -55,7 +65,7 @@ fn login_succeeds_and_is_refused() {
 
         // Version du protocole incompatible : signalé proprement, avant tout test d'identifiants.
         // Un client de version 1 (avant les caméras) est refusé.
-        let mismatch = client.login_as(USER, PASSWORD, PROTOCOL - 1).await;
+        let mismatch = client.login_as(USER, PASSWORD, PROTOCOL + 1).await;
         assert_eq!(
             (mismatch.status, mismatch.code().as_str()),
             (426, "version_incompatible")
@@ -210,7 +220,7 @@ fn websocket_needs_token_and_matching_version() {
         assert_eq!(no_token.status, 401);
         let wrong = client.ws(&"a".repeat(64), PROTOCOL).await.err().unwrap();
         assert_eq!(wrong.status, 401);
-        let old = client.ws(&token, PROTOCOL - 1).await.err().unwrap();
+        let old = client.ws(&token, PROTOCOL + 1).await.err().unwrap();
         assert_eq!(
             (old.status, old.code().as_str()),
             (426, "version_incompatible")
@@ -1101,7 +1111,7 @@ fn log_never_contains_secrets() {
     // Le fichier des sessions ne contient que des empreintes.
     let sessions = std::fs::read_to_string(dir.join("serveur/sessions.json")).unwrap();
     assert!(!sessions.contains(&token));
-    let account = std::fs::read_to_string(dir.join("serveur/compte.json")).unwrap();
+    let account = std::fs::read_to_string(dir.join("serveur/comptes.json")).unwrap();
     assert!(!account.contains(PASSWORD) && account.contains("$argon2id$"));
 }
 

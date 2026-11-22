@@ -8,6 +8,7 @@
 mod camera_text;
 mod cameras;
 mod connect;
+mod connections;
 mod customize;
 mod devices;
 mod events;
@@ -50,9 +51,9 @@ use protocol::events::{now_unix, CoverMotion};
 use protocol::home::{HomePlan, Symbol};
 use protocol::mode::{HomeMode, ModeSource};
 use protocol::wire::{
-    CoverRequest, CustomizeRequest, HistoryResponse, IdentityInfo, ImportIdentity, ImportResponse,
-    ImportSummary, ModeRequest, OnOffRequest, PairRequest, Snapshot, TextIds, WireEvent,
-    WireStatus, HISTORY_MAX_LIMIT,
+    CoverRequest, CustomizeRequest, ErrorCode, HistoryResponse, IdentityInfo, ImportIdentity,
+    ImportResponse, ImportSummary, ModeRequest, OnOffRequest, PairRequest, Snapshot, TextIds,
+    WireEvent, WireStatus, HISTORY_MAX_LIMIT,
 };
 
 /// Ce que les vues d'un appareil demandent à l'application (elles ne parlent pas au réseau).
@@ -71,6 +72,8 @@ enum View {
     Temperatures,
     Cameras,
     Rules,
+    /// Mes connexions : hors de la barre d'onglets (Fichier › Mes connexions…).
+    Connections,
 }
 
 impl View {
@@ -91,6 +94,7 @@ impl View {
             View::Rules => "Automatisations",
             View::Temperatures => "Températures",
             View::Cameras => "Caméras",
+            View::Connections => "Mes connexions",
         }
     }
 }
@@ -114,6 +118,8 @@ struct TempCacheKey {
 
 /// À quoi sert une requête en vol : la réponse est aiguillée d'après son numéro.
 enum Pending {
+    /// Qui est à la maison (`GET /api/presence/people`), toutes les minutes.
+    People,
     History {
         node_id: u64,
     },
@@ -148,6 +154,12 @@ enum Pending {
         bytes: Arc<Vec<u8>>,
     },
     ImportApply,
+    /// La liste de « Mes connexions ».
+    Connections,
+    /// Couper une connexion (son nom, pour le dire).
+    CutConnection {
+        name: String,
+    },
 }
 
 /// Fenêtre ouverte par le menu Fichier → Exporter / Importer.
@@ -265,6 +277,14 @@ pub struct MatterApp {
     /// Option `--device` : appareil à sélectionner quand il apparaîtra.
     select_on_arrival: Option<String>,
     data_dialog: Option<DataDialog>,
+    /// La page « Mes connexions ».
+    connections: connections::Page,
+    /// Qui est à la maison, lu toutes les minutes ; `None` : rien à montrer (pas de box, ou serveur
+    /// plus ancien qui n'a pas la route : alors on ne redemande plus).
+    people: Option<protocol::presence::PeopleView>,
+    people_asked: Option<Instant>,
+    people_pending: bool,
+    people_unsupported: bool,
     /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
     server: Option<String>,
     /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
@@ -356,6 +376,11 @@ impl MatterApp {
             device_edit: None,
             select_on_arrival: None,
             data_dialog: None,
+            connections: connections::Page::new(),
+            people: None,
+            people_asked: None,
+            people_pending: false,
+            people_unsupported: false,
             server: None,
             draft_server: None,
             test_after_save: None,
@@ -473,6 +498,12 @@ impl MatterApp {
             match command {
                 native_menu::MenuCommand::Export => self.export_data(),
                 native_menu::MenuCommand::Import => self.import_data(),
+                native_menu::MenuCommand::Connections => {
+                    self.close_detail();
+                    self.connections.notice = None;
+                    self.view = View::Connections;
+                    self.load_connections();
+                }
                 native_menu::MenuCommand::Logout => self.backend.logout(),
                 native_menu::MenuCommand::Quit => {
                     // Fenêtre visible et au premier plan : la question « modifications non
@@ -1415,10 +1446,14 @@ impl MatterApp {
             // `Model::cameras` est déjà à jour ; les pages caméras le relisent à chaque image.
             Change::CamerasChanged => {}
             // « Mode : Absent (raccourci iPhone) » ; un ancien serveur ne dit pas d'où il vient.
-            Change::ModeChanged(mode, source) => self.push_log(match source {
-                Some(source) => format!("Mode : {} ({})", mode.label(), source.label()),
-                None => format!("Mode : {}", mode.label()),
-            }),
+            Change::ModeChanged(mode, source) => {
+                // Le mode a bougé (peut-être par la présence) : on relit qui est à la maison.
+                self.people_asked = None;
+                self.push_log(match source {
+                    Some(source) => format!("Mode : {} ({})", mode.label(), source.label()),
+                    None => format!("Mode : {}", mode.label()),
+                });
+            }
         }
     }
 
@@ -1426,8 +1461,30 @@ impl MatterApp {
         let Some(pending) = self.pending.remove(&id) else {
             return;
         };
+        if matches!(pending, Pending::People) {
+            // Cette lecture périodique n'invalide aucun cache de données (`data_epoch`).
+            self.people_pending = false;
+            match result.and_then(|r| r.json::<protocol::presence::PeopleView>()) {
+                Ok(view) => self.people = Some(view),
+                // Un serveur plus ancien n'a pas la route : rien à montrer, sans bruit.
+                Err(e)
+                    if matches!(
+                        e.api_code(),
+                        Some(ErrorCode::NotFound | ErrorCode::MethodNotAllowed)
+                    ) =>
+                {
+                    self.people = None;
+                    self.people_unsupported = true;
+                }
+                // Réseau coupé ou autre : on garde ce qu'on savait.
+                Err(_) => {}
+            }
+            return;
+        }
         self.data_epoch += 1;
         match pending {
+            // Traité plus haut : cette lecture périodique n'invalide aucun cache de données.
+            Pending::People => {}
             Pending::History { node_id } => {
                 let Some(entry) = self.series.get_mut(&node_id) else {
                     return;
@@ -1606,6 +1663,83 @@ impl MatterApp {
                     },
                 });
             }
+            Pending::Connections => {
+                self.connections.loaded(
+                    result
+                        .and_then(|r| r.json::<protocol::wire::ConnectionsResponse>())
+                        .map_err(|e| {
+                            // Un serveur d'avant la version 4 ne connaît pas la route.
+                            if e.api_code() == Some(ErrorCode::NotFound) {
+                                "Ce serveur ne gère pas encore les connexions : mettez-le à jour."
+                                    .to_string()
+                            } else {
+                                e.message()
+                            }
+                        }),
+                );
+            }
+            Pending::CutConnection { name } => {
+                match result {
+                    Ok(_) => self
+                        .connections
+                        .say(true, format!("Connexion « {name} » coupée.")),
+                    // Déjà coupée : la liste relue le montre.
+                    Err(e) if e.api_code() == Some(ErrorCode::NotFound) => self
+                        .connections
+                        .say(false, "Cette connexion était déjà fermée.".into()),
+                    Err(e) => self.connections.say(false, e.message()),
+                }
+                self.load_connections();
+            }
+        }
+    }
+
+    /// Relit la liste de « Mes connexions ».
+    fn load_connections(&mut self) {
+        self.connections.load = connections::Load::Loading;
+        if self
+            .request(Pending::Connections, Request::get("/api/me/installations"))
+            .is_none()
+        {
+            self.connections.loaded(Err(
+                "Plus de connexion : la liste n'a pas pu être lue.".into()
+            ));
+        }
+    }
+
+    /// Coupe une connexion de cette personne (déjà confirmée dans la page).
+    fn cut_connection(&mut self, id: &str, name: String) {
+        self.connections.notice = None;
+        let path = format!("/api/me/installations/{id}");
+        if self
+            .request(
+                Pending::CutConnection { name },
+                Request::new("DELETE", path),
+            )
+            .is_none()
+        {
+            self.connections
+                .say(false, "Plus de connexion : rien n'a été coupé.".into());
+        }
+    }
+
+    /// La page « Mes connexions », à la place de la vue courante.
+    fn connections_page(&mut self, ui: &mut egui::Ui) {
+        let (now, offset) = connections::clock();
+        let route = connections::Route {
+            primary: self.backend.saved_url(),
+            tailscale: self
+                .backend
+                .alt_urls()
+                .into_iter()
+                .filter(|u| ostal_client::net::ServerAddr::parse(u).is_ok_and(|a| a.is_tailscale()))
+                .collect(),
+            via_remote: self.backend.route().map(|(_, remote)| remote),
+        };
+        match self.connections.show(ui, now, offset, &route) {
+            connections::Action::None => {}
+            connections::Action::Reload => self.load_connections(),
+            connections::Action::Cut { id, name } => self.cut_connection(&id, name),
         }
     }
 
@@ -2810,6 +2944,7 @@ impl eframe::App for MatterApp {
                     plan::PlanAction::None => {}
                 },
                 View::Temperatures => self.temperatures_page(ui),
+                View::Connections => self.connections_page(ui),
                 View::Cameras => {
                     // Les événements à droite, la mosaïque (ou la caméra ouverte) à gauche.
                     egui::Panel::right("events-panel")
@@ -2847,6 +2982,31 @@ impl MatterApp {
         self.save_documents(now, holding);
         self.maintain_series();
         self.maintain_temperatures();
+        self.maintain_people(now);
+    }
+
+    /// Relit qui est à la maison : à la connexion, toutes les minutes, et dès que le mode change.
+    fn maintain_people(&mut self, now: Instant) {
+        const EVERY: Duration = Duration::from_secs(60);
+        if !self.connected() || self.people_pending || self.people_unsupported {
+            return;
+        }
+        if self
+            .people_asked
+            .is_some_and(|at| now.duration_since(at) < EVERY)
+        {
+            return;
+        }
+        self.people_asked = Some(now);
+        if self
+            .request(
+                Pending::People,
+                Request::get(protocol::presence::PEOPLE_PATH),
+            )
+            .is_some()
+        {
+            self.people_pending = true;
+        }
     }
 
     /// Un envoi est à faire ou en vol : l'interface se réveille pour le déclencher à temps.

@@ -1761,6 +1761,80 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    /// La box de la maison (`serveur/box.json`, avec son mot de passe) et les téléphones des comptes
+    /// (`serveur/telephones.json`) ne partent jamais dans un export, et un import les laisse tels quels.
+    #[test]
+    fn the_box_password_and_phones_are_neither_exported_nor_lost_by_an_import() {
+        let base = temp("box");
+        let dir = sample_dir(&base);
+        add_server_dir(&dir);
+        let server = dir.join(SERVER_DIR);
+        crate::security::write_secret(
+            &server.join("box.json"),
+            br#"{"url":"https://mabbox.bytel.fr","password":"MOT-DE-PASSE-DE-LA-BOX","auto_mode":true}"#,
+        )
+        .unwrap();
+        crate::security::write_secret(
+            &server.join("telephones.json"),
+            br#"{"phones":[{"user_id":"u1","host":"TELEPHONE-DE-SAM"}]}"#,
+        )
+        .unwrap();
+        let before = tree(&server);
+
+        let (text, _) = export_to_string(&dir).unwrap();
+        for secret in [
+            "MOT-DE-PASSE-DE-LA-BOX",
+            "TELEPHONE-DE-SAM",
+            "box.json",
+            "telephones",
+        ] {
+            assert!(!text.contains(secret), "{secret}");
+        }
+        let other = text.replace("Capteur", "Capteur importé");
+        stage_import_text(&dir, &other).unwrap();
+        apply_pending(&dir).unwrap().unwrap();
+        assert_eq!(tree(&server), before);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Le journal d'audit (`serveur/audit/`) vit dans le dossier du serveur : il ne part pas dans un
+    /// export, et un import le laisse tel quel (sous-dossier compris, droits compris).
+    #[test]
+    fn the_audit_journal_is_neither_exported_nor_lost_by_an_import() {
+        let base = temp("audit");
+        let dir = sample_dir(&base);
+        add_server_dir(&dir);
+        let audit = dir.join(SERVER_DIR).join("audit");
+        std::fs::create_dir_all(&audit).unwrap();
+        std::fs::set_permissions(&audit, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = audit.join("2026-11.jsonl");
+        std::fs::write(
+            &file,
+            "{\"at\":1763800000.0,\"action\":\"login\",\"user_name\":\"LIGNE-DU-JOURNAL\",\"result\":\"ok\"}\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = tree(&dir.join(SERVER_DIR));
+        assert!(before.keys().any(|k| k.ends_with("audit/2026-11.jsonl")));
+
+        let (text, _) = export_to_string(&dir).unwrap();
+        assert!(!text.contains("LIGNE-DU-JOURNAL") && !text.contains("2026-11.jsonl"));
+        assert!(!text.contains("audit"));
+
+        let other = text.replace("Capteur", "Capteur importé");
+        stage_import_text(&dir, &other).unwrap();
+        let msg = apply_pending(&dir).unwrap().unwrap();
+        assert!(msg.contains("Import terminé"), "{msg}");
+        assert_eq!(tree(&dir.join(SERVER_DIR)), before);
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join(SERVER_DIR).join("audit")), 0o700);
+        assert_eq!(
+            mode(&dir.join(SERVER_DIR).join("audit/2026-11.jsonl")),
+            0o600
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     fn marker_names(dir: &Path) -> (PathBuf, PathBuf) {
         (
             sibling(dir, PARTIAL_SUFFIX).unwrap(),

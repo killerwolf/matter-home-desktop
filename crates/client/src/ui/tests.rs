@@ -1488,6 +1488,7 @@ fn the_draft_widgets_draw_without_a_window() {
         View::Rules,
         View::Temperatures,
         View::Cameras,
+        View::Connections,
     ] {
         f.app.view = view;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1504,6 +1505,7 @@ fn the_draft_widgets_draw_without_a_window() {
                 }
                 View::Temperatures => f.app.temperatures_page(ui),
                 View::Cameras => cameras::show(ui, &f.app.model, f.app.plan.plan()),
+                View::Connections => f.app.connections_page(ui),
                 View::Devices => {}
             }
             f.app.close_prompt_window(&ui.ctx().clone());

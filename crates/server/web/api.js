@@ -3,7 +3,11 @@
 // natif garde le sien dans connexion.json : il est révocable (POST /api/logout) et expire côté
 // serveur. Il ne part jamais dans une URL : en-tête Authorization pour le REST, sous-protocole
 // WebSocket pour le temps réel (un navigateur ne peut pas poser d'en-tête sur un WebSocket).
-export const PROTOCOL_VERSION = 3;
+import { describeInstallation } from "./connections.js";
+
+// 4 : le login dit quelle connexion se présente (« Mes connexions »). Un serveur d'avant la
+// version 4 refuse alors de se connecter : l'app web et le serveur sortent ensemble.
+export const PROTOCOL_VERSION = 4;
 const KEY = "ostal.session";
 const SUBPROTOCOL = "ostal.v1";
 
@@ -103,7 +107,7 @@ export async function requestBlob(path) {
 
 export async function login(username, password) {
   const result = await request("POST", "/api/login", {
-    username, password, protocol_version: PROTOCOL_VERSION,
+    username, password, protocol_version: PROTOCOL_VERSION, installation: describeInstallation(),
   });
   save(result.token);
 }

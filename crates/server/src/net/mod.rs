@@ -30,7 +30,8 @@ use tower::ServiceExt;
 use crate::hub::Hub;
 use crate::security::account::AccountStore;
 use crate::security::limiter::LoginLimiter;
-use crate::security::sessions::SessionStore;
+use crate::security::sessions::{SessionInfo, SessionStore};
+use protocol::wire::Via;
 
 /// Connexions simultanées au plus ; au-delà, les nouvelles sont fermées aussitôt.
 const MAX_CONNECTIONS: usize = 128;
@@ -68,6 +69,8 @@ pub struct AppState {
     pub client_write_timeout: Duration,
     pub body_idle_timeout: Duration,
     pub signer: crate::shortcuts::Signer,
+    /// Adresse d'écoute réelle (celle du `bind`, même quand on a demandé le port 0).
+    pub listen: SocketAddr,
 }
 
 /// Compte, sessions et limitation des tentatives.
@@ -82,6 +85,12 @@ pub struct Auth {
 
 impl Auth {
     pub fn new(accounts: AccountStore, sessions: SessionStore) -> Self {
+        // Sessions coupées pendant que le serveur était arrêté (mot de passe changé, compte
+        // désactivé en ligne de commande) : on les retire dès le démarrage.
+        let cut = sessions.retain_valid(|user, epoch| accounts.is_current(user, epoch));
+        if cut > 0 {
+            log::info!("{cut} session(s) coupée(s) depuis le dernier démarrage retirée(s)");
+        }
         Self {
             accounts,
             sessions,
@@ -89,6 +98,67 @@ impl Auth {
             hash_slots: Semaphore::new(1),
         }
     }
+}
+
+impl Auth {
+    /// Reconnaît un jeton de session : session valable **et** utilisateur toujours actif, à la
+    /// bonne époque (un changement de mot de passe ou une désactivation coupe ses sessions).
+    pub fn authenticate(&self, token: &str) -> Option<SessionInfo> {
+        self.authenticate_from(token, None)
+    }
+
+    /// Comme [`Auth::authenticate`], en notant d'où vient la requête (dernier accès de la
+    /// connexion : sur place ou par Tailscale).
+    pub fn authenticate_from(&self, token: &str, via: Option<Via>) -> Option<SessionInfo> {
+        let info = self.sessions.validate_from(token, via)?;
+        if self.accounts.is_current(&info.user_id, info.epoch) {
+            Some(info)
+        } else {
+            // Coupée : on la retire pour de bon.
+            self.sessions.revoke(&info.id);
+            None
+        }
+    }
+
+    /// Cette session est-elle encore vivante ? (Pour les flux ouverts : déconnexion, expiration,
+    /// compte désactivé ou mot de passe changé ferment le flux.)
+    pub fn is_live(&self, session: &SessionInfo) -> bool {
+        self.sessions.is_live(&session.id)
+            && self.accounts.is_current(&session.user_id, session.epoch)
+    }
+}
+
+/// Adresses Tailscale **directes** de cette machine (`https://100.x.y.z:port`, une par interface
+/// du tailnet), lues sur les interfaces réseau : rien n'est demandé à Tailscale. Même certificat
+/// que l'adresse locale. Le nom `….ts.net` du `tailscale serve` (certificat public, port 443) n'en
+/// fait pas partie : le client l'ajoute lui-même s'il le connaît. Rien si le serveur n'écoute
+/// que sur la boucle locale (démo, essais) ou sur une autre adresse que celle du tailnet.
+pub fn tailnet_urls(listen: SocketAddr) -> Vec<String> {
+    tailnet_urls_of(
+        listen,
+        &if_addrs::get_if_addrs()
+            .unwrap_or_default()
+            .iter()
+            .map(|i| i.ip())
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn tailnet_urls_of(listen: SocketAddr, local: &[IpAddr]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ip in local {
+        let IpAddr::V4(v4) = ip else { continue };
+        let o = v4.octets();
+        let in_tailnet = o[0] == 100 && (o[1] & 0xc0) == 64;
+        let reachable = listen.ip().is_unspecified() || listen.ip() == *ip;
+        if in_tailnet && reachable {
+            let url = format!("https://{v4}:{}", listen.port());
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+    }
+    out
 }
 
 /// Serveur réseau en marche, sur son propre runtime.
@@ -123,6 +193,10 @@ pub fn start(
             shutdown_rx.clone(),
         ))
     });
+    let listener = runtime
+        .block_on(TcpListener::bind(config.listen))
+        .with_context(|| format!("écoute sur {}", config.listen))?;
+    let addr = listener.local_addr().context("adresse d'écoute")?;
     let state = AppState {
         hub,
         auth,
@@ -131,15 +205,20 @@ pub fn start(
         client_write_timeout: config.client_write_timeout,
         body_idle_timeout: config.body_idle_timeout,
         signer: config.shortcut_signer,
+        listen: addr,
     };
+    // Les appareils d'une personne désactivée ne reçoivent plus de notifications.
+    {
+        let auth = state.auth.clone();
+        state
+            .hub
+            .push()
+            .set_owner_filter(Arc::new(move |user| auth.accounts.is_active(user)));
+    }
     // Les dossiers de signature d'un arrêt brutal portent un jeton en clair.
     crate::shortcuts::remove_leftovers();
     let router = routes::router(state);
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let listener = runtime
-        .block_on(TcpListener::bind(config.listen))
-        .with_context(|| format!("écoute sur {}", config.listen))?;
-    let addr = listener.local_addr().context("adresse d'écoute")?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     runtime.spawn(accept_loop(
         listener,
@@ -306,6 +385,29 @@ impl Drop for NetServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_tailnet_addresses_the_server_really_listens_on_are_announced() {
+        let local: Vec<IpAddr> = ["192.168.1.20", "100.101.102.103", "10.0.0.5"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        let any: SocketAddr = "0.0.0.0:8443".parse().unwrap();
+        assert_eq!(
+            tailnet_urls_of(any, &local),
+            vec!["https://100.101.102.103:8443".to_string()]
+        );
+        // Boucle locale (démo, essais) ou adresse du réseau de la maison seulement : rien.
+        let loopback: SocketAddr = "127.0.0.1:8443".parse().unwrap();
+        assert!(tailnet_urls_of(loopback, &local).is_empty());
+        let lan: SocketAddr = "192.168.1.20:8443".parse().unwrap();
+        assert!(tailnet_urls_of(lan, &local).is_empty());
+        let ts: SocketAddr = "100.101.102.103:9000".parse().unwrap();
+        assert_eq!(
+            tailnet_urls_of(ts, &local),
+            vec!["https://100.101.102.103:9000".to_string()]
+        );
+    }
 
     #[test]
     fn connections_are_capped_per_address_and_released() {

@@ -94,7 +94,7 @@ impl Server {
             listen.starts_with("127.0.0.1:"),
             "uniquement la boucle locale"
         );
-        if !dir.join("serveur").join("compte.json").exists() {
+        if !dir.join("serveur").join("comptes.json").exists() {
             create_account(dir);
         }
         let log_path = dir.join(format!(

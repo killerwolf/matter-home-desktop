@@ -9,6 +9,12 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 
 ## Règles
 
+- **Connexions (version 4)** : le login peut porter `installation` (`{id, kind: web|mac, device:
+  iphone|ipad|android|computer, name}`) ; sans elle, la connexion est « inconnue ». Le serveur parle
+  les versions 3 et 4 et répond dans celle du client : `GET /api/version?protocol=4` (sans le
+  paramètre : 3, comme avant), la réponse du login et le `hello` du WebSocket (`?protocol=`). Les
+  clients de version 3 (2.0.0, 2.1.0-beta.1) ne voient donc jamais un « 4 ». `tailnet_urls` (version 4
+  seulement) : adresses Tailscale directes du serveur (`https://100.x.y.z:port`, même certificat).
 - **Version** : `protocol_version` (2 aujourd'hui). `GET /api/version` la donne sans jeton ;
   la connexion et le WebSocket (`?protocol=2`) l'exigent identique, sinon l'erreur
   `version_incompatible` (HTTP 426). Ajouter un champ optionnel ne change pas la version ;
@@ -37,8 +43,11 @@ réutilise tel quel. Les types internes `Command` et `Event` ne sont jamais envo
 Le serveur génère au premier lancement un certificat auto-signé (`serveur/tls-cert.pem`, clé
 en 0600), le garde d'un lancement à l'autre, affiche et journalise son **empreinte SHA-256**
 (`ostal-server fingerprint` la redonne). Le client la mémorise à la première connexion
-et refuse tout autre certificat. Le compte unique se crée sur le serveur
-(`create-account`) ; le mot de passe est haché en argon2id. Après 5 échecs depuis une adresse,
+et refuse tout autre certificat. Les comptes (un par personne du foyer, `serveur/comptes.json`)
+se créent sur le serveur (`create-account` pour le premier, `user add` ensuite, ou Réglages › Comptes
+dans Ostal Server) ; le mot de passe est haché en argon2id. Un nouveau mot de passe ou une
+désactivation coupe les sessions de ce compte, et d'elles seules. Les échecs sont aussi comptés
+par identifiant (10 échecs, attente plafonnée à 5 min). Après 5 échecs depuis une adresse,
 la connexion de **cette adresse** est mise en attente 30 s, doublée à chaque échec (15 min au
 plus) : `too_many_attempts` (HTTP 429, `Retry-After`). Il n'y a **pas** de blocage global : une
 attaque répartie sur plusieurs adresses ne peut pas enfermer le propriétaire dehors. Elle est
@@ -68,12 +77,22 @@ est écrit dans `history-demo/`, le plan et les règles de démonstration resten
 `--listen ADRESSE:PORT` (le port `0` laisse le système choisir) et `--data-dir DOSSIER` servent
 aux essais et aux tests.
 
+## Découverte (Bonjour)
+
+Le serveur écouteant ailleurs que sur la boucle locale s'annonce en mDNS : service `_ostal._tcp`,
+instance = nom du Mac, port d'écoute, adresses IPv4 **privées** seulement (jamais celle du tailnet),
+TXT `v=<protocole>` et `fp=<empreinte SHA-256 du certificat>`. Rien de secret, rien ne s'y fie : le
+client se connecte à l'adresse trouvée comme à une adresse saisie, et confirme l'empreinte à la
+première connexion (`protocol::discovery`, `ostal_server::announce`, `ostal_client::net::discovery`).
+
 ## Routes
 
 | Méthode et chemin | Rôle |
 |---|---|
 | `GET /api/version` | version du protocole et du serveur (sans jeton) |
-| `POST /api/login` | `{username, password, protocol_version}` → `{token, expires_at, …}` (sans jeton) |
+| `POST /api/login` | `{username, password, protocol_version, installation?}` → `{token, expires_at, …, tailnet_urls?}` (sans jeton) |
+| `GET /api/me/installations` | les connexions ouvertes sur le compte de la personne : `{connections: [{id, name, kind, device, last_seen, via, current, unknown}]}` |
+| `DELETE /api/me/installations/{id}` | coupe une connexion de la personne (204, ou 404) : son jeton cesse de marcher, ses flux se ferment |
 | `POST /api/logout` | révoque le jeton (204) ; le WebSocket de cette session se ferme |
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
 | `GET /api/ws?protocol=2` | temps réel (WebSocket) |
@@ -99,7 +118,7 @@ aux essais et aux tests.
 
 Les commandes répondent `202 {"accepted": true}` dès que le serveur les a transmises ; leur
 effet (ou leur échec) arrive en événements. Les erreurs possibles : `not_found` (appareil ou
-règle inconnu), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
+règle inconnu), `forbidden` (403, le compte n'a pas ce droit ; jamais en V1), `bad_request`, `plan_without_floor` (400, plan sans étage), `pairing_busy`, `payload_too_large` (413), `method_not_allowed`
 (405, avec l'en-tête `Allow`), `request_timeout` (408), `import_pending` (409), `identity_mismatch` (409), `invalid_import`
 (400), `unavailable`… Toute erreur, y compris 405 et 413, a le corps `{"error": {"code": …}}`.
 
@@ -168,14 +187,29 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   permet : avec le jeton de mode, `shortcut` (ou `widget` s'il le dit) ; avec une session, `web` ou
   `desktop`, sinon `other` (un ancien client n'envoie rien). Une valeur inconnue se lit `other` ; un
   ancien client ignore le champ.
-- **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode**, un secret
-  à part que le serveur crée à la demande (fenêtre du serveur), qui ne vaut que pour cette route :
+- **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode** d'une
+  personne, un secret à part que le serveur crée à la demande (app web, fenêtre du serveur), qui ne
+  vaut que pour cette route et `PUT /api/presence` :
   `GET /api/state`, le WebSocket, le plan, les règles, l'export… répondent 401 avec lui. Il se
   présente dans `Authorization: Bearer …` (jamais dans l'URL), le serveur n'en garde que l'empreinte
-  SHA-256 (`serveur/jeton-mode.json`, 0600), et il n'est jamais journalisé. Un jeton absent ou faux : 401
+  SHA-256 (`serveur/jetons.json`, 0600), et il n'est jamais journalisé. Un compte désactivé perd ses jetons. Un jeton absent ou faux : 401
   (`unauthorized`, après 250 ms). Le jeton est vérifié **d'abord** et un bon jeton n'est jamais refusé :
   pas de blocage par adresse (derrière `tailscale serve`, toutes les connexions viennent de 127.0.0.1 et
   un compteur partagé aurait bloqué le bon Raccourci), seulement une ligne au journal par échec.
+- **Où est la personne** (ajouté après la 2.0, sans changer la version du protocole) :
+  `PUT /api/presence` `{"state": "home" | "away"}`, avec une session ou le jeton de mode de la personne
+  (mêmes règles que `PUT /api/mode`), répond `200 {"state", "changed", "mode", "message"}` : `mode` est le mode actuel de la maison une fois
+  la règle appliquée, `message` une phrase française qui dit ce qui s'est passé (« Maison en mode
+  Absent. », « Sam est encore à la maison : la maison reste en Présent. », « Mode Nuit : la maison ne
+  change pas. » ; le prénom est le nom affiché, jamais un identifiant). Les raccourcis « Je pars » et
+  « Je rentre » l'affichent tel quel. Un client plus ancien ignore les deux champs. Le serveur retient la dernière
+  déclaration de chacun (`serveur/presence.json`). Provisoirement, avec un jeton de mode (raccourci),
+  « away » passe aussi la maison en Absent et « home » en Présent, comme les raccourcis d'avant ; une
+  session ne fait que déclarer.
+- **Jetons personnels** : `GET /api/tokens` rend **mes** jetons (`items` : `id`, `kind` `mode` ou
+  `read`, `label`, `created`), `DELETE /api/tokens/{id}` en révoque un (404 s'il n'est pas à moi),
+  `POST /api/tokens/mode/shortcuts` et `POST /api/tokens/read/widget` (`{"origin", "label"?}`) créent
+  celui de ce téléphone. Voir [App web](web-app.md#widgets-et-raccourcis).
 - **Caméras** : `CameraView` porte `emplacement` (`interieure` \| `exterieure`) et `modes`
   (`present`, `absent`, `nuit`, `vacances` → `eteinte` \| `diffusion` \| `surveillance`), tous deux
   optionnels (absents d'un serveur plus ancien : extérieure, jamais éteinte). Pour une caméra
@@ -435,7 +469,7 @@ un abonnement inconnu ; `unavailable` pour l'essai quand les notifications sont 
 
 | route | corps | réponse |
 |---|---|---|
-| `GET /api/push` | | `{"enabled", "public_key", "subscriptions": […]}` ; `public_key` : clé VAPID (base64url) pour `pushManager.subscribe` |
+| `GET /api/push` | | `{"enabled", "public_key", "subscriptions": […]}` (**les appareils de la personne connectée** seulement) ; `public_key` : clé VAPID (base64url) pour `pushManager.subscribe` |
 | `PUT /api/push` | `{"enabled": bool}` | comme `GET` |
 | `POST /api/push/subscriptions` | `PushSubscription.toJSON()` (`endpoint`, `keys.p256dh`, `keys.auth`) plus `label` et, facultatif, `categories` | l'abonnement ; la même adresse garde le même `id` |
 | `PUT /api/push/subscriptions/{id}` | `{"categories"?, "label"?}` | l'abonnement |

@@ -19,8 +19,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::accounts_ui::AccountsUi;
 use crate::cameras_ui::CamerasUi;
 use crate::descriptions_ui::DescriptionsUi;
+use crate::journal_ui::JournalUi;
+use crate::presence_ui::PresenceUi;
 use eframe::egui::{self, RichText};
 use ostal_server::backup;
 use ostal_server::setup::{self, IdentityComparison, IdentityState};
@@ -444,7 +447,11 @@ struct App {
     last_phase: Option<Phase>,
     page: Page,
     form: AccountForm,
-    change_account: bool,
+    /// Réglages › Comptes (liste, ajout, fiche d'un compte).
+    accounts: AccountsUi,
+    journal: JournalUi,
+    /// Réglages › Présence (box, interrupteur, téléphones).
+    presence: PresenceUi,
     /// La configuration a été faite dans cette session : on montre l'écran de fin.
     setup_session: bool,
     show_done: bool,
@@ -512,7 +519,9 @@ impl App {
             last_phase: None,
             page: Page::Start,
             form: AccountForm::default(),
-            change_account: false,
+            accounts: AccountsUi::default(),
+            journal: JournalUi::default(),
+            presence: PresenceUi::default(),
             setup_session: false,
             show_done: false,
             login_enabled: false,
@@ -660,7 +669,10 @@ impl App {
     /// Une saisie est en cours dans la fenêtre : formulaire de caméra, page de la clé Anthropic,
     /// changement de mot de passe.
     fn has_unsaved_input(&self) -> bool {
-        self.cameras.editing() || self.descriptions_open || self.change_account
+        self.cameras.editing()
+            || self.descriptions_open
+            || self.accounts.editing()
+            || self.presence.editing()
     }
 
     /// Le menu demande la fenêtre sur un onglet : on l'amène au premier plan, sans jeter une
@@ -677,12 +689,19 @@ impl App {
 
     /// Change d'onglet depuis la fenêtre (barre d'onglets, bouton d'une autre page).
     fn open_tab(&mut self, tab: Tab) {
-        if tab != self.tab || self.descriptions_open {
-            // On repart d'une page propre : ni formulaire de caméra ni saisie de clé à moitié faits.
+        if tab != self.tab
+            || self.descriptions_open
+            || self.accounts.is_open()
+            || self.presence.is_open()
+        {
+            // On repart d'une page propre : ni formulaire de caméra, ni saisie de clé, ni mot de
+            // passe à moitié faits.
             self.cameras.reset();
             self.descriptions.reset();
             self.descriptions_open = false;
-            self.change_account = false;
+            self.accounts.reset();
+            self.presence.reset();
+            self.journal.reset();
             self.form = AccountForm::default();
         }
         self.tab = tab;

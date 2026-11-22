@@ -8,6 +8,7 @@ use eframe::egui::{self, RichText};
 use protocol::wire::ErrorCode;
 
 use super::theme;
+use ostal_client::net::discovery::{Finder, Found};
 use ostal_client::net::tls::normalize_fingerprint;
 use ostal_client::net::{Backend, Link, NetError, ServerAddr};
 
@@ -48,6 +49,13 @@ pub struct ConnectScreen {
     confirm_reset: bool,
     /// La note de sécurité est dépliée (« Détails »).
     show_security: bool,
+    /// La recherche d'Ostal Server sur le réseau de la maison (Bonjour), lancée à la première
+    /// ouverture, quand aucun serveur n'est encore connu.
+    finder: Option<Finder>,
+    /// L'adresse est saisie à la main : plus de serveur trouvé proposé.
+    manual: bool,
+    /// Lequel des serveurs trouvés est choisi (s'il y en a plusieurs).
+    found_choice: usize,
 }
 
 /// Sous quel champ s'affiche un message d'erreur.
@@ -120,6 +128,9 @@ impl ConnectScreen {
             message_field: Field::General,
             confirm_reset: false,
             show_security: false,
+            finder: None,
+            manual: false,
+            found_choice: 0,
         }
     }
 
@@ -166,6 +177,8 @@ impl ConnectScreen {
 
     /// Connexion réussie : plus rien à garder.
     pub fn connected(&mut self) {
+        self.finder = None;
+        self.manual = false;
         self.password.clear();
         self.expected.clear();
         self.stage = Stage::Form;
@@ -298,6 +311,25 @@ impl ConnectScreen {
         Self::header(ui);
         let busy = matches!(self.stage, Stage::Probing | Stage::LoggingIn);
         let p = theme::palette(ui);
+        // Aucun serveur connu : on le cherche sur le réseau de la maison (Bonjour). Un serveur
+        // déjà approuvé (adresse gardée) n'a rien à chercher.
+        let discover = self.pinned_url.is_none() && !self.manual;
+        if discover && self.finder.is_none() {
+            let ctx = ui.ctx().clone();
+            self.finder = Some(Finder::start(std::sync::Arc::new(move || {
+                ctx.request_repaint()
+            })));
+        }
+        let found: Vec<Found> = if discover {
+            self.finder.as_ref().map(Finder::found).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let searching = discover && self.finder.as_ref().is_some_and(Finder::searching);
+        if !found.is_empty() {
+            self.found_choice = self.found_choice.min(found.len() - 1);
+            self.url = found[self.found_choice].url();
+        }
         // Une erreur sous son champ : l'icône, le texte en gras (kit §12), role=alert.
         let error = |ui: &mut egui::Ui, which: Field| {
             if let Some((false, text)) = message.as_ref().filter(|_| at == Some(which)) {
@@ -333,58 +365,73 @@ impl ConnectScreen {
         };
         let full = ui.available_width();
 
-        label(ui, "Adresse du serveur");
-        ui.scope(|ui| {
-            invalid(ui, Field::Server);
-            ui.add_enabled(
-                !busy,
-                egui::TextEdit::singleline(&mut self.url)
-                    .hint_text("192.168.1.20:8443 ou mac-mini.local")
-                    .desired_width(full),
-            );
-        });
-        error(ui, Field::Server);
-        ui.label(
-            RichText::new(
-                "Elle s'affiche sur le Mac serveur : menu › Connecter un Mac ou un iPhone…",
-            )
-            .size(12.0)
-            .color(p.text_secondary),
-        );
-        ui.add_space(theme::tokens().space.sm);
-
-        label(ui, "Adresse à distance (facultatif)");
-        ui.scope(|ui| {
-            invalid(ui, Field::Remote);
-            ui.add_enabled(
-                !busy,
-                egui::TextEdit::singleline(&mut self.remote)
-                    .hint_text("mac-mini.exemple.ts.net ou 100.x.y.z")
-                    .desired_width(full),
-            );
-        });
-        error(ui, Field::Remote);
-        ui.label(
-            RichText::new(
-                "Le même serveur, joint par Tailscale quand vous n'êtes pas chez vous. \
-                 L'app essaie l'adresse ci-dessus, puis celle-ci. Plusieurs : séparez par un espace.",
-            )
-            .size(12.0)
-            .color(p.text_secondary),
-        );
-        if ServerAddr::parse_list(&self.remote)
-            .is_ok_and(|l| l.iter().any(ServerAddr::is_tailscale_serve))
-        {
+        if found.is_empty() {
+            if searching {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Recherche d'Ostal Server sur le réseau de la maison…")
+                            .size(12.0)
+                            .color(p.text_secondary),
+                    );
+                });
+                ui.add_space(4.0);
+            }
+            label(ui, "Adresse du serveur");
+            ui.scope(|ui| {
+                invalid(ui, Field::Server);
+                ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut self.url)
+                        .hint_text("192.168.1.20:8443 ou mac-mini.local")
+                        .desired_width(full),
+                );
+            });
+            error(ui, Field::Server);
             ui.label(
                 RichText::new(
-                    "Vérifiée par le certificat public de Tailscale : vérifiez bien le nom de \
-                     votre Mac.",
+                    "Elle s'affiche sur le Mac serveur : menu › Connecter un Mac ou un iPhone…",
                 )
-                .small()
+                .size(12.0)
                 .color(p.text_secondary),
             );
+            ui.add_space(theme::tokens().space.sm);
+
+            label(ui, "Adresse à distance (facultatif)");
+            ui.scope(|ui| {
+                invalid(ui, Field::Remote);
+                ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut self.remote)
+                        .hint_text("mac-mini.exemple.ts.net ou 100.x.y.z")
+                        .desired_width(full),
+                );
+            });
+            error(ui, Field::Remote);
+            ui.label(
+                RichText::new(
+                    "Le même serveur, joint par Tailscale quand vous n'êtes pas chez vous. \
+                     L'app essaie l'adresse ci-dessus, puis celle-ci. Plusieurs : séparez par un espace.",
+                )
+                .size(12.0)
+                .color(p.text_secondary),
+            );
+            if ServerAddr::parse_list(&self.remote)
+                .is_ok_and(|l| l.iter().any(ServerAddr::is_tailscale_serve))
+            {
+                ui.label(
+                    RichText::new(
+                        "Vérifiée par le certificat public de Tailscale : vérifiez bien le nom de \
+                         votre Mac.",
+                    )
+                    .small()
+                    .color(p.text_secondary),
+                );
+            }
+            ui.add_space(theme::tokens().space.md);
+        } else {
+            self.found_card(ui, &found, busy);
         }
-        ui.add_space(theme::tokens().space.md);
 
         label(ui, "Identifiant");
         ui.add_enabled(
@@ -473,6 +520,78 @@ impl ConnectScreen {
                 .color(p.text_secondary),
             );
         }
+    }
+
+    /// « Ostal Server trouvé » (maquette Bureau-Serveur-Trouve) : le serveur annoncé sur le réseau,
+    /// choisi d'un clic s'il y en a plusieurs, et « Saisir une adresse à la main » en secours. Pas
+    /// d'adresse affichée : le nom suffit.
+    fn found_card(&mut self, ui: &mut egui::Ui, found: &[Found], busy: bool) {
+        let p = *theme::palette(ui);
+        ui.label(
+            RichText::new("Ostal Server trouvé")
+                .size(theme::tokens().font.size.heading)
+                .strong(),
+        );
+        ui.label(
+            RichText::new("Ce Mac pilote la maison. Ostal l'a trouvé tout seul.")
+                .color(p.text_secondary),
+        );
+        ui.add_space(6.0);
+        for (i, f) in found.iter().enumerate() {
+            let selected = i == self.found_choice;
+            let frame = egui::Frame::new()
+                .fill(if selected { p.accent_soft } else { p.surface })
+                .stroke(egui::Stroke::new(
+                    if selected { 1.5 } else { 1.0 },
+                    if selected { p.accent } else { p.line },
+                ))
+                .corner_radius(8)
+                .inner_margin(egui::Margin::same(10));
+            let response = frame
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&f.name).strong());
+                            ui.label(
+                                RichText::new("Trouvé sur ce réseau")
+                                    .small()
+                                    .color(p.text_secondary),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            theme::state_word(ui, theme::StateWord::Ok, "joignable");
+                        });
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            if response.clicked() && !busy {
+                self.found_choice = i;
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(p.ok, "✓ Serveur trouvé");
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(
+                        RichText::new("Saisir une adresse à la main").color(p.accent_text),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                self.manual = true;
+                self.finder = None;
+            }
+        });
+        ui.label(
+            RichText::new("Puis connectez-vous avec votre compte.")
+                .size(12.0)
+                .color(p.text_secondary),
+        );
+        ui.add_space(theme::tokens().space.sm);
     }
 
     fn submit(&mut self, backend: &Backend) {

@@ -110,7 +110,7 @@ fn a_session_changes_the_mode_and_everyone_hears_about_it() {
 fn the_mode_token_changes_the_mode_and_can_do_nothing_else() {
     let rig = rig("mode-token");
     let client = client(&rig);
-    let token = rig.hub.generate_mode_token().unwrap();
+    let token = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
     common::runtime().block_on(async {
         let ok = put_mode(&client, Some(&token), "vacances").await;
         assert_eq!(ok.status, 200, "{}", ok.text());
@@ -149,15 +149,20 @@ fn the_mode_token_changes_the_mode_and_can_do_nothing_else() {
             .await;
         assert_eq!(in_url.status, 401);
 
-        // Un nouveau jeton révoque l'ancien.
-        let newer = rig.hub.generate_mode_token().unwrap();
+        // Un nouveau jeton pour le même téléphone remplace l'ancien.
+        let newer = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
         let old = put_mode(&client, Some(&token), "nuit").await;
         assert_eq!(old.status, 401);
         let new = put_mode(&client, Some(&newer), "nuit").await;
         assert_eq!(new.json(), json!({"mode": "nuit", "changed": true}));
 
         // Sans jeton généré (révoqué), plus d'accès par jeton.
-        rig.hub.revoke_mode_token().unwrap();
+        rig.hub
+            .revoke_tokens_of(
+                &rig.user_id,
+                ostal_server::security::user_tokens::Kind::Mode,
+            )
+            .unwrap();
         assert_eq!(put_mode(&client, Some(&newer), "present").await.status, 401);
     });
 }
@@ -189,7 +194,7 @@ async fn put_mode_from(
 fn every_mode_change_says_where_it_comes_from() {
     let rig = rig("mode-source");
     let client = client(&rig);
-    let mode_token = rig.hub.generate_mode_token().unwrap();
+    let mode_token = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
     common::runtime().block_on(async {
         let session = login(&client).await;
         let mut ws = client.ws(&session, PROTOCOL_VERSION).await.unwrap();
@@ -270,7 +275,7 @@ fn every_mode_change_says_where_it_comes_from() {
 fn mode_token_failures_never_block_a_valid_token_nor_the_login() {
     let rig = rig("mode-limit");
     let client = client(&rig);
-    let token = rig.hub.generate_mode_token().unwrap();
+    let token = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
     common::runtime().block_on(async {
         // Derrière `tailscale serve`, tout le monde vient de 127.0.0.1 : des échecs en rafale ne
         // doivent jamais bloquer le bon jeton (ni la connexion par mot de passe).

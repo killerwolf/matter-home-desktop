@@ -397,7 +397,7 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
         fingerprint_before.text
     );
     let serveur_before = tree(&data.join("serveur"));
-    assert!(serveur_before.contains_key("compte.json"));
+    assert!(serveur_before.contains_key("comptes.json"));
     assert!(serveur_before.contains_key("tls-key.pem"));
 
     // Sans terminal ni --yes : refus, rien n'a bougé.
@@ -468,7 +468,13 @@ fn a_v021_backup_is_imported_on_the_server_with_the_same_identity() {
     );
     // Le compte et le certificat n'ont pas changé : même empreinte, aucun réappairage.
     for (name, bytes) in &serveur_before {
-        assert_eq!(&after[&format!("serveur/{name}")], bytes, "serveur/{name}");
+        let now = &after[&format!("serveur/{name}")];
+        if name.starts_with("audit/") {
+            // Le journal d'audit est en ajout seul : l'import y note sa ligne, rien d'ancien ne change.
+            assert!(now.starts_with(bytes), "serveur/{name}");
+        } else {
+            assert_eq!(now, bytes, "serveur/{name}");
+        }
     }
     let fingerprint_after = run(&data, &["fingerprint"], Stdio::null());
     assert_eq!(fingerprint_after.text, fingerprint_before.text);
@@ -551,7 +557,7 @@ fn import_works_on_a_missing_data_dir_and_asks_for_the_account() {
     assert!(done.text.contains("create-account"), "{}", done.text);
     assert_eq!(tree(&data)["controller.json"], fx.controller.as_bytes());
     assert_eq!(mode(&data), 0o700);
-    assert!(!data.join("serveur").join("compte.json").exists());
+    assert!(!data.join("serveur").join("comptes.json").exists());
 
     // Le compte se crée ensuite, à côté de l'identité importée, sans la toucher.
     let (status, text) = create_account(&data, USER, PASSWORD, &[]);

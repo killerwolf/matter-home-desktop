@@ -47,6 +47,11 @@ pub struct Subscription {
     pub last_error: Option<String>,
     #[serde(default)]
     pub categories: PushCategories,
+    /// La personne à qui appartient l'appareil. Absent des abonnements d'avant les comptes
+    /// nominatifs : ils sont rattachés au premier utilisateur au démarrage (le champ s'ajoute, rien
+    /// d'autre ne change dans le fichier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 /// Le contenu de `push.json`.

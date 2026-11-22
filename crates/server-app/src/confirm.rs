@@ -26,6 +26,12 @@ pub enum Confirmation {
     DeleteCamera { name: String },
     /// Retirer la clé d'API des descriptions par IA.
     RemoveApiKey,
+    /// Désactiver le compte d'une personne du foyer.
+    DisableAccount { name: String },
+    /// Couper la connexion d'un téléphone ou d'un ordinateur.
+    CutConnection { name: String },
+    /// Délier la box de la maison (présence par le Wi-Fi).
+    UnlinkBox,
 }
 
 /// Ce que l'alerte affiche.
@@ -70,6 +76,21 @@ impl Confirmation {
                 "Retirer la clé ?".into(),
                 "Les événements ne seront plus décrits.".into(),
                 "Retirer",
+            ),
+            Confirmation::DisableAccount { name } => (
+                format!("Désactiver le compte de {name} ?"),
+                "Ses connexions, ses raccourcis et son widget cessent de marcher tout de suite, tant que le compte est désactivé. Le compte reste là : vous pouvez le réactiver, et ses raccourcis et son widget remarcheront.".into(),
+                "Désactiver",
+            ),
+            Confirmation::CutConnection { name } => (
+                format!("Couper la connexion « {name} » ?"),
+                "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
+                "Couper",
+            ),
+            Confirmation::UnlinkBox => (
+                "Délier la box ?".into(),
+                "Ostal Server oublie le mot de passe de la box et n'interroge plus le Wi-Fi. La maison ne change plus de mode toute seule ; les téléphones choisis restent enregistrés.".into(),
+                "Délier",
             ),
         };
         Dialog {
@@ -128,11 +149,16 @@ mod tests {
                 name: "Entrée".into(),
             },
             Confirmation::RemoveApiKey,
+            Confirmation::DisableAccount { name: "Sam".into() },
+            Confirmation::CutConnection {
+                name: "iPhone de Sam".into(),
+            },
+            Confirmation::UnlinkBox,
         ]
     }
 
     #[test]
-    fn the_six_destructive_gestures_each_ask_first() {
+    fn the_destructive_gestures_each_ask_first() {
         for what in all() {
             let mut shown = 0;
             let done = ask_with(&what, |d| {

@@ -17,6 +17,7 @@ use super::addr::ServerAddr;
 use super::error::NetError;
 use super::files;
 use super::http::{self, Request};
+use super::installation;
 use super::store::{Saved, Store};
 use super::tls::{self, normalize_fingerprint, Trust};
 use super::{ws, Event, Link, Notifier};
@@ -447,6 +448,12 @@ impl Backend {
         self.shared.store.load().ok().flatten().map(|s| s.url)
     }
 
+    /// Par où la session est jointe en ce moment : l'adresse, et si c'est « à distance » (autre
+    /// adresse que la principale, ou adresse Tailscale). `None` sans session.
+    pub fn route(&self) -> Option<(String, bool)> {
+        self.shared.creds().map(|c| (c.addr.url(), c.is_remote()))
+    }
+
     /// Autres adresses du serveur gardées dans le fichier de connexion (à distance).
     pub fn alt_urls(&self) -> Vec<String> {
         self.shared.alts()
@@ -801,9 +808,10 @@ fn try_login(
     let trust = Trust::Pinned(fingerprint.clone());
     // Version annoncée d'abord : un serveur incompatible est signalé clairement, avant de lui
     // confier un mot de passe.
-    let version: VersionInfo = http::exec(&addr, &trust, None, &Request::get("/api/version"))?
-        .into_result()?
-        .json()?;
+    let version: VersionInfo =
+        http::exec(&addr, &trust, None, &version_request(shared.protocol()))?
+            .into_result()?
+            .json()?;
     if version.protocol_version != shared.protocol() {
         return Err(NetError::Api {
             status: 426,
@@ -816,6 +824,9 @@ fn try_login(
         username: username.to_string(),
         password: password.to_string(),
         protocol_version: shared.protocol(),
+        // Cette app se présente (version 4) ; un serveur plus ancien ne la verrait pas, et la
+        // version 3 n'en parle pas : on n'envoie rien.
+        installation: (shared.protocol() >= 4).then(|| installation::describe(&shared.store)),
     };
     let response: LoginResponse = http::exec(
         &addr,
@@ -826,7 +837,51 @@ fn try_login(
     .into_result()?
     .json()?;
     creds.token = response.token;
+    // Le serveur donne ses adresses Tailscale directes : on les garde pour plus tard (même
+    // certificat, donc rien de nouveau à approuver).
+    let alts = merge_tailnet_urls(&shared.alts(), &response.tailnet_urls);
+    *shared
+        .alt_urls
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = alts.clone();
+    creds.alts = parse_alts(&creds.primary, &alts);
     Ok(creds)
+}
+
+/// `GET /api/version` en annonçant la version parlée : le serveur répond dans cette version (un
+/// serveur d'avant la version 4 ignore la question et répond 3).
+pub(super) fn version_request(protocol: u32) -> Request {
+    Request::get(format!("/api/version?protocol={protocol}"))
+}
+
+/// Au plus ce nombre d'adresses Tailscale gardées d'un serveur.
+const MAX_TAILNET_URLS: usize = 4;
+
+/// Ajoute aux autres adresses celles que le serveur annonce, **à condition** que ce soient des
+/// adresses directes du tailnet (IP `100.64.0.0/10` ou `fd7a:115c:a1e0::/48`) : le même
+/// certificat s'y présente, et un serveur ne peut donc pas envoyer le client ailleurs. Rend la
+/// nouvelle liste (adresses déjà connues d'abord, sans doublon).
+pub(super) fn merge_tailnet_urls(known: &[String], announced: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = known.to_vec();
+    let mut added = 0;
+    for url in announced {
+        let Ok(addr) = ServerAddr::parse(url) else {
+            continue;
+        };
+        let is_ip = addr.host.parse::<std::net::IpAddr>().is_ok();
+        if !is_ip || !addr.is_tailscale() || added >= MAX_TAILNET_URLS {
+            continue;
+        }
+        let canonical = addr.url();
+        let already = out
+            .iter()
+            .any(|u| ServerAddr::parse(u).is_ok_and(|a| a == addr));
+        if !already {
+            out.push(canonical);
+            added += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1044,5 +1099,34 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("alt_urls"), "{text}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn only_direct_tailnet_addresses_announced_by_a_server_are_kept() {
+        let known = vec!["https://mac.tailnet-xxxx.ts.net".to_string()];
+        let merged = merge_tailnet_urls(
+            &known,
+            &[
+                "https://100.101.102.103:8443".into(),
+                // Doublon, autre adresse que le tailnet, nom (certificat public) : écartés.
+                "https://100.101.102.103:8443".into(),
+                "https://203.0.113.9:8443".into(),
+                "https://192.168.1.20:8443".into(),
+                "https://evil.example.com:8443".into(),
+                "https://mac.tailnet-yyyy.ts.net".into(),
+                "pas une adresse".into(),
+                "https://[fd7a:115c:a1e0::1]:8443".into(),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                "https://mac.tailnet-xxxx.ts.net".to_string(),
+                "https://100.101.102.103:8443".to_string(),
+                "https://[fd7a:115c:a1e0::1]:8443".to_string(),
+            ]
+        );
+        // Rien à ajouter : la liste ne bouge pas.
+        assert_eq!(merge_tailnet_urls(&merged, &[]), merged);
     }
 }

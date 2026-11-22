@@ -198,6 +198,7 @@ impl MatterApp {
                     ui.spacing_mut().item_spacing.x = 16.0;
                     theme::logotype(ui);
                     self.mode_button(ui, chosen_mode);
+                    self.presence_summary(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 16.0;
                         if self.connected() && theme::primary_button(ui, "+ Ajouter").clicked() {
@@ -227,7 +228,12 @@ impl MatterApp {
     /// liaison est perdue.
     fn mode_button(&mut self, ui: &mut egui::Ui, chosen_mode: &mut Option<HomeMode>) {
         let p = *theme::palette(ui);
-        let label = format!("Mode : {} ▾", self.model.mode.label());
+        let auto = self.connected() && self.people.as_ref().is_some_and(|v| v.auto_mode);
+        let label = format!(
+            "Mode : {}{} ▾",
+            self.model.mode.label(),
+            if auto { " · automatique" } else { "" }
+        );
         let hint = "Mode de la maison : commande les caméras et les automatisations";
         // Un serveur sans modes : pas de pastille du tout.
         if self.connected() && !self.model.has_mode {
@@ -269,6 +275,37 @@ impl MatterApp {
                     }
                 }
             });
+    }
+
+    /// Qui est à la maison (maquette Bureau-Maison-Presence) : « À la maison : Hamdi, Sam », puis
+    /// « Léa n'est pas là depuis 17:20 ». Rien sans box reliée, ni avec un serveur plus ancien.
+    fn presence_summary(&self, ui: &mut egui::Ui) {
+        let Some(view) = self.people.as_ref().filter(|_| self.connected()) else {
+            return;
+        };
+        let Some(summary) = protocol::presence::summary(view, devices::clock) else {
+            return;
+        };
+        let p = *theme::palette(ui);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(RichText::new(&summary.lead).strong());
+            let small = theme::tokens().font.size.caption;
+            if !summary.away.is_empty() {
+                ui.label(
+                    RichText::new(&summary.away)
+                        .size(small)
+                        .color(p.text_secondary),
+                );
+            }
+            if summary.stale {
+                ui.label(
+                    RichText::new("La box ne répond pas : présence peut-être dépassée")
+                        .size(small)
+                        .color(p.warn),
+                );
+            }
+        });
     }
 
     /// L'adresse du serveur : « ● adresse · vX » en vert ; quand la liaison est perdue, le point
@@ -431,6 +468,15 @@ impl MatterApp {
             .show(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    // Mes connexions : « ‹ Maison » ramène à la maison, le seul sous-onglet
+                    // de cette page est actif.
+                    if self.view == View::Connections {
+                        if tab_link(ui, false, connected, "‹ Maison").clicked() {
+                            self.view = View::Devices;
+                        }
+                        tab_link(ui, true, connected, View::Connections.title());
+                        return;
+                    }
                     for view in View::ALL {
                         if tab_link(ui, self.view == view, connected, view.title()).clicked() {
                             if view != self.view {

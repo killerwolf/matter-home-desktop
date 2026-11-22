@@ -91,9 +91,6 @@ async fn upgrade(
         ))
         .into_response();
     };
-    let Some(account_id) = state.auth.accounts.account_id() else {
-        return ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response();
-    };
     let subscription = match live.subscribe(&state.hub, id, kind) {
         Ok(subscription) => subscription,
         Err(SubscribeError::UnknownCamera) => {
@@ -121,7 +118,7 @@ async fn upgrade(
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            viewer_loop(socket, state, session, account_id, subscription, stall).await;
+            viewer_loop(socket, state, session, subscription, stall).await;
         })
 }
 
@@ -156,7 +153,6 @@ async fn viewer_loop(
     mut socket: WebSocket,
     state: AppState,
     session: SessionInfo,
-    account_id: String,
     mut subscription: Subscription,
     stall: Duration,
 ) {
@@ -200,7 +196,7 @@ async fn viewer_loop(
                 }
             }
             _ = session_check.tick() => {
-                if !state.auth.sessions.is_valid(&session.id, &account_id) {
+                if !state.auth.is_live(&session) {
                     close(&mut socket, 1008, "session terminée", stall).await;
                     return;
                 }

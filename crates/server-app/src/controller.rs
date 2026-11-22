@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use ostal_server::app::{Outcome, Server, ServerConfig};
+use ostal_server::audit::{Action, AuditLog, Entry, Who};
 use ostal_server::backup::{self, PendingKind};
 use ostal_server::hub::Hub;
 use ostal_server::persistence::{self, DataLock, LockHeld};
@@ -70,6 +71,19 @@ pub struct State {
     pub migrated: Option<String>,
     /// `Some` tant que le serveur tourne.
     pub hub: Option<HubHandle>,
+    /// Comptes et sessions du serveur qui tourne : les connexions ouvertes se lisent et se
+    /// coupent ici.
+    pub auth: Option<AuthHandle>,
+}
+
+/// Les sessions du serveur qui tourne (voir `accounts::connections`). `Debug` n'en montre rien.
+#[derive(Clone)]
+pub struct AuthHandle(pub Arc<ostal_server::net::Auth>);
+
+impl std::fmt::Debug for AuthHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthHandle")
+    }
 }
 
 /// Le hub du serveur qui tourne, pour la fenêtre des caméras (qui les modifie directement : c'est
@@ -97,10 +111,6 @@ pub enum Cmd {
         username: String,
         password: String,
     },
-    ReplaceAccount {
-        username: String,
-        password: String,
-    },
     Quit,
 }
 
@@ -121,11 +131,6 @@ impl std::fmt::Debug for Cmd {
             Cmd::NewHome => f.write_str("NewHome"),
             Cmd::CreateAccount { username, .. } => f
                 .debug_struct("CreateAccount")
-                .field("username", username)
-                .field("password", &"***")
-                .finish(),
-            Cmd::ReplaceAccount { username, .. } => f
-                .debug_struct("ReplaceAccount")
                 .field("username", username)
                 .field("password", &"***")
                 .finish(),
@@ -248,6 +253,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<DataLock>)) -> Han
         demo: config.demo,
         migrated: None,
         hub: None,
+        auth: None,
     }));
     let (tx, rx) = mpsc::channel();
     let exited = ExitSignal::default();
@@ -337,6 +343,7 @@ impl Controller {
             s.health = Health::default();
             s.desktop_doubt = false;
             s.hub = None;
+            s.auth = None;
         });
         let demo_skips_setup = self.cfg.demo && !self.cfg.demo_setup;
         if self.cfg.demo && self.cfg.demo_blocked {
@@ -452,6 +459,7 @@ impl Controller {
                     s.fingerprint = Some(server.fingerprint.clone());
                     s.setup = None;
                     s.hub = Some(HubHandle(server.hub().clone()));
+                    s.auth = Some(AuthHandle(server.auth().clone()));
                 });
                 self.server = Some(server);
             }
@@ -466,7 +474,10 @@ impl Controller {
 
     fn stop_server(&mut self) -> bool {
         self.sleep = None;
-        self.set(|s| s.hub = None);
+        self.set(|s| {
+            s.hub = None;
+            s.auth = None;
+        });
         match self.server.take() {
             Some(server) => {
                 self.set(|s| s.phase = Phase::Stopping);
@@ -636,19 +647,8 @@ impl Controller {
             }
             Cmd::CreateAccount { username, password } if in_setup => {
                 return self.operation("Création du compte…", |_| {
-                    create_account(&username, &password, false).map(|()| "Compte créé.".to_string())
+                    create_account(&username, &password).map(|()| "Compte créé.".to_string())
                 });
-            }
-            Cmd::ReplaceAccount { username, password } => {
-                let result = create_account(&username, &password, true);
-                match result {
-                    Ok(()) => {
-                        self.set(|s| s.notice = Some(Notice::Ok("Compte remplacé : les anciennes connexions sont fermées, le serveur redémarre.".into())));
-                        self.stop_or_exit();
-                        return Some(Next::Reboot);
-                    }
-                    Err(e) => self.set(|s| s.notice = Some(Notice::Err(e))),
-                }
             }
             other => log::warn!("commande ignorée dans cet état : {other:?}"),
         }
@@ -769,12 +769,17 @@ fn new_home() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn create_account(username: &str, password: &str, replace: bool) -> Result<(), String> {
+/// Le premier compte (première installation). Les suivants se créent dans Réglages › Comptes.
+fn create_account(username: &str, password: &str) -> Result<(), String> {
     setup::check_credentials(username, password)?;
     let dir = persistence::data_dir();
     security::server_dir(&dir)
-        .and_then(|d| account::create(&d, username, password, replace))
-        .map(|_| ())
+        .and_then(|d| {
+            account::create(&d, username, password, false)?;
+            AuditLog::open(&d)
+                .record(Entry::new(Action::UserCreated, &Who::server_app()).target(username));
+            Ok(())
+        })
         .map_err(|e| format!("{e:#}"))
 }
 
@@ -842,20 +847,13 @@ mod tests {
     #[test]
     fn debug_never_shows_a_password() {
         let secret = "tres-secret-123";
-        for cmd in [
-            Cmd::CreateAccount {
-                username: "hamdi".into(),
-                password: secret.into(),
-            },
-            Cmd::ReplaceAccount {
-                username: "hamdi".into(),
-                password: secret.into(),
-            },
-        ] {
-            let text = format!("{cmd:?}");
-            assert!(!text.contains(secret), "{text}");
-            assert!(text.contains("hamdi") && text.contains("***"), "{text}");
-        }
+        let cmd = Cmd::CreateAccount {
+            username: "hamdi".into(),
+            password: secret.into(),
+        };
+        let text = format!("{cmd:?}");
+        assert!(!text.contains(secret), "{text}");
+        assert!(text.contains("hamdi") && text.contains("***"), "{text}");
         assert_eq!(format!("{:?}", Cmd::Quit), "Quit");
     }
 

@@ -12,7 +12,9 @@ import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
 import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
-import { SHORTCUT_NAMES, copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
+import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
+import * as presence from "./presence.js";
+import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -31,7 +33,9 @@ const state = {
   updatedAt: null, // l'heure du dernier état ou événement reçu (« À jour à 18:42 »)
   lostAt: null, // la liaison perdue après avoir été établie : le bandeau « La maison ne répond pas »
   notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
-  tokens: null, // GET /api/tokens : { mode: { exists, created }, read: { … } } (carte « Installer »)
+  presence: null, // GET /api/presence/people : { people, auto_mode, box_link, updated_at } ; null : rien à montrer (pas de box, serveur plus ancien)
+  phones: null, // GET /api/wifi/phones : { linked, box_link, mine, free } (noms seulement)
+  tokens: null, // GET /api/tokens : mes jetons { mode: { exists, created }, read: { … }, items: [{ id, kind, label, created }], label } (carte « Installer »)
 };
 const expects = new Map(); // id -> { on, motion, at, acked, req, timer }
 let tab = "devices";
@@ -90,6 +94,7 @@ function applyEvent(e) {
       if (isMode(e.mode)) state.mode = e.mode;
       if (notice) showModeNotice(notice);
       scheduleRender(true);
+      loadPresence();
       return;
     }
     case "detection": {
@@ -326,14 +331,214 @@ function patchStatus() {
   if (time && state.updatedAt) time.textContent = `À jour à ${clockText(state.updatedAt)}`;
 }
 
+/** La carte « Présence » : qui est à la maison, qui n'y est pas, le mode (« automatique » quand
+ *  l'interrupteur du serveur est allumé). Absente sans box reliée ni personne de connue. */
+function patchPresence() {
+  const slot = $("#presence-slot");
+  if (!slot) return;
+  const card = state.loaded && !state.lostAt ? presence.presenceCard(state.presence, state.mode) : null;
+  slot.hidden = !card;
+  if (!card) { slot._key = ""; return; }
+  const key = JSON.stringify(card);
+  if (slot._key === key) return;
+  slot._key = key;
+  const section = make("section", "card presence");
+  section.setAttribute("aria-label", "Présence à la maison");
+  const text = make("div", "presence-text");
+  text.appendChild(make("div", "presence-lead", card.lead));
+  if (card.away) text.appendChild(make("div", "presence-away", card.away));
+  text.appendChild(make("div", "presence-mode", card.mode));
+  if (card.note) text.appendChild(make("div", "presence-note", card.note));
+  const faces = make("div", "faces");
+  for (const p of card.people) {
+    const face = make("div", "face");
+    const dot = make("span", `avatar${p.home ? "" : " away"}`, p.initial);
+    dot.setAttribute("role", "img");
+    dot.setAttribute("aria-label", p.aria);
+    face.append(dot, make("span", "face-name", p.name));
+    faces.appendChild(face);
+  }
+  section.append(text, faces);
+  slot.replaceChildren(section);
+}
+
+let presenceTimer = null;
+/** Qui est à la maison : à l'ouverture, au retour de l'app, à chaque changement de mode et toutes les
+ *  minutes (la box est relevée toutes les deux minutes). Un serveur plus ancien n'a pas la route :
+ *  on ne montre rien, sans erreur. */
+async function loadPresence() {
+  if (!api.hasToken()) return;
+  try {
+    state.presence = await api.request("GET", "/api/presence/people");
+  } catch (error) {
+    if (presence.isMissingRoute(error)) state.presence = null;
+    // Autre échec (réseau coupé) : on garde ce qu'on savait.
+  }
+  scheduleRender(false);
+}
+
+function startPresence() {
+  clearInterval(presenceTimer);
+  loadPresence();
+  presenceTimer = setInterval(() => { if (!document.hidden) loadPresence(); }, 60_000);
+}
+
+function stopPresence() {
+  clearInterval(presenceTimer);
+  presenceTimer = null;
+  state.presence = null;
+  state.phones = null;
+  closePhonePick();
+}
+
+// ---- « Lequel est votre téléphone ? » (première connexion, ou « Mon téléphone ») ----------------------
+
+const pick = { open: false, first: false, choice: "", phones: null, busy: false, error: "", asked: false };
+
+async function loadPhones(refresh = false) {
+  try {
+    state.phones = await api.request(refresh ? "POST" : "GET", refresh ? "/api/wifi/refresh" : "/api/wifi/phones");
+    pick.error = "";
+  } catch (error) {
+    if (presence.isMissingRoute(error)) state.phones = null;
+    else if (refresh) pick.error = "La liste n'a pas pu être actualisée.";
+  }
+  pick.phones = state.phones;
+  scheduleRender(true);
+  if (pick.open) renderPhonePick();
+  return state.phones;
+}
+
+/** Après la connexion : si une box est reliée et que la personne n'a pas encore son téléphone, on
+ *  demande une fois par ouverture (et pas avant une semaine si elle a dit « plus tard »). */
+async function maybeAskPhone() {
+  const phones = await loadPhones();
+  if (pick.asked || !presence.shouldAskPhone(phones, presence.readLater())) return;
+  pick.asked = true;
+  openPhonePick(true);
+}
+
+function openPhonePick(first) {
+  pick.open = true;
+  pick.first = first;
+  pick.phones = state.phones;
+  pick.choice = state.phones?.mine ? state.phones.mine.toLowerCase() : "";
+  pick.error = "";
+  closeSheet();
+  $("#phone-pick").hidden = false;
+  document.documentElement.classList.add("noscroll");
+  renderPhonePick();
+  $("#pick-body").querySelector("input[type=radio]:checked, input[type=radio]")?.focus();
+}
+
+function closePhonePick() {
+  pick.open = false;
+  const el = $("#phone-pick");
+  if (el) el.hidden = true;
+  document.documentElement.classList.remove("noscroll");
+}
+
+function renderPhonePick() {
+  const t = presence.chooserTexts(pick.phones, pick.phones?.name ?? "");
+  const list = presence.listWithMine(pick.phones);
+  const body = $("#pick-body");
+  const keep = body.scrollTop;
+  $("#pick-step").hidden = !pick.first;
+  $("#pick-cancel").hidden = pick.first;
+  body.replaceChildren();
+  const head = make("div");
+  head.append(make("h1", "pick-title", t.title), make("p", "pick-intro", t.intro));
+  const group = make("div", "pick-group");
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-labelledby", "pick-list-title");
+  const choiceRow = (value, label, selected, className = "") => {
+    const row = make("label", `pick-row${selected ? " chosen" : ""} ${className}`.trim());
+    const input = make("input");
+    input.type = "radio";
+    input.name = "tel";
+    input.value = value;
+    input.checked = selected;
+    input.disabled = pick.busy;
+    input.addEventListener("change", () => { pick.choice = value; pick.error = ""; renderPhonePick(); });
+    row.appendChild(input);
+    return [row, input];
+  };
+  if (list.length) {
+    const section = make("section", "pick-list");
+    const title = make("h2", "", t.listTitle);
+    title.id = "pick-list-title";
+    section.appendChild(title);
+    for (const name of list) {
+      const selected = pick.choice === name.toLowerCase();
+      const [row] = choiceRow(name.toLowerCase(), name, selected);
+      row.append(icon("phone", "ico pick-ico"), make("span", "pick-name", name));
+      if (selected) row.appendChild(make("span", "pick-ok", "✓ choisi"));
+      section.appendChild(row);
+    }
+    group.appendChild(section);
+  } else {
+    const empty = make("p", "pick-empty", t.empty);
+    empty.setAttribute("role", "status");
+    empty.id = "pick-list-title";
+    group.appendChild(empty);
+  }
+  const refresh = make("button", "ghost pick-refresh", t.refresh);
+  refresh.type = "button";
+  refresh.disabled = pick.busy;
+  refresh.addEventListener("click", async () => { pick.busy = true; renderPhonePick(); await loadPhones(true); pick.busy = false; renderPhonePick(); });
+  (group.querySelector(".pick-list") ?? group).appendChild(refresh);
+  if (pick.first) {
+    const [laterRow] = choiceRow("later", t.later, pick.choice === "later", "pick-later");
+    laterRow.appendChild(make("span", "pick-name", t.later));
+    group.appendChild(laterRow);
+  }
+  const why = make("section", "pick-why");
+  why.append(make("h2", "", t.whyTitle), make("p", "", t.why), make("p", "pick-privacy", t.privacy));
+  body.append(head, group);
+  if (pick.error) { const e = make("p", "error", pick.error); e.setAttribute("role", "alert"); body.appendChild(e); }
+  body.appendChild(why);
+  body.scrollTop = keep;
+  const confirm = $("#pick-confirm");
+  const later = pick.choice === "later";
+  confirm.textContent = later ? "Continuer sans téléphone" : t.confirm;
+  confirm.disabled = pick.busy || !pick.choice || (pick.choice !== "later" && !list.some((n) => n.toLowerCase() === pick.choice));
+}
+
+async function confirmPhonePick() {
+  if (pick.busy || !pick.choice) return;
+  if (pick.choice === "later") {
+    presence.writeLater();
+    closePhonePick();
+    return;
+  }
+  const name = (presence.listWithMine(pick.phones).find((n) => n.toLowerCase() === pick.choice)) ?? pick.choice;
+  if (pick.phones?.mine && pick.phones.mine.toLowerCase() === name.toLowerCase()) { closePhonePick(); return; }
+  pick.busy = true;
+  pick.error = "";
+  renderPhonePick();
+  try {
+    state.phones = await api.request("PUT", "/api/wifi/phone", { phone: name });
+    presence.clearLater();
+    pick.busy = false;
+    closePhonePick();
+    scheduleRender(true);
+    loadPresence();
+  } catch (error) {
+    pick.busy = false;
+    pick.error = presence.chooseError(error);
+    await loadPhones();
+    renderPhonePick();
+  }
+}
+
 /** Les trois étapes de « Installer sur l'iPhone » : l'état vient des jetons (GET /api/tokens) et de
  *  l'abonnement de cet appareil aux notifications. `null` tant que les jetons ne sont pas connus. */
 function installSteps() {
   if (!state.tokens) return null;
   const support = push.pushSupport(pushEnv());
   return [
-    { done: Boolean(state.tokens.mode?.exists), parts: ["Ajouter les raccourcis de mode : ", ["Absent", "Présent", "Nuit", "Vacances"], "."], open: openWidgets },
-    { done: Boolean(state.tokens.read?.exists), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
+    { done: Boolean(tokenHere(state.tokens, "mode")), parts: ["Ajouter vos raccourcis : ", ["Je pars", "Je rentre", "Nuit", "Vacances"], "."], open: openWidgets },
+    { done: Boolean(tokenHere(state.tokens, "read")), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
     // Un navigateur qui ne sait pas recevoir de notifications (ordinateur, Android sans push) n'a rien à y faire.
     { done: Boolean(pushUi.mine) || support.reason === "unsupported", parts: ["Activer les ", ["notifications"], " sur cet iPhone."], open: openNotifications },
   ];
@@ -394,13 +599,16 @@ function renderDevices() {
     view.replaceChildren();
     const status = make("div");
     status.id = "status-slot";
+    const presenceSlot = make("div");
+    presenceSlot.id = "presence-slot";
+    presenceSlot.hidden = true;
     const install = make("div");
     install.id = "install-slot";
     install.hidden = true;
     const note = make("p", "view-note");
     note.id = "rooms-note";
     note.hidden = true;
-    view.append(status, install, make("h2", "view-title", "Pièces"), note);
+    view.append(status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
     if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
@@ -422,11 +630,16 @@ function renderDevices() {
       const out = make("div", "section-title");
       const notif = make("button", "ghost", "Notifications");
       notif.id = "notifications";
+      const connections = make("button", "ghost", "Mes connexions");
+      connections.id = "connections";
+      const myPhone = make("button", "ghost", "Mon téléphone");
+      myPhone.id = "my-phone";
+      myPhone.hidden = !state.phones?.linked;
       const widgets = make("button", "ghost", "Widgets et raccourcis");
       widgets.id = "widgets";
       const logout = make("button", "ghost", "Se déconnecter");
       logout.id = "logout";
-      out.append(notif, widgets, logout);
+      out.append(notif, connections, myPhone, widgets, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -459,6 +672,7 @@ function renderDevices() {
     if (lost) note.textContent = `Dernières valeurs connues. Lu à ${clockText(state.updatedAt ?? state.lostAt)}.`;
   }
   patchStatus();
+  patchPresence();
   patchInstall();
   if (sheetId) renderSheet();
 }
@@ -971,6 +1185,7 @@ function closeSheet() {
   sheetId = null;
   pushUi.open = false;
   modeUi.open = false;
+  connUi.open = false;
   if (wasOpen) {
     const target = sheetOpener;
     sheetOpener = null;
@@ -1192,6 +1407,86 @@ async function openNotifications() {
   if (pushUi.open) renderPush();
 }
 
+// ---------------------------------------------------------------------------
+// Mes connexions : les téléphones et ordinateurs où le compte est ouvert (GET
+// /api/me/installations), avec « Couper ». La connexion de cet appareil n'a pas de bouton.
+// ---------------------------------------------------------------------------
+const connUi = { open: false, list: null, error: "", busy: false };
+
+async function openConnections() {
+  closeSheet();
+  connUi.open = true;
+  connUi.list = null;
+  connUi.error = "";
+  $("#sheet-title").textContent = "Mes connexions";
+  renderConnections();
+  showSheet("tall");
+  await loadConnections();
+}
+
+async function loadConnections() {
+  try {
+    connUi.list = (await api.request("GET", "/api/me/installations")).connections;
+    connUi.error = "";
+  } catch (error) {
+    connUi.error = error?.status === 404
+      ? "Ce serveur ne gère pas encore les connexions : mettez-le à jour."
+      : (error?.detail || "Liste indisponible pour l'instant.");
+  }
+  if (connUi.open) renderConnections();
+}
+
+const THIS_DEVICE = { iphone: "Cet iPhone", ipad: "Cet iPad", android: "Ce téléphone", computer: "Cet ordinateur" };
+
+async function cutConnection(c) {
+  const text = "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.";
+  if (!await askConfirm({ title: "Couper cette connexion ?", text, action: "Couper" })) return;
+  connUi.busy = true;
+  connUi.error = "";
+  renderConnections();
+  try {
+    await api.request("DELETE", `/api/me/installations/${encodeURIComponent(c.id)}`);
+  } catch (error) {
+    // Déjà coupée (404) : la liste relue le montre. Le reste est dit.
+    if (error?.status !== 404) connUi.error = error?.detail || "Échec, réessayez.";
+  } finally {
+    connUi.busy = false;
+  }
+  await loadConnections();
+}
+
+function renderConnections() {
+  const body = $("#sheet-body");
+  body.dataset.id = "connections";
+  body.replaceChildren();
+  body.appendChild(make("p", "ev-note", "Les téléphones et ordinateurs où votre compte est ouvert. Couper une connexion la ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher : ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe."));
+  if (connUi.error) body.appendChild(make("p", "error", connUi.error));
+  if (!connUi.list) { if (!connUi.error) body.appendChild(make("p", "w-note", "Chargement…")); return; }
+  body.appendChild(make("h3", "", "Ouvertes sur votre compte"));
+  if (!connUi.list.length) body.appendChild(make("p", "w-note", "Aucune connexion ouverte pour l'instant."));
+  const ul = make("ul", "conn-list");
+  for (const c of sortConnections(connUi.list)) {
+    const li = make("li", "conn");
+    const who = make("div", "who");
+    who.appendChild(make("strong", "", c.name));
+    who.appendChild(make("span", "", `${kindLabel(c)} · Dernier accès : ${lastSeenLabel(c.last_seen)}`));
+    who.appendChild(make("span", "", `Où : ${viaLabel(c.via)}`));
+    li.appendChild(who);
+    if (c.current) {
+      li.appendChild(make("span", "conn-here", `✓ ${THIS_DEVICE[c.device] ?? "Cet appareil"}`));
+    } else {
+      const cut = make("button", "btn", "Couper");
+      cut.type = "button";
+      cut.setAttribute("aria-label", `Couper ${c.name}`);
+      cut.disabled = connUi.busy;
+      cut.addEventListener("click", () => cutConnection(c));
+      li.appendChild(cut);
+    }
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
+}
+
 function checkbox(label, checked, onChange) {
   const row = document.createElement("label");
   row.className = "push-check";
@@ -1347,8 +1642,9 @@ function renderPush() {
 }
 
 // ---------------------------------------------------------------------------
-// Widgets et raccourcis : les deux raccourcis de mode et le widget Scriptable, préparés par le
-// serveur avec l'adresse et un jeton à part (rien à taper sur l'iPhone)
+// Widgets et raccourcis : les raccourcis de la personne (« Je pars », « Je rentre », Nuit, Vacances)
+// et son widget Scriptable, préparés par le serveur avec l'adresse et un jeton à elle (rien à taper
+// sur l'iPhone). Chacun ne voit, n'installe et ne révoque que les siens.
 // ---------------------------------------------------------------------------
 const widgetsUi = { tokens: null, links: null, busy: "", message: "", error: "" };
 
@@ -1392,9 +1688,9 @@ const clipboardDeps = () => ({
 });
 
 async function installShortcuts() {
-  if (widgetsUi.tokens?.mode?.exists && !await askConfirm({
-    title: "Remplacer le jeton de mode ?",
-    text: "Les raccourcis et les automatisations installés avec l'ancien cesseront de marcher.",
+  if (tokenHere(widgetsUi.tokens, "mode") && !await askConfirm({
+    title: "Réinstaller vos raccourcis ?",
+    text: "Vos raccourcis déjà installés sur ce téléphone cesseront de marcher : il faut ajouter les nouveaux. Ceux des autres personnes ne changent pas.",
     action: "Continuer",
     plain: true,
   })) return;
@@ -1436,16 +1732,19 @@ async function installWidget() {
   if (manual) renderWidgets(manual);
 }
 
-async function revokeToken(kind) {
-  const ok = await askConfirm(kind === "mode"
-    ? { title: "Révoquer le jeton de mode ?", text: "Les raccourcis et automatisations qui l'utilisent ne marcheront plus.", action: "Révoquer" }
-    : { title: "Révoquer le jeton de lecture ?", text: "Le widget affichera « Jeton révoqué » jusqu'à ce qu'il soit recopié.", action: "Révoquer" });
+/** Révoque un de mes jetons (`/api/tokens/{id}`) : les autres, les miens comme ceux des autres
+ *  personnes, ne bougent pas. */
+async function revokeToken(token) {
+  const shortcuts = token.kind === "mode";
+  const ok = await askConfirm(shortcuts
+    ? { title: "Révoquer ces raccourcis ?", text: "Les raccourcis et les automatisations de ce téléphone qui l'utilisent ne marcheront plus.", action: "Révoquer" }
+    : { title: "Révoquer ce widget ?", text: "Le widget affichera « Jeton révoqué » jusqu'à ce qu'il soit recopié.", action: "Révoquer" });
   if (!ok) return;
   try {
-    await api.request("DELETE", `/api/tokens/${kind}`);
-    if (kind === "mode") widgetsUi.links = null;
+    await api.request("DELETE", `/api/tokens/${encodeURIComponent(token.id)}`);
+    if (shortcuts) widgetsUi.links = null;
     widgetsUi.error = "";
-    widgetsUi.message = kind === "mode" ? "Jeton de mode révoqué." : "Jeton de lecture révoqué.";
+    widgetsUi.message = shortcuts ? "Raccourcis révoqués." : "Widget révoqué.";
   } catch (error) {
     widgetsUi.error = error?.message || "Révocation impossible.";
   }
@@ -1482,77 +1781,96 @@ function renderWidgets(manualText = "") {
     p.append(icon("okCircle"), make("span", "", text));
     parent.appendChild(p);
   };
-  // Comme la maquette : « Jeton actif depuis le 20/11/2026. » pour le mode, « Jeton de lecture actif. » pour le widget.
-  const tokenLine = (token, label, withDate) => (token?.exists ? `${label} actif${withDate ? ` ${sinceText(token.created)}` : ""}`.trim() + "." : null);
 
-  note("Mettez l'état de la maison sur l'écran d'accueil et changez de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.", "ev-note");
   if (widgetsUi.error) note(widgetsUi.error, "error");
   if (widgetsUi.message) note(widgetsUi.message, "ev-note");
+  // Android : ni Raccourcis ni Scriptable ; la présence par le Wi-Fi les remplace.
+  if (isAndroid(navigator.userAgent)) {
+    note(ANDROID_NOTE, "ev-note");
+    return;
+  }
   const info = originInfo(location);
   const busy = widgetsUi.busy !== "";
 
-  // 1. Les raccourcis de mode : Absent, Présent, Nuit et Vacances.
+  // Les révocations : un seul jeton, un seul bouton ; plusieurs téléphones, une ligne chacun.
+  const revokes = (parent, kind, one) => {
+    const mine = myTokens(widgetsUi.tokens, kind);
+    if (mine.length === 1) {
+      parent.appendChild(act(one, "btn danger-btn", () => revokeToken(mine[0]), busy));
+    } else if (mine.length > 1) {
+      const list = make("ul", "w-tokens");
+      for (const token of mine) {
+        const here = token === tokenHere(widgetsUi.tokens, kind);
+        const li = make("li", "w-token");
+        li.appendChild(make("span", "", `${token.label}${here ? " (ce téléphone)" : ""} ${sinceText(token.created)}`.trim()));
+        const b = act("Révoquer", "btn danger-btn", () => revokeToken(token), busy);
+        b.setAttribute("aria-label", `Révoquer ${token.label}`);
+        li.appendChild(b);
+        list.appendChild(li);
+      }
+      parent.appendChild(list);
+    }
+  };
+
+  // 1. Vos raccourcis : « Je pars » et « Je rentre » disent où vous êtes ; Nuit et Vacances, à la main.
   const modes = make("section", "w-section");
   modes.setAttribute("aria-labelledby", "titre-raccourcis");
-  const h3 = make("h3", "", "Raccourcis des modes");
+  const h3 = make("h3", "", "Vos raccourcis");
   h3.id = "titre-raccourcis";
   modes.appendChild(h3);
-  const modeLine = tokenLine(widgetsUi.tokens?.mode, "Jeton", true);
-  if (modeLine) status(modes, modeLine); else modes.appendChild(make("p", "w-note", "Pas encore de jeton de mode."));
-  modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
-  // Hors adresse .ts.net : les boutons sont grisés et la raison est dite juste à côté.
-  if (!info.usable) modes.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
-  modes.appendChild(make("p", "w-note", "Installer crée un nouveau jeton de mode : les raccourcis et automatisations installés avec l'ancien cessent de marcher."));
-  // À part et en tête : supprimer les anciens raccourcis (sinon iOS crée « Mode absent 1 »).
-  const callout = make("div", "callout");
-  const calloutBadge = make("span", "step-n now", "1");
-  calloutBadge.setAttribute("aria-hidden", "true");
-  callout.append(calloutBadge, make("p", "", "Dans l'app Raccourcis, supprimez les anciens « Mode absent », « Mode present » et « Mode présent » (sinon iOS crée « Mode absent 1 »)."));
-  modes.appendChild(callout);
+  modes.appendChild(make("p", "w-note", "Installés sur cet iPhone, pour vous seul."));
+  modes.appendChild(make("p", "w-note", "« Je pars » et « Je rentre » disent où vous êtes et changent le mode de la maison : Absent au départ, Présent au retour (Nuit et Vacances sont respectés). Si l'administrateur a allumé « Changer le mode de la maison selon la présence », la maison ne passe en Absent que quand le dernier est parti."));
+  const here = tokenHere(widgetsUi.tokens, "mode");
+  if (here) status(modes, `Installés ${sinceText(here.created)}`.trim() + ".");
+  modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer mes raccourcis", "primary", installShortcuts, busy || !info.usable));
+  // Hors adresse .ts.net : le bouton est grisé et la raison est dite juste à côté.
+  if (!info.usable) modes.appendChild(make("p", "w-note", info.warning));
+  modes.appendChild(make("p", "w-note", "Réinstaller ne touche que vos raccourcis, jamais ceux des autres."));
   const list = make("ol", "steps");
-  SHORTCUT_NAMES.forEach((name, i) => {
-    const link = widgetsUi.links?.shortcuts.find((x) => x.name === name);
-    const content = [make("p", "", i === 0 ? `Touchez « ${name} », puis « Ajouter le raccourci ».` : `Même chose pour « ${name} ».`)];
-    if (link) {
-      const a = make("a", "widgets-link", name);
-      a.href = link.url;
-      content.push(a);
-    }
-    list.appendChild(step(i + 2, link ? "now" : "", content));
-  });
-  list.appendChild(step(SHORTCUT_NAMES.length + 2, "", [make("p", "", "Revenez ici et vérifiez le mode.")]));
+  const link = (name) => {
+    const found = widgetsUi.links?.shortcuts.find((x) => x.name === name);
+    if (!found) return null;
+    const a = make("a", "widgets-link", name);
+    a.href = found.url;
+    return a;
+  };
+  const [leaving, arriving, ...manual] = SHORTCUT_NAMES;
+  list.appendChild(step(1, widgetsUi.links ? "now" : "", [make("p", "", `Touchez « ${leaving} », puis « Ajouter le raccourci ».`), link(leaving)].filter(Boolean)));
+  list.appendChild(step(2, widgetsUi.links ? "now" : "", [make("p", "", `Même chose pour « ${arriving} ».`), link(arriving)].filter(Boolean)));
+  list.appendChild(step(3, widgetsUi.links ? "now" : "", [
+    make("p", "", "Pour la maison entière, à la main :"),
+    ...manual.map(link).filter(Boolean),
+    make("p", "w-note", "Ces deux-là changent le mode de toute la maison."),
+  ]));
   modes.appendChild(list);
+  modes.appendChild(make("p", "w-note", "« Mode absent » et « Mode présent » marchent encore. Vous pouvez les retirer."));
   if (widgetsUi.links) {
     modes.appendChild(make("p", "w-note", `Liens valables ${Math.round(widgetsUi.links.expiresInS / 60)} minutes. Si rien ne se passe, ouvrez cette page dans Safari : le téléchargement peut échouer dans l'app installée sur l'écran d'accueil.`));
   }
-  if (widgetsUi.tokens?.mode?.exists) modes.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("mode"), busy));
+  revokes(modes, "mode", "Révoquer mes raccourcis");
   body.appendChild(modes);
   body.appendChild(document.createElement("hr"));
 
-  // 2. Le widget Scriptable.
+  // 2. Votre widget Scriptable.
   const widget = make("section", "w-section");
   widget.setAttribute("aria-labelledby", "titre-widget");
-  const h3w = make("h3", "", "Widget Scriptable");
+  const h3w = make("h3", "", "Votre widget");
   h3w.id = "titre-widget";
   widget.appendChild(h3w);
-  const readLine = tokenLine(widgetsUi.tokens?.read, "Jeton de lecture", false);
-  if (readLine) status(widget, readLine); else widget.appendChild(make("p", "w-note", "Pas encore de jeton de lecture."));
+  widget.appendChild(make("p", "w-note", "Relié à votre compte."));
   const store = make("a", "link-button", "Installer Scriptable (App Store, gratuit)");
   store.href = SCRIPTABLE_URL;
   store.target = "_blank";
   store.rel = "noopener noreferrer";
   widget.appendChild(store);
   widget.appendChild(act(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
-  if (!info.usable) widget.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
+  if (!info.usable) widget.appendChild(make("p", "w-note", info.warning));
   const wlist = make("ol", "steps");
   ["Dans Scriptable, touchez « + ».", "Collez le script copié.", "Nommez le script « Ostal ».", "Ajoutez le widget Scriptable à l'écran d'accueil et choisissez le script Ostal."]
     .forEach((text, i) => wlist.appendChild(step(i + 1, i === 0 ? "now" : "", [make("p", "", text)])));
   widget.appendChild(wlist);
-  widget.appendChild(make("p", "w-status", "Le widget ne propose que Absent et Présent."));
-  if (widgetsUi.tokens?.read?.exists) {
-    widget.appendChild(make("p", "w-note", "Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié."));
-    widget.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("read"), busy));
-  }
+  widget.appendChild(make("p", "w-note", "Le widget montre le mode de la maison. Absent et Présent changent tout seuls."));
+  revokes(widget, "read", "Révoquer le widget");
   body.appendChild(widget);
   if (manualText) {
     const area = make("textarea", "widgets-script");
@@ -1600,11 +1918,13 @@ function renderModeChip() {
   modeTab.hidden = !shown;
   const label = modeLabel(state.mode);
   const lost = Boolean(state.lostAt);
-  const key = JSON.stringify([shown, state.mode, lost]);
+  const auto = Boolean(state.presence?.auto_mode);
+  const key = JSON.stringify([shown, state.mode, lost, auto]);
   if (modeChip._key === key) return;
   modeChip._key = key;
   const present = state.mode === "present";
-  const aria = lost ? `Mode : ${label}. Modifiable quand la maison répond.` : `Mode : ${label}. Changer de mode`;
+  const named = presence.modeChipLabel(state.mode, auto);
+  const aria = lost ? `${named}. Modifiable quand la maison répond.` : `${named}. Changer de mode`;
   // La pastille : « Mode : Présent » ; les autres modes ont en plus leur pictogramme.
   const pill = make("span", "pill");
   if (!present) { const pic = make("span", "ico"); pic.innerHTML = modeIcon(state.mode); pill.appendChild(pic); }
@@ -1767,6 +2087,8 @@ function showLogin(message, info = false) {
   state.lostAt = null;
   state.tokens = null;
   state.notice = "";
+  stopPresence();
+  pick.asked = false;
   pushUi.mine = null;
   $("#lost").hidden = true;
   historyCache.clear();
@@ -1791,6 +2113,8 @@ function start() {
     },
   });
   loadTokens();
+  startPresence();
+  maybeAskPhone();
   // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
   if (location.hash) openFromUrl(location.href);
   syncPush();
@@ -1852,6 +2176,8 @@ $("#lost-title-text").textContent = api.HOUSE_SILENT;
 $("#lost-hint").textContent = api.HOUSE_HINT;
 $("#retry").addEventListener("click", () => { state.connection = "connecting"; renderLost(); events?.restart(); });
 $("#sheet-close").addEventListener("click", closeSheet);
+$("#pick-confirm").addEventListener("click", confirmPhonePick);
+$("#pick-cancel").addEventListener("click", closePhonePick);
 $("#sheet-backdrop").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (e) => {
   if (confirmDone) {
@@ -1900,6 +2226,8 @@ view.addEventListener("contextmenu", (e) => {
 view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   if (e.target.closest("#notifications")) { openNotifications(); return; }
+  if (e.target.closest("#connections")) { openConnections(); return; }
+  if (e.target.closest("#my-phone")) { loadPhones().then(() => openPhonePick(false)); return; }
   if (e.target.closest("#widgets")) { openWidgets(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
@@ -1920,6 +2248,7 @@ let hiddenAt = null;
 function wake() {
   if (!api.hasToken()) return;
   events?.restart();
+  loadPresence();
   if (tab === "cameras") renderCameras();
 }
 document.addEventListener("visibilitychange", () => {

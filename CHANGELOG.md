@@ -10,6 +10,144 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)
+
+- Ostal Server se relie à la box (Réglages › Présence) avec son mot de passe d'administration, gardé
+  dans `serveur/box.json` (0600) : jamais affiché, journalisé ni exporté. Il relève les appareils actifs
+  toutes les 2 minutes, en lecture seule ; seuls les **noms** des téléphones sont gardés
+  (`telephones.json`), jamais une adresse MAC ni une IP. Box injoignable ou mot de passe refusé : le mode
+  est figé, et un mot de passe refusé n'est plus rejoué.
+- À sa première connexion, l'app web demande « Lequel est votre téléphone ? » (noms seulement, « plus
+  tard » possible) ; « Mon téléphone » permet de le changer. iPhone et Android. L'administrateur corrige
+  dans Ostal Server (Réglages › Présence, fiche d'un compte).
+- La présence de chacun vient de son téléphone vu sur le Wi-Fi (un départ compte après 10 minutes) ou de
+  « Je pars » / « Je rentre » : le plus récent l'emporte. L'accueil de l'app web et la barre de l'app Mac
+  disent qui est à la maison.
+- Nouvel interrupteur « Changer le mode de la maison selon la présence », **éteint par défaut** (aussi
+  après la mise à jour) : Absent quand la dernière personne part, Présent dès qu'une arrive ; Nuit et
+  Vacances restent à la main (une absence ne les quitte jamais, une arrivée pendant Vacances remet
+  Présent). « Je pars » et « Je rentre » : interrupteur éteint, comme avant (« Je pars » met la maison
+  en Absent, « Je rentre » en Présent, Nuit et Vacances respectés), et la présence est quand même
+  notée ; allumé, un départ n'arme la maison que si personne d'autre n'est à la maison. L'interrupteur
+  peut être allumé sans box reliée : la règle suit alors les seuls raccourcis (« aucun téléphone relié,
+  jamais » ne vaut que pour le Wi-Fi), et délier la box ne l'éteint plus. Le raccourci dit ce que la
+  maison est devenue. Chaque changement automatique est au journal avec la personne concernée, ainsi que
+  le changement du délai de départ.
+- La box : la vérification du certificat n'est désactivée que pour `mabbox.bytel.fr` ou une adresse IP
+  privée ; toute autre adresse https garde la vérification. Un départ vu pendant qu'une déclaration « à la
+  maison » arrive n'arme plus la maison (la décision se prend sous le verrou du mode).
+
+### Préparation des droits (multi-comptes, étape 5)
+
+- Invisible pour l'instant : chaque route qui modifie la maison (commande d'un équipement, mode,
+  présence, plan, automatisations, appairage, export et import, réglage des notifications) demande
+  d'abord si le compte en a le droit. Tous les comptes gardent les mêmes droits ; le code d'erreur
+  `forbidden` (403) existe déjà pour le jour où l'on restreindra un compte. Rien à migrer.
+
+### Journal d'audit (multi-comptes, étape 4)
+
+- Un journal note qui a fait quoi, depuis quel téléphone ou ordinateur : connexion réussie ou
+  refusée, nouvelle connexion, connexion coupée, mot de passe changé, compte créé, désactivé ou
+  réactivé, changement de mode (avec sa source : personne, raccourci, automatisation ou automatique),
+  commande d'un équipement, automatisations modifiées ou testées, appairage et suppression d'un
+  équipement, export et import, « Je pars » et « Je rentre ». Chaque ligne porte la date, la
+  personne, la connexion, l'adresse, l'action, la cible et le résultat. Jamais de mot de passe, de
+  jeton, de code d'appairage ni de mesure ; un identifiant tapé lors d'une connexion refusée n'est
+  gardé que s'il désigne un compte.
+- Un fichier par mois, `serveur/audit/AAAA-MM.jsonl`, en ajout seul (dossier 0700, fichiers 0600),
+  gardé 6 mois : les fichiers plus anciens sont supprimés. Le dossier reste dans `serveur/` : jamais
+  exporté, jamais remplacé par un import. Rien d'ancien n'est modifié : le dossier se crée à côté des
+  fichiers existants au premier événement, et les anciens clients continuent de se connecter (ligne
+  « connexion inconnue »).
+- Ostal Server : nouvel onglet **Journal** (filtres Personne et Période, par jour) ; la ligne de
+  commande `ostal-server audit [--user COMPTE] [--days N]` relit les mêmes lignes.
+
+### Raccourcis et notifications par personne (multi-comptes, étape 3)
+
+- Raccourcis, widget et notifications deviennent personnels. Les jetons de mode et de lecture se
+  rangent dans `jetons.json` : un par téléphone, avec un libellé (« iPhone de Hamdi »), révocables un
+  par un sans toucher à ceux des autres. Chaque jeton est rattaché à la connexion d'où il a été
+  préparé : réinstaller depuis la même connexion remplace son jeton (deux téléphones nommés
+  « iPhone » gardent chacun le leur), et couper une connexion coupe aussi ses raccourcis et son
+  widget. Les raccourcis et le widget d'un compte désactivé cessent de marcher tant qu'il l'est ; ils
+  remarchent à la réactivation.
+- Migration sans casse : `jeton-mode.json` et `jeton-lecture.json` deviennent des jetons du premier
+  utilisateur (même empreinte) ; les raccourcis et le widget déjà installés continuent de marcher.
+  Les anciens fichiers restent en place, intacts. Les abonnements aux notifications sont rattachés
+  au premier utilisateur au démarrage (un champ s'ajoute dans `push.json`, rien d'autre ne change).
+- Notifications : chaque personne voit, règle et révoque ses téléphones et ordinateurs ; chacun reçoit
+  selon ses catégories. L'interrupteur général reste un réglage commun à toute la maison. Un
+  téléphone qui change de compte passe à la nouvelle personne.
+- App web, « Widgets et raccourcis » : « Installer mes raccourcis » (« Je pars », « Je rentre »,
+  Mode nuit, Mode vacances) et « Votre widget », au jeton de la personne ; « Je pars » et « Je rentre »
+  disent où elle est ; une note remplace les deux sections sur Android. Le widget propose
+  « Je pars » et « Je rentre ». « Mode absent » et « Mode présent », déjà installés, marchent encore.
+- Présence déclarée : `PUT /api/presence` (`{"state": "home" | "away"}`, jeton de mode ou session)
+  garde ce que chacun a dit dans `presence.json`. En attendant la présence automatique, « Je pars » et
+  « Je rentre » (jeton de mode) font ce que faisaient les raccourcis d'avant, sans rien à réinstaller,
+  mais selon la règle de la maison : la maison passe en Absent seulement si personne d'autre n'est
+  à la maison, et en Présent seulement depuis Absent ou Vacances (une arrivée la nuit ne réveille pas
+  la maison). Une session ne fait que déclarer.
+- « Je pars » et « Je rentre » disent ce que la maison est devenue : `PUT /api/presence` répond aussi
+  `mode` (le mode actuel) et `message` (par exemple « Maison en mode Absent. » ou « Sam est encore à
+  la maison : la maison reste en Présent. »), et la notification du raccourci affiche cette phrase au
+  lieu d'un « C'est noté » fixe : on sait si la maison est armée. Les raccourcis déjà installés
+  marchent encore (ils affichent l'ancien texte).
+- Couper une connexion : les confirmations (app web, fenêtre du serveur) disent que les raccourcis et
+  le widget installés depuis elle cessent aussi de marcher ; dans la fenêtre du serveur, la coupure
+  se fait sans figer la fenêtre (« Coupure de … »). Une coupure qui arrive pendant la préparation de
+  raccourcis ne laisse plus de jeton neuf pour la connexion coupée. Un identifiant de connexion ne
+  peut plus avoir la forme d'un identifiant interne (32 caractères hexadécimaux).
+- Ostal Server : le code secret et le widget de la fenêtre sont ceux du premier compte.
+- Les commandes `user add`, `user passwd`, `user disable` et `user enable`, et la fenêtre du serveur,
+  prennent un verrou (`serveur/comptes.lock`) : deux modifications simultanées des comptes ne se
+  perdent plus. `create-account --replace` dit combien de jetons et d'abonnements des anciens comptes
+  restent dans les fichiers, sans effet.
+
+### Connexions (multi-comptes, étape 2)
+
+- Chaque téléphone ou ordinateur où un compte est ouvert est une « connexion » : le login envoie
+  son identifiant (gardé par l'app), son type (app web, app Mac) et son nom (« iPhone de Hamdi »).
+  Protocole 4 : le serveur répond dans la version que parle le client, donc la 2.0.0 et la 2.1.0-beta.1
+  (version 3, sans connexion) continuent de marcher et apparaissent comme « connexion inconnue ».
+- Les connexions se rangent dans `sessions.json` (dernier accès, sur place ou par Tailscale), à côté
+  de ce qui existe ; rien n'est migré ni supprimé. Se reconnecter depuis la même installation remplace
+  sa session. Routes `GET /api/me/installations` et `DELETE /api/me/installations/{id}`.
+- App web : feuille « Mes connexions » (nom, dernier accès, où, « Couper »). Le cache du service
+  worker passe à `ostal-shell-v16`.
+- App Ostal sur Mac : Fichier › « Mes connexions… » (page « ‹ Maison · Mes connexions »).
+- Ostal Server : « Voir toutes les connexions » dans Réglages › Comptes, avec « Couper », et les
+  connexions de chaque personne dans sa fiche.
+- Le serveur donne au client ses adresses Tailscale directes après la connexion (même certificat,
+  rien de nouveau à approuver) ; l'app Mac revient sur l'adresse de la maison dès qu'elle répond de
+  nouveau.
+
+### Découverte du serveur (multi-comptes, étape 2)
+
+- Ostal Server s'annonce sur le réseau de la maison (Bonjour, service `_ostal._tcp`, nom du Mac,
+  adresses privées seulement, version du protocole et empreinte du certificat en TXT), par l'API mDNS
+  de `matc` : ni nouvelle caisse, ni sous-processus. Jamais d'annonce sur la boucle locale (démo,
+  essais) ; « au revoir » envoyé à l'arrêt.
+- App Mac : à la première ouverture, « Ostal Server trouvé » (nom du Mac, rien à taper) ;
+  « Saisir une adresse à la main » en secours. Le certificat se confirme comme avant, par son
+  empreinte. Mes connexions : carte « Comment ce Mac joint la maison » (réseau de la maison,
+  Tailscale, détails, « Chercher à nouveau »).
+
+### Comptes nominatifs (multi-comptes, étape 1)
+
+- Serveur : plusieurs comptes, un par personne du foyer (`comptes.json` : identifiant, nom affiché,
+  mot de passe haché argon2id, rôle administrateur pour tous en V1, actif ou désactivé). Au premier
+  démarrage, l'ancien compte unique devient le premier utilisateur, avec le même identifiant
+  interne : ses sessions, ses raccourcis et les anciens clients continuent de marcher. Les anciens
+  fichiers (`compte.json`, `sessions.json`) restent en place.
+- Sessions rattachées à leur utilisateur (32 au plus par personne). Un nouveau mot de passe ou une
+  désactivation coupe tout de suite les sessions de ce compte, et d'elles seules, même serveur ouvert.
+- Limiteur d'échecs de connexion aussi par identifiant, en plus de l'adresse.
+- Ligne de commande : `ostal-server user add | list | passwd | disable | enable` (`create-account`
+  reste, pour le premier compte).
+- Ostal Server : Réglages › Comptes (liste, « Ajouter un compte », fiche d'un compte : nouveau mot de
+  passe, désactiver ou réactiver). « Remplacer le compte » disparaît : le serveur ne redémarre plus.
+
 ### Refonte (préversion, finitions)
 
 - App web : le plan de la maison est affiné (`plan.js` et ses tests).

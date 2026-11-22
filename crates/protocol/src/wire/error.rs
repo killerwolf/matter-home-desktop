@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 pub enum ErrorCode {
     /// Jeton absent, invalide, expiré ou révoqué.
     Unauthorized,
+    /// La personne est connue, mais son compte n'a pas le droit de faire cela. Jamais envoyé en V1
+    /// (tout le monde peut tout faire) : le code existe pour que les droits par compte arrivent
+    /// sans changer le protocole.
+    Forbidden,
     /// Identifiant ou mot de passe incorrect.
     InvalidCredentials,
     /// Trop de tentatives de connexion : réessayer après `retry_after_s`.
@@ -56,6 +60,7 @@ impl ErrorCode {
     pub fn http_status(self) -> u16 {
         match self {
             ErrorCode::Unauthorized | ErrorCode::InvalidCredentials => 401,
+            ErrorCode::Forbidden => 403,
             ErrorCode::TooManyAttempts => 429,
             ErrorCode::VersionIncompatible => 426,
             ErrorCode::BadRequest | ErrorCode::PlanWithoutFloor | ErrorCode::InvalidImport => 400,

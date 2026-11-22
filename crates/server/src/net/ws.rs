@@ -38,16 +38,18 @@ pub async fn upgrade(
     ws: WebSocketUpgrade,
 ) -> Response {
     let protocol = query.ok().and_then(|Query(q)| q.protocol);
-    if protocol != Some(wire::PROTOCOL_VERSION) {
+    // Toujours explicite : la version 3 ou la 4. Le serveur salue dans celle que le client parle.
+    let Some(protocol) = protocol.and_then(|p| super::routes::negotiate(Some(p))) else {
         return ApiErr(ApiError::with_detail(
             ErrorCode::VersionIncompatible,
             format!(
-                "indiquez protocol={} dans l'URL du WebSocket",
-                wire::PROTOCOL_VERSION
+                "indiquez protocol={} (ou {}) dans l'URL du WebSocket",
+                wire::PROTOCOL_VERSION,
+                wire::MIN_PROTOCOL_VERSION
             ),
         ))
         .into_response();
-    }
+    };
     let Ok(slot) = state.ws_slots.clone().try_acquire_owned() else {
         return ApiErr(ApiError::with_detail(
             ErrorCode::Unavailable,
@@ -55,14 +57,11 @@ pub async fn upgrade(
         ))
         .into_response();
     };
-    let Some(account_id) = state.auth.accounts.account_id() else {
-        return ApiErr(ApiError::new(ErrorCode::Unauthorized)).into_response();
-    };
     ws.protocols(super::routes::WS_SUBPROTOCOLS)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            client_loop(socket, state, session, account_id).await;
+            client_loop(socket, state, session, protocol).await;
         })
 }
 
@@ -93,15 +92,10 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str, timeout:
     let _ = send(socket, Message::Close(Some(frame)), timeout).await;
 }
 
-async fn client_loop(
-    mut socket: WebSocket,
-    state: AppState,
-    session: SessionInfo,
-    account_id: String,
-) {
+async fn client_loop(mut socket: WebSocket, state: AppState, session: SessionInfo, protocol: u32) {
     let timeout = state.client_write_timeout;
     let hello = ServerMessage::Hello {
-        protocol_version: wire::PROTOCOL_VERSION,
+        protocol_version: protocol,
         server_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     let Ok(hello) = serde_json::to_string(&hello) else {
@@ -164,7 +158,7 @@ async fn client_loop(
             }
             _ = session_check.tick() => {
                 // Déconnexion, expiration ou remplacement du compte : le flux s'arrête.
-                if !state.auth.sessions.is_valid(&session.id, &account_id) {
+                if !state.auth.is_live(&session) {
                     close(&mut socket, 1008, "session terminée", timeout).await;
                     return;
                 }

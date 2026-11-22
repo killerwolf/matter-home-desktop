@@ -61,6 +61,21 @@
   </form>
 </section>
 
+<section id="phone-pick" aria-label="Choisir son téléphone" role="dialog" aria-modal="true" hidden>
+  <header class="pick-head">
+    <picture class="brand">
+      <source srcset="logotype-sombre.svg" media="(prefers-color-scheme: dark)">
+      <img src="logotype-clair.svg" alt="Ostal" width="100" height="32">
+    </picture>
+    <span id="pick-step" class="muted">Étape 2 sur 2</span>
+    <button id="pick-cancel" class="ghost" type="button" hidden>Annuler</button>
+  </header>
+  <div id="pick-body" class="pick-body"></div>
+  <footer class="pick-foot">
+    <button id="pick-confirm" class="primary" type="button">Choisir ce téléphone</button>
+  </footer>
+</section>
+
 <div id="sheet-backdrop" hidden></div>
 <aside id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
   <div class="grab"></div>

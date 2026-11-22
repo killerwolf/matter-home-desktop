@@ -29,6 +29,8 @@ pub enum EditCommand {
 pub enum MenuCommand {
     Export,
     Import,
+    /// Mes connexions : la page des téléphones et ordinateurs où le compte est ouvert.
+    Connections,
     Logout,
     /// Quitter (⌘Q) : passe par la fermeture de la fenêtre, donc par la question « modifications
     /// non envoyées » si besoin.
@@ -41,6 +43,7 @@ pub enum MenuCommand {
 pub struct FileMenuState {
     pub export: bool,
     pub import: bool,
+    pub connections: bool,
     pub logout: bool,
 }
 
@@ -52,6 +55,7 @@ impl FileMenuState {
         Self {
             export: connected,
             import: connected,
+            connections: connected,
             logout: session_open,
         }
     }
@@ -62,6 +66,7 @@ impl FileMenuState {
         match command {
             MenuCommand::Export => self.export,
             MenuCommand::Import => self.import,
+            MenuCommand::Connections => self.connections,
             MenuCommand::Logout => self.logout,
             MenuCommand::Quit | MenuCommand::Edit(_) => true,
         }
@@ -196,6 +201,11 @@ mod appkit {
                 self.send(MenuCommand::Import);
             }
 
+            #[unsafe(method(showConnections:))]
+            fn show_connections(&self, _sender: Option<&AnyObject>) {
+                self.send(MenuCommand::Connections);
+            }
+
             #[unsafe(method(logOut:))]
             fn log_out(&self, _sender: Option<&AnyObject>) {
                 self.send(MenuCommand::Logout);
@@ -275,6 +285,7 @@ mod appkit {
         _target: Retained<Target>,
         export: Retained<NSMenuItem>,
         import: Retained<NSMenuItem>,
+        connections: Retained<NSMenuItem>,
         logout: Retained<NSMenuItem>,
     }
 
@@ -282,6 +293,7 @@ mod appkit {
         pub fn apply(&self, state: FileMenuState) {
             self.export.setEnabled(state.export);
             self.import.setEnabled(state.import);
+            self.connections.setEnabled(state.connections);
             self.logout.setEnabled(state.logout);
         }
     }
@@ -373,11 +385,18 @@ mod appkit {
         // Fichier : mêmes actions que l'ancien menu de la fenêtre.
         let export = item_to(mtm, t, "Exporter mes données…", sel!(exportData:), "");
         let import = item_to(mtm, t, "Importer des données…", sel!(importData:), "");
+        let connections = item_to(mtm, t, "Mes connexions…", sel!(showConnections:), "");
         let logout = item_to(mtm, t, "Se déconnecter", sel!(logOut:), "");
         let file = submenu(
             mtm,
             "Fichier",
-            &[&export, &import, &NSMenuItem::separatorItem(mtm), &logout],
+            &[
+                &export,
+                &import,
+                &NSMenuItem::separatorItem(mtm),
+                &connections,
+                &logout,
+            ],
         );
         // Griser à la main (selon la connexion), pas selon ce que la cible sait faire.
         menu_of(&file).setAutoenablesItems(false);
@@ -419,6 +438,7 @@ mod appkit {
             _target: target,
             export,
             import,
+            connections,
             logout,
         };
         handles.apply(FileMenuState::new(false, false));

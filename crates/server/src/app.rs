@@ -20,6 +20,11 @@ use crate::security::sessions::SessionStore;
 use crate::security::{self, tls};
 use crate::{demo, matter, persistence, Backend};
 
+/// Un relevé de la box toutes les 2 minutes (la box bascule l'état d'un appareil dans ce délai),
+/// sans balayage du réseau. La démonstration relève plus souvent : sa « box » n'a pas de réseau.
+const WIFI_POLL: Duration = Duration::from_secs(120);
+const WIFI_DEMO_POLL: Duration = Duration::from_secs(20);
+
 /// Délai laissé au backend et à l'écriture de l'historique pour s'arrêter.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -37,6 +42,9 @@ pub struct ServerConfig {
     pub body_idle_timeout: Duration,
     /// Qui signe les raccourcis de l'iPhone : `/usr/bin/shortcuts`, sauf en essai.
     pub shortcut_signer: crate::shortcuts::Signer,
+    /// Écart entre deux relevés de la box (présence par le Wi-Fi) ; `None` : pas de relevé
+    /// périodique (les essais relèvent à la main).
+    pub wifi_poll_interval: Option<Duration>,
 }
 
 impl ServerConfig {
@@ -49,6 +57,7 @@ impl ServerConfig {
             client_write_timeout: Duration::from_secs(10),
             body_idle_timeout: crate::net::BODY_IDLE_TIMEOUT,
             shortcut_signer: crate::shortcuts::Signer::Apple,
+            wifi_poll_interval: Some(if demo { WIFI_DEMO_POLL } else { WIFI_POLL }),
         }
     }
 }
@@ -66,12 +75,17 @@ pub enum Outcome {
 
 pub struct Server {
     hub: Arc<Hub>,
+    auth: Arc<Auth>,
     net: Option<NetServer>,
+    /// L'annonce Bonjour (absente en démo et sur la boucle locale).
+    announcement: Option<crate::announce::Announcement>,
     backend: Option<Backend>,
     pump: Option<JoinHandle<()>>,
     demo_history_writer: Option<JoinHandle<()>>,
     /// Vérifie la joignabilité des caméras (aucune connexion gardée ouverte). Absent en démo.
     camera_monitor: Option<CameraMonitor>,
+    /// Le fil qui relève la box de la maison.
+    wifi_watcher: Option<WifiWatcher>,
     stop_pump: Arc<AtomicBool>,
     fatal: Arc<AtomicBool>,
     pub addr: SocketAddr,
@@ -140,7 +154,7 @@ impl Server {
                 shortcut_signer: config.shortcut_signer,
             },
             hub.clone(),
-            auth,
+            auth.clone(),
             identity.config.clone(),
         ) {
             Ok(net) => net,
@@ -166,14 +180,26 @@ impl Server {
                 }
             }
         };
+        // Le serveur de démonstration ne s'annonce jamais : rien ne doit sortir de la boucle locale.
+        let announcement = if config.demo {
+            None
+        } else {
+            crate::announce::start(net.addr, &identity.fingerprint)
+        };
+        let wifi_watcher = config
+            .wifi_poll_interval
+            .map(|every| WifiWatcher::start(hub.clone(), auth.clone(), every));
         Ok(Server {
+            announcement,
             addr: net.addr,
             hub,
+            auth,
             net: Some(net),
             backend: Some(backend),
             pump: Some(pump),
             demo_history_writer,
             camera_monitor,
+            wifi_watcher,
             stop_pump,
             fatal,
             fingerprint: identity.fingerprint,
@@ -184,6 +210,12 @@ impl Server {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// Comptes et sessions du serveur qui tourne : Ostal Server y lit les connexions ouvertes et
+    /// les coupe (les sessions ne vivent qu'ici, en mémoire, avec leur fichier).
+    pub fn auth(&self) -> &Arc<Auth> {
+        &self.auth
     }
 
     /// Une erreur fatale ou un import à appliquer sont-ils survenus ? (Sans attendre.)
@@ -219,6 +251,10 @@ impl Server {
     /// Arrêt ordonné : le réseau d'abord (plus de commandes), puis le backend, puis les
     /// écritures sur disque. `true` si tout s'est arrêté à temps.
     pub fn stop(mut self) -> bool {
+        // D'abord « au revoir » sur le réseau : les apps ne proposent plus ce serveur.
+        if let Some(announcement) = self.announcement.take() {
+            announcement.stop();
+        }
         if let Some(net) = self.net.take() {
             net.shutdown();
         }
@@ -227,6 +263,9 @@ impl Server {
         let mut clean = true;
         if let Some(monitor) = self.camera_monitor.take() {
             clean &= monitor.stop();
+        }
+        if let Some(watcher) = self.wifi_watcher.take() {
+            clean &= watcher.stop();
         }
         if let Some(backend) = self.backend.take() {
             clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
@@ -239,6 +278,44 @@ impl Server {
         }
         self.hub.push().shutdown();
         clean
+    }
+}
+
+/// Le fil qui relève la box de la maison à intervalle fixe (présence par le Wi-Fi). Sans box reliée,
+/// chaque tour ne fait rien. Il s'arrête dans la seconde qui suit la demande.
+pub struct WifiWatcher {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+impl WifiWatcher {
+    pub fn start(hub: Arc<Hub>, auth: Arc<Auth>, every: Duration) -> WifiWatcher {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("wifi".into())
+            .spawn(move || {
+                let tick = Duration::from_millis(200);
+                loop {
+                    hub.wifi_poll(&auth.accounts, false);
+                    let mut waited = Duration::ZERO;
+                    while waited < every {
+                        if flag.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(tick);
+                        waited += tick;
+                    }
+                }
+            })
+            .expect("fil du Wi-Fi");
+        WifiWatcher { stop, thread }
+    }
+
+    /// Arrête le fil et attend sa fin. `true` : il s'est arrêté sans panique.
+    pub fn stop(self) -> bool {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread.join().is_ok()
     }
 }
 

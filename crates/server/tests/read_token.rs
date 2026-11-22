@@ -69,8 +69,8 @@ async fn ws_status(client: &Client, path: &str, token: &str, subprotocol: bool) 
 fn the_read_token_reads_state_and_events_and_nothing_else() {
     let rig = rig("read-token-scope");
     let client = Client::new(rig.server.addr, &rig.fingerprint);
-    let read = rig.hub.generate_read_token().unwrap();
-    let mode = rig.hub.generate_mode_token().unwrap();
+    let read = rig.hub.generate_read_token(&rig.user_id, "iPhone").unwrap();
+    let mode = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
     let camera = rig.main_only;
     common::runtime().block_on(async {
         // Les deux portes qu'il ouvre (la requête `?…` ne change rien).
@@ -199,11 +199,16 @@ fn the_read_token_reads_state_and_events_and_nothing_else() {
         assert_eq!(client.get("/api/plan", &session).await.status, 200);
         assert_eq!(client.get("/api/state", &session).await.status, 200);
 
-        // Un nouveau jeton révoque l'ancien ; une révocation ferme tout.
-        let newer = rig.hub.generate_read_token().unwrap();
+        // Un nouveau jeton pour le même téléphone remplace l'ancien ; une révocation ferme tout.
+        let newer = rig.hub.generate_read_token(&rig.user_id, "iPhone").unwrap();
         assert_eq!(client.get("/api/state", &read).await.status, 401);
         assert_eq!(client.get("/api/state", &newer).await.status, 200);
-        rig.hub.revoke_read_token().unwrap();
+        rig.hub
+            .revoke_tokens_of(
+                &rig.user_id,
+                ostal_server::security::user_tokens::Kind::Read,
+            )
+            .unwrap();
         assert_eq!(client.get("/api/state", &newer).await.status, 401);
     });
 }
@@ -212,7 +217,7 @@ fn the_read_token_reads_state_and_events_and_nothing_else() {
 fn bad_read_tokens_are_slowed_but_never_block_the_good_one() {
     let rig = rig("read-token-limit");
     let client = Client::new(rig.server.addr, &rig.fingerprint);
-    let read = rig.hub.generate_read_token().unwrap();
+    let read = rig.hub.generate_read_token(&rig.user_id, "iPhone").unwrap();
     common::runtime().block_on(async {
         // Derrière `tailscale serve`, tout vient de 127.0.0.1 : des échecs en rafale ne bloquent
         // jamais le bon jeton. Chaque échec attend 250 ms.

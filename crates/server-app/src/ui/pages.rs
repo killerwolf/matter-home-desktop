@@ -1,9 +1,9 @@
 //! Les pages de la fenêtre (voir `docs/ux-serveur.md`).
 //!
 //! - Première installation : trois étapes (la maison, le compte, « c'est prêt »).
-//! - Ensuite, cinq onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
-//!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis) et
-//!   **Réglages** (compte, démarrage, sauvegarde, dépannage).
+//! - Ensuite, six onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
+//!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis),
+//!   **Journal** (qui a fait quoi) et **Réglages** (compte, démarrage, sauvegarde, dépannage).
 //!
 //! Les mots sont ceux de l'utilisateur ; le terme technique, quand il aide à se repérer dans la
 //! documentation, suit entre parenthèses. Aucun secret n'est affiché, sauf le jeton de mode à sa
@@ -137,14 +137,15 @@ impl App {
             (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
                 self.identity_page(ui, st, unreadable.as_deref())
             }
-            (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st, false),
+            (Phase::NeedsSetup, Some(SetupNeed::Account)) => self.account_page(ui, st),
             (Phase::Running, _) if self.show_done => self.done_page(ui, ctx, st),
             _ => match self.tab {
                 Tab::Overview => self.overview_page(ui, st),
                 Tab::Devices => self.devices_page(ui, st),
                 Tab::Cameras => self.cameras_page(ui, ctx, st),
                 Tab::Connect => self.connect_page(ui, st),
-                Tab::Settings => self.settings_page(ui, st),
+                Tab::Journal => self.journal.show(ui, ctx, &st.data_dir),
+                Tab::Settings => self.settings_page(ui, ctx, st),
             },
         }
         self.show_local_notice(ui, st);
@@ -234,7 +235,7 @@ impl App {
     }
 
     fn revoke_read(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
-        match hub.revoke_read_token() {
+        match hub.window_revoke_read_tokens() {
             Ok(()) => {
                 self.local_notice = Some(Notice::Ok(
                     "Jeton de lecture révoqué : le widget ne lit plus rien.".into(),
@@ -253,7 +254,7 @@ impl App {
     }
 
     fn delete_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
-        match hub.revoke_mode_token() {
+        match hub.window_revoke_mode_token() {
             Ok(()) => {
                 self.local_notice = Some(Notice::Ok(
                     "Code secret supprimé : Raccourcis ne peut plus changer le mode.".into(),
@@ -470,13 +471,11 @@ impl App {
         }
     }
 
-    fn account_page(&mut self, ui: &mut egui::Ui, st: &State, replace: bool) {
-        if !replace {
-            setup_header(ui, 2, "Créez votre compte");
-            ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Ostal sur vos autres appareils (ordinateur, iPhone). Il n'y a qu'un seul compte : notez-le.");
-        } else {
-            ui.label("Choisissez un nouvel identifiant et un nouveau mot de passe. Les appareils déjà connectés devront se reconnecter, et le serveur redémarre quelques secondes.");
-        }
+    /// Le premier compte, à la première installation. Les autres se créent ensuite dans
+    /// Réglages › Comptes.
+    fn account_page(&mut self, ui: &mut egui::Ui, st: &State) {
+        setup_header(ui, 2, "Créez votre compte");
+        ui.label("C'est avec cet identifiant et ce mot de passe que vous ouvrirez Ostal sur vos autres appareils (ordinateur, iPhone). Notez-les : vous pourrez ajouter les comptes des autres personnes de la maison ensuite, dans Réglages › Comptes.");
         if let Some(n) = &st.notice {
             ui.add_space(6.0);
             notice_label(ui, n);
@@ -499,13 +498,8 @@ impl App {
             }
         }
         ui.add_space(8.0);
-        let label = if replace {
-            "Remplacer le compte"
-        } else {
-            "Créer le compte"
-        };
         if ui
-            .add_enabled(check.is_ok(), egui::Button::new(label))
+            .add_enabled(check.is_ok(), egui::Button::new("Créer le compte"))
             .clicked()
         {
             let (username, password) = (
@@ -513,14 +507,10 @@ impl App {
                 std::mem::take(&mut self.form.password),
             );
             self.form.confirm.clear();
-            let _ = self.handle.tx.send(if replace {
-                Cmd::ReplaceAccount { username, password }
-            } else {
-                Cmd::CreateAccount { username, password }
-            });
-            if replace {
-                self.change_account = false;
-            }
+            let _ = self
+                .handle
+                .tx
+                .send(Cmd::CreateAccount { username, password });
         }
     }
 
@@ -963,7 +953,7 @@ impl App {
                 }
             }),
             Some(
-                if hub.has_mode_token() {
+                if hub.window_has_mode_token() {
                     "Code secret : en service"
                 } else {
                     "pas encore de code secret"
@@ -1202,8 +1192,8 @@ impl App {
     fn shortcuts_steps(&mut self, ui: &mut egui::Ui, hub: &Arc<ostal_server::hub::Hub>) {
         let p = theme::palette(ui);
         ui.label("L'iPhone peut passer la maison en « Absent » quand vous partez et en « Présent » quand vous rentrez, tout seul, avec l'app Raccourcis. Il lui faut un code secret (le « jeton de mode »), qui ne permet rien d'autre que changer le mode.");
-        widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer les raccourcis » crée un nouveau code et les deux raccourcis tout prêts, sans rien taper.");
-        let read = hub.has_read_token();
+        widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer mes raccourcis » : chacun a les siens, tout prêts, sans rien taper. Le code secret d'ici est celui du premier compte, pour les automatisations faites à la main.");
+        let read = hub.window_has_read_token();
         ui.horizontal(|ui| {
             ui.label(if read {
                 "Widget de l'iPhone : jeton de lecture actif (il ne permet que de lire l'état)."
@@ -1219,7 +1209,7 @@ impl App {
         });
         ui.add_space(6.0);
         let remote = matches!(self.web, WebAccess::On { .. });
-        let has = hub.has_mode_token();
+        let has = hub.window_has_mode_token();
         widgets::step(
             ui,
             1,
@@ -1340,7 +1330,7 @@ impl App {
 
     fn generate_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
         self.mode_token_confirm = false;
-        match hub.generate_mode_token() {
+        match hub.window_generate_mode_token() {
             Ok(token) => self.mode_token_shown = Some(token),
             Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
                 self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
@@ -1356,28 +1346,48 @@ impl App {
 
     // ---- réglages ------------------------------------------------------------------------------
 
-    fn settings_page(&mut self, ui: &mut egui::Ui, st: &State) {
+    fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
         let p = theme::palette(ui);
         if st.phase == Phase::Running {
-            widgets::section(ui, "Compte", |ui| {
-                if self.change_account {
-                    self.account_page(ui, st, true);
-                    if ui.button("Annuler").clicked() {
-                        self.change_account = false;
-                        // Aucun mot de passe ne reste en mémoire dans le formulaire.
-                        self.form = AccountForm::default();
-                    }
-                } else {
-                    ui.label("L'identifiant et le mot de passe demandés par Ostal sur vos autres appareils. Il n'y a qu'un seul compte.");
-                    if let Some(n) = &st.notice {
-                        notice_label(ui, n);
-                    }
-                    if ui
-                        .button("Changer l'identifiant ou le mot de passe…")
-                        .clicked()
-                    {
-                        self.change_account = true;
-                    }
+            if self.accounts.is_open() {
+                if self.accounts.show(
+                    ui,
+                    ctx,
+                    &st.data_dir,
+                    st.auth.as_ref().map(|a| &a.0),
+                    st.hub.as_ref().map(|h| &h.0),
+                ) {
+                    self.accounts.reset();
+                }
+                return;
+            }
+            if self.presence.is_open() {
+                if self.presence.show(
+                    ui,
+                    ctx,
+                    &st.data_dir,
+                    st.auth.as_ref().map(|a| &a.0),
+                    st.hub.as_ref().map(|h| &h.0),
+                ) {
+                    self.presence.reset();
+                }
+                return;
+            }
+            widgets::section(ui, "Comptes", |ui| {
+                ui.label("Chaque personne de la maison a son compte : l'identifiant et le mot de passe qu'elle entre sur son téléphone ou son ordinateur.");
+                if let Some(n) = &st.notice {
+                    notice_label(ui, n);
+                }
+                if ui.button("Gérer les comptes…").clicked() {
+                    self.accounts.open();
+                }
+            });
+        }
+        if st.phase == Phase::Running {
+            widgets::section(ui, "Présence", |ui| {
+                ui.label("Ostal sait qui est à la maison grâce au Wi-Fi de la box. La maison peut passer en Absent quand plus personne n'est là, et en Présent dès qu'une personne arrive.");
+                if ui.button("Régler la présence…").clicked() {
+                    self.presence.open();
                 }
             });
         }

@@ -24,6 +24,8 @@ pub struct Rig {
     pub server: NetServer,
     pub hub: Arc<Hub>,
     pub fingerprint: String,
+    /// L'identifiant interne du compte `USER` (celui des jetons de raccourci qu'on lui crée).
+    pub user_id: String,
     pub camera: FakeCamera,
     /// « Entrée » : flux principal et flux réduit.
     pub with_sub: u64,
@@ -77,10 +79,9 @@ pub fn start(setup: Setup<'_>) -> Rig {
     let main_only = hub
         .add_camera(&draft("Jardin", "live/ch01_0", false))
         .unwrap();
-    let auth = Arc::new(Auth::new(
-        AccountStore::open(&dir).unwrap(),
-        SessionStore::open(&dir).unwrap(),
-    ));
+    let accounts = AccountStore::open(&dir).unwrap();
+    let user_id = accounts.users()[0].id.clone();
+    let auth = Arc::new(Auth::new(accounts, SessionStore::open(&dir).unwrap()));
     let server = net::start(
         NetConfig {
             listen: setup.listen.parse().expect("adresse d'écoute"),
@@ -97,6 +98,7 @@ pub fn start(setup: Setup<'_>) -> Rig {
         server,
         hub,
         fingerprint: identity.fingerprint,
+        user_id,
         camera,
         with_sub,
         main_only,
