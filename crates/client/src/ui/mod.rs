@@ -1688,7 +1688,17 @@ impl MatterApp {
     /// La page « Mes connexions », à la place de la vue courante.
     fn connections_page(&mut self, ui: &mut egui::Ui) {
         let (now, offset) = connections::clock();
-        match self.connections.show(ui, now, offset) {
+        let route = connections::Route {
+            primary: self.backend.saved_url(),
+            tailscale: self
+                .backend
+                .alt_urls()
+                .into_iter()
+                .filter(|u| ostal_client::net::ServerAddr::parse(u).is_ok_and(|a| a.is_tailscale()))
+                .collect(),
+            via_remote: self.backend.route().map(|(_, remote)| remote),
+        };
+        match self.connections.show(ui, now, offset, &route) {
             connections::Action::None => {}
             connections::Action::Reload => self.load_connections(),
             connections::Action::Cut { id, name } => self.cut_connection(&id, name),

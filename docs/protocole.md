@@ -77,6 +77,14 @@ est écrit dans `history-demo/`, le plan et les règles de démonstration resten
 `--listen ADRESSE:PORT` (le port `0` laisse le système choisir) et `--data-dir DOSSIER` servent
 aux essais et aux tests.
 
+## Découverte (Bonjour)
+
+Le serveur écouteant ailleurs que sur la boucle locale s'annonce en mDNS : service `_ostal._tcp`,
+instance = nom du Mac, port d'écoute, adresses IPv4 **privées** seulement (jamais celle du tailnet),
+TXT `v=<protocole>` et `fp=<empreinte SHA-256 du certificat>`. Rien de secret, rien ne s'y fie : le
+client se connecte à l'adresse trouvée comme à une adresse saisie, et confirme l'empreinte à la
+première connexion (`protocol::discovery`, `ostal_server::announce`, `ostal_client::net::discovery`).
+
 ## Routes
 
 | Méthode et chemin | Rôle |

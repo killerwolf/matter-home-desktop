@@ -8,6 +8,7 @@
 
 pub mod addr;
 mod backend;
+pub mod discovery;
 pub mod error;
 pub mod events;
 pub mod files;

@@ -448,6 +448,12 @@ impl Backend {
         self.shared.store.load().ok().flatten().map(|s| s.url)
     }
 
+    /// Par où la session est jointe en ce moment : l'adresse, et si c'est « à distance » (autre
+    /// adresse que la principale, ou adresse Tailscale). `None` sans session.
+    pub fn route(&self) -> Option<(String, bool)> {
+        self.shared.creds().map(|c| (c.addr.url(), c.is_remote()))
+    }
+
     /// Autres adresses du serveur gardées dans le fichier de connexion (à distance).
     pub fn alt_urls(&self) -> Vec<String> {
         self.shared.alts()

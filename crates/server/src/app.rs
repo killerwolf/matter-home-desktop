@@ -68,6 +68,8 @@ pub struct Server {
     hub: Arc<Hub>,
     auth: Arc<Auth>,
     net: Option<NetServer>,
+    /// L'annonce Bonjour (absente en démo et sur la boucle locale).
+    announcement: Option<crate::announce::Announcement>,
     backend: Option<Backend>,
     pump: Option<JoinHandle<()>>,
     demo_history_writer: Option<JoinHandle<()>>,
@@ -167,7 +169,14 @@ impl Server {
                 }
             }
         };
+        // Le serveur de démonstration ne s'annonce jamais : rien ne doit sortir de la boucle locale.
+        let announcement = if config.demo {
+            None
+        } else {
+            crate::announce::start(net.addr, &identity.fingerprint)
+        };
         Ok(Server {
+            announcement,
             addr: net.addr,
             hub,
             auth,
@@ -227,6 +236,10 @@ impl Server {
     /// Arrêt ordonné : le réseau d'abord (plus de commandes), puis le backend, puis les
     /// écritures sur disque. `true` si tout s'est arrêté à temps.
     pub fn stop(mut self) -> bool {
+        // D'abord « au revoir » sur le réseau : les apps ne proposent plus ce serveur.
+        if let Some(announcement) = self.announcement.take() {
+            announcement.stop();
+        }
         if let Some(net) = self.net.take() {
             net.shutdown();
         }

@@ -10,7 +10,20 @@ use protocol::wire::{
     connection_kind_label, last_seen_label, via_label, ConnectionView, ConnectionsResponse,
 };
 
+use ostal_client::net::discovery::{Finder, Found};
+
 use super::theme;
+
+/// Comment ce Mac joint la maison, pour la carte « Comment ce Mac joint la maison ».
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Route {
+    /// L'adresse principale (celle de la maison), gardée dans le fichier de connexion.
+    pub primary: Option<String>,
+    /// Les adresses Tailscale gardées (IP du tailnet ou nom `….ts.net`).
+    pub tailscale: Vec<String>,
+    /// `Some(true)` : la session passe en ce moment par une adresse à distance.
+    pub via_remote: Option<bool>,
+}
 
 /// Où en est la liste.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +54,10 @@ pub struct Page {
     confirming: Option<(String, String)>,
     /// Un message sous la liste (« Connexion coupée. »).
     pub notice: Option<(bool, String)>,
+    /// « Détails » de la carte « Comment ce Mac joint la maison » est ouvert.
+    details: bool,
+    /// « Chercher à nouveau » : la recherche Bonjour lancée depuis la carte.
+    finder: Option<Finder>,
 }
 
 impl Page {
@@ -49,6 +66,8 @@ impl Page {
             load: Load::Idle,
             confirming: None,
             notice: None,
+            details: false,
+            finder: None,
         }
     }
 
@@ -66,7 +85,13 @@ impl Page {
     }
 
     /// Dessine la page : la liste, puis la note sur « Couper ».
-    pub fn show(&mut self, ui: &mut egui::Ui, now: f64, utc_offset_s: i64) -> Action {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        now: f64,
+        utc_offset_s: i64,
+        route: &Route,
+    ) -> Action {
         let p = *theme::palette(ui);
         let mut action = Action::None;
         if self.load == Load::Idle {
@@ -115,7 +140,117 @@ impl Page {
                     ui.colored_label(if *ok { p.ok } else { p.error }, text);
                 }
             });
+        ui.add_space(12.0);
+        self.route_card(ui, route);
         action
+    }
+
+    /// « Comment ce Mac joint la maison » : le réseau de la maison, Tailscale, et en « Détails »
+    /// les adresses et « Chercher à nouveau ».
+    fn route_card(&mut self, ui: &mut egui::Ui, route: &Route) {
+        let p = *theme::palette(ui);
+        theme::card_frame(ui)
+            .inner_margin(egui::Margin::same(20))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new("Comment ce Mac joint la maison")
+                        .size(theme::tokens().font.size.heading)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new("Ostal Server se trouve tout seul sur le réseau de la maison. L'adresse Tailscale ne sert que hors de chez vous.")
+                        .color(p.text_secondary),
+                );
+                ui.add_space(8.0);
+                let at_home = route.via_remote == Some(false);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        theme::state_word(
+                            ui,
+                            if at_home { theme::StateWord::Ok } else { theme::StateWord::Neutral },
+                            if at_home { "joignable" } else { "pas en ce moment" },
+                        );
+                        ui.label(RichText::new("Sur le réseau de la maison").strong());
+                        ui.label(
+                            RichText::new("Trouvé tout seul sur le réseau de la maison. Rien à taper.")
+                                .small()
+                                .color(p.text_secondary),
+                        );
+                    });
+                    ui.add_space(24.0);
+                    ui.vertical(|ui| {
+                        let on = !route.tailscale.is_empty();
+                        theme::state_word(
+                            ui,
+                            if on { theme::StateWord::Ok } else { theme::StateWord::Neutral },
+                            if on { "Activé" } else { "Pas encore" },
+                        );
+                        ui.label(RichText::new("À distance : par Tailscale").strong());
+                        ui.label(
+                            RichText::new(if on {
+                                "Hors de la maison, Ostal passe par Tailscale."
+                            } else {
+                                "Le serveur donne son adresse Tailscale à la prochaine connexion."
+                            })
+                            .small()
+                            .color(p.text_secondary),
+                        );
+                    });
+                });
+                ui.add_space(6.0);
+                let label = if self.details { "Détails ▾" } else { "Détails ▸" };
+                if ui
+                    .add(egui::Button::new(RichText::new(label).color(p.accent_text)).frame(false))
+                    .clicked()
+                {
+                    self.details = !self.details;
+                }
+                if self.details {
+                    let line = |ui: &mut egui::Ui, what: &str, value: &str| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(what).color(p.text_secondary));
+                            ui.label(RichText::new(value).monospace());
+                        });
+                    };
+                    line(
+                        ui,
+                        "Adresse locale",
+                        route.primary.as_deref().unwrap_or("—"),
+                    );
+                    for url in &route.tailscale {
+                        line(ui, "Adresse Tailscale", url);
+                    }
+                    let searching = self.finder.as_ref().is_some_and(Finder::searching);
+                    if let Some(finder) = &self.finder {
+                        let found: Vec<Found> = finder.found();
+                        for f in &found {
+                            line(ui, "Trouvé", &format!("{} · {}", f.name, f.url()));
+                        }
+                        if found.is_empty() && !searching {
+                            ui.label(
+                                RichText::new("Aucun Ostal Server trouvé sur ce réseau.")
+                                    .small()
+                                    .color(p.text_secondary),
+                            );
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!searching, egui::Button::new("Chercher à nouveau"))
+                            .clicked()
+                        {
+                            let ctx = ui.ctx().clone();
+                            self.finder = Some(Finder::start(std::sync::Arc::new(move || {
+                                ctx.request_repaint()
+                            })));
+                        }
+                        if searching {
+                            ui.spinner();
+                        }
+                    });
+                }
+            });
     }
 
     fn table(

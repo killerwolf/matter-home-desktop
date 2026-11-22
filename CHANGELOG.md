@@ -28,6 +28,17 @@ Les téléchargements de chaque version sont sur la
   rien de nouveau à approuver) ; l'app Mac revient sur l'adresse de la maison dès qu'elle répond de
   nouveau.
 
+### Découverte du serveur (multi-comptes, étape 2)
+
+- Ostal Server s'annonce sur le réseau de la maison (Bonjour, service `_ostal._tcp`, nom du Mac,
+  adresses privées seulement, version du protocole et empreinte du certificat en TXT), par l'API mDNS
+  de `matc` : ni nouvelle caisse, ni sous-processus. Jamais d'annonce sur la boucle locale (démo,
+  essais) ; « au revoir » envoyé à l'arrêt.
+- App Mac : à la première ouverture, « Ostal Server trouvé » (nom du Mac, rien à taper) ;
+  « Saisir une adresse à la main » en secours. Le certificat se confirme comme avant, par son
+  empreinte. Mes connexions : carte « Comment ce Mac joint la maison » (réseau de la maison,
+  Tailscale, détails, « Chercher à nouveau »).
+
 ### Comptes nominatifs (multi-comptes, étape 1)
 
 - Serveur : plusieurs comptes, un par personne du foyer (`comptes.json` : identifiant, nom affiché,
