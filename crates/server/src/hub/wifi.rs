@@ -972,16 +972,16 @@ mod tests {
             (NAS, true),
         ]);
         r.poll(0.0);
-        // Ni les appareils déjà attribués, ni les téléphones absents, ni ce qui n'est pas un
-        // téléphone.
+        // Ni les appareils déjà attribués, ni ce qui n'est pas un téléphone. Un téléphone absent du
+        // Wi-Fi reste proposé, après ceux qui sont là : on peut le relier à distance.
         assert_eq!(
             r.hub.wifi().free_hosts(true),
-            vec!["android-3f2a", "Redmi-de-Adam"]
+            vec!["android-3f2a", "Redmi-de-Adam", "iPhone-7"]
         );
         // L'administrateur voit aussi les autres appareils.
         assert_eq!(
             r.hub.wifi().free_hosts(false),
-            vec!["android-3f2a", NAS, "Redmi-de-Adam"]
+            vec!["android-3f2a", NAS, "Redmi-de-Adam", "iPhone-7"]
         );
         let who = Who::default();
         // Un membre ne choisit que parmi les noms de téléphones libres.
@@ -991,7 +991,7 @@ mod tests {
         );
         assert_eq!(
             r.hub
-                .wifi_assign("adam", Some("iPhone-7"), true, &who, "Adam"),
+                .wifi_assign("adam", Some("iPhone-inconnu"), true, &who, "Adam"),
             Err(AssignError::NotFree)
         );
         assert_eq!(
@@ -1007,7 +1007,10 @@ mod tests {
             Some("Redmi-de-Adam")
         );
         // Il n'est plus libre pour personne.
-        assert_eq!(r.hub.wifi().free_hosts(true), vec!["android-3f2a"]);
+        assert_eq!(
+            r.hub.wifi().free_hosts(true),
+            vec!["android-3f2a", "iPhone-7"]
+        );
         // L'administrateur corrige : il peut attribuer un appareil qui n'a pas un nom de téléphone.
         assert!(r
             .hub
@@ -1015,8 +1018,14 @@ mod tests {
             .unwrap());
         assert_eq!(
             r.hub.wifi().free_hosts(true),
-            vec!["android-3f2a", "Redmi-de-Adam"]
+            vec!["android-3f2a", "Redmi-de-Adam", "iPhone-7"]
         );
+        // Un téléphone absent du Wi-Fi se relie aussi (la personne est loin de la maison).
+        assert!(r
+            .hub
+            .wifi_assign("lea2", Some("iphone-7"), true, &who, "Léa")
+            .unwrap());
+        assert_eq!(r.hub.wifi().phone_of("lea2").as_deref(), Some("iPhone-7"));
         // Les téléphones se retrouvent après un redémarrage.
         let reopened = Wifi::open(&r.dir.join("serveur"), Box::new(r.fake.clone()));
         assert_eq!(reopened.phone_of("sam").as_deref(), Some(SAM));

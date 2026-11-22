@@ -503,28 +503,28 @@ impl Wifi {
             .any(|h| h.active && h.name.eq_ignore_ascii_case(host))
     }
 
-    /// Les noms des appareils actifs, sans propriétaire. `phones_only` : seulement ceux qui ont un
-    /// nom de téléphone (ce que voit un membre ; l'administrateur voit tout).
+    /// Les noms des appareils connus de la box, sans propriétaire : ceux qui sont sur le Wi-Fi en
+    /// ce moment d'abord, puis les autres (un téléphone parti reste reliable à distance).
+    /// `phones_only` : seulement ceux qui ont un nom de téléphone (ce que voit un membre ;
+    /// l'administrateur voit tout).
     pub fn free_hosts(&self, phones_only: bool) -> Vec<String> {
         let st = self.lock();
-        let mut names: Vec<String> = st
+        let mut hosts: Vec<&bbox::Host> = st
             .hosts
             .iter()
-            .filter(|h| h.active)
             .filter(|h| !phones_only || bbox::looks_like_phone(&h.name))
             .filter(|h| {
                 !st.phones
                     .iter()
                     .any(|p| p.host.eq_ignore_ascii_case(&h.name))
             })
-            .map(|h| h.name.clone())
             .collect();
-        names.sort_by_key(|n| n.to_lowercase());
-        names
+        hosts.sort_by_key(|h| (!h.active, h.name.to_lowercase()));
+        hosts.into_iter().map(|h| h.name.clone()).collect()
     }
 
     /// Attribue ce téléphone à ce compte (celui qu'il avait est remplacé), ou le retire (`None`).
-    /// Le nom doit être dans les appareils libres vus au dernier relevé. Rend `true` si quelque
+    /// Le nom doit être parmi les appareils libres connus de la box au dernier relevé. Rend `true` si quelque
     /// chose a changé.
     pub fn assign(
         &self,
@@ -552,7 +552,7 @@ impl Wifi {
                 let free = st
                     .hosts
                     .iter()
-                    .find(|h| h.active && h.name.eq_ignore_ascii_case(&name))
+                    .find(|h| h.name.eq_ignore_ascii_case(&name))
                     .filter(|h| !phones_only || bbox::looks_like_phone(&h.name))
                     .map(|h| h.name.clone())
                     .ok_or(AssignError::NotFree)?;

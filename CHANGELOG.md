@@ -10,6 +10,8 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+- Présence : un téléphone absent du Wi-Fi peut être relié à son compte à distance ; la liste montre d'abord ceux qui sont sur le Wi-Fi, puis les autres appareils connus de la box.
+
 ### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)
 
 - Ostal Server se relie à la box (Réglages › Présence) avec son mot de passe d'administration, gardé
