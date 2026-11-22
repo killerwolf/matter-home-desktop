@@ -7,7 +7,10 @@
 //! - deux personnes : chacune installe, voit et révoque les siens, sans toucher à ceux de l'autre ;
 //!   une personne désactivée perd ses raccourcis ;
 //! - « Je pars » / « Je rentre » : la présence déclarée est gardée ; en attendant la présence
-//!   automatique, un raccourci change aussi le mode comme le faisaient Absent et Présent.
+//!   automatique, un raccourci change aussi le mode, selon la règle de la maison : Absent seulement
+//!   quand personne d'autre n'est là, Présent seulement depuis Absent ou Vacances ;
+//! - couper une connexion coupe ses raccourcis et son widget, sans toucher à ceux des autres
+//!   téléphones, même s'ils portent le même nom.
 
 mod common;
 
@@ -333,8 +336,9 @@ fn each_person_installs_sees_and_revokes_only_their_own_and_a_disabled_person_lo
         // Un jeton n'est pas une session : il n'ouvre pas la liste des jetons.
         assert_eq!(client.get("/api/tokens", &sam_mode_again).await.status, 401);
 
-        // La dernière déclaration d'un raccourci (Sam : « Je pars ») a fait ce que faisait Absent.
-        assert_eq!(mode_of(&client, &hamdi).await, "absent");
+        // Hamdi a dit « Je rentre » et Sam « Je pars » : quelqu'un est encore là, la maison reste
+        // Présent.
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
 
         // Désactiver Sam : ses raccourcis et son widget ne marchent plus ; la maison reste à Hamdi.
         assert!(user(&dir, &["disable", "--username", "sam"], None));
@@ -344,7 +348,7 @@ fn each_person_installs_sees_and_revokes_only_their_own_and_a_disabled_person_lo
         );
         assert_eq!(put_mode(&client, &sam_mode_again, "nuit").await.status, 401);
         assert_eq!(client.get("/api/state", &sam_read).await.status, 401);
-        assert_eq!(mode_of(&client, &hamdi).await, "absent");
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
         // Réactivé, ils reviennent (ils n'ont pas été supprimés).
         assert!(user(&dir, &["enable", "--username", "sam"], None));
         assert_eq!(
@@ -413,5 +417,160 @@ fn presence_needs_a_known_token_and_a_valid_state() {
         );
         // Le jeton de mode ne lit rien d'autre.
         assert_eq!(client.get("/api/state", &token).await.status, 401);
+    });
+}
+
+async fn login_from(client: &Client, user: &str, password: &str, id: &str, name: &str) -> String {
+    let body = json!({
+        "username": user, "password": password, "protocol_version": PROTOCOL,
+        "installation": {"id": id, "kind": "web", "device": "iphone", "name": name},
+    });
+    let r = client
+        .request(
+            "POST",
+            "/api/login",
+            None,
+            Some(body.to_string().as_bytes()),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    r.json()["token"].as_str().unwrap().to_string()
+}
+
+async fn install_widget(client: &Client, session: &str) -> String {
+    let r = client
+        .send_json(
+            "POST",
+            "/api/tokens/read/widget",
+            session,
+            &json!({ "origin": ORIGIN }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let script = r.json()["script"].as_str().unwrap().to_string();
+    let start = script.find("const TOKEN = \"").unwrap() + "const TOKEN = \"".len();
+    script[start..start + 64].to_string()
+}
+
+#[test]
+fn cutting_a_connection_cuts_its_shortcuts_and_widget_and_only_those() {
+    let dir = temp_dir("tokens-cut");
+    let server = start(&dir);
+    let client = server.client();
+    assert!(user(
+        &dir,
+        &["add", "--username", "sam", "--display-name", "Sam"],
+        Some(SAM_PASSWORD)
+    ));
+    runtime().block_on(async {
+        // Deux téléphones de Hamdi qui s'appellent tous deux « iPhone », et un Mac.
+        let phone_a = login_from(&client, USER, PASSWORD, "iphone-a-001", "iPhone").await;
+        let phone_b = login_from(&client, USER, PASSWORD, "iphone-b-001", "iPhone").await;
+        let mac = login_from(&client, USER, PASSWORD, "mac-hamdi-01", "Mac").await;
+        let sam = login_from(&client, "sam", SAM_PASSWORD, "iphone-sam-01", "iPhone").await;
+
+        let mode_a = install_shortcuts(&client, &phone_a).await;
+        let read_a = install_widget(&client, &phone_a).await;
+        let mode_b = install_shortcuts(&client, &phone_b).await;
+        let read_b = install_widget(&client, &phone_b).await;
+        let mode_sam = install_shortcuts(&client, &sam).await;
+        // Installer sur le second iPhone n'a pas révoqué ceux du premier.
+        for t in [&mode_a, &mode_b] {
+            assert_eq!(put_presence(&client, t, "home").await.status, 200);
+        }
+        for t in [&read_a, &read_b] {
+            assert_eq!(client.get("/api/state", t).await.status, 200);
+        }
+        let items = client.get("/api/tokens", &phone_a).await.json()["items"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(items, 4);
+        // Réinstaller depuis le même téléphone ne remplace que le sien.
+        let mode_a2 = install_shortcuts(&client, &phone_a).await;
+        assert_eq!(put_presence(&client, &mode_a, "home").await.status, 401);
+        assert_eq!(put_presence(&client, &mode_b, "home").await.status, 200);
+
+        // Le téléphone A est perdu : on le coupe depuis le Mac. Sam ne peut pas le faire.
+        let path = "/api/me/installations/iphone-a-001";
+        assert_eq!(
+            client
+                .request("DELETE", path, Some(&sam), None)
+                .await
+                .status,
+            404
+        );
+        assert_eq!(put_presence(&client, &mode_a2, "home").await.status, 200);
+        assert_eq!(
+            client
+                .request("DELETE", path, Some(&mac), None)
+                .await
+                .status,
+            204
+        );
+        assert_eq!(put_presence(&client, &mode_a2, "away").await.status, 401);
+        assert_eq!(put_mode(&client, &mode_a2, "nuit").await.status, 401);
+        assert_eq!(client.get("/api/state", &read_a).await.status, 401);
+        assert_eq!(client.get("/api/state", &phone_a).await.status, 401);
+        // Les autres téléphones, le Mac et Sam n'ont rien perdu.
+        assert_eq!(put_presence(&client, &mode_b, "home").await.status, 200);
+        assert_eq!(client.get("/api/state", &read_b).await.status, 200);
+        assert_eq!(put_presence(&client, &mode_sam, "home").await.status, 200);
+        assert_eq!(client.get("/api/state", &mac).await.status, 200);
+        let left = client.get("/api/tokens", &mac).await.json();
+        assert_eq!(left["items"].as_array().unwrap().len(), 2, "{left}");
+        // Une seconde coupure : plus rien à couper.
+        assert_eq!(
+            client
+                .request("DELETE", path, Some(&mac), None)
+                .await
+                .status,
+            404
+        );
+    });
+}
+
+#[test]
+fn leaving_home_arms_the_house_only_when_the_last_person_leaves() {
+    let dir = temp_dir("tokens-presence-rule");
+    let server = start(&dir);
+    let client = server.client();
+    assert!(user(
+        &dir,
+        &["add", "--username", "sam", "--display-name", "Sam"],
+        Some(SAM_PASSWORD)
+    ));
+    runtime().block_on(async {
+        let hamdi = client.login().await;
+        let sam = client.login_as("sam", SAM_PASSWORD, PROTOCOL).await.json()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let hamdi_mode = install_shortcuts(&client, &hamdi).await;
+        let sam_mode = install_shortcuts(&client, &sam).await;
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
+
+        // Hamdi est là. Le « Je pars » de Sam n'arme pas la maison.
+        assert_eq!(put_presence(&client, &hamdi_mode, "home").await.status, 200);
+        assert_eq!(put_presence(&client, &sam_mode, "away").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
+        // Puis Hamdi part à son tour : le dernier parti, la maison passe en Absent.
+        assert_eq!(put_presence(&client, &hamdi_mode, "away").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "absent");
+        // Quelqu'un rentre : Présent.
+        assert_eq!(put_presence(&client, &sam_mode, "home").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "present");
+
+        // La nuit, une arrivée ne réveille pas la maison.
+        assert_eq!(put_mode(&client, &sam_mode, "nuit").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "nuit");
+        assert_eq!(put_presence(&client, &hamdi_mode, "home").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "nuit");
+        // Une personne désactivée ne compte pas comme « à la maison ».
+        assert_eq!(put_presence(&client, &hamdi_mode, "away").await.status, 200);
+        assert!(user(&dir, &["disable", "--username", "sam"], None));
+        assert_eq!(put_presence(&client, &hamdi_mode, "home").await.status, 200);
+        assert_eq!(put_presence(&client, &hamdi_mode, "away").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "absent");
     });
 }

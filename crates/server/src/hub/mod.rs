@@ -607,7 +607,7 @@ impl Hub {
         let change = try_change(&self.tokens)?;
         let token = Change::draw();
         change
-            .install(user_id, kind, label, &token)
+            .install(user_id, kind, label, None, &token)
             .map_err(install_error)?;
         if kind == Kind::Mode {
             self.shortcut_downloads.clear(user_id);
@@ -636,6 +636,7 @@ impl Hub {
         &self,
         user_id: &str,
         label: &str,
+        installation_id: Option<&str>,
         build: impl FnOnce(&str) -> Result<Vec<(String, Vec<u8>)>, ApiError>,
         still_wanted: impl Fn() -> bool,
     ) -> ApiResult<Vec<String>> {
@@ -646,7 +647,7 @@ impl Hub {
             return Err(abandoned());
         }
         change
-            .install(user_id, Kind::Mode, label, &token)
+            .install(user_id, Kind::Mode, label, installation_id, &token)
             .map_err(install_error)?;
         Ok(self.shortcut_downloads.replace(user_id, files))
     }
@@ -657,6 +658,7 @@ impl Hub {
         &self,
         user_id: &str,
         label: &str,
+        installation_id: Option<&str>,
         build: impl FnOnce(&str) -> Result<T, ApiError>,
         still_wanted: impl Fn() -> bool,
     ) -> ApiResult<T> {
@@ -667,7 +669,7 @@ impl Hub {
             return Err(abandoned());
         }
         change
-            .install(user_id, Kind::Read, label, &token)
+            .install(user_id, Kind::Read, label, installation_id, &token)
             .map_err(install_error)?;
         Ok(built)
     }
@@ -686,6 +688,27 @@ impl Hub {
         }
         self.shortcut_downloads.clear(user_id);
         Ok(())
+    }
+
+    /// Révoque les raccourcis et le widget préparés depuis une connexion qu'on vient de couper,
+    /// et oublie les liens de téléchargement de ces personnes. `user_id` : limite à une personne
+    /// (l'API) ; `None` : la fenêtre du serveur. Rend le nombre de jetons révoqués.
+    ///
+    /// Attend son tour (une signature en cours dure quelques secondes) : une coupure ne doit
+    /// jamais laisser un jeton valable. À appeler hors d'une tâche asynchrone.
+    pub fn revoke_installation_tokens(
+        &self,
+        user_id: Option<&str>,
+        installation_id: &str,
+    ) -> ApiResult<usize> {
+        let change = self.tokens.change();
+        let (users, n) = change
+            .revoke_installation(user_id, installation_id)
+            .map_err(install_error)?;
+        for user in users {
+            self.shortcut_downloads.clear(&user);
+        }
+        Ok(n)
     }
 
     /// Révoque tous les jetons de mode (raccourcis) ou tous ceux de lecture (widgets) de cette
@@ -757,7 +780,7 @@ impl Hub {
         let change = try_change(&self.tokens)?;
         let token = Change::draw();
         change
-            .install(&first, Kind::Mode, Self::WINDOW_LABEL, &token)
+            .install(&first, Kind::Mode, Self::WINDOW_LABEL, None, &token)
             .map_err(install_error)?;
         for t in old.iter().filter(|t| t.label != Self::WINDOW_LABEL) {
             change.revoke(&first, &t.id).map_err(install_error)?;
@@ -816,6 +839,23 @@ impl Hub {
         self.presence
             .declare(user_id, state, source)
             .map_err(|e| internal("présence", &e))
+    }
+
+    /// Après la déclaration de `user_id` par un raccourci : met la maison dans le mode que la
+    /// règle de [`crate::presence::mode_after`] en tire, ou la laisse telle quelle. `is_active` :
+    /// le compte existe-t-il et est-il actif ? (Une personne désactivée ne compte pas comme
+    /// « à la maison ».) Rend `true` si le mode a changé.
+    pub fn follow_presence(
+        &self,
+        user_id: &str,
+        state: crate::presence::Whereabouts,
+        is_active: impl Fn(&str) -> bool,
+    ) -> ApiResult<bool> {
+        let declared = self.presence.all();
+        match crate::presence::mode_after(user_id, state, self.mode(), &declared, is_active) {
+            Some(mode) => self.set_mode(mode, ModeSource::Shortcut),
+            None => Ok(false),
+        }
     }
 
     /// Ce que chacun a déclaré en dernier.
@@ -1716,6 +1756,7 @@ pub(crate) mod tests {
             .prepare_mode_shortcuts(
                 "lea",
                 "iPhone",
+                None,
                 |_| Err(ApiError::with_detail(ErrorCode::Unavailable, "signature")),
                 || true,
             )
@@ -1727,6 +1768,7 @@ pub(crate) mod tests {
             .prepare_mode_shortcuts(
                 "lea",
                 "iPhone",
+                None,
                 |token| {
                     drawn = token.to_string();
                     Ok(vec![("x".into(), token.as_bytes().to_vec())])
@@ -1744,6 +1786,7 @@ pub(crate) mod tests {
             .prepare_mode_shortcuts(
                 "lea",
                 "iPhone",
+                None,
                 |t| Ok(vec![("x".into(), t.as_bytes().to_vec())]),
                 || true,
             )
@@ -1752,6 +1795,7 @@ pub(crate) mod tests {
             .prepare_mode_shortcuts(
                 "adam",
                 "iPhone",
+                None,
                 |t| Ok(vec![("y".into(), t.as_bytes().to_vec())]),
                 || true,
             )
@@ -1777,6 +1821,7 @@ pub(crate) mod tests {
                 hub.prepare_mode_shortcuts(
                     "lea",
                     "iPhone",
+                    None,
                     |_| {
                         entered_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
@@ -1792,7 +1837,7 @@ pub(crate) mod tests {
             again.generate_mode_token("adam", "x").map(|_| ()),
             again.revoke_token("adam", &some_id),
             again
-                .prepare_mode_shortcuts("adam", "x", |_| Ok(vec![]), || true)
+                .prepare_mode_shortcuts("adam", "x", None, |_| Ok(vec![]), || true)
                 .map(|_| ()),
         ] {
             assert_eq!(busy.unwrap_err().code, ErrorCode::Busy);
@@ -1805,7 +1850,7 @@ pub(crate) mod tests {
         assert!(worker.join().unwrap().is_ok());
         let again = std::sync::Arc::try_unwrap(again).ok().unwrap();
         let script = again
-            .prepare_widget("lea", "iPhone", |t| Ok(format!("TOKEN={t}")), || true)
+            .prepare_widget("lea", "iPhone", None, |t| Ok(format!("TOKEN={t}")), || true)
             .unwrap();
         // Le même téléphone : l'ancien jeton de lecture est remplacé.
         assert!(again.verify_read_token(&read).is_none());
@@ -1813,7 +1858,7 @@ pub(crate) mod tests {
             .verify_read_token(script.trim_start_matches("TOKEN="))
             .is_some());
         assert!(again
-            .prepare_widget("lea", "iPhone", |_| Ok(()), || false)
+            .prepare_widget("lea", "iPhone", None, |_| Ok(()), || false)
             .is_err());
         assert!(again
             .verify_read_token(script.trim_start_matches("TOKEN="))

@@ -71,6 +71,10 @@ async fn status(
     Json(state.hub.push().status_for(&session.user_id))
 }
 
+/// `PUT /api/push` : l'interrupteur général des notifications. C'est un **réglage commun à toute
+/// la maison**, pas un réglage personnel : il vaut pour tous les comptes (les abonnements, eux,
+/// restent personnels). N'importe quelle personne connectée peut le changer ; la réponse ne montre
+/// que ses propres appareils.
 async fn settings(
     State(state): State<AppState>,
     Extension(session): Extension<SessionInfo>,

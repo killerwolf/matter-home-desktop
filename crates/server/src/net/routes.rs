@@ -662,7 +662,8 @@ async fn put_mode(
 
 /// `PUT /api/presence` `{"state": "home" | "away"}` : la personne dit où elle est (raccourcis « Je
 /// rentre » et « Je pars »). Mêmes jetons que `PUT /api/mode`. Le serveur retient seulement ce
-/// que chacun a déclaré : le mode de la maison ne change pas pour autant.
+/// que chacun a déclaré. Avec un jeton de mode (les raccourcis), le mode de la maison suit la règle
+/// de `presence::mode_after` ; une session ne fait que déclarer.
 async fn put_presence(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -685,17 +686,21 @@ async fn put_presence(
     let hub = state.hub.clone();
     let user_id = actor.user_id.clone();
     let changed = blocking(move || hub.declare_presence(&user_id, wanted, source)).await?;
-    // PROVISOIRE, jusqu'à la présence automatique (étape suivante) : un raccourci « Je pars » ou « Je
-    // rentre » fait ce que faisaient les raccourcis Absent et Présent, pour que les téléphones n'aient
-    // rien à réinstaller. L'étape suivante remplace ce bloc par la règle « Absent quand le dernier est
-    // parti, Présent dès que quelqu'un rentre » ; une session, elle, ne fait que déclarer.
+    // Un raccourci « Je pars » ou « Je rentre » fait aussi ce que faisaient les raccourcis Absent et
+    // Présent, pour que les téléphones n'aient rien à réinstaller, mais selon la règle de la maison
+    // (`presence::mode_after`) : Absent seulement quand personne d'autre n'est là, Présent seulement
+    // depuis Absent ou Vacances (jamais depuis Nuit). Une session, elle, ne fait que déclarer.
     if actor.by_mode_token {
-        let mode = match wanted {
-            crate::presence::Whereabouts::Away => protocol::mode::HomeMode::Absent,
-            crate::presence::Whereabouts::Home => protocol::mode::HomeMode::Present,
-        };
         let hub = state.hub.clone();
-        blocking(move || hub.set_mode(mode, ModeSource::Shortcut)).await?;
+        let state_for_accounts = state.clone();
+        let user_id = actor.user_id.clone();
+        blocking(move || {
+            hub.follow_presence(&user_id, wanted, |id| {
+                state_for_accounts.auth.accounts.is_active(id)
+            })
+            .map(|_| ())
+        })
+        .await?;
     }
     let who = state
         .auth
@@ -762,20 +767,27 @@ async fn my_connections(
     Json(ConnectionsResponse { connections })
 }
 
-/// `DELETE /api/me/installations/{id}` : coupe une connexion de la personne. Le jeton de cette
-/// connexion cesse de marcher tout de suite ; ses flux ouverts se ferment. Les connexions des
+/// `DELETE /api/me/installations/{id}` : coupe une connexion de la personne. Son jeton de session,
+/// ses raccourcis et son widget cessent de marcher tout de suite ; ses flux ouverts se ferment. Les connexions des
 /// autres comptes ne se coupent pas d'ici (404, comme si elles n'existaient pas).
 async fn cut_connection(
     State(state): State<AppState>,
     Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    if state
+    // Les sessions d'abord : plus aucune ne peut préparer de nouveaux raccourcis pour cette
+    // connexion. Puis ses raccourcis et son widget, même si la session avait déjà expiré :
+    // couper un téléphone perdu le coupe vraiment.
+    let cut = state
         .auth
         .sessions
-        .cut_connection(Some(&session.user_id), &id)
-        == 0
-    {
+        .cut_connection(Some(&session.user_id), &id);
+    let hub = state.hub.clone();
+    let user_id = session.user_id.clone();
+    let connection = id.clone();
+    let revoked =
+        blocking(move || hub.revoke_installation_tokens(Some(&user_id), &connection)).await?;
+    if cut == 0 && revoked == 0 {
         return Err(ApiError::new(ErrorCode::NotFound).into());
     }
     log::info!("connexion coupée par son propriétaire");

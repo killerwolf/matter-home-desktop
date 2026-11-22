@@ -502,6 +502,13 @@ fn run_create_account(args: &[String]) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
+    let old_ids: Vec<String> = if replace {
+        account::list(&dir)
+            .map(|users| users.into_iter().map(|u| u.id).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     match account::create(&dir, &username, &password, replace) {
         Ok(replaced) => {
             println!(
@@ -510,6 +517,12 @@ fn run_create_account(args: &[String]) -> ExitCode {
             );
             if replaced {
                 println!("Les sessions ouvertes sont fermées.");
+                let (tokens, subscriptions) = account::orphans_of(&dir, &old_ids);
+                if tokens + subscriptions > 0 {
+                    println!(
+                        "{tokens} jeton(s) de raccourci ou de widget et {subscriptions} abonnement(s) aux notifications des anciens comptes restent dans les fichiers, sans effet : plus aucun compte ne les porte."
+                    );
+                }
             }
             ExitCode::SUCCESS
         }

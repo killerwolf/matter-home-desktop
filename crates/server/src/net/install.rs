@@ -12,8 +12,10 @@
 //!
 //! Toutes les routes `/api/tokens…` exigent une session (jamais un jeton de mode ou de lecture).
 //! Le libellé (« iPhone de Hamdi ») est celui de la connexion qui demande, sauf si la page en
-//! envoie un : réinstaller sur le même téléphone remplace son jeton, jamais ceux des autres
-//! téléphones ni des autres personnes. Une préparation à la fois : une autre pendant ce temps
+//! envoie un ; il ne sert qu'à l'affichage. Le jeton est rattaché à la **connexion** qui le
+//! demande : réinstaller depuis la même connexion remplace son jeton, jamais ceux des autres
+//! téléphones (même s'ils portent le même nom) ni des autres personnes, et couper la connexion
+//! révoque ses raccourcis et son widget. Une préparation à la fois : une autre pendant ce temps
 //! répond `409 busy` tout de suite, sans faire la queue.
 //!
 //! Les raccourcis portent le jeton de mode : un lien de Safari ne peut pas poser d'en-tête
@@ -106,6 +108,19 @@ fn state_of(mine: &[TokenInfo], kind: Kind) -> TokenState {
         exists: created.is_some(),
         created,
     }
+}
+
+/// La connexion (installation) d'où la session demandeuse a ouvert son compte, si elle l'a
+/// annoncée : c'est à elle que le jeton est rattaché, pour que la couper le révoque. `None` : un
+/// ancien client, qui n'a rien dit de lui.
+fn installation_of(state: &AppState, session: &SessionInfo) -> Option<String> {
+    state
+        .auth
+        .sessions
+        .connections()
+        .into_iter()
+        .find(|c| c.session_id == session.id && !c.unknown)
+        .map(|c| c.id)
 }
 
 /// Le libellé d'un nouveau jeton : celui que la page envoie, sinon le nom de la connexion qui
@@ -294,6 +309,7 @@ async fn mode_shortcuts(
     let address = this_mac(&headers, &request.origin)?;
     let (hub, signer) = (state.hub.clone(), state.signer);
     let label = label_for(&state, &session, request.label.as_deref());
+    let installation = installation_of(&state, &session);
     let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
     let still_wanted = wanted.probe();
@@ -301,6 +317,7 @@ async fn mode_shortcuts(
         hub.prepare_mode_shortcuts(
             &user_id,
             &label,
+            installation.as_deref(),
             |token| signer.sign_shortcuts(&address, token),
             still_wanted,
         )
@@ -348,6 +365,7 @@ async fn widget(
     let address = this_mac(&headers, &request.origin)?;
     let hub = state.hub.clone();
     let label = label_for(&state, &session, request.label.as_deref());
+    let installation = installation_of(&state, &session);
     let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
     let still_wanted = wanted.probe();
@@ -355,6 +373,7 @@ async fn widget(
         hub.prepare_widget(
             &user_id,
             &label,
+            installation.as_deref(),
             |token| Ok(shortcuts::widget_script(&address, token)),
             still_wanted,
         )

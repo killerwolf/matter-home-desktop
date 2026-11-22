@@ -14,23 +14,33 @@ Les téléchargements de chaque version sont sur la
 
 - Raccourcis, widget et notifications deviennent personnels. Les jetons de mode et de lecture se
   rangent dans `jetons.json` : un par téléphone, avec un libellé (« iPhone de Hamdi »), révocables un
-  par un sans toucher à ceux des autres. Réinstaller sur le même téléphone remplace son jeton ; un
-  compte désactivé perd les siens.
+  par un sans toucher à ceux des autres. Chaque jeton est rattaché à la connexion d'où il a été
+  préparé : réinstaller depuis la même connexion remplace son jeton (deux téléphones nommés
+  « iPhone » gardent chacun le leur), et couper une connexion coupe aussi ses raccourcis et son
+  widget. Les raccourcis et le widget d'un compte désactivé cessent de marcher tant qu'il l'est ; ils
+  remarchent à la réactivation.
 - Migration sans casse : `jeton-mode.json` et `jeton-lecture.json` deviennent des jetons du premier
   utilisateur (même empreinte) ; les raccourcis et le widget déjà installés continuent de marcher.
   Les anciens fichiers restent en place, intacts. Les abonnements aux notifications sont rattachés
   au premier utilisateur au démarrage (un champ s'ajoute dans `push.json`, rien d'autre ne change).
-- Notifications : chaque personne voit, règle et révoque ses appareils ; chacun reçoit selon ses
-  catégories. Un téléphone qui change de compte passe à la nouvelle personne.
+- Notifications : chaque personne voit, règle et révoque ses téléphones et ordinateurs ; chacun reçoit
+  selon ses catégories. L'interrupteur général reste un réglage commun à toute la maison. Un
+  téléphone qui change de compte passe à la nouvelle personne.
 - App web, « Widgets et raccourcis » : « Installer mes raccourcis » (« Je pars », « Je rentre »,
   Mode nuit, Mode vacances) et « Votre widget », au jeton de la personne ; « Je pars » et « Je rentre »
   disent où elle est ; une note remplace les deux sections sur Android. Le widget propose
   « Je pars » et « Je rentre ». « Mode absent » et « Mode présent », déjà installés, marchent encore.
 - Présence déclarée : `PUT /api/presence` (`{"state": "home" | "away"}`, jeton de mode ou session)
   garde ce que chacun a dit dans `presence.json`. En attendant la présence automatique, « Je pars » et
-  « Je rentre » (jeton de mode) passent la maison en Absent et en Présent, comme les raccourcis
-  d'avant : les téléphones n'auront rien à réinstaller. Une session ne fait que déclarer.
+  « Je rentre » (jeton de mode) font ce que faisaient les raccourcis d'avant, sans rien à réinstaller,
+  mais selon la règle de la maison : la maison passe en Absent seulement si personne d'autre n'est
+  à la maison, et en Présent seulement depuis Absent ou Vacances (une arrivée la nuit ne réveille pas
+  la maison). Une session ne fait que déclarer.
 - Ostal Server : le code secret et le widget de la fenêtre sont ceux du premier compte.
+- Les commandes `user add`, `user passwd`, `user disable` et `user enable`, et la fenêtre du serveur,
+  prennent un verrou (`serveur/comptes.lock`) : deux modifications simultanées des comptes ne se
+  perdent plus. `create-account --replace` dit combien de jetons et d'abonnements des anciens comptes
+  restent dans les fichiers, sans effet.
 
 ### Connexions (multi-comptes, étape 2)
 

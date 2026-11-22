@@ -223,6 +223,9 @@ pub fn check_password(password: &str) -> Result<()> {
     Ok(())
 }
 
+/// Le verrou des modifications de `comptes.json`.
+const LOCK_FILE: &str = "comptes.lock";
+
 fn users_path(dir: &Path) -> PathBuf {
     dir.join(USERS_FILE)
 }
@@ -287,6 +290,26 @@ fn read_users(dir: &Path) -> Result<UsersFile> {
     bail!("comptes illisibles dans {}", path.display())
 }
 
+/// Verrou entre processus autour de chaque lecture-modification-écriture de `comptes.json`
+/// (`serveur/comptes.lock`) : une commande `user add` lancée pendant qu'Ostal Server ajoute un
+/// compte ne perd plus l'une des deux écritures. Le verrou tombe quand le fichier est fermé, même
+/// si le processus s'arrête.
+fn with_users_lock<T>(dir: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let path = dir.join(LOCK_FILE);
+    let lock = options
+        .open(&path)
+        .with_context(|| format!("ouverture de {}", path.display()))?;
+    lock.lock()
+        .with_context(|| format!("verrou de {}", path.display()))?;
+    let result = work();
+    drop(lock);
+    result
+}
+
 fn write_users(dir: &Path, file: &UsersFile) -> Result<()> {
     super::write_secret(
         &users_path(dir),
@@ -331,58 +354,66 @@ pub fn add(dir: &Path, username: &str, display_name: Option<&str>, password: &st
     let display_name = display_name.unwrap_or(username);
     check_display_name(display_name)?;
     check_password(password)?;
-    let mut file = read_users(dir)?;
-    if find_index(&file, username).is_some() {
-        bail!("l'identifiant « {username} » est déjà pris");
-    }
-    let user = StoredUser {
-        id: new_id(),
-        username: username.to_string(),
-        display_name: display_name.to_string(),
-        password_hash: hash_password(password)?,
-        role: Role::Admin,
-        active: true,
-        created: now(),
-        session_epoch: 0,
-    };
-    let out = User::from(&user);
-    file.version = 1;
-    file.users.push(user);
-    write_users(dir, &file)?;
-    Ok(out)
+    let hash = hash_password(password)?;
+    with_users_lock(dir, || {
+        let mut file = read_users(dir)?;
+        if find_index(&file, username).is_some() {
+            bail!("l'identifiant « {username} » est déjà pris");
+        }
+        let user = StoredUser {
+            id: new_id(),
+            username: username.to_string(),
+            display_name: display_name.to_string(),
+            password_hash: hash,
+            role: Role::Admin,
+            active: true,
+            created: now(),
+            session_epoch: 0,
+        };
+        let out = User::from(&user);
+        file.version = 1;
+        file.users.push(user);
+        write_users(dir, &file)?;
+        Ok(out)
+    })
 }
 
 /// Définit un nouveau mot de passe (`key` : identifiant de connexion ou identifiant interne) et
 /// coupe toutes les sessions de cet utilisateur.
 pub fn set_password(dir: &Path, key: &str, password: &str) -> Result<User> {
     check_password(password)?;
-    let mut file = read_users(dir)?;
-    let i = find_index(&file, key).with_context(|| format!("aucun compte « {key} »"))?;
-    file.users[i].password_hash = hash_password(password)?;
-    file.users[i].session_epoch += 1;
-    let out = User::from(&file.users[i]);
-    write_users(dir, &file)?;
-    Ok(out)
+    let hash = hash_password(password)?;
+    with_users_lock(dir, || {
+        let mut file = read_users(dir)?;
+        let i = find_index(&file, key).with_context(|| format!("aucun compte « {key} »"))?;
+        file.users[i].password_hash = hash;
+        file.users[i].session_epoch += 1;
+        let out = User::from(&file.users[i]);
+        write_users(dir, &file)?;
+        Ok(out)
+    })
 }
 
 /// Désactive ou réactive un compte. Désactiver coupe toutes ses sessions ; le dernier compte
 /// actif ne peut pas être désactivé (plus personne ne pourrait se connecter).
 pub fn set_active(dir: &Path, key: &str, active: bool) -> Result<User> {
-    let mut file = read_users(dir)?;
-    let i = find_index(&file, key).with_context(|| format!("aucun compte « {key} »"))?;
-    if file.users[i].active == active {
-        return Ok(User::from(&file.users[i]));
-    }
-    if !active && file.users.iter().filter(|u| u.active).count() <= 1 {
-        bail!("c'est le dernier compte actif : le désactiver empêcherait toute connexion");
-    }
-    file.users[i].active = active;
-    if !active {
-        file.users[i].session_epoch += 1;
-    }
-    let out = User::from(&file.users[i]);
-    write_users(dir, &file)?;
-    Ok(out)
+    with_users_lock(dir, || {
+        let mut file = read_users(dir)?;
+        let i = find_index(&file, key).with_context(|| format!("aucun compte « {key} »"))?;
+        if file.users[i].active == active {
+            return Ok(User::from(&file.users[i]));
+        }
+        if !active && file.users.iter().filter(|u| u.active).count() <= 1 {
+            bail!("c'est le dernier compte actif : le désactiver empêcherait toute connexion");
+        }
+        file.users[i].active = active;
+        if !active {
+            file.users[i].session_epoch += 1;
+        }
+        let out = User::from(&file.users[i]);
+        write_users(dir, &file)?;
+        Ok(out)
+    })
 }
 
 /// Crée le premier compte (première installation, `create-account`) ou, avec `replace`,
@@ -391,34 +422,67 @@ pub fn set_active(dir: &Path, key: &str, active: bool) -> Result<User> {
 pub fn create(dir: &Path, username: &str, password: &str, replace: bool) -> Result<bool> {
     check_username(username)?;
     check_password(password)?;
-    let existed = match read_users(dir) {
-        Ok(file) => !file.users.is_empty(),
-        // Un fichier abîmé ne doit pas empêcher de repartir de zéro avec --replace.
-        Err(_) if replace => true,
-        Err(e) => return Err(e),
+    let hash = hash_password(password)?;
+    with_users_lock(dir, || {
+        let existed = match read_users(dir) {
+            Ok(file) => !file.users.is_empty(),
+            // Un fichier abîmé ne doit pas empêcher de repartir de zéro avec --replace.
+            Err(_) if replace => true,
+            Err(e) => return Err(e),
+        };
+        if existed && !replace {
+            bail!("un compte existe déjà ; ajoutez les suivants avec « ostal-server user add », ou utilisez --replace pour tout remplacer (les sessions ouvertes seront fermées)");
+        }
+        let file = UsersFile {
+            version: 1,
+            users: vec![StoredUser {
+                id: new_id(),
+                username: username.to_string(),
+                display_name: username.to_string(),
+                password_hash: hash,
+                role: Role::Admin,
+                active: true,
+                created: now(),
+                session_epoch: 0,
+            }],
+        };
+        write_users(dir, &file)?;
+        // Les anciennes sessions ne correspondent plus à aucun compte : on les retire aussi du
+        // disque.
+        if existed {
+            let _ = std::fs::remove_file(dir.join(super::sessions::FILE_NAME));
+        }
+        Ok(existed)
+    })
+}
+
+/// Après un `--replace` : combien de jetons de raccourci et d'abonnements aux notifications
+/// appartenaient aux anciens comptes (`old_ids`) et restent dans `jetons.json` et `push.json`.
+/// Ils ne servent plus à rien : le serveur refuse tout jeton, et ignore tout abonnement, dont le
+/// propriétaire n'existe plus. On ne les retire pas d'ici, car un serveur qui tourne garde ces
+/// fichiers en mémoire et les réécrirait. Lecture seule.
+pub fn orphans_of(dir: &Path, old_ids: &[String]) -> (usize, usize) {
+    let count = |file: &str, key: &str| -> usize {
+        std::fs::read_to_string(dir.join(file))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|json| json.get(key).and_then(|v| v.as_array()).cloned())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.get("user_id")
+                            .and_then(|u| u.as_str())
+                            .is_some_and(|u| old_ids.iter().any(|old| old == u))
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     };
-    if existed && !replace {
-        bail!("un compte existe déjà ; ajoutez les suivants avec « ostal-server user add », ou utilisez --replace pour tout remplacer (les sessions ouvertes seront fermées)");
-    }
-    let file = UsersFile {
-        version: 1,
-        users: vec![StoredUser {
-            id: new_id(),
-            username: username.to_string(),
-            display_name: username.to_string(),
-            password_hash: hash_password(password)?,
-            role: Role::Admin,
-            active: true,
-            created: now(),
-            session_epoch: 0,
-        }],
-    };
-    write_users(dir, &file)?;
-    // Les anciennes sessions ne correspondent plus à aucun compte : on les retire aussi du disque.
-    if existed {
-        let _ = std::fs::remove_file(dir.join(super::sessions::FILE_NAME));
-    }
-    Ok(existed)
+    (
+        count(super::user_tokens::FILE, "tokens"),
+        count(crate::push::store::FILE, "subscriptions"),
+    )
 }
 
 /// (date de modification, taille, inode) : change à chaque écriture de `comptes.json`. Chaque
@@ -554,6 +618,46 @@ mod tests {
             Verdict::Valid(g) => g,
             Verdict::Invalid => panic!("identifiants refusés"),
         }
+    }
+
+    #[test]
+    fn simultaneous_additions_do_not_lose_each_other() {
+        let dir = temp("verrou");
+        create(&dir, "hamdi", PW, false).unwrap();
+        let workers: Vec<_> = (0..6)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || add(&dir, &format!("user{i}"), None, PW).unwrap())
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        assert_eq!(list(&dir).unwrap().len(), 7);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replacing_counts_what_the_old_accounts_leave_behind() {
+        let dir = temp("orphelins");
+        create(&dir, "hamdi", PW, false).unwrap();
+        let old: Vec<String> = list(&dir).unwrap().into_iter().map(|u| u.id).collect();
+        std::fs::write(
+            dir.join(super::super::user_tokens::FILE),
+            format!(
+                "{{\"version\":1,\"tokens\":[{{\"user_id\":\"{}\"}},{{\"user_id\":\"autre\"}}]}}",
+                old[0]
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(crate::push::store::FILE),
+            format!("{{\"subscriptions\":[{{\"user_id\":\"{}\"}}]}}", old[0]),
+        )
+        .unwrap();
+        assert_eq!(orphans_of(&dir, &old), (1, 1));
+        assert_eq!(orphans_of(&dir, &["rien".to_string()]), (0, 0));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

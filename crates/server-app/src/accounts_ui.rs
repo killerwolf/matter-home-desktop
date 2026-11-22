@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
+use ostal_server::hub::Hub;
 use ostal_server::net::Auth;
 use ostal_server::security::account::User;
 use ostal_server_app::accounts::{self, ConnectionRow, NewAccount};
@@ -181,6 +182,7 @@ impl AccountsUi {
         ctx: &egui::Context,
         data_dir: &Path,
         auth: Option<&Arc<Auth>>,
+        hub: Option<&Arc<Hub>>,
     ) -> bool {
         self.poll(data_dir);
         let (now, offset) = accounts::clock();
@@ -201,7 +203,7 @@ impl AccountsUi {
             View::Connections => leave = self.connections_page(ui),
         }
         if let Some((name, id)) = self.cut.take() {
-            self.cut_connection(auth, &name, &id);
+            self.cut_connection(auth, hub, &name, &id);
         }
         if busy {
             ui.add_space(8.0);
@@ -225,16 +227,26 @@ impl AccountsUi {
     }
 
     /// Coupe une connexion après confirmation, et le dit.
-    fn cut_connection(&mut self, auth: Option<&Arc<Auth>>, name: &str, id: &str) {
+    fn cut_connection(
+        &mut self,
+        auth: Option<&Arc<Auth>>,
+        hub: Option<&Arc<Hub>>,
+        name: &str,
+        id: &str,
+    ) {
         let Some(auth) = auth else { return };
         if !confirm::ask(&Confirmation::CutConnection { name: name.into() }) {
             return;
         }
-        self.notice = Some(if accounts::cut_connection(auth, id) {
-            Notice::Ok(format!("Connexion « {name} » coupée."))
-        } else {
-            Notice::Err("Cette connexion était déjà fermée.".into())
-        });
+        self.notice = Some(
+            match accounts::cut_connection(auth, hub.map(|h| &**h), id) {
+                Ok(true) => Notice::Ok(format!("Connexion « {name} » coupée.")),
+                Ok(false) => Notice::Err("Cette connexion était déjà fermée.".into()),
+                Err(e) => Notice::Err(format!(
+                "Connexion « {name} » fermée, mais ses raccourcis n'ont pas pu être coupés : {e}"
+            )),
+            },
+        );
     }
 
     /// « Réglages › Comptes » : « Réglages » ramène en arrière.
@@ -493,7 +505,7 @@ impl AccountsUi {
             ui.add_space(6.0);
             ui.label(RichText::new("Accès à la maison").strong());
             if user.active {
-                ui.label("Ses connexions et ses raccourcis cessent de marcher. Le compte reste là : vous pouvez le réactiver.");
+                ui.label("Ses connexions, ses raccourcis et son widget cessent de marcher tant que le compte est désactivé. Le compte reste là : vous pouvez le réactiver, et ses raccourcis et son widget remarcheront.");
                 ui.horizontal(|ui| {
                     // Un bouton grisé dit toujours pourquoi, juste à côté.
                     let enabled = !busy && !last_active;

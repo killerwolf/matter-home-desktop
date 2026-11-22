@@ -68,6 +68,10 @@ struct Entry {
     user_id: String,
     kind: Kind,
     label: String,
+    /// La connexion (téléphone, ordinateur) depuis laquelle le jeton a été préparé : couper cette
+    /// connexion le révoque. Absent : jeton d'origine, ou préparé depuis une connexion inconnue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    installation_id: Option<String>,
     /// SHA-256 du jeton, hexadécimal.
     hash: String,
     /// Secondes Unix.
@@ -96,6 +100,8 @@ pub struct TokenInfo {
     pub user_id: String,
     pub kind: Kind,
     pub label: String,
+    /// La connexion d'où il a été préparé, si on la connaît.
+    pub installation_id: Option<String>,
     /// Secondes Unix.
     pub created: f64,
 }
@@ -107,6 +113,7 @@ impl From<&Entry> for TokenInfo {
             user_id: e.user_id.clone(),
             kind: e.kind,
             label: e.label.clone(),
+            installation_id: e.installation_id.clone(),
             created: e.created,
         }
     }
@@ -187,6 +194,12 @@ impl UserTokens {
                     );
                     std::fs::rename(&path, &aside)
                         .with_context(|| format!("mise de côté de {}", path.display()))?;
+                    // Un `jetons.json` vide à la place : sans lui, le prochain démarrage verrait
+                    // un fichier absent et rejouerait `jeton-mode.json` et `jeton-lecture.json`
+                    // (un jeton révoqué reviendrait).
+                    if let Err(e) = write_if_absent(dir, &[]) {
+                        log::error!("jetons : fichier vide non écrit : {e:#}");
+                    }
                     (Vec::new(), true)
                 }
             },
@@ -266,6 +279,7 @@ impl UserTokens {
                     user_id: user_id.clone(),
                     kind,
                     label: label.to_string(),
+                    installation_id: None,
                     hash: old.hash,
                     created: old.created,
                 })
@@ -416,13 +430,17 @@ impl Change<'_> {
         hex::encode(raw)
     }
 
-    /// Le jeton tiré devient celui de cette personne pour ce libellé. Un jeton de même type et de
-    /// même libellé (le même téléphone qui réinstalle) est remplacé ; les autres restent.
+    /// Le jeton tiré devient celui de cette personne pour cette connexion. Remplacé : le jeton de
+    /// même personne, de même type et de même `installation_id` (le même téléphone qui
+    /// réinstalle). Sans connexion connue, le libellé sert de repli, mais seulement face aux
+    /// jetons eux aussi sans connexion (jeton d'origine, session inconnue) : deux téléphones qui
+    /// s'appellent « iPhone » ne se remplacent jamais. Les autres restent.
     pub fn install(
         &self,
         user_id: &str,
         kind: Kind,
         label: &str,
+        installation_id: Option<&str>,
         token: &str,
     ) -> Result<TokenInfo, InstallError> {
         let label = clean_label(label, "Mon téléphone");
@@ -431,15 +449,19 @@ impl Change<'_> {
             user_id: user_id.to_string(),
             kind,
             label,
+            installation_id: installation_id.map(str::to_string),
             hash: hex::encode(hash_of(token)),
             created: now(),
         };
         let info = TokenInfo::from(&entry);
         self.store.commit(|entries| {
             entries.retain(|e| {
-                !(e.user_id == entry.user_id
-                    && e.kind == kind
-                    && same_label(&e.label, &entry.label))
+                let same_phone = match (&e.installation_id, &entry.installation_id) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => same_label(&e.label, &entry.label),
+                    _ => false,
+                };
+                !(e.user_id == entry.user_id && e.kind == kind && same_phone)
             });
             if entries
                 .iter()
@@ -461,6 +483,29 @@ impl Change<'_> {
             let before = entries.len();
             entries.retain(|e| !(e.user_id == user_id && e.id == id));
             Ok(entries.len() != before)
+        })
+    }
+
+    /// Révoque les jetons préparés depuis cette connexion (couper un téléphone perdu coupe ses
+    /// raccourcis et son widget). `user_id` : limite à une personne ; `None` pour la fenêtre du
+    /// serveur. Rend les personnes touchées, une fois chacune, et le nombre de jetons.
+    pub fn revoke_installation(
+        &self,
+        user_id: Option<&str>,
+        installation_id: &str,
+    ) -> Result<(Vec<String>, usize), InstallError> {
+        self.store.commit(|entries| {
+            let mut users: Vec<String> = Vec::new();
+            let before = entries.len();
+            entries.retain(|e| {
+                let hit = e.installation_id.as_deref() == Some(installation_id)
+                    && user_id.is_none_or(|u| u == e.user_id);
+                if hit && !users.contains(&e.user_id) {
+                    users.push(e.user_id.clone());
+                }
+                !hit
+            });
+            Ok((users, before - entries.len()))
         })
     }
 
@@ -501,11 +546,13 @@ mod tests {
         let change = store.change();
         let (t1, t2, t3) = (Change::draw(), Change::draw(), Change::draw());
         let a = change
-            .install("lea", Kind::Mode, "iPhone de Léa", &t1)
+            .install("lea", Kind::Mode, "iPhone de Léa", None, &t1)
             .unwrap();
-        change.install("lea", Kind::Mode, "iPad", &t2).unwrap();
         change
-            .install("adam", Kind::Mode, "iPhone de Léa", &t3)
+            .install("lea", Kind::Mode, "iPad", None, &t2)
+            .unwrap();
+        change
+            .install("adam", Kind::Mode, "iPhone de Léa", None, &t3)
             .unwrap();
         drop(change);
         assert_eq!(store.verify(Kind::Mode, &t1).unwrap().user_id, "lea");
@@ -528,10 +575,14 @@ mod tests {
         let store = UserTokens::in_memory();
         let change = store.change();
         let (old, other, new) = (Change::draw(), Change::draw(), Change::draw());
-        change.install("lea", Kind::Mode, "iPhone", &old).unwrap();
-        change.install("lea", Kind::Mode, "iPad", &other).unwrap();
         change
-            .install("lea", Kind::Mode, "  iphone ", &new)
+            .install("lea", Kind::Mode, "iPhone", None, &old)
+            .unwrap();
+        change
+            .install("lea", Kind::Mode, "iPad", None, &other)
+            .unwrap();
+        change
+            .install("lea", Kind::Mode, "  iphone ", None, &new)
             .unwrap();
         drop(change);
         assert!(store.verify(Kind::Mode, &old).is_none());
@@ -547,16 +598,22 @@ mod tests {
         let change = store.change();
         for i in 0..MAX_PER_USER {
             change
-                .install("lea", Kind::Read, &format!("tel {i}"), &Change::draw())
+                .install(
+                    "lea",
+                    Kind::Read,
+                    &format!("tel {i}"),
+                    None,
+                    &Change::draw(),
+                )
                 .unwrap();
         }
         assert!(matches!(
-            change.install("lea", Kind::Mode, "un de trop", &Change::draw()),
+            change.install("lea", Kind::Mode, "un de trop", None, &Change::draw()),
             Err(InstallError::TooMany)
         ));
         // Les autres ne sont pas gênés.
         change
-            .install("adam", Kind::Mode, "tel", &Change::draw())
+            .install("adam", Kind::Mode, "tel", None, &Change::draw())
             .unwrap();
     }
 
@@ -575,7 +632,7 @@ mod tests {
             let store = UserTokens::open(&dir).unwrap();
             store
                 .change()
-                .install("lea", Kind::Read, "iPhone", &token)
+                .install("lea", Kind::Read, "iPhone", None, &token)
                 .unwrap();
         }
         let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
@@ -672,6 +729,103 @@ mod tests {
         let store = UserTokens::open(&dir).unwrap();
         assert!(store.verify(Kind::Mode, "ancien-mode").is_none());
         assert!(dir.join("jetons.json.illisible").is_file());
+        // Au démarrage suivant, le fichier n'est plus absent : rien n'est rejoué.
+        drop(store);
+        let again = UserTokens::open(&dir).unwrap();
+        assert!(again.verify(Kind::Mode, "ancien-mode").is_none());
+        assert!(again.list("premier").is_empty());
+        drop(again);
+        let third = UserTokens::open(&dir).unwrap();
+        assert!(third.verify(Kind::Mode, "ancien-mode").is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn two_phones_with_the_same_name_keep_their_own_tokens() {
+        let store = UserTokens::in_memory();
+        let change = store.change();
+        let (a, b, a2, unknown, unknown2) = (
+            Change::draw(),
+            Change::draw(),
+            Change::draw(),
+            Change::draw(),
+            Change::draw(),
+        );
+        change
+            .install("lea", Kind::Mode, "iPhone", Some("tel-a-0001"), &a)
+            .unwrap();
+        change
+            .install("lea", Kind::Mode, "iPhone", Some("tel-b-0001"), &b)
+            .unwrap();
+        // Sans connexion connue, le libellé « iPhone » ne touche pas aux jetons des téléphones.
+        change
+            .install("lea", Kind::Mode, "iPhone", None, &unknown)
+            .unwrap();
+        // Le même téléphone qui réinstalle remplace le sien, quel que soit son nom.
+        change
+            .install(
+                "lea",
+                Kind::Mode,
+                "Téléphone de Léa",
+                Some("tel-a-0001"),
+                &a2,
+            )
+            .unwrap();
+        // Entre jetons sans connexion, le libellé sert de repli.
+        change
+            .install("lea", Kind::Mode, " IPHONE", None, &unknown2)
+            .unwrap();
+        drop(change);
+        assert!(store.verify(Kind::Mode, &a).is_none());
+        assert!(store.verify(Kind::Mode, &unknown).is_none());
+        for t in [&b, &a2, &unknown2] {
+            assert!(store.verify(Kind::Mode, t).is_some());
+        }
+        assert_eq!(store.list("lea").len(), 3);
+    }
+
+    #[test]
+    fn revoking_an_installation_takes_its_tokens_of_every_kind() {
+        let store = UserTokens::in_memory();
+        let change = store.change();
+        let (m, r, other, sams) = (
+            Change::draw(),
+            Change::draw(),
+            Change::draw(),
+            Change::draw(),
+        );
+        change
+            .install("lea", Kind::Mode, "iPhone", Some("tel-a-0001"), &m)
+            .unwrap();
+        change
+            .install("lea", Kind::Read, "iPhone", Some("tel-a-0001"), &r)
+            .unwrap();
+        change
+            .install("lea", Kind::Mode, "iPad", Some("tel-b-0001"), &other)
+            .unwrap();
+        change
+            .install("sam", Kind::Mode, "iPhone", Some("tel-a-0001"), &sams)
+            .unwrap();
+        // Limité à une personne : on ne coupe pas la connexion d'un autre.
+        assert_eq!(
+            change
+                .revoke_installation(Some("adam"), "tel-a-0001")
+                .unwrap(),
+            (Vec::new(), 0)
+        );
+        let (users, n) = change
+            .revoke_installation(Some("lea"), "tel-a-0001")
+            .unwrap();
+        assert_eq!((users, n), (vec!["lea".to_string()], 2));
+        drop(change);
+        assert!(store.verify(Kind::Mode, &m).is_none() && store.verify(Kind::Read, &r).is_none());
+        assert!(store.verify(Kind::Mode, &other).is_some());
+        assert!(store.verify(Kind::Mode, &sams).is_some());
+        // Sans limite (fenêtre du serveur) : tout ce qui porte cette connexion.
+        let (users, n) = store
+            .change()
+            .revoke_installation(None, "tel-a-0001")
+            .unwrap();
+        assert_eq!((users, n), (vec!["sam".to_string()], 1));
     }
 }

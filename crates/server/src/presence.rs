@@ -2,14 +2,16 @@
 //! raccourci « Je rentre » / « Je pars » (ou, plus tard, son téléphone vu sur le Wi-Fi) l'a dite.
 //!
 //! Rangée dans `serveur/presence.json` (0600, jamais exportée) : la dernière déclaration de chacun,
-//! avec la date du dernier changement. Pour l'instant, **rien n'en est déduit** : le mode de la
-//! maison ne change pas tout seul (c'est l'étape « présence et mode automatique »). Le serveur
-//! garde seulement ce que chacun a dit, pour que cette étape n'ait rien à migrer.
+//! avec la date du dernier changement. [`Presence`] ne déduit rien : elle garde ce que chacun a
+//! dit. La règle qui en tire le mode de la maison est [`mode_after`] ; elle ne sert pour l'instant
+//! qu'aux raccourcis « Je pars » et « Je rentre » (jeton de mode), le mode automatique complet
+//! (téléphone vu sur le Wi-Fi, etc.) étant l'étape « présence et mode automatique ».
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::Result;
+use protocol::mode::HomeMode;
 use serde::{Deserialize, Serialize};
 
 use crate::security::write_secret;
@@ -32,6 +34,33 @@ pub enum Source {
     Shortcut,
     /// La personne, depuis une session de l'app.
     Session,
+}
+
+/// Le mode que doit prendre la maison après que `user_id` vient de déclarer `wanted` (sa
+/// déclaration est déjà dans `declared`), ou `None` : le mode ne change pas.
+///
+/// - « partie » : **Absent** seulement si aucune autre personne active n'est à la maison (Absent
+///   veut dire « toutes les caméras en surveillance » : on ne l'arme pas sur quelqu'un qui est
+///   là), et si la maison n'est pas déjà Absent ou en Vacances ;
+/// - « à la maison » : **Présent** seulement si la maison est Absent ou en Vacances. Une arrivée
+///   la nuit ne réveille pas la maison : le mode Nuit reste.
+pub fn mode_after(
+    user_id: &str,
+    wanted: Whereabouts,
+    current: HomeMode,
+    declared: &[Declared],
+    is_active: impl Fn(&str) -> bool,
+) -> Option<HomeMode> {
+    let away_or_holiday = matches!(current, HomeMode::Absent | HomeMode::Vacances);
+    match wanted {
+        Whereabouts::Away => {
+            let someone_else_is_home = declared.iter().any(|d| {
+                d.user_id != user_id && d.state == Whereabouts::Home && is_active(&d.user_id)
+            });
+            (!someone_else_is_home && !away_or_holiday).then_some(HomeMode::Absent)
+        }
+        Whereabouts::Home => away_or_holiday.then_some(HomeMode::Present),
+    }
 }
 
 /// La dernière déclaration d'une personne.

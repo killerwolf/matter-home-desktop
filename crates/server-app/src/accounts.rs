@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use ostal_server::hub::Hub;
 use ostal_server::net::Auth;
 use ostal_server::persistence::SERVER_DIR;
 use ostal_server::security::account::{self, User};
@@ -174,10 +175,19 @@ pub fn clock() -> (f64, i64) {
     )
 }
 
-/// Coupe la connexion `id` (n'importe quelle personne : c'est la fenêtre du serveur). Rend `true`
-/// si elle existait encore.
-pub fn cut_connection(auth: &Auth, id: &str) -> bool {
-    auth.sessions.cut_connection(None, id) > 0
+/// Coupe la connexion `id` (n'importe quelle personne : c'est la fenêtre du serveur) : sa session,
+/// et ses raccourcis et son widget (le jeton d'un téléphone perdu ne doit plus rien pouvoir).
+/// Rend `true` si elle existait encore ou si elle avait encore des jetons. Peut attendre quelques
+/// secondes si une préparation de raccourcis est en cours.
+pub fn cut_connection(auth: &Auth, hub: Option<&Hub>, id: &str) -> Result<bool, String> {
+    let cut = auth.sessions.cut_connection(None, id);
+    let revoked = match hub {
+        Some(hub) => hub
+            .revoke_installation_tokens(None, id)
+            .map_err(|e| e.detail.unwrap_or_else(|| "écriture impossible".into()))?,
+        None => 0,
+    };
+    Ok(cut > 0 || revoked > 0)
 }
 
 /// « 3 connexions », « 1 connexion », « aucune connexion ».
@@ -366,9 +376,9 @@ mod tests {
         );
         assert_eq!(unknown.detail, "App pas encore à jour");
 
-        assert!(cut_connection(&auth, &mac.id));
-        assert!(!cut_connection(&auth, &mac.id));
-        assert!(cut_connection(&auth, &unknown.id));
+        assert_eq!(cut_connection(&auth, None, &mac.id), Ok(true));
+        assert_eq!(cut_connection(&auth, None, &mac.id), Ok(false));
+        assert_eq!(cut_connection(&auth, None, &unknown.id), Ok(true));
         assert_eq!(connection_rows(&auth, &users, now, offset).len(), 1);
         assert_eq!(count_label(0), "aucune connexion");
         assert_eq!(count_label(1), "1 connexion");

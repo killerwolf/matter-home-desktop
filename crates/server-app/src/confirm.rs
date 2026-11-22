@@ -77,7 +77,7 @@ impl Confirmation {
             ),
             Confirmation::DisableAccount { name } => (
                 format!("Désactiver le compte de {name} ?"),
-                "Ses connexions et ses raccourcis cessent de marcher tout de suite. Le compte reste là : vous pouvez le réactiver.".into(),
+                "Ses connexions, ses raccourcis et son widget cessent de marcher tout de suite, tant que le compte est désactivé. Le compte reste là : vous pouvez le réactiver, et ses raccourcis et son widget remarcheront.".into(),
                 "Désactiver",
             ),
             Confirmation::CutConnection { name } => (
