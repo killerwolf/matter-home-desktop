@@ -459,6 +459,7 @@ fn every_event_of_the_plan_is_written_with_who_where_and_the_result() {
 #[test]
 fn a_shortcut_says_where_it_comes_from_and_presence_changes_the_mode_automatically() {
     let dir = temp_dir("audit-shortcut");
+    common::enable_auto_mode(&dir, USER);
     let server = Server::start_with(&dir, &[("OSTAL_TEST_UNSIGNED_SHORTCUTS", "1")]);
     let client = server.client();
     runtime().block_on(async {
@@ -476,7 +477,8 @@ fn a_shortcut_says_where_it_comes_from_and_presence_changes_the_mode_automatical
         // Un raccourci qui choisit le mode : « raccourci », depuis le téléphone qui l'a préparé.
         let r = put_mode(&client, &token, json!({"mode": "nuit"})).await;
         assert_eq!(r.status, 200, "{}", r.text());
-        // « Je rentre » depuis la nuit ne change rien ; « Je pars » met la maison en Absent.
+        // « Je rentre » depuis la nuit ne change rien ; « Je pars » met la maison en Absent (le mode
+        // automatique est allumé et un téléphone est relié : sans cela, rien ne change).
         let r = client
             .send_json("PUT", "/api/presence", &token, &json!({"state": "home"}))
             .await;

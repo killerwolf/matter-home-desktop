@@ -22,6 +22,7 @@ export const ICONS = {
   fullscreenEnter: svg('<path d="M16.5 4.5h7v7M23.5 4.5l-8 8M11.5 23.5h-7v-7M4.5 23.5l8-8"/>'),
   fullscreenExit: svg('<path d="M23.5 12.5h-7v-7M16.5 12.5l8-8M4.5 15.5h7v7M11.5 15.5l-8 8"/>'),
   plan: svg('<rect x="4" y="5" width="20" height="18" rx="1.5"/><path d="M4 14h9M13 5v18M17 14h7"/>'),
+  phone: svg('<rect x="9" y="3.5" width="10" height="21" rx="2.2"/><path d="M13 21.5h2"/>'),
   thermo: svg('<path d="M12 16.2V5.5a2 2 0 0 1 4 0v10.7a4.5 4.5 0 1 1-4 0z"/>'),
 };
 

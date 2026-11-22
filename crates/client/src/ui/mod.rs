@@ -118,6 +118,8 @@ struct TempCacheKey {
 
 /// À quoi sert une requête en vol : la réponse est aiguillée d'après son numéro.
 enum Pending {
+    /// Qui est à la maison (`GET /api/presence/people`), toutes les minutes.
+    People,
     History {
         node_id: u64,
     },
@@ -277,6 +279,12 @@ pub struct MatterApp {
     data_dialog: Option<DataDialog>,
     /// La page « Mes connexions ».
     connections: connections::Page,
+    /// Qui est à la maison, lu toutes les minutes ; `None` : rien à montrer (pas de box, ou serveur
+    /// plus ancien qui n'a pas la route : alors on ne redemande plus).
+    people: Option<protocol::presence::PeopleView>,
+    people_asked: Option<Instant>,
+    people_pending: bool,
+    people_unsupported: bool,
     /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
     server: Option<String>,
     /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
@@ -369,6 +377,10 @@ impl MatterApp {
             select_on_arrival: None,
             data_dialog: None,
             connections: connections::Page::new(),
+            people: None,
+            people_asked: None,
+            people_pending: false,
+            people_unsupported: false,
             server: None,
             draft_server: None,
             test_after_save: None,
@@ -1434,10 +1446,14 @@ impl MatterApp {
             // `Model::cameras` est déjà à jour ; les pages caméras le relisent à chaque image.
             Change::CamerasChanged => {}
             // « Mode : Absent (raccourci iPhone) » ; un ancien serveur ne dit pas d'où il vient.
-            Change::ModeChanged(mode, source) => self.push_log(match source {
-                Some(source) => format!("Mode : {} ({})", mode.label(), source.label()),
-                None => format!("Mode : {}", mode.label()),
-            }),
+            Change::ModeChanged(mode, source) => {
+                // Le mode a bougé (peut-être par la présence) : on relit qui est à la maison.
+                self.people_asked = None;
+                self.push_log(match source {
+                    Some(source) => format!("Mode : {} ({})", mode.label(), source.label()),
+                    None => format!("Mode : {}", mode.label()),
+                });
+            }
         }
     }
 
@@ -1447,6 +1463,24 @@ impl MatterApp {
         };
         self.data_epoch += 1;
         match pending {
+            Pending::People => {
+                self.people_pending = false;
+                match result.and_then(|r| r.json::<protocol::presence::PeopleView>()) {
+                    Ok(view) => self.people = Some(view),
+                    // Un serveur plus ancien n'a pas la route : rien à montrer, sans bruit.
+                    Err(e)
+                        if matches!(
+                            e.api_code(),
+                            Some(ErrorCode::NotFound | ErrorCode::MethodNotAllowed)
+                        ) =>
+                    {
+                        self.people = None;
+                        self.people_unsupported = true;
+                    }
+                    // Réseau coupé ou autre : on garde ce qu'on savait.
+                    Err(_) => {}
+                }
+            }
             Pending::History { node_id } => {
                 let Some(entry) = self.series.get_mut(&node_id) else {
                     return;
@@ -2944,6 +2978,31 @@ impl MatterApp {
         self.save_documents(now, holding);
         self.maintain_series();
         self.maintain_temperatures();
+        self.maintain_people(now);
+    }
+
+    /// Relit qui est à la maison : à la connexion, toutes les minutes, et dès que le mode change.
+    fn maintain_people(&mut self, now: Instant) {
+        const EVERY: Duration = Duration::from_secs(60);
+        if !self.connected() || self.people_pending || self.people_unsupported {
+            return;
+        }
+        if self
+            .people_asked
+            .is_some_and(|at| now.duration_since(at) < EVERY)
+        {
+            return;
+        }
+        self.people_asked = Some(now);
+        if self
+            .request(
+                Pending::People,
+                Request::get(protocol::presence::PEOPLE_PATH),
+            )
+            .is_some()
+        {
+            self.people_pending = true;
+        }
     }
 
     /// Un envoi est à faire ou en vol : l'interface se réveille pour le déclencher à temps.

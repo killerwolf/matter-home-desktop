@@ -8,8 +8,7 @@
 //! « Connexions » de la liste, la page « Toutes les connexions » et la carte « Connexions de … »
 //! de la fiche, chacune avec « Couper ». Elles se lisent dans les sessions du serveur qui tourne.
 //!
-//! Une place est gardée pour la suite, sans rien dessiner d'ici là : [`AccountsUi::phone_section`],
-//! « Téléphone relié » de la fiche (présence, étape 6).
+//! La carte « Téléphone relié » de la fiche est dessinée par `presence_ui::phone_card`.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -25,6 +24,7 @@ use ostal_server_app::confirm::{self, Confirmation};
 use ostal_server_app::controller::Notice;
 use ostal_theme as theme;
 
+use crate::presence_ui::{self, PhonePicker};
 use crate::ui::widgets;
 
 /// Les comptes sont relus à cette cadence tant que la page est ouverte : une commande lancée
@@ -79,6 +79,8 @@ pub struct AccountsUi {
     /// Coupure en cours sur un fil à part (elle peut attendre jusqu'à une minute une signature de
     /// raccourcis : la fenêtre ne doit pas se figer) : nom de la connexion et résultat à venir.
     cutting: Option<(String, Receiver<Notice>)>,
+    /// Le choix du téléphone d'un compte (carte « Téléphone relié » de la fiche).
+    phone: PhonePicker,
 }
 
 impl AccountsUi {
@@ -203,7 +205,7 @@ impl AccountsUi {
             View::Closed => leave = true,
             View::List => leave = self.list(ui, busy),
             View::Add => self.add_form(ui, ctx, data_dir, busy),
-            View::Detail(id) => self.detail(ui, ctx, data_dir, &id, busy),
+            View::Detail(id) => self.detail(ui, ctx, data_dir, hub, &id, busy),
             View::Connections => leave = self.connections_page(ui),
         }
         if let Some((name, id)) = self.cut.take() {
@@ -456,6 +458,7 @@ impl AccountsUi {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         data_dir: &Path,
+        hub: Option<&Arc<Hub>>,
         id: &str,
         busy: bool,
     ) {
@@ -494,7 +497,7 @@ impl AccountsUi {
             );
             ui.add_space(6.0);
         }
-        self.phone_section(ui, &user);
+        presence_ui::phone_card(ui, &mut self.phone, hub, &user);
         self.connections_section(ui, &user);
 
         let last_active = accounts::is_last_active(&self.users, &user.id);
@@ -600,10 +603,6 @@ impl AccountsUi {
             });
         }
     }
-
-    /// « Téléphone relié » : la présence (Wi-Fi de la box) arrive à l'étape 6. Rien n'est dessiné
-    /// d'ici là.
-    fn phone_section(&self, _ui: &mut egui::Ui, _user: &User) {}
 
     /// « Connexions de … » : les téléphones et ordinateurs où le compte est ouvert, avec « Couper ».
     fn connections_section(&mut self, ui: &mut egui::Ui, user: &User) {

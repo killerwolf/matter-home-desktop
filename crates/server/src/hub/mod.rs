@@ -25,6 +25,9 @@ use protocol::wire::{
 };
 
 mod cameras;
+mod wifi;
+
+pub use wifi::{People, WifiReport};
 
 use crate::backup;
 use crate::cameras::{CameraBook, ViewerRegistry, Wake};
@@ -145,6 +148,8 @@ pub struct Hub {
     /// Où chacun a dit être (raccourcis « Je pars » / « Je rentre ») : voir `presence.rs`. Rien n'en
     /// est déduit pour l'instant.
     presence: crate::presence::Presence,
+    /// La box de la maison et les téléphones des comptes (présence par le Wi-Fi) : `wifi/`.
+    wifi: crate::wifi::Wifi,
     /// Le journal d'audit (`serveur/audit/`) : voir `audit.rs`.
     audit: Arc<crate::audit::AuditLog>,
     /// Ce que chaque compte a le droit de faire : voir `rights.rs`.
@@ -254,6 +259,19 @@ impl Hub {
             Ok(dir) => crate::presence::Presence::open(dir),
             Err(_) => crate::presence::Presence::in_memory(),
         };
+        // La démonstration ne sort jamais de la boucle locale : sa « box » est fictive (sans réseau),
+        // mais elle lit les mêmes fichiers (`box.json`, `telephones.json`) que le vrai serveur.
+        let box_api = || -> Box<dyn crate::wifi::bbox::BoxApi> {
+            if config.demo {
+                Box::new(crate::wifi::DemoBox)
+            } else {
+                Box::new(crate::wifi::bbox::CurlBox::default())
+            }
+        };
+        let wifi = match &server_dir {
+            Ok(dir) => crate::wifi::Wifi::open(dir, box_api()),
+            Err(_) => crate::wifi::Wifi::in_memory(box_api()),
+        };
         let audit = match &server_dir {
             Ok(dir) => crate::audit::AuditLog::open(dir),
             Err(_) => crate::audit::AuditLog::disabled(),
@@ -271,6 +289,7 @@ impl Hub {
             }),
             tokens,
             presence,
+            wifi,
             audit: Arc::new(audit),
             rights: crate::rights::Rights::new(),
             shortcut_downloads: Default::default(),
@@ -620,7 +639,48 @@ impl Hub {
     }
 
     fn change_mode(&self, mode: HomeMode, source: ModeSource) -> ApiResult<bool> {
+        self.change_mode_with(|_| Some(mode), source)
+    }
+
+    /// Comme [`Hub::set_mode_as`], mais le nouveau mode se décide **sous le verrou**, d'après le mode
+    /// du moment (`decide` rend `None` : on ne change rien). Un choix fait à la main entre-temps
+    /// n'est jamais écrasé par une décision prise sur un mode périmé.
+    pub fn set_mode_if(
+        &self,
+        decide: impl FnOnce(HomeMode) -> Option<HomeMode>,
+        source: ModeSource,
+        cause: crate::audit::ModeCause,
+    ) -> ApiResult<Option<HomeMode>> {
+        let mut chosen = None;
+        let changed = self.change_mode_with(
+            |current| {
+                chosen = decide(current);
+                chosen
+            },
+            source,
+        )?;
+        let Some(mode) = chosen.filter(|_| changed) else {
+            return Ok(None);
+        };
+        let mut entry = crate::audit::Entry::new(crate::audit::Action::ModeChanged, &cause.who)
+            .target(mode.key())
+            .source(cause.origin);
+        if let Some(detail) = &cause.detail {
+            entry = entry.detail(detail);
+        }
+        self.audit.record(entry);
+        Ok(Some(mode))
+    }
+
+    fn change_mode_with(
+        &self,
+        decide: impl FnOnce(HomeMode) -> Option<HomeMode>,
+        source: ModeSource,
+    ) -> ApiResult<bool> {
         let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mode) = decide(self.mode()) else {
+            return Ok(false);
+        };
         if self.mode() == mode {
             return Ok(false);
         }
@@ -897,10 +957,12 @@ impl Hub {
             .map_err(|e| internal("présence", &e))
     }
 
-    /// Après la déclaration de `user_id` par un raccourci : met la maison dans le mode que la
-    /// règle de [`crate::presence::mode_after`] en tire, ou la laisse telle quelle. `is_active` :
-    /// le compte existe-t-il et est-il actif ? (Une personne désactivée ne compte pas comme
-    /// « à la maison ».) Rend le mode final et ce qui l'a retenu, pour le dire à la personne.
+    /// Après la déclaration de `user_id` par un raccourci : met la maison dans le mode que la règle
+    /// de [`crate::presence::auto_mode`] en tire, ou la laisse telle quelle. **Rien ne change** tant
+    /// que l'interrupteur « Changer le mode de la maison selon la présence » est éteint, ou
+    /// qu'aucun téléphone n'est relié à un compte actif (la règle est la même que pour le Wi-Fi).
+    /// `is_active` : le compte existe-t-il et est-il actif ? (Une personne désactivée ne compte pas
+    /// comme « à la maison ».) Rend le mode final et ce qui l'a retenu, pour le dire à la personne.
     pub fn follow_presence(
         &self,
         user_id: &str,
@@ -908,27 +970,37 @@ impl Hub {
         is_active: impl Fn(&str) -> bool,
         who: &crate::audit::Who,
     ) -> ApiResult<crate::presence::Followed> {
+        use crate::presence::{auto_mode, Movement, Whereabouts};
         let declared = self.presence.all();
         let others_home = crate::presence::others_at_home(user_id, &declared, &is_active);
-        let changed =
-            match crate::presence::mode_after(user_id, state, self.mode(), &declared, is_active) {
-                // Le mode change tout seul, par la règle de présence : le journal l'attribue à
-                // celui qui a dit partir ou rentrer, d'où l'origine « automatique ».
-                Some(mode) => self.set_mode_as(
-                    mode,
+        let auto =
+            self.wifi.auto_mode() && self.wifi.phones().iter().any(|p| is_active(&p.user_id));
+        let movement = match state {
+            Whereabouts::Home => Some(Movement::Arrival),
+            Whereabouts::Away if others_home.is_empty() => Some(Movement::LastDeparture),
+            Whereabouts::Away => None,
+        };
+        let changed = match movement {
+            // Le mode change tout seul, par la règle de présence : le journal l'attribue à celui
+            // qui a dit partir ou rentrer, d'où l'origine « automatique ».
+            Some(movement) if auto => self
+                .set_mode_if(
+                    |current| auto_mode(movement, current),
                     ModeSource::Shortcut,
                     crate::audit::ModeCause {
                         who: who.clone(),
                         origin: crate::audit::Origin::Automatic,
                         detail: None,
                     },
-                )?,
-                None => false,
-            };
+                )?
+                .is_some(),
+            _ => false,
+        };
         Ok(crate::presence::Followed {
             mode: self.mode(),
             changed,
             others_home,
+            auto,
         })
     }
 

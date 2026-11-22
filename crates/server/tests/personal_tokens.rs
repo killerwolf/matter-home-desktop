@@ -190,15 +190,26 @@ fn a_2_0_0_folder_keeps_its_shortcuts_widget_and_old_clients_and_the_migration_i
         ] {
             assert!(!text.contains(&secret));
         }
-        // L'ancien jeton de mode sait aussi dire où l'on est ; en attendant la présence automatique,
-        // « Je pars » fait ce que faisait Absent.
+        // L'ancien jeton de mode sait aussi dire où l'on est. Le mode automatique est éteint après la
+        // mise à jour : « Je pars » est noté, la maison ne change pas (et le dit).
         assert_eq!(mode_of(&client, OLD_SESSION).await, "nuit");
         let r = put_presence(&client, OLD_MODE, "away").await;
         assert_eq!(
             r.json(),
-            json!({"state": "away", "changed": true, "mode": "absent", "message": "Maison en mode Absent."})
+            json!({"state": "away", "changed": true, "mode": "nuit",
+                   "message": "C'est noté. Le mode automatique est désactivé : la maison reste en Nuit."})
         );
-        assert_eq!(mode_of(&client, OLD_SESSION).await, "absent");
+        assert_eq!(mode_of(&client, OLD_SESSION).await, "nuit");
+        // La présence par le Wi-Fi : l'ancienne session (sans identifiant de connexion) la lit sans
+        // problème, l'interrupteur du mode automatique est éteint, et « Je pars » (jeton de mode)
+        // apparaît dans qui est à la maison. (La démonstration a une box fictive ; la maison sans
+        // box est dans `tests/wifi.rs`.)
+        let phones = client.get("/api/wifi/phones", OLD_SESSION).await;
+        assert_eq!(phones.status, 200, "{}", phones.text());
+        let people = client.get("/api/presence/people", OLD_SESSION).await.json();
+        assert_eq!(people["auto_mode"], false, "{people}");
+        assert_eq!(people["people"][0]["name"], "Hamdi");
+        assert_eq!(people["people"][0]["state"], "away");
         // Réinstaller depuis une connexion nouvelle ajoute un jeton, sans toucher à l'ancien.
         let session = client.login().await;
         install_shortcuts(&client, &session).await;
@@ -218,6 +229,9 @@ fn a_2_0_0_folder_keeps_its_shortcuts_widget_and_old_clients_and_the_migration_i
     let tokens_file = std::fs::read_to_string(dir.join("serveur/jetons.json")).unwrap();
     assert!(!tokens_file.contains(OLD_MODE) && !tokens_file.contains(OLD_READ));
     assert!(dir.join("serveur/presence.json").is_file());
+    // Sans box reliée, aucun réglage de box n'est écrit : le mode automatique reste éteint.
+    assert!(!dir.join("serveur/box.json").exists());
+    assert!(!dir.join("serveur/telephones.json").exists());
 
     // Redémarrage : même chose, la migration ne se refait pas (le jeton ajouté est toujours là).
     drop(server);
@@ -538,6 +552,7 @@ fn cutting_a_connection_cuts_its_shortcuts_and_widget_and_only_those() {
 #[test]
 fn leaving_home_tells_whether_the_house_changed() {
     let dir = temp_dir("tokens-presence-message");
+    common::enable_auto_mode(&dir, USER);
     let server = start(&dir);
     let client = server.client();
     assert!(user(
@@ -575,6 +590,12 @@ fn leaving_home_tells_whether_the_house_changed() {
         let r = put_presence(&client, &hamdi_mode, "home").await.json();
         assert_eq!(r["mode"], "nuit");
         assert_eq!(r["message"], "Mode Nuit : la maison ne change pas.");
+        // Partir la nuit non plus : une absence ne quitte jamais Nuit.
+        let r = put_presence(&client, &sam_mode, "away").await.json();
+        assert_eq!(r["mode"], "nuit");
+        let r = put_presence(&client, &hamdi_mode, "away").await.json();
+        assert_eq!(r["mode"], "nuit");
+        assert_eq!(r["message"], "Mode Nuit : la maison ne change pas.");
         // Une session ne fait que déclarer : le mode est rendu, sans l'avoir changé.
         let r = put_presence(&client, &hamdi, "away").await.json();
         assert_eq!(r["mode"], "nuit");
@@ -585,6 +606,7 @@ fn leaving_home_tells_whether_the_house_changed() {
 #[test]
 fn leaving_home_arms_the_house_only_when_the_last_person_leaves() {
     let dir = temp_dir("tokens-presence-rule");
+    common::enable_auto_mode(&dir, USER);
     let server = start(&dir);
     let client = server.client();
     assert!(user(
@@ -618,8 +640,11 @@ fn leaving_home_arms_the_house_only_when_the_last_person_leaves() {
         assert_eq!(mode_of(&client, &hamdi).await, "nuit");
         assert_eq!(put_presence(&client, &hamdi_mode, "home").await.status, 200);
         assert_eq!(mode_of(&client, &hamdi).await, "nuit");
-        // Une personne désactivée ne compte pas comme « à la maison ».
+        // Partir la nuit ne change rien non plus : Nuit se choisit à la main.
         assert_eq!(put_presence(&client, &hamdi_mode, "away").await.status, 200);
+        assert_eq!(mode_of(&client, &hamdi).await, "nuit");
+        // Une personne désactivée ne compte pas comme « à la maison ».
+        assert_eq!(put_mode(&client, &sam_mode, "present").await.status, 200);
         assert!(user(&dir, &["disable", "--username", "sam"], None));
         assert_eq!(put_presence(&client, &hamdi_mode, "home").await.status, 200);
         assert_eq!(put_presence(&client, &hamdi_mode, "away").await.status, 200);

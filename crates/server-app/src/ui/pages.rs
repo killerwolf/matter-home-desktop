@@ -1361,6 +1361,18 @@ impl App {
                 }
                 return;
             }
+            if self.presence.is_open() {
+                if self.presence.show(
+                    ui,
+                    ctx,
+                    &st.data_dir,
+                    st.auth.as_ref().map(|a| &a.0),
+                    st.hub.as_ref().map(|h| &h.0),
+                ) {
+                    self.presence.reset();
+                }
+                return;
+            }
             widgets::section(ui, "Comptes", |ui| {
                 ui.label("Chaque personne de la maison a son compte : l'identifiant et le mot de passe qu'elle entre sur son téléphone ou son ordinateur.");
                 if let Some(n) = &st.notice {
@@ -1368,6 +1380,14 @@ impl App {
                 }
                 if ui.button("Gérer les comptes…").clicked() {
                     self.accounts.open();
+                }
+            });
+        }
+        if st.phase == Phase::Running {
+            widgets::section(ui, "Présence", |ui| {
+                ui.label("Ostal sait qui est à la maison grâce au Wi-Fi de la box. La maison peut passer en Absent quand plus personne n'est là, et en Présent dès qu'une personne arrive.");
+                if ui.button("Régler la présence…").clicked() {
+                    self.presence.open();
                 }
             });
         }

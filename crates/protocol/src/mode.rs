@@ -105,6 +105,9 @@ pub enum ModeSource {
     /// fait que lire ; les boutons de mode de l'écran d'accueil lancent les raccourcis, qui
     /// arrivent comme `Shortcut`.
     Widget,
+    /// La maison toute seule : le Wi-Fi de la box a vu quelqu'un arriver ou la dernière personne
+    /// partir (règle de présence).
+    Presence,
     /// Un client qui ne dit rien (ancienne version) ou une source inconnue.
     #[serde(other)]
     Other,
@@ -122,6 +125,7 @@ impl ModeSource {
             ModeSource::Rule { name } if name.is_empty() => "automatisation".into(),
             ModeSource::Rule { name } => format!("automatisation « {name} »"),
             ModeSource::Widget => "widget iPhone".into(),
+            ModeSource::Presence => "présence (Wi-Fi)".into(),
             ModeSource::Other => "autre".into(),
         }
     }
@@ -163,6 +167,7 @@ mod tests {
             ModeSource::ServerApp,
             rule.clone(),
             ModeSource::Widget,
+            ModeSource::Presence,
             ModeSource::Other,
         ] {
             let json = serde_json::to_string(&source).unwrap();

@@ -10,6 +10,26 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)
+
+- Ostal Server se relie à la box (Réglages › Présence) avec son mot de passe d'administration, gardé
+  dans `serveur/box.json` (0600) : jamais affiché, journalisé ni exporté. Il relève les appareils actifs
+  toutes les 2 minutes, en lecture seule ; seuls les **noms** des téléphones sont gardés
+  (`telephones.json`), jamais une adresse MAC ni une IP. Box injoignable ou mot de passe refusé : le mode
+  est figé, et un mot de passe refusé n'est plus rejoué.
+- À sa première connexion, l'app web demande « Lequel est votre téléphone ? » (noms seulement, « plus
+  tard » possible) ; « Mon téléphone » permet de le changer. iPhone et Android. L'administrateur corrige
+  dans Ostal Server (Réglages › Présence, fiche d'un compte).
+- La présence de chacun vient de son téléphone vu sur le Wi-Fi (un départ compte après 10 minutes) ou de
+  « Je pars » / « Je rentre » : le plus récent l'emporte. L'accueil de l'app web et la barre de l'app Mac
+  disent qui est à la maison.
+- Nouvel interrupteur « Changer le mode de la maison selon la présence », **éteint par défaut** (aussi
+  après la mise à jour) : Absent quand la dernière personne part, Présent dès qu'une arrive ; Nuit et
+  Vacances restent à la main (une absence ne les quitte jamais, une arrivée pendant Vacances remet
+  Présent). Changement : « Je pars » et « Je rentre » suivent maintenant cet interrupteur : éteint, ils
+  notent la présence sans changer le mode (le raccourci le dit). Chaque changement automatique est au
+  journal avec la personne concernée.
+
 ### Préparation des droits (multi-comptes, étape 5)
 
 - Invisible pour l'instant : chaque route qui modifie la maison (commande d'un équipement, mode,

@@ -120,16 +120,18 @@ ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essaient rout
 ### Où est chaque personne : « Je pars » et « Je rentre »
 
 `PUT /api/presence` `{"state": "home" | "away"}` (jeton de mode ou session) : la personne dit où elle
-est. Réponse `200 {"state", "changed"}` (`changed` est faux si elle l'avait déjà dit). Le serveur garde
-la dernière déclaration de chacun dans `serveur/presence.json` (0600, jamais exportée) avec la date du
-dernier changement : c'est le terrain de la présence automatique (Absent quand le dernier est parti,
-Présent dès que quelqu'un rentre), prévue à l'étape suivante.
+est. Le serveur garde la dernière déclaration de chacun dans `serveur/presence.json` (0600, jamais
+exportée). Réponse `200 {"state", "changed", "mode", "message"}` : `changed` est faux si elle l'avait
+déjà dit ; `mode` et `message` disent ce qu'est devenue la maison.
 
-**En attendant, rien ne change pour l'iPhone** : une requête portant un **jeton de mode** (les
-raccourcis « Je pars » et « Je rentre ») change aussi le mode, comme le faisaient « Mode absent » et
-« Mode present » : « Je pars » passe la maison en Absent, « Je rentre » en Présent (source « raccourci
-iPhone »), même s'il reste du monde à la maison. Une **session** (app) ne fait que déclarer. Ce bloc,
-marqué « PROVISOIRE » dans `net/routes.rs`, disparaît avec la présence automatique.
+Le mode ne change que par la **règle de présence** (voir [comptes-presence.md](comptes-presence.md)),
+la même pour les raccourcis et pour le téléphone vu sur le Wi-Fi de la box, et **seulement quand
+l'interrupteur « Changer le mode de la maison selon la présence » est allumé** (éteint par défaut,
+y compris après une mise à jour) et qu'au moins un téléphone est relié à un compte actif : Absent quand
+la dernière personne part (depuis Présent seulement), Présent quand quelqu'un arrive (depuis Absent ou
+Vacances). Nuit et Vacances se choisissent à la main : une absence ne les quitte jamais, une arrivée
+pendant Nuit ne change rien. Interrupteur éteint, « Je pars » est noté et le raccourci le dit. Une
+**session** (app) ne fait que déclarer.
 
 ## Changer de mode automatiquement avec Raccourcis sur iPhone
 

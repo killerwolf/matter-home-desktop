@@ -30,6 +30,8 @@ pub enum Confirmation {
     DisableAccount { name: String },
     /// Couper la connexion d'un téléphone ou d'un ordinateur.
     CutConnection { name: String },
+    /// Délier la box de la maison (présence par le Wi-Fi).
+    UnlinkBox,
 }
 
 /// Ce que l'alerte affiche.
@@ -84,6 +86,11 @@ impl Confirmation {
                 format!("Couper la connexion « {name} » ?"),
                 "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
                 "Couper",
+            ),
+            Confirmation::UnlinkBox => (
+                "Délier la box ?".into(),
+                "Ostal Server oublie le mot de passe de la box et n'interroge plus le Wi-Fi. La maison ne change plus de mode toute seule ; les téléphones choisis restent enregistrés.".into(),
+                "Délier",
             ),
         };
         Dialog {
@@ -146,6 +153,7 @@ mod tests {
             Confirmation::CutConnection {
                 name: "iPhone de Sam".into(),
             },
+            Confirmation::UnlinkBox,
         ]
     }
 

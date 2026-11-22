@@ -48,6 +48,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me/installations", get(my_connections))
         .route("/api/me/installations/{id}", delete(cut_connection))
         .route("/api/state", get(full_state))
+        .route(protocol::presence::PEOPLE_PATH, get(get_people))
+        .route(protocol::presence::PHONES_PATH, get(get_phones))
+        .route(
+            protocol::presence::PHONES_REFRESH_PATH,
+            post(refresh_phones),
+        )
+        .route(protocol::presence::PHONE_PATH, put(put_phone))
         .route("/api/ws", get(super::ws::upgrade))
         .route("/api/rule-runs", get(rule_runs))
         .route("/api/cameras", get(get_cameras))
@@ -894,7 +901,8 @@ async fn put_mode(
 /// `PUT /api/presence` `{"state": "home" | "away"}` : la personne dit où elle est (raccourcis « Je
 /// rentre » et « Je pars »). Mêmes jetons que `PUT /api/mode`. Le serveur retient seulement ce
 /// que chacun a déclaré. Avec un jeton de mode (les raccourcis), le mode de la maison suit la règle
-/// de `presence::mode_after` ; une session ne fait que déclarer.
+/// de `presence::auto_mode` (et de l'interrupteur du mode automatique) ; une session ne fait que
+/// déclarer.
 async fn put_presence(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -927,10 +935,11 @@ async fn put_presence(
         }),
     )
     .await;
-    // Un raccourci « Je pars » ou « Je rentre » fait aussi ce que faisaient les raccourcis Absent et
-    // Présent, pour que les téléphones n'aient rien à réinstaller, mais selon la règle de la maison
-    // (`presence::mode_after`) : Absent seulement quand personne d'autre n'est là, Présent seulement
-    // depuis Absent ou Vacances (jamais depuis Nuit). Une session, elle, ne fait que déclarer.
+    // Un raccourci « Je pars » ou « Je rentre » suit la règle de la maison (`presence::auto_mode`),
+    // la même que le Wi-Fi et seulement si l'interrupteur « Changer le mode de la maison selon la
+    // présence » est allumé : Absent quand la dernière personne part (depuis Présent seulement),
+    // Présent à l'arrivée (depuis Absent ou Vacances ; jamais depuis Nuit). Une session, elle, ne
+    // fait que déclarer.
     let followed = if actor.by_mode_token {
         let hub = state.hub.clone();
         let state_for_accounts = state.clone();
@@ -1001,6 +1010,141 @@ struct PresenceResponse {
     changed: bool,
     mode: protocol::mode::HomeMode,
     message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Présence par le Wi-Fi de la box (voir `wifi/` et `hub/wifi.rs`)
+// ---------------------------------------------------------------------------
+
+fn box_link(link: crate::wifi::Link) -> protocol::presence::BoxLink {
+    use crate::wifi::Link;
+    use protocol::presence::BoxLink;
+    match link {
+        Link::None => BoxLink::None,
+        Link::Ok => BoxLink::Ok,
+        Link::Unreachable => BoxLink::Unreachable,
+        Link::Refused => BoxLink::Refused,
+    }
+}
+
+/// `GET /api/presence/people` : qui est à la maison (prénoms et états seulement), et si le mode suit
+/// la présence. Jamais un nom de téléphone, une adresse ou une personne désactivée.
+async fn get_people(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<protocol::presence::PeopleView> {
+    use protocol::presence::{PeopleView, PersonPresence, Where};
+    let status = state.hub.wifi().status();
+    let mut people: Vec<PersonPresence> = state
+        .hub
+        .presence_of(&state.auth.accounts)
+        .into_iter()
+        .filter_map(|d| {
+            Some(PersonPresence {
+                name: state.auth.accounts.display_name(&d.user_id)?,
+                state: match d.state {
+                    crate::presence::Whereabouts::Home => Where::Home,
+                    crate::presence::Whereabouts::Away => Where::Away,
+                },
+                since: d.since,
+                me: d.user_id == session.user_id,
+            })
+        })
+        .collect();
+    // Ceux qui sont là d'abord, puis par prénom : un ordre qui ne change pas d'un relevé à l'autre.
+    people.sort_by(|a, b| {
+        (a.state != Where::Home, a.name.to_lowercase())
+            .cmp(&(b.state != Where::Home, b.name.to_lowercase()))
+    });
+    Json(PeopleView {
+        people,
+        auto_mode: status.auto_mode,
+        box_link: box_link(status.link),
+        updated_at: status.last_ok,
+    })
+}
+
+fn phones_view(state: &AppState, user_id: &str) -> protocol::presence::PhonesView {
+    let status = state.hub.wifi().status();
+    protocol::presence::PhonesView {
+        linked: status.linked,
+        box_link: box_link(status.link),
+        name: state
+            .auth
+            .accounts
+            .display_name(user_id)
+            .unwrap_or_default(),
+        mine: state.hub.wifi().phone_of(user_id),
+        // Un membre ne voit que des noms de téléphones encore libres.
+        free: state.hub.wifi().free_hosts(true),
+    }
+}
+
+/// `GET /api/wifi/phones` : les téléphones vus sur le Wi-Fi et pas encore attribués (leur **nom**
+/// seulement), et le sien. « Lequel est ton téléphone ? » s'appuie dessus.
+async fn get_phones(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<protocol::presence::PhonesView> {
+    Json(phones_view(&state, &session.user_id))
+}
+
+/// `POST /api/wifi/refresh` : relève la box maintenant (au plus une fois toutes les 10 secondes) et
+/// rend la même chose que `GET /api/wifi/phones`.
+async fn refresh_phones(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> ApiResult<Json<protocol::presence::PhonesView>> {
+    let hub = state.hub.clone();
+    let st = state.clone();
+    blocking(move || {
+        hub.wifi_poll(&st.auth.accounts, false);
+        Ok(())
+    })
+    .await?;
+    Ok(Json(phones_view(&state, &session.user_id)))
+}
+
+/// `PUT /api/wifi/phone` `{"phone": "nom" | null}` : la personne choisit son téléphone (ou le retire).
+/// Ne concerne que son propre compte. 404 : ce nom n'est pas dans les téléphones libres ; 409 : un
+/// autre compte l'a déjà.
+async fn put_phone(
+    State(state): State<AppState>,
+    Ctx(who): Ctx,
+    Extension(session): Extension<SessionInfo>,
+    ApiJson(choice): ApiJson<protocol::presence::PhoneChoice>,
+) -> ApiResult<Json<protocol::presence::PhonesView>> {
+    use crate::wifi::AssignError;
+    if !state.hub.wifi().status().linked {
+        return Err(ApiError::with_detail(
+            ErrorCode::Unavailable,
+            "aucune box n'est reliée à Ostal Server",
+        )
+        .into());
+    }
+    let hub = state.hub.clone();
+    let user_id = session.user_id.clone();
+    let name = state
+        .auth
+        .accounts
+        .display_name(&user_id)
+        .unwrap_or_default();
+    let result = blocking(move || {
+        hub.wifi_assign(&user_id, choice.phone.as_deref(), true, &who, &name)
+            .map_err(|e| match e {
+                AssignError::NotFree => ApiError::with_detail(
+                    ErrorCode::NotFound,
+                    "ce téléphone n'est plus vu sur le Wi-Fi : actualisez la liste",
+                ),
+                AssignError::Taken => {
+                    ApiError::with_detail(ErrorCode::Busy, "ce téléphone a déjà un propriétaire")
+                }
+                AssignError::Storage => ApiError::new(ErrorCode::Internal),
+            })
+    })
+    .await;
+    result?;
+    Ok(Json(phones_view(&state, &session.user_id)))
 }
 
 async fn logout(

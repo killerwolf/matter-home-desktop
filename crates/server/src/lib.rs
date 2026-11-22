@@ -28,6 +28,7 @@ pub mod security;
 pub mod setup;
 pub mod shortcuts;
 pub mod validate;
+pub mod wifi;
 
 use std::sync::mpsc;
 use std::thread::JoinHandle;

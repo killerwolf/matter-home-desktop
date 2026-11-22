@@ -58,8 +58,14 @@ pub enum Action {
     DeviceRemoved,
     Export,
     Import,
-    /// « Je pars » ou « Je rentre ».
+    /// « Je pars » ou « Je rentre », ou un téléphone vu (ou plus vu) sur le Wi-Fi.
     Presence,
+    /// Un téléphone relié à un compte (ou retiré). Cible : le compte ; jamais le nom ni l'adresse
+    /// du téléphone.
+    Phone,
+    /// Un réglage de la box : reliée, déliée, mot de passe changé (jamais le mot de passe),
+    /// mode automatique activé ou désactivé.
+    BoxSetting,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -90,6 +96,7 @@ impl Origin {
     pub fn of(source: &ModeSource) -> Origin {
         match source {
             ModeSource::Shortcut | ModeSource::Widget => Origin::Shortcut,
+            ModeSource::Presence => Origin::Automatic,
             ModeSource::Rule { .. } => Origin::Automation,
             ModeSource::Web | ModeSource::Desktop | ModeSource::ServerApp | ModeSource::Other => {
                 Origin::Person
@@ -686,6 +693,9 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::ModeChanged => {
             let mode = mode_label(entry.target.as_deref());
             match entry.source {
+                Some(Origin::Automatic) if !detail.is_empty() => {
+                    format!("La maison passe en {mode} (automatique, {detail})")
+                }
                 Some(Origin::Automatic) => format!("La maison passe en {mode} (automatique)"),
                 Some(Origin::Automation) if !detail.is_empty() => {
                     format!("Mode {mode}, par l'automatisation « {detail} »")
@@ -724,6 +734,14 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::DeviceRemoved => format!("Équipement « {target} » supprimé"),
         Action::Export => "Sauvegarde exportée".to_string(),
         Action::Import => "Sauvegarde importée, le serveur redémarre".to_string(),
+        Action::Presence if detail == "wifi" => {
+            let seen = if target == "away" {
+                "n'est plus vu sur le Wi-Fi"
+            } else {
+                "est vu sur le Wi-Fi"
+            };
+            format!("Téléphone de {} {seen}", who_label(entry))
+        }
         Action::Presence => {
             let said = if target == "away" {
                 "Je pars"
@@ -732,6 +750,16 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             };
             format!("{} : « {said} »", who_label(entry))
         }
+        Action::Phone if detail == "cleared" => format!("Téléphone de {target} retiré"),
+        Action::Phone => format!("Téléphone de {target} relié"),
+        Action::BoxSetting => match detail {
+            "linked" => "Box de la maison reliée".to_string(),
+            "unlinked" => "Box de la maison déliée".to_string(),
+            "password" => "Mot de passe de la box changé".to_string(),
+            "auto_on" => "Mode automatique selon la présence activé".to_string(),
+            "auto_off" => "Mode automatique selon la présence désactivé".to_string(),
+            _ => "Réglage de la box".to_string(),
+        },
         Action::Other => "Action inconnue".to_string(),
     };
     if failed && entry.action != Action::Login {

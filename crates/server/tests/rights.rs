@@ -193,6 +193,22 @@ const EXEMPT: &[(&str, &str)] = &[
         "wire::PUSH_TEST_PATH",
         "notification d'essai vers son propre appareil",
     ),
+    (
+        "protocol::presence::PEOPLE_PATH",
+        "lecture (prénoms et états)",
+    ),
+    (
+        "protocol::presence::PHONES_PATH",
+        "lecture (noms de téléphones libres, jamais d'adresse)",
+    ),
+    (
+        "protocol::presence::PHONES_REFRESH_PATH",
+        "relève la box en lecture seule",
+    ),
+    (
+        "protocol::presence::PHONE_PATH",
+        "choisit son propre téléphone",
+    ),
     ("wire::EVENT_SNAPSHOT_PATH", "lecture"),
     ("wire::EVENT_CLIP_PATH", "lecture"),
     ("wire::CAMERA_STREAM_PATH", "lecture (flux caméra)"),

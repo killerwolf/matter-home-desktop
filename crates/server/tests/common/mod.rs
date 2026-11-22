@@ -82,6 +82,39 @@ pub fn create_account(
     (out.status, text)
 }
 
+/// Allume le mode automatique d'un dossier jetable, avec une box **fictive** (la démonstration n'a
+/// pas de réseau) et un téléphone attribué à `username` : `box.json` et `telephones.json`, écrits
+/// avant le lancement. Le téléphone « Galaxy-de-Lea » est absent de la liste fictive : il ne dit
+/// jamais « à la maison » pendant le test.
+pub fn enable_auto_mode(dir: &Path, username: &str) {
+    let (status, text) = create_account(dir, USER, PASSWORD, &[]);
+    assert!(status.success(), "{text}");
+    let users: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("serveur/comptes.json")).unwrap()).unwrap();
+    let id = users["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == username)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::fs::write(
+        dir.join("serveur/box.json"),
+        serde_json::json!({"version": 1, "url": "http://demo.invalid", "password": "fictif",
+               "auto_mode": true, "away_delay_min": 10})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("serveur/telephones.json"),
+        serde_json::json!({"version": 1, "phones": [{"user_id": id, "host": "Galaxy-de-Lea"}]})
+            .to_string(),
+    )
+    .unwrap();
+}
+
 /// Un serveur `--demo` en cours d'exécution, dans un sous-processus.
 pub struct Server {
     child: Option<Child>,

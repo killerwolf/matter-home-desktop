@@ -27,6 +27,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/push.js", "text/javascript"),
     ("/app/widgets.js", "text/javascript"),
     ("/app/connections.js", "text/javascript"),
+    ("/app/presence.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
     ("/app/icon-192.png", "image/png"),
@@ -646,7 +647,8 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         assert_eq!(r.status, 200, "{}", r.text());
         assert_eq!(
             r.json(),
-            json!({"state": "away", "changed": true, "mode": "absent", "message": "Maison en mode Absent."})
+            json!({"state": "away", "changed": true, "mode": "present",
+                   "message": "C'est noté. Le mode automatique est désactivé : la maison reste en Présent."})
         );
         let r = client
             .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "absent"}))

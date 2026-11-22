@@ -14,6 +14,7 @@ pub mod icon;
 pub mod journal;
 pub mod menu;
 pub mod overview;
+pub mod presence;
 pub mod signals;
 pub mod sleep;
 pub mod startup;

@@ -11,6 +11,7 @@ mod accounts_ui;
 mod cameras_ui;
 mod descriptions_ui;
 mod journal_ui;
+mod presence_ui;
 mod ui;
 
 use std::net::SocketAddr;

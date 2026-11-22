@@ -1761,6 +1761,42 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    /// La box de la maison (`serveur/box.json`, avec son mot de passe) et les téléphones des comptes
+    /// (`serveur/telephones.json`) ne partent jamais dans un export, et un import les laisse tels quels.
+    #[test]
+    fn the_box_password_and_phones_are_neither_exported_nor_lost_by_an_import() {
+        let base = temp("box");
+        let dir = sample_dir(&base);
+        add_server_dir(&dir);
+        let server = dir.join(SERVER_DIR);
+        crate::security::write_secret(
+            &server.join("box.json"),
+            br#"{"url":"https://mabbox.bytel.fr","password":"MOT-DE-PASSE-DE-LA-BOX","auto_mode":true}"#,
+        )
+        .unwrap();
+        crate::security::write_secret(
+            &server.join("telephones.json"),
+            br#"{"phones":[{"user_id":"u1","host":"TELEPHONE-DE-SAM"}]}"#,
+        )
+        .unwrap();
+        let before = tree(&server);
+
+        let (text, _) = export_to_string(&dir).unwrap();
+        for secret in [
+            "MOT-DE-PASSE-DE-LA-BOX",
+            "TELEPHONE-DE-SAM",
+            "box.json",
+            "telephones",
+        ] {
+            assert!(!text.contains(secret), "{secret}");
+        }
+        let other = text.replace("Capteur", "Capteur importé");
+        stage_import_text(&dir, &other).unwrap();
+        apply_pending(&dir).unwrap().unwrap();
+        assert_eq!(tree(&server), before);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     /// Le journal d'audit (`serveur/audit/`) vit dans le dossier du serveur : il ne part pas dans un
     /// export, et un import le laisse tel quel (sous-dossier compris, droits compris).
     #[test]

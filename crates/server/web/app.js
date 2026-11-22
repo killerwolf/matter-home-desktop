@@ -13,6 +13,7 @@ import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents
 import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
 import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
+import * as presence from "./presence.js";
 import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -32,6 +33,8 @@ const state = {
   updatedAt: null, // l'heure du dernier état ou événement reçu (« À jour à 18:42 »)
   lostAt: null, // la liaison perdue après avoir été établie : le bandeau « La maison ne répond pas »
   notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
+  presence: null, // GET /api/presence/people : { people, auto_mode, box_link, updated_at } ; null : rien à montrer (pas de box, serveur plus ancien)
+  phones: null, // GET /api/wifi/phones : { linked, box_link, mine, free } (noms seulement)
   tokens: null, // GET /api/tokens : mes jetons { mode: { exists, created }, read: { … }, items: [{ id, kind, label, created }], label } (carte « Installer »)
 };
 const expects = new Map(); // id -> { on, motion, at, acked, req, timer }
@@ -91,6 +94,7 @@ function applyEvent(e) {
       if (isMode(e.mode)) state.mode = e.mode;
       if (notice) showModeNotice(notice);
       scheduleRender(true);
+      loadPresence();
       return;
     }
     case "detection": {
@@ -327,6 +331,206 @@ function patchStatus() {
   if (time && state.updatedAt) time.textContent = `À jour à ${clockText(state.updatedAt)}`;
 }
 
+/** La carte « Présence » : qui est à la maison, qui n'y est pas, le mode (« automatique » quand
+ *  l'interrupteur du serveur est allumé). Absente sans box reliée ni personne de connue. */
+function patchPresence() {
+  const slot = $("#presence-slot");
+  if (!slot) return;
+  const card = state.loaded && !state.lostAt ? presence.presenceCard(state.presence, state.mode) : null;
+  slot.hidden = !card;
+  if (!card) { slot._key = ""; return; }
+  const key = JSON.stringify(card);
+  if (slot._key === key) return;
+  slot._key = key;
+  const section = make("section", "card presence");
+  section.setAttribute("aria-label", "Présence à la maison");
+  const text = make("div", "presence-text");
+  text.appendChild(make("div", "presence-lead", card.lead));
+  if (card.away) text.appendChild(make("div", "presence-away", card.away));
+  text.appendChild(make("div", "presence-mode", card.mode));
+  if (card.note) text.appendChild(make("div", "presence-note", card.note));
+  const faces = make("div", "faces");
+  for (const p of card.people) {
+    const face = make("div", "face");
+    const dot = make("span", `avatar${p.home ? "" : " away"}`, p.initial);
+    dot.setAttribute("role", "img");
+    dot.setAttribute("aria-label", p.aria);
+    face.append(dot, make("span", "face-name", p.name));
+    faces.appendChild(face);
+  }
+  section.append(text, faces);
+  slot.replaceChildren(section);
+}
+
+let presenceTimer = null;
+/** Qui est à la maison : à l'ouverture, au retour de l'app, à chaque changement de mode et toutes les
+ *  minutes (la box est relevée toutes les deux minutes). Un serveur plus ancien n'a pas la route :
+ *  on ne montre rien, sans erreur. */
+async function loadPresence() {
+  if (!api.hasToken()) return;
+  try {
+    state.presence = await api.request("GET", "/api/presence/people");
+  } catch (error) {
+    if (presence.isMissingRoute(error)) state.presence = null;
+    // Autre échec (réseau coupé) : on garde ce qu'on savait.
+  }
+  scheduleRender(false);
+}
+
+function startPresence() {
+  clearInterval(presenceTimer);
+  loadPresence();
+  presenceTimer = setInterval(() => { if (!document.hidden) loadPresence(); }, 60_000);
+}
+
+function stopPresence() {
+  clearInterval(presenceTimer);
+  presenceTimer = null;
+  state.presence = null;
+  state.phones = null;
+  closePhonePick();
+}
+
+// ---- « Lequel est votre téléphone ? » (première connexion, ou « Mon téléphone ») ----------------------
+
+const pick = { open: false, first: false, choice: "", phones: null, busy: false, error: "", asked: false };
+
+async function loadPhones(refresh = false) {
+  try {
+    state.phones = await api.request(refresh ? "POST" : "GET", refresh ? "/api/wifi/refresh" : "/api/wifi/phones");
+    pick.error = "";
+  } catch (error) {
+    if (presence.isMissingRoute(error)) state.phones = null;
+    else if (refresh) pick.error = "La liste n'a pas pu être actualisée.";
+  }
+  pick.phones = state.phones;
+  scheduleRender(true);
+  if (pick.open) renderPhonePick();
+  return state.phones;
+}
+
+/** Après la connexion : si une box est reliée et que la personne n'a pas encore son téléphone, on
+ *  demande une fois par ouverture (et pas avant une semaine si elle a dit « plus tard »). */
+async function maybeAskPhone() {
+  const phones = await loadPhones();
+  if (pick.asked || !presence.shouldAskPhone(phones, presence.readLater())) return;
+  pick.asked = true;
+  openPhonePick(true);
+}
+
+function openPhonePick(first) {
+  pick.open = true;
+  pick.first = first;
+  pick.phones = state.phones;
+  pick.choice = state.phones?.mine ? state.phones.mine.toLowerCase() : "";
+  pick.error = "";
+  closeSheet();
+  $("#phone-pick").hidden = false;
+  document.documentElement.classList.add("noscroll");
+  renderPhonePick();
+  $("#pick-body").querySelector("input[type=radio]:checked, input[type=radio]")?.focus();
+}
+
+function closePhonePick() {
+  pick.open = false;
+  const el = $("#phone-pick");
+  if (el) el.hidden = true;
+  document.documentElement.classList.remove("noscroll");
+}
+
+function renderPhonePick() {
+  const t = presence.chooserTexts(pick.phones, pick.phones?.name ?? "");
+  const list = presence.listWithMine(pick.phones);
+  const body = $("#pick-body");
+  const keep = body.scrollTop;
+  $("#pick-step").hidden = !pick.first;
+  $("#pick-cancel").hidden = pick.first;
+  body.replaceChildren();
+  const head = make("div");
+  head.append(make("h1", "pick-title", t.title), make("p", "pick-intro", t.intro));
+  const group = make("div", "pick-group");
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-labelledby", "pick-list-title");
+  const choiceRow = (value, label, selected, className = "") => {
+    const row = make("label", `pick-row${selected ? " chosen" : ""} ${className}`.trim());
+    const input = make("input");
+    input.type = "radio";
+    input.name = "tel";
+    input.value = value;
+    input.checked = selected;
+    input.disabled = pick.busy;
+    input.addEventListener("change", () => { pick.choice = value; pick.error = ""; renderPhonePick(); });
+    row.appendChild(input);
+    return [row, input];
+  };
+  if (list.length) {
+    const section = make("section", "pick-list");
+    const title = make("h2", "", t.listTitle);
+    title.id = "pick-list-title";
+    section.appendChild(title);
+    for (const name of list) {
+      const selected = pick.choice === name.toLowerCase();
+      const [row] = choiceRow(name.toLowerCase(), name, selected);
+      row.append(icon("phone", "ico pick-ico"), make("span", "pick-name", name));
+      if (selected) row.appendChild(make("span", "pick-ok", "✓ choisi"));
+      section.appendChild(row);
+    }
+    group.appendChild(section);
+  } else {
+    const empty = make("p", "pick-empty", t.empty);
+    empty.setAttribute("role", "status");
+    empty.id = "pick-list-title";
+    group.appendChild(empty);
+  }
+  const refresh = make("button", "ghost pick-refresh", t.refresh);
+  refresh.type = "button";
+  refresh.disabled = pick.busy;
+  refresh.addEventListener("click", async () => { pick.busy = true; renderPhonePick(); await loadPhones(true); pick.busy = false; renderPhonePick(); });
+  (group.querySelector(".pick-list") ?? group).appendChild(refresh);
+  if (pick.first) {
+    const [laterRow] = choiceRow("later", t.later, pick.choice === "later", "pick-later");
+    laterRow.appendChild(make("span", "pick-name", t.later));
+    group.appendChild(laterRow);
+  }
+  const why = make("section", "pick-why");
+  why.append(make("h2", "", t.whyTitle), make("p", "", t.why), make("p", "pick-privacy", t.privacy));
+  body.append(head, group);
+  if (pick.error) { const e = make("p", "error", pick.error); e.setAttribute("role", "alert"); body.appendChild(e); }
+  body.appendChild(why);
+  body.scrollTop = keep;
+  const confirm = $("#pick-confirm");
+  const later = pick.choice === "later";
+  confirm.textContent = later ? "Continuer sans téléphone" : t.confirm;
+  confirm.disabled = pick.busy || !pick.choice || (pick.choice !== "later" && !list.some((n) => n.toLowerCase() === pick.choice));
+}
+
+async function confirmPhonePick() {
+  if (pick.busy || !pick.choice) return;
+  if (pick.choice === "later") {
+    presence.writeLater();
+    closePhonePick();
+    return;
+  }
+  const name = (presence.listWithMine(pick.phones).find((n) => n.toLowerCase() === pick.choice)) ?? pick.choice;
+  if (pick.phones?.mine && pick.phones.mine.toLowerCase() === name.toLowerCase()) { closePhonePick(); return; }
+  pick.busy = true;
+  pick.error = "";
+  renderPhonePick();
+  try {
+    state.phones = await api.request("PUT", "/api/wifi/phone", { phone: name });
+    presence.clearLater();
+    pick.busy = false;
+    closePhonePick();
+    scheduleRender(true);
+    loadPresence();
+  } catch (error) {
+    pick.busy = false;
+    pick.error = presence.chooseError(error);
+    await loadPhones();
+    renderPhonePick();
+  }
+}
+
 /** Les trois étapes de « Installer sur l'iPhone » : l'état vient des jetons (GET /api/tokens) et de
  *  l'abonnement de cet appareil aux notifications. `null` tant que les jetons ne sont pas connus. */
 function installSteps() {
@@ -395,13 +599,16 @@ function renderDevices() {
     view.replaceChildren();
     const status = make("div");
     status.id = "status-slot";
+    const presenceSlot = make("div");
+    presenceSlot.id = "presence-slot";
+    presenceSlot.hidden = true;
     const install = make("div");
     install.id = "install-slot";
     install.hidden = true;
     const note = make("p", "view-note");
     note.id = "rooms-note";
     note.hidden = true;
-    view.append(status, install, make("h2", "view-title", "Pièces"), note);
+    view.append(status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
     if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
@@ -425,11 +632,14 @@ function renderDevices() {
       notif.id = "notifications";
       const connections = make("button", "ghost", "Mes connexions");
       connections.id = "connections";
+      const myPhone = make("button", "ghost", "Mon téléphone");
+      myPhone.id = "my-phone";
+      myPhone.hidden = !state.phones?.linked;
       const widgets = make("button", "ghost", "Widgets et raccourcis");
       widgets.id = "widgets";
       const logout = make("button", "ghost", "Se déconnecter");
       logout.id = "logout";
-      out.append(notif, connections, widgets, logout);
+      out.append(notif, connections, myPhone, widgets, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -462,6 +672,7 @@ function renderDevices() {
     if (lost) note.textContent = `Dernières valeurs connues. Lu à ${clockText(state.updatedAt ?? state.lostAt)}.`;
   }
   patchStatus();
+  patchPresence();
   patchInstall();
   if (sheetId) renderSheet();
 }
@@ -1707,11 +1918,13 @@ function renderModeChip() {
   modeTab.hidden = !shown;
   const label = modeLabel(state.mode);
   const lost = Boolean(state.lostAt);
-  const key = JSON.stringify([shown, state.mode, lost]);
+  const auto = Boolean(state.presence?.auto_mode);
+  const key = JSON.stringify([shown, state.mode, lost, auto]);
   if (modeChip._key === key) return;
   modeChip._key = key;
   const present = state.mode === "present";
-  const aria = lost ? `Mode : ${label}. Modifiable quand la maison répond.` : `Mode : ${label}. Changer de mode`;
+  const named = presence.modeChipLabel(state.mode, auto);
+  const aria = lost ? `${named}. Modifiable quand la maison répond.` : `${named}. Changer de mode`;
   // La pastille : « Mode : Présent » ; les autres modes ont en plus leur pictogramme.
   const pill = make("span", "pill");
   if (!present) { const pic = make("span", "ico"); pic.innerHTML = modeIcon(state.mode); pill.appendChild(pic); }
@@ -1874,6 +2087,8 @@ function showLogin(message, info = false) {
   state.lostAt = null;
   state.tokens = null;
   state.notice = "";
+  stopPresence();
+  pick.asked = false;
   pushUi.mine = null;
   $("#lost").hidden = true;
   historyCache.clear();
@@ -1898,6 +2113,8 @@ function start() {
     },
   });
   loadTokens();
+  startPresence();
+  maybeAskPhone();
   // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
   if (location.hash) openFromUrl(location.href);
   syncPush();
@@ -1959,6 +2176,8 @@ $("#lost-title-text").textContent = api.HOUSE_SILENT;
 $("#lost-hint").textContent = api.HOUSE_HINT;
 $("#retry").addEventListener("click", () => { state.connection = "connecting"; renderLost(); events?.restart(); });
 $("#sheet-close").addEventListener("click", closeSheet);
+$("#pick-confirm").addEventListener("click", confirmPhonePick);
+$("#pick-cancel").addEventListener("click", closePhonePick);
 $("#sheet-backdrop").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (e) => {
   if (confirmDone) {
@@ -2008,6 +2227,7 @@ view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   if (e.target.closest("#notifications")) { openNotifications(); return; }
   if (e.target.closest("#connections")) { openConnections(); return; }
+  if (e.target.closest("#my-phone")) { loadPhones().then(() => openPhonePick(false)); return; }
   if (e.target.closest("#widgets")) { openWidgets(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
@@ -2028,6 +2248,7 @@ let hiddenAt = null;
 function wake() {
   if (!api.hasToken()) return;
   events?.restart();
+  loadPresence();
   if (tab === "cameras") renderCameras();
 }
 document.addEventListener("visibilitychange", () => {

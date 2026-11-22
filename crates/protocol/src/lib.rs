@@ -11,5 +11,6 @@ pub mod events;
 pub mod format;
 pub mod home;
 pub mod mode;
+pub mod presence;
 pub mod status;
 pub mod wire;
