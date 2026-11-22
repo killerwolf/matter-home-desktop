@@ -704,6 +704,34 @@ mod tests {
             assert_eq!(followed.changed, expected != start);
             assert_eq!(followed.auto, on);
         }
+        // Box injoignable : un « Je pars » n'arme pas la maison (les relevés peuvent être périmés),
+        // mais une arrivée désarme.
+        let r = rig("wifi-shortcut-down");
+        r.auto(true);
+        r.both_home();
+        r.fake.fail(BoxError::Unreachable);
+        assert_eq!(r.poll(10_000.0).link, Link::Unreachable);
+        r.hub
+            .presence
+            .declare_at("lea", Away, Source::Wifi, r.t0 - 100.0)
+            .unwrap();
+        let followed = r
+            .hub
+            .follow_presence("sam", Away, |id| r.crew.is_active(id), &Who::default())
+            .unwrap();
+        assert!(followed.box_down && !followed.changed);
+        assert_eq!(r.mode(), HomeMode::Present);
+        assert_eq!(
+            presence::message(Away, &followed, &[]),
+            "La box ne répond pas : la maison reste en Présent."
+        );
+        r.set_mode(HomeMode::Absent);
+        let followed = r
+            .hub
+            .follow_presence("sam", Home, |id| r.crew.is_active(id), &Who::default())
+            .unwrap();
+        assert!(followed.changed && !followed.box_down);
+        assert_eq!(r.mode(), HomeMode::Present);
         // Sans téléphone relié à un compte actif, l'interrupteur allumé ne fait toujours rien.
         let r = rig("wifi-shortcut-nophone");
         r.auto(true);

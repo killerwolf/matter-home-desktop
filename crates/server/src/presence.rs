@@ -124,6 +124,9 @@ pub struct Followed {
     /// Le mode automatique est-il actif (interrupteur allumé, au moins un téléphone relié) ?
     /// Sinon la maison ne change jamais : on le dit à la personne.
     pub auto: bool,
+    /// Un départ n'a pas armé la maison parce que la box ne répond pas : « qui est là » vient alors
+    /// de relevés peut-être dépassés, et le mode reste figé.
+    pub box_down: bool,
 }
 
 /// La phrase, en français, qui dit à la personne ce qui s'est passé. `names` : prénoms (noms
@@ -135,6 +138,9 @@ pub fn message(wanted: Whereabouts, followed: &Followed, names: &[String]) -> St
         return format!(
             "C'est noté. Le mode automatique est désactivé : la maison reste en {label}."
         );
+    }
+    if followed.box_down {
+        return format!("La box ne répond pas : la maison reste en {label}.");
     }
     if followed.changed {
         return format!("Maison en mode {label}.");
@@ -326,6 +332,7 @@ mod tests {
             changed,
             others_home: vec![],
             auto: true,
+            box_down: false,
         };
         let one = vec!["Sam".to_string()];
         let two = vec!["Sam".to_string(), "Léa".to_string()];
@@ -353,12 +360,24 @@ mod tests {
             message(Whereabouts::Home, &followed(HomeMode::Present, true), &[]),
             "Maison en mode Présent."
         );
+        let down = Followed {
+            mode: HomeMode::Present,
+            changed: false,
+            others_home: vec![],
+            auto: true,
+            box_down: true,
+        };
+        assert_eq!(
+            message(Whereabouts::Away, &down, &[]),
+            "La box ne répond pas : la maison reste en Présent."
+        );
         // Interrupteur éteint : la maison ne change jamais, et le raccourci le dit.
         let off = Followed {
             mode: HomeMode::Present,
             changed: false,
             others_home: vec![],
             auto: false,
+            box_down: false,
         };
         assert_eq!(
             message(Whereabouts::Away, &off, &[]),

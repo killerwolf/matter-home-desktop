@@ -1461,26 +1461,30 @@ impl MatterApp {
         let Some(pending) = self.pending.remove(&id) else {
             return;
         };
+        if matches!(pending, Pending::People) {
+            // Cette lecture périodique n'invalide aucun cache de données (`data_epoch`).
+            self.people_pending = false;
+            match result.and_then(|r| r.json::<protocol::presence::PeopleView>()) {
+                Ok(view) => self.people = Some(view),
+                // Un serveur plus ancien n'a pas la route : rien à montrer, sans bruit.
+                Err(e)
+                    if matches!(
+                        e.api_code(),
+                        Some(ErrorCode::NotFound | ErrorCode::MethodNotAllowed)
+                    ) =>
+                {
+                    self.people = None;
+                    self.people_unsupported = true;
+                }
+                // Réseau coupé ou autre : on garde ce qu'on savait.
+                Err(_) => {}
+            }
+            return;
+        }
         self.data_epoch += 1;
         match pending {
-            Pending::People => {
-                self.people_pending = false;
-                match result.and_then(|r| r.json::<protocol::presence::PeopleView>()) {
-                    Ok(view) => self.people = Some(view),
-                    // Un serveur plus ancien n'a pas la route : rien à montrer, sans bruit.
-                    Err(e)
-                        if matches!(
-                            e.api_code(),
-                            Some(ErrorCode::NotFound | ErrorCode::MethodNotAllowed)
-                        ) =>
-                    {
-                        self.people = None;
-                        self.people_unsupported = true;
-                    }
-                    // Réseau coupé ou autre : on garde ce qu'on savait.
-                    Err(_) => {}
-                }
-            }
+            // Traité plus haut : cette lecture périodique n'invalide aucun cache de données.
+            Pending::People => {}
             Pending::History { node_id } => {
                 let Some(entry) = self.series.get_mut(&node_id) else {
                     return;

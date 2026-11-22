@@ -980,7 +980,14 @@ impl Hub {
             Whereabouts::Away if others_home.is_empty() => Some(Movement::LastDeparture),
             Whereabouts::Away => None,
         };
+        // Box injoignable ou mot de passe refusé : « qui est là » vient de relevés peut-être périmés
+        // (quelqu'un a pu rentrer sans que la box le voie). On n'arme jamais la maison sur eux : le
+        // mode est figé. Une arrivée, elle, ne fait que désarmer.
+        let box_down = auto
+            && movement == Some(Movement::LastDeparture)
+            && self.wifi.status().link != crate::wifi::Link::Ok;
         let changed = match movement {
+            _ if box_down => false,
             // Le mode change tout seul, par la règle de présence : le journal l'attribue à celui
             // qui a dit partir ou rentrer, d'où l'origine « automatique ».
             Some(movement) if auto => self
@@ -1001,6 +1008,7 @@ impl Hub {
             changed,
             others_home,
             auto,
+            box_down,
         })
     }
 

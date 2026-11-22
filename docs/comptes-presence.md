@@ -37,7 +37,7 @@ Le signal le plus récent l'emporte, entre le téléphone vu sur le Wi-Fi et le 
 
 - une arrivée vue sur le Wi-Fi compte tout de suite, sauf si un « Je pars » plus récent a été dit ;
 - un départ vu seulement sur le Wi-Fi ne compte qu'après 10 minutes sans voir le téléphone (délai
-  `away_delay_min`), et un « Je rentre » plus récent le début de l'absence l'annule.
+  `away_delay_min`), et un « Je rentre » plus récent que le début de l'absence l'annule.
 
 ## Mode automatique
 
@@ -54,7 +54,7 @@ Un départ ne compte que si personne d'autre n'est déclaré à la maison (Wi-Fi
 arrivée l'emporte sur un départ au même relevé. Le mode se décide sous le verrou du mode : un choix fait
 à la main entre-temps n'est jamais écrasé. Chaque arrivée ou départ vu sur le Wi-Fi, et chaque changement
 automatique, est écrit au journal avec la personne concernée (source « automatique », connexion « Wi-Fi
-de la box »). Les raccourcis « Je pars » et « Je rentre » suivent la même règle et le même interrupteur.
+de la box »). Les raccourcis « Je pars » et « Je rentre » suivent la même règle et le même interrupteur ; box injoignable, un « Je pars » n'arme pas la maison (le raccourci le dit).
 
 ## Affichage
 
