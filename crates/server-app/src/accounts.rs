@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use ostal_server::audit::{Action, AuditLog, Entry, Who};
 use ostal_server::hub::Hub;
 use ostal_server::net::Auth;
 use ostal_server::persistence::SERVER_DIR;
@@ -86,23 +87,41 @@ impl NewAccount {
 /// Crée le compte (calcul du mot de passe : à lancer hors du fil principal).
 pub fn add(data_dir: &Path, form: &NewAccount) -> Result<User, String> {
     form.check()?;
-    account::add(
+    let user = account::add(
         &dir(data_dir),
         form.username.trim(),
         Some(form.display_name.trim()),
         &form.password,
     )
-    .map_err(|e| format!("{e:#}"))
+    .map_err(|e| format!("{e:#}"))?;
+    record(data_dir, Action::UserCreated, &user.display_name);
+    Ok(user)
+}
+
+/// Note au journal d'audit une opération faite depuis la fenêtre d'Ostal Server.
+fn record(data_dir: &Path, action: Action, target: &str) {
+    AuditLog::open(&dir(data_dir)).record(Entry::new(action, &Who::server_app()).target(target));
 }
 
 /// Définit un nouveau mot de passe : les sessions de ce compte, et d'elles seules, sont coupées.
 pub fn change_password(data_dir: &Path, user_id: &str, password: &str) -> Result<User, String> {
-    account::set_password(&dir(data_dir), user_id, password).map_err(|e| format!("{e:#}"))
+    let user =
+        account::set_password(&dir(data_dir), user_id, password).map_err(|e| format!("{e:#}"))?;
+    record(data_dir, Action::PasswordChanged, &user.display_name);
+    Ok(user)
 }
 
 /// Désactive (sessions coupées) ou réactive un compte. Le dernier compte actif ne se désactive pas.
 pub fn set_active(data_dir: &Path, user_id: &str, active: bool) -> Result<User, String> {
-    account::set_active(&dir(data_dir), user_id, active).map_err(|e| format!("{e:#}"))
+    let user =
+        account::set_active(&dir(data_dir), user_id, active).map_err(|e| format!("{e:#}"))?;
+    let action = if active {
+        Action::UserEnabled
+    } else {
+        Action::UserDisabled
+    };
+    record(data_dir, action, &user.display_name);
+    Ok(user)
 }
 
 /// Ce compte est-il le seul à pouvoir encore se connecter ?
@@ -180,6 +199,13 @@ pub fn clock() -> (f64, i64) {
 /// Rend `true` si elle existait encore ou si elle avait encore des jetons. Peut attendre quelques
 /// secondes si une préparation de raccourcis est en cours.
 pub fn cut_connection(auth: &Auth, hub: Option<&Hub>, id: &str) -> Result<bool, String> {
+    // Son nom, pris avant la coupure, pour le journal d'audit.
+    let name = auth
+        .sessions
+        .connections()
+        .into_iter()
+        .find(|c| c.id == id)
+        .map(|c| c.name);
     let cut = auth.sessions.cut_connection(None, id);
     let revoked = match hub {
         Some(hub) => hub
@@ -187,7 +213,13 @@ pub fn cut_connection(auth: &Auth, hub: Option<&Hub>, id: &str) -> Result<bool, 
             .map_err(|e| e.detail.unwrap_or_else(|| "écriture impossible".into()))?,
         None => 0,
     };
-    Ok(cut > 0 || revoked > 0)
+    let done = cut > 0 || revoked > 0;
+    if let (true, Some(hub)) = (done, hub) {
+        hub.audit().record(
+            Entry::new(Action::ConnectionCut, &Who::server_app()).target(name.unwrap_or_default()),
+        );
+    }
+    Ok(done)
 }
 
 /// « 3 connexions », « 1 connexion », « aucune connexion ».

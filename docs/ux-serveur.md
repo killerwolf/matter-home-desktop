@@ -130,7 +130,7 @@ les entrées Connexion et Caméras n'apparaissent que lorsque le serveur tourne.
 Le calcul est dans `crates/server-app/src/overview.rs` (sans interface, testé) : le menu
 (`menu.rs`), l'icône et l'infobulle (`status.rs`) et la vue d'ensemble de la fenêtre le partagent.
 
-### La fenêtre : cinq onglets
+### La fenêtre : six onglets
 
 | Onglet | Contenu |
 |---|---|
@@ -138,6 +138,7 @@ Le calcul est dans `crates/server-app/src/overview.rs` (sans interface, testé) 
 | **Appareils** | Combien répondent, lesquels sont injoignables et quoi faire ; « Ajouter un appareil » en trois étapes (cela se fait dans le client) ; où voir et piloter ses appareils. |
 | **Caméras** | La liste et le formulaire (inchangés sur le fond), l'état de la détection, et « Décrire les événements par IA » : état, puis une page en deux étapes (créer et coller la clé Anthropic, activer et régler). |
 | **Connexion** | Quatre blocs : *depuis un ordinateur de la maison* (adresse et code de vérification à copier), *depuis l'iPhone, même hors de la maison* (Tailscale sur ce Mac, activer l'accès, Tailscale sur l'iPhone, adresse à ouvrir dans Safari), *notifications sur l'iPhone et l'iPad* (ticket n° 17 : interrupteur général, appareils abonnés, « Révoquer »), *changer de mode automatiquement* (accès à distance, code secret, champs à remplir dans Raccourcis). |
+| **Journal** | Qui a fait quoi, depuis quel téléphone ou ordinateur : une liste par jour (Heure, Qui, Depuis, Quoi), filtrée par personne (« Toutes les personnes » ou un compte) et par période (« Aujourd'hui et hier », « Aujourd'hui », « 7 derniers jours »). Gardé 6 mois ; ne se lit que dans Ostal Server et par `ostal-server audit`. Les phrases viennent de `ostal_server::audit::describe`, les mêmes dans la fenêtre et dans le Terminal. |
 | **Réglages** | Compte (identifiant et mot de passe), démarrage et veille, sauvegarde (où elle se fait, comment la reprendre), dépannage (journal, dossier des données, version). |
 
 Les onglets apparaissent une fois la première installation terminée. Un onglet qui a besoin du

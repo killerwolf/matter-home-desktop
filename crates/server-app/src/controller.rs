@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use ostal_server::app::{Outcome, Server, ServerConfig};
+use ostal_server::audit::{Action, AuditLog, Entry, Who};
 use ostal_server::backup::{self, PendingKind};
 use ostal_server::hub::Hub;
 use ostal_server::persistence::{self, DataLock, LockHeld};
@@ -773,8 +774,12 @@ fn create_account(username: &str, password: &str) -> Result<(), String> {
     setup::check_credentials(username, password)?;
     let dir = persistence::data_dir();
     security::server_dir(&dir)
-        .and_then(|d| account::create(&d, username, password, false))
-        .map(|_| ())
+        .and_then(|d| {
+            account::create(&d, username, password, false)?;
+            AuditLog::open(&d)
+                .record(Entry::new(Action::UserCreated, &Who::server_app()).target(username));
+            Ok(())
+        })
         .map_err(|e| format!("{e:#}"))
 }
 

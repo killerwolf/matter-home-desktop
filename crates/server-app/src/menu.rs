@@ -30,6 +30,7 @@ impl Action {
             Action::Open(Tab::Devices) => "open-appareils",
             Action::Open(Tab::Cameras) => "open-cameras",
             Action::Open(Tab::Connect) => "open-connexion",
+            Action::Open(Tab::Journal) => "open-journal",
             Action::Open(Tab::Settings) => "open-reglages",
             Action::Quit => "quit",
             Action::Mode(HomeMode::Present) => "mode-present",

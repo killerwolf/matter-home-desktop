@@ -6,7 +6,9 @@
 use std::net::SocketAddr;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequest, Path, Query, Request, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Path, Query, Request, State,
+};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -25,8 +27,10 @@ use protocol::wire::{
 };
 
 use super::AppState;
+use crate::audit::{Action, ConnRef, Entry, ModeCause, Origin, Outcome, Who};
 use crate::security::account::Verdict;
-use crate::security::sessions::{clean_installation, SessionInfo};
+use crate::security::sessions::{clean_installation, ConnectionRecord, SessionInfo};
+use crate::security::user_tokens::TokenInfo;
 
 /// Taille maximale d'un corps JSON ordinaire (plan, règles, commandes).
 const JSON_LIMIT: usize = 1024 * 1024;
@@ -257,6 +261,90 @@ async fn blocking<T: Send + 'static>(
 }
 
 // ---------------------------------------------------------------------------
+// Journal d'audit : qui agit, d'où
+// ---------------------------------------------------------------------------
+
+fn conn_ref(record: &ConnectionRecord) -> ConnRef {
+    let id = (!record.unknown).then_some(record.id.as_str());
+    ConnRef::new(id, &record.name, ConnRef::of_kind(record.kind))
+}
+
+/// Une personne connectée par cette session : son nom, sa connexion, son adresse et d'où elle vient.
+fn session_who(
+    state: &AppState,
+    session: &SessionInfo,
+    peer: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
+) -> Who {
+    let mut who = Who::user(
+        &session.user_id,
+        state.auth.accounts.display_name(&session.user_id),
+    );
+    who.connection = state
+        .auth
+        .sessions
+        .connections()
+        .iter()
+        .find(|c| c.session_id == session.id)
+        .map(conn_ref);
+    who.ip = peer.map(|p| p.to_string());
+    who.via = peer.map(|p| via_of(p, headers));
+    who
+}
+
+/// Qui agit dans une requête protégée par une session (`require_session` a posé la session).
+pub(super) struct Ctx(pub Who);
+
+impl FromRequestParts<AppState> for Ctx {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip());
+        Ok(Ctx(match parts.extensions.get::<SessionInfo>() {
+            Some(session) => session_who(state, session, peer, &parts.headers),
+            None => Who::default(),
+        }))
+    }
+}
+
+/// Écrit une ligne du journal sans bloquer le réseau (c'est une écriture sur disque).
+async fn audit(state: &AppState, entry: Entry) {
+    let log = state.hub.audit().clone();
+    let _ = tokio::task::spawn_blocking(move || log.record(entry)).await;
+}
+
+async fn audit_throttled(state: &AppState, key: String, window_s: f64, entry: Entry) {
+    let log = state.hub.audit().clone();
+    let _ = tokio::task::spawn_blocking(move || log.record_throttled(&key, window_s, entry)).await;
+}
+
+/// Le mot du journal pour une commande de marche/arrêt.
+fn on_off_word(command: protocol::automation::OnOffCommand) -> &'static str {
+    use protocol::automation::OnOffCommand::{Off, On, Toggle};
+    match command {
+        On => "on",
+        Off => "off",
+        Toggle => "toggle",
+    }
+}
+
+fn cover_word(command: protocol::automation::CoverCommand) -> String {
+    use protocol::automation::CoverCommand::{Close, Open, Position, Stop};
+    match command {
+        Open => "open".into(),
+        Close => "close".into(),
+        Stop => "stop".into(),
+        Position(p) => format!("position:{p}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Authentification
 // ---------------------------------------------------------------------------
 
@@ -346,7 +434,10 @@ async fn login(
         return Err(ApiError::new(ErrorCode::InvalidCredentials).into());
     }
     let ip = peer.ip();
-    check_not_locked(&state, ip, &request.username)?;
+    if let Err(e) = check_not_locked(&state, ip, &request.username) {
+        audit_lockout(&state, ip, &headers, &request.username).await;
+        return Err(e);
+    }
     // Argon2 coûte du temps et de la mémoire : une vérification à la fois, pour tout le
     // serveur. C'est ce qui limite le débit d'une attaque répartie sur plusieurs adresses,
     // sans jamais refuser un mot de passe correct : les demandes font la queue (dans l'ordre
@@ -361,7 +452,10 @@ async fn login(
         // Deuxième contrôle, une fois la place obtenue : des tentatives lancées en parallèle
         // passent toutes le premier, mais celles qui attendaient voient l'attente décidée par
         // les échecs des précédentes. Sans lui, la limite serait contournable en simultané.
-        check_not_locked(&state, ip, &request.username)?;
+        if let Err(e) = check_not_locked(&state, ip, &request.username) {
+            audit_lockout(&state, ip, &headers, &request.username).await;
+            return Err(e);
+        }
         let auth = state.auth.clone();
         let (username, password) = (request.username.clone(), request.password);
         tokio::task::spawn_blocking(move || auth.accounts.verify(&username, &password))
@@ -374,12 +468,35 @@ async fn login(
             state.auth.limiter.record_user_success(&request.username);
             // Un client d'avant la version 4 ne dit rien de lui : connexion « inconnue ».
             let installation = clean_installation(request.installation);
-            let session = state.auth.sessions.create_from(
+            // Nouvelle connexion : aucune session n'existait pour cette installation.
+            let is_new = installation.as_ref().is_some_and(|i| {
+                !state
+                    .auth
+                    .sessions
+                    .connections()
+                    .iter()
+                    .any(|c| !c.unknown && c.id == i.id)
+            });
+            let via = via_of(ip, &headers);
+            let mut who = Who::user(
                 &granted.user_id,
-                granted.epoch,
-                installation,
-                via_of(ip, &headers),
+                state.auth.accounts.display_name(&granted.user_id),
             );
+            // Une connexion inconnue (client sans identifiant) n'a pas de connexion à nommer.
+            who.connection = installation
+                .as_ref()
+                .map(|i| ConnRef::new(Some(&i.id), &i.name, ConnRef::of_kind(i.kind)));
+            who.ip = Some(ip.to_string());
+            who.via = Some(via);
+            let session =
+                state
+                    .auth
+                    .sessions
+                    .create_from(&granted.user_id, granted.epoch, installation, via);
+            audit(&state, Entry::new(Action::Login, &who)).await;
+            if is_new {
+                audit(&state, Entry::new(Action::NewConnection, &who)).await;
+            }
             log::info!("connexion acceptée pour {ip}");
             Ok(Json(LoginResponse {
                 token: session.token,
@@ -399,6 +516,25 @@ async fn login(
             let by_user = state.auth.limiter.record_user_failure(&request.username);
             let wait = by_ip.max(by_user);
             log::warn!("connexion refusée pour {ip} : identifiants incorrects");
+            // L'identifiant tapé n'entre au journal que s'il désigne un compte (on tape parfois
+            // son mot de passe dans cette case).
+            let known = state.auth.accounts.find_by_username(&request.username);
+            let mut who = match &known {
+                Some((id, name)) => Who::user(id, Some(name.clone())),
+                None => Who::default(),
+            };
+            who.connection = clean_installation(request.installation)
+                .map(|i| ConnRef::new(None, &i.name, ConnRef::of_kind(i.kind)));
+            who.ip = Some(ip.to_string());
+            who.via = Some(via_of(ip, &headers));
+            let who_key = known.map_or_else(String::new, |(id, _)| id);
+            audit_throttled(
+                &state,
+                format!("refused:{ip}:{who_key}"),
+                REFUSED_LOG_WINDOW_S,
+                Entry::new(Action::Login, &who).result(Outcome::Refused),
+            )
+            .await;
             // Petit délai avant de répondre (hors de la file des vérifications : il ne retarde
             // personne d'autre) : un échec coûte un peu de temps à celui qui le provoque.
             tokio::time::sleep(FAILURE_PAUSE).await;
@@ -407,6 +543,35 @@ async fn login(
             Err(error.into())
         }
     }
+}
+
+/// Un refus de connexion n'est écrit qu'une fois par ce délai, pour une même adresse et un même
+/// compte : une attaque en rafale ne remplit pas le disque.
+const REFUSED_LOG_WINDOW_S: f64 = 5.0;
+/// Même chose pour « trop d'essais » : une ligne par minute et par adresse.
+const LOCKOUT_LOG_WINDOW_S: f64 = 60.0;
+
+async fn audit_lockout(
+    state: &AppState,
+    ip: std::net::IpAddr,
+    headers: &HeaderMap,
+    username: &str,
+) {
+    let mut who = match state.auth.accounts.find_by_username(username) {
+        Some((id, name)) => Who::user(&id, Some(name)),
+        None => Who::default(),
+    };
+    who.ip = Some(ip.to_string());
+    who.via = Some(via_of(ip, headers));
+    audit_throttled(
+        state,
+        format!("lockout:{ip}"),
+        LOCKOUT_LOG_WINDOW_S,
+        Entry::new(Action::Login, &who)
+            .result(Outcome::Refused)
+            .detail("lockout"),
+    )
+    .await;
 }
 
 /// Refuse si l'adresse **ou** l'identifiant demandé est en attente après trop d'échecs.
@@ -580,6 +745,42 @@ struct Actor {
     user_id: String,
     /// `true` : le jeton de mode d'un raccourci ; `false` : une session.
     by_mode_token: bool,
+    /// La session, quand c'en est une.
+    session: Option<SessionInfo>,
+    /// Le jeton de mode, quand c'en est un (pour dire de quel téléphone vient le raccourci).
+    token: Option<TokenInfo>,
+}
+
+/// Qui est l'auteur d'une requête de mode ou de présence, pour le journal d'audit.
+fn actor_who(state: &AppState, actor: &Actor, ip: std::net::IpAddr, headers: &HeaderMap) -> Who {
+    if let Some(session) = &actor.session {
+        return session_who(state, session, Some(ip), headers);
+    }
+    let mut who = Who::user(
+        &actor.user_id,
+        state.auth.accounts.display_name(&actor.user_id),
+    );
+    who.ip = Some(ip.to_string());
+    who.via = Some(via_of(ip, headers));
+    if let Some(token) = &actor.token {
+        // Le téléphone d'où le raccourci a été préparé, sinon le libellé du jeton.
+        who.connection = token
+            .installation_id
+            .as_deref()
+            .and_then(|id| {
+                state
+                    .auth
+                    .sessions
+                    .connections()
+                    .iter()
+                    .find(|c| !c.unknown && c.id == id)
+                    .map(conn_ref)
+            })
+            .or_else(|| {
+                (!token.label.is_empty()).then(|| ConnRef::new(None, &token.label, "shortcut"))
+            });
+    }
+    who
 }
 
 /// Reconnaît l'auteur d'une requête `PUT /api/mode` ou `PUT /api/presence`. Le jeton est lu dans
@@ -599,8 +800,10 @@ async fn authenticate_mode_request(
     };
     if let Some(session) = state.auth.authenticate(&token) {
         return Ok(Actor {
-            user_id: session.user_id,
+            user_id: session.user_id.clone(),
             by_mode_token: false,
+            session: Some(session),
+            token: None,
         });
     }
     if let Some(owner) = state
@@ -609,8 +812,10 @@ async fn authenticate_mode_request(
         .filter(|t| state.auth.accounts.is_active(&t.user_id))
     {
         return Ok(Actor {
-            user_id: owner.user_id,
+            user_id: owner.user_id.clone(),
             by_mode_token: true,
+            session: None,
+            token: Some(owner),
         });
     }
     log::warn!("{what} refusé pour {ip} : jeton invalide");
@@ -630,6 +835,7 @@ async fn put_mode(
     let ip = peer.ip();
     let actor =
         authenticate_mode_request(&state, ip, "changement de mode", request.headers()).await?;
+    let who = actor_who(&state, &actor, ip, request.headers());
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let ModeRequest { mode, source } = serde_json::from_slice(&bytes).map_err(|_| {
         ApiErr(ApiError::with_detail(
@@ -642,7 +848,16 @@ async fn put_mode(
     let source = ModeSource::claimed(source, actor.by_mode_token);
     let hub = state.hub.clone();
     let label = source.label();
-    let changed = blocking(move || hub.set_mode(mode, source)).await?;
+    let cause = ModeCause {
+        who,
+        origin: Origin::of(&source),
+        detail: match &source {
+            ModeSource::Web => Some("l'app web".to_string()),
+            ModeSource::Desktop => Some("l'app Mac".to_string()),
+            _ => None,
+        },
+    };
+    let changed = blocking(move || hub.set_mode_as(mode, source, cause)).await?;
     let who = state
         .auth
         .accounts
@@ -671,6 +886,7 @@ async fn put_presence(
 ) -> ApiResult<Json<PresenceResponse>> {
     let ip = peer.ip();
     let actor = authenticate_mode_request(&state, ip, "présence", request.headers()).await?;
+    let who = actor_who(&state, &actor, ip, request.headers());
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let PresenceRequest { state: wanted } = serde_json::from_slice(&bytes).map_err(|_| {
         ApiErr(ApiError::with_detail(
@@ -686,6 +902,14 @@ async fn put_presence(
     let hub = state.hub.clone();
     let user_id = actor.user_id.clone();
     let changed = blocking(move || hub.declare_presence(&user_id, wanted, source)).await?;
+    audit(
+        &state,
+        Entry::new(Action::Presence, &who).target(match wanted {
+            crate::presence::Whereabouts::Home => "home",
+            crate::presence::Whereabouts::Away => "away",
+        }),
+    )
+    .await;
     // Un raccourci « Je pars » ou « Je rentre » fait aussi ce que faisaient les raccourcis Absent et
     // Présent, pour que les téléphones n'aient rien à réinstaller, mais selon la règle de la maison
     // (`presence::mode_after`) : Absent seulement quand personne d'autre n'est là, Présent seulement
@@ -694,11 +918,15 @@ async fn put_presence(
         let hub = state.hub.clone();
         let state_for_accounts = state.clone();
         let user_id = actor.user_id.clone();
+        let who = who.clone();
         Some(
             blocking(move || {
-                hub.follow_presence(&user_id, wanted, |id| {
-                    state_for_accounts.auth.accounts.is_active(id)
-                })
+                hub.follow_presence(
+                    &user_id,
+                    wanted,
+                    |id| state_for_accounts.auth.accounts.is_active(id),
+                    &who,
+                )
             })
             .await?,
         )
@@ -760,9 +988,21 @@ struct PresenceResponse {
 
 async fn logout(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     Extension(session): Extension<SessionInfo>,
 ) -> StatusCode {
     state.auth.sessions.revoke(&session.id);
+    let name = who
+        .connection
+        .as_ref()
+        .map_or_else(String::new, |c| c.name.clone());
+    audit(
+        &state,
+        Entry::new(Action::ConnectionCut, &who)
+            .target(name)
+            .detail("logout"),
+    )
+    .await;
     StatusCode::NO_CONTENT
 }
 
@@ -797,9 +1037,18 @@ async fn my_connections(
 /// autres comptes ne se coupent pas d'ici (404, comme si elles n'existaient pas).
 async fn cut_connection(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    // Son nom, pris avant la coupure : après, la connexion n'existe plus.
+    let name = state
+        .auth
+        .sessions
+        .connections()
+        .into_iter()
+        .find(|c| c.id == id && c.user_id == session.user_id)
+        .map(|c| c.name);
     // Les sessions d'abord : plus aucune ne peut préparer de nouveaux raccourcis pour cette
     // connexion. Puis ses raccourcis et son widget, même si la session avait déjà expiré :
     // couper un téléphone perdu le coupe vraiment.
@@ -815,6 +1064,11 @@ async fn cut_connection(
     if cut == 0 && revoked == 0 {
         return Err(ApiError::new(ErrorCode::NotFound).into());
     }
+    audit(
+        &state,
+        Entry::new(Action::ConnectionCut, &who).target(name.unwrap_or_default()),
+    )
+    .await;
     log::info!("connexion coupée par son propriétaire");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -858,15 +1112,42 @@ async fn get_rules(State(state): State<AppState>) -> Json<TextIds<RuleSet>> {
 
 async fn put_rules(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     ApiJson(TextIds(rules)): ApiJson<TextIds<RuleSet>>,
 ) -> ApiResult<Json<TextIds<RuleSet>>> {
     let hub = state.hub.clone();
-    blocking(move || hub.set_rules(rules)).await?;
+    let result = blocking(move || hub.set_rules(rules)).await;
+    audit(
+        &state,
+        Entry::new(Action::AutomationChanged, &who).outcome(&result),
+    )
+    .await;
+    result?;
     Ok(Json(TextIds(state.hub.rules())))
 }
 
-async fn test_rule(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    state.hub.test_rule(parse_id(&id)?)?;
+async fn test_rule(
+    State(state): State<AppState>,
+    Ctx(who): Ctx,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let id = parse_id(&id)?;
+    let name = state
+        .hub
+        .rules()
+        .rules
+        .iter()
+        .find(|r| r.id == id)
+        .map(|r| r.name.clone());
+    let result = state.hub.test_rule(id);
+    audit(
+        &state,
+        Entry::new(Action::AutomationTested, &who)
+            .target(name.unwrap_or_default())
+            .outcome(&result),
+    )
+    .await;
+    result?;
     Ok(accepted())
 }
 
@@ -876,9 +1157,17 @@ async fn test_rule(State(state): State<AppState>, Path(id): Path<String>) -> Api
 
 async fn pair(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     ApiJson(request): ApiJson<PairRequest>,
 ) -> ApiResult<Response> {
-    state.hub.pair(&request.code)?;
+    // Le code d'appairage est un secret : il n'entre jamais au journal d'audit.
+    let result = state.hub.pair(&request.code);
+    audit(
+        &state,
+        Entry::new(Action::DevicePaired, &who).outcome(&result),
+    )
+    .await;
+    result?;
     Ok(accepted())
 }
 
@@ -887,8 +1176,22 @@ async fn retry(State(state): State<AppState>, Path(id): Path<String>) -> ApiResu
     Ok(accepted())
 }
 
-async fn forget(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    state.hub.forget(parse_id(&id)?)?;
+async fn forget(
+    State(state): State<AppState>,
+    Ctx(who): Ctx,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let id = parse_id(&id)?;
+    let name = state.hub.device_name(id);
+    let result = state.hub.forget(id);
+    audit(
+        &state,
+        Entry::new(Action::DeviceRemoved, &who)
+            .target(name.unwrap_or_default())
+            .outcome(&result),
+    )
+    .await;
+    result?;
     Ok(accepted())
 }
 
@@ -903,19 +1206,43 @@ async fn customize(
 
 async fn on_off(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<OnOffRequest>,
 ) -> ApiResult<Response> {
-    state.hub.set_on_off(parse_id(&id)?, request.command)?;
+    let id = parse_id(&id)?;
+    let name = state.hub.device_name(id);
+    let result = state.hub.set_on_off(id, request.command);
+    audit(
+        &state,
+        Entry::new(Action::DeviceCommand, &who)
+            .target(name.unwrap_or_default())
+            .detail(on_off_word(request.command))
+            .outcome(&result),
+    )
+    .await;
+    result?;
     Ok(accepted())
 }
 
 async fn cover(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<CoverRequest>,
 ) -> ApiResult<Response> {
-    state.hub.set_cover(parse_id(&id)?, request.command)?;
+    let id = parse_id(&id)?;
+    let name = state.hub.device_name(id);
+    let result = state.hub.set_cover(id, request.command);
+    audit(
+        &state,
+        Entry::new(Action::DeviceCommand, &who)
+            .target(name.unwrap_or_default())
+            .detail(cover_word(request.command))
+            .outcome(&result),
+    )
+    .await;
+    result?;
     Ok(accepted())
 }
 
@@ -975,9 +1302,11 @@ fn attachment(content_type: &'static str, file_name: &str, body: String) -> Resp
     response
 }
 
-async fn export(State(state): State<AppState>) -> ApiResult<Response> {
+async fn export(State(state): State<AppState>, Ctx(who): Ctx) -> ApiResult<Response> {
     let hub = state.hub.clone();
-    let (name, text) = blocking(move || hub.export()).await?;
+    let result = blocking(move || hub.export()).await;
+    audit(&state, Entry::new(Action::Export, &who).outcome(&result)).await;
+    let (name, text) = result?;
     log::warn!("export de la sauvegarde complète (clés privées en clair) demandé");
     Ok(attachment(wire::EXPORT_CONTENT_TYPE, &name, text))
 }
@@ -994,6 +1323,7 @@ struct ImportQuery {
 
 async fn import(
     State(state): State<AppState>,
+    Ctx(who): Ctx,
     q: Result<Query<ImportQuery>, axum::extract::rejection::QueryRejection>,
     ApiBytes(body): ApiBytes,
 ) -> ApiResult<Response> {
@@ -1017,7 +1347,7 @@ async fn import(
         }
     };
     let hub = state.hub.clone();
-    let response = blocking(move || {
+    let result = blocking(move || {
         let text = std::str::from_utf8(&body).map_err(|_| {
             ApiError::with_detail(
                 ErrorCode::InvalidImport,
@@ -1049,7 +1379,12 @@ async fn import(
                 })
         }
     })
-    .await?;
+    .await;
+    // Seul un vrai import est écrit au journal, pas la simple vérification (`dry_run`).
+    if !dry_run {
+        audit(&state, Entry::new(Action::Import, &who).outcome(&result)).await;
+    }
+    let response = result?;
     Ok((response.0, Json(response.1)).into_response())
 }
 

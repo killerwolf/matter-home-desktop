@@ -567,6 +567,18 @@ impl AccountStore {
         self.with_users(|users| users.iter().any(|u| u.id == user_id && u.active))
     }
 
+    /// Le compte qui porte cet identifiant de connexion : (identifiant interne, nom affiché). Pour
+    /// le journal d'audit ; ni mot de passe ni état n'en sortent.
+    pub fn find_by_username(&self, username: &str) -> Option<(String, String)> {
+        let wanted = username_key(username);
+        self.with_users(|users| {
+            users
+                .iter()
+                .find(|u| username_key(&u.username) == wanted)
+                .map(|u| (u.id.clone(), User::from(u).display_name))
+        })
+    }
+
     /// Le nom affiché d'un compte (pour le journal technique).
     pub fn display_name(&self, user_id: &str) -> Option<String> {
         self.with_users(|users| {

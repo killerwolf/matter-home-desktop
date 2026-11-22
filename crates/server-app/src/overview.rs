@@ -19,15 +19,17 @@ pub enum Tab {
     Devices,
     Cameras,
     Connect,
+    Journal,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Overview,
         Tab::Devices,
         Tab::Cameras,
         Tab::Connect,
+        Tab::Journal,
         Tab::Settings,
     ];
 
@@ -38,6 +40,7 @@ impl Tab {
             Tab::Devices => "Appareils",
             Tab::Cameras => "Caméras",
             Tab::Connect => "Connexion",
+            Tab::Journal => "Journal",
             Tab::Settings => "Réglages",
         }
     }
@@ -49,6 +52,7 @@ impl Tab {
             Tab::Devices => "appareils",
             Tab::Cameras => "cameras",
             Tab::Connect => "connexion",
+            Tab::Journal => "journal",
             Tab::Settings => "reglages",
         }
     }

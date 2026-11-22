@@ -3,6 +3,7 @@
 
 pub mod announce;
 pub mod app;
+pub mod audit;
 pub mod automation;
 pub mod backup;
 pub mod cameras;

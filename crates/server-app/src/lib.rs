@@ -11,6 +11,7 @@ pub mod confirm;
 pub mod controller;
 pub mod descriptions;
 pub mod icon;
+pub mod journal;
 pub mod menu;
 pub mod overview;
 pub mod signals;

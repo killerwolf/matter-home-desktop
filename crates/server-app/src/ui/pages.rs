@@ -1,9 +1,9 @@
 //! Les pages de la fenêtre (voir `docs/ux-serveur.md`).
 //!
 //! - Première installation : trois étapes (la maison, le compte, « c'est prêt »).
-//! - Ensuite, cinq onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
-//!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis) et
-//!   **Réglages** (compte, démarrage, sauvegarde, dépannage).
+//! - Ensuite, six onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
+//!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis),
+//!   **Journal** (qui a fait quoi) et **Réglages** (compte, démarrage, sauvegarde, dépannage).
 //!
 //! Les mots sont ceux de l'utilisateur ; le terme technique, quand il aide à se repérer dans la
 //! documentation, suit entre parenthèses. Aucun secret n'est affiché, sauf le jeton de mode à sa
@@ -144,6 +144,7 @@ impl App {
                 Tab::Devices => self.devices_page(ui, st),
                 Tab::Cameras => self.cameras_page(ui, ctx, st),
                 Tab::Connect => self.connect_page(ui, st),
+                Tab::Journal => self.journal.show(ui, ctx, &st.data_dir),
                 Tab::Settings => self.settings_page(ui, ctx, st),
             },
         }

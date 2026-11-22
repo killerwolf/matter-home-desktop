@@ -10,6 +10,24 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Journal d'audit (multi-comptes, étape 4)
+
+- Un journal note qui a fait quoi, depuis quel téléphone ou ordinateur : connexion réussie ou
+  refusée, nouvelle connexion, connexion coupée, mot de passe changé, compte créé, désactivé ou
+  réactivé, changement de mode (avec sa source : personne, raccourci, automatisation ou automatique),
+  commande d'un équipement, automatisations modifiées ou testées, appairage et suppression d'un
+  équipement, export et import, « Je pars » et « Je rentre ». Chaque ligne porte la date, la
+  personne, la connexion, l'adresse, l'action, la cible et le résultat. Jamais de mot de passe, de
+  jeton, de code d'appairage ni de mesure ; un identifiant tapé lors d'une connexion refusée n'est
+  gardé que s'il désigne un compte.
+- Un fichier par mois, `serveur/audit/AAAA-MM.jsonl`, en ajout seul (dossier 0700, fichiers 0600),
+  gardé 6 mois : les fichiers plus anciens sont supprimés. Le dossier reste dans `serveur/` : jamais
+  exporté, jamais remplacé par un import. Rien d'ancien n'est modifié : le dossier se crée à côté des
+  fichiers existants au premier événement, et les anciens clients continuent de se connecter (ligne
+  « connexion inconnue »).
+- Ostal Server : nouvel onglet **Journal** (filtres Personne et Période, par jour) ; la ligne de
+  commande `ostal-server audit [--user COMPTE] [--days N]` relit les mêmes lignes.
+
 ### Raccourcis et notifications par personne (multi-comptes, étape 3)
 
 - Raccourcis, widget et notifications deviennent personnels. Les jetons de mode et de lecture se

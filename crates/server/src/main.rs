@@ -6,6 +6,7 @@
 //! - `ostal-server --discover`     : diagnostic en ligne de commande (mDNS)
 //! - `ostal-server create-account` : crée le premier compte (mot de passe demandé sans écho)
 //! - `ostal-server user …`         : comptes nominatifs (`add`, `list`, `passwd`, `disable`, `enable`)
+//! - `ostal-server audit`          : lit le journal d'audit (lecture seule)
 //! - `ostal-server fingerprint`    : affiche l'empreinte du certificat TLS
 //! - `ostal-server init`           : crée l'identité Matter d'une installation neuve
 //!   (sans sauvegarde à importer), puis quitte
@@ -28,6 +29,7 @@ use std::time::Duration;
 use rand::RngCore;
 
 use ostal_server::app::{Outcome, Server, ServerConfig};
+use ostal_server::audit::{self, Action, AuditLog, Entry, Filter, Who};
 use ostal_server::security::account::{self, AccountStore};
 use ostal_server::security::{self, tls};
 use ostal_server::{backup, matter, persistence};
@@ -64,6 +66,12 @@ Usage :
                                  dernier compte actif ne peut pas être désactivé.
                                  Ces commandes agissent aussi sur un serveur qui tourne,
                                  sans redémarrage
+  ostal-server audit [--user COMPTE] [--days N] [--data-dir DOSSIER]
+                                 lit le journal d'audit (qui a fait quoi, depuis quel téléphone
+                                 ou ordinateur), la ligne la plus récente d'abord : date, qui,
+                                 depuis, quoi. 7 jours par défaut ; --user garde un seul compte
+                                 (identifiant ou nom affiché). Gardé 6 mois, jamais de mot de
+                                 passe ni de jeton. Lecture seule
   ostal-server fingerprint [--data-dir DOSSIER]
                                  affiche l'empreinte SHA-256 du certificat TLS
   ostal-server init [--data-dir DOSSIER]
@@ -144,6 +152,7 @@ fn main() -> ExitCode {
             .map_or_else(|c| c, |()| run_create_account(&args[1..])),
         Some("user") => refuse_root("« user »").map_or_else(|c| c, |()| run_user(&args[1..])),
         Some("fingerprint") => run_fingerprint(&args[1..]),
+        Some("audit") => run_audit(&args[1..]),
         Some("init") => refuse_root("« init »").map_or_else(|c| c, |()| run_init(&args[1..])),
         Some("import") => refuse_root("« import »").map_or_else(|c| c, |()| run_import(&args[1..])),
         _ => run_server(&args),
@@ -511,6 +520,7 @@ fn run_create_account(args: &[String]) -> ExitCode {
     };
     match account::create(&dir, &username, &password, replace) {
         Ok(replaced) => {
+            record_account(&dir, Action::UserCreated, &username);
             println!(
                 "Compte « {username} » {}.",
                 if replaced { "remplacé" } else { "créé" }
@@ -642,6 +652,7 @@ fn run_user(args: &[String]) -> ExitCode {
         match action {
             "add" => {
                 let user = account::add(&dir, &username, display_name.as_deref(), &password)?;
+                record_account(&dir, Action::UserCreated, &user.display_name);
                 println!("Compte « {} » créé ({}).", user.username, user.display_name);
             }
             "list" => {
@@ -660,6 +671,7 @@ fn run_user(args: &[String]) -> ExitCode {
             }
             "passwd" => {
                 let user = account::set_password(&dir, &username, &password)?;
+                record_account(&dir, Action::PasswordChanged, &user.display_name);
                 println!(
                     "Mot de passe de « {} » changé : ses sessions ouvertes sont fermées.",
                     user.username
@@ -667,6 +679,7 @@ fn run_user(args: &[String]) -> ExitCode {
             }
             "disable" => {
                 let user = account::set_active(&dir, &username, false)?;
+                record_account(&dir, Action::UserDisabled, &user.display_name);
                 println!(
                     "Compte « {} » désactivé : ses sessions ouvertes sont fermées.",
                     user.username
@@ -674,6 +687,7 @@ fn run_user(args: &[String]) -> ExitCode {
             }
             _ => {
                 let user = account::set_active(&dir, &username, true)?;
+                record_account(&dir, Action::UserEnabled, &user.display_name);
                 println!("Compte « {} » réactivé.", user.username);
             }
         }
@@ -807,6 +821,8 @@ fn run_import(args: &[String]) -> ExitCode {
     }
     match backup::import_file(&data_dir, &file) {
         Ok(done) => {
+            AuditLog::of_data_dir(&data_dir)
+                .record(Entry::new(Action::Import, &Who::command_line()));
             if let Some(note) = &done.resumed {
                 println!("{note}");
             }
@@ -955,6 +971,74 @@ fn confirm(question: &str) -> bool {
         line.trim().to_lowercase().as_str(),
         "o" | "oui" | "y" | "yes"
     )
+}
+
+/// Note au journal d'audit une opération sur un compte faite en ligne de commande. `serveur_dir`
+/// est le dossier `serveur/` que la commande vient de modifier.
+fn record_account(server_dir: &std::path::Path, action: Action, name: &str) {
+    AuditLog::open(server_dir).record(Entry::new(action, &Who::command_line()).target(name));
+}
+
+/// `audit [--user COMPTE] [--days N] [--data-dir DOSSIER]` : lit le journal d'audit, la plus
+/// récente d'abord. Lecture seule : ne démarre rien et ne prend aucun verrou.
+fn run_audit(args: &[String]) -> ExitCode {
+    let mut args = args.to_vec();
+    let user = match take_value(&mut args, "--user") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    let days = match take_value(&mut args, "--days") {
+        Ok(Some(d)) => match d.parse::<u32>() {
+            Ok(n) if n >= 1 => n,
+            _ => return usage_error("--days attend un nombre de jours (1 ou plus)"),
+        },
+        Ok(None) => 7,
+        Err(e) => return usage_error(&e),
+    };
+    let data_dir = match data_dir_for_command(&mut args) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    if let Some(unknown) = args.first() {
+        return usage_error(&format!("Option inconnue : {unknown}"));
+    }
+    let server_dir = data_dir.join(persistence::SERVER_DIR);
+    // `--user` accepte l'identifiant de connexion, le nom affiché ou l'identifiant interne.
+    let user_id = user.as_deref().map(|wanted| {
+        let key = account::username_key(wanted);
+        account::list(&server_dir)
+            .ok()
+            .and_then(|users| {
+                users.into_iter().find(|u| {
+                    account::username_key(&u.username) == key
+                        || account::username_key(&u.display_name) == key
+                        || u.id == wanted
+                })
+            })
+            .map_or_else(|| wanted.to_string(), |u| u.id)
+    });
+    let now = ostal_server::events::now_unix();
+    let filter = Filter {
+        user: user_id,
+        since: Some(now - f64::from(days) * 86_400.0),
+        ..Filter::default()
+    };
+    let entries = AuditLog::open(&server_dir).read(&filter);
+    if entries.is_empty() {
+        println!("Aucune entrée sur les {days} derniers jours.");
+        return ExitCode::SUCCESS;
+    }
+    for entry in &entries {
+        let (_, what) = audit::describe(entry);
+        println!(
+            "{}\t{}\t{}\t{}",
+            audit::stamp_label(entry.at),
+            audit::who_label(entry),
+            audit::from_label(entry),
+            what
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_fingerprint(args: &[String]) -> ExitCode {

@@ -145,6 +145,8 @@ pub struct Hub {
     /// Où chacun a dit être (raccourcis « Je pars » / « Je rentre ») : voir `presence.rs`. Rien n'en
     /// est déduit pour l'instant.
     presence: crate::presence::Presence,
+    /// Le journal d'audit (`serveur/audit/`) : voir `audit.rs`.
+    audit: Arc<crate::audit::AuditLog>,
     /// Les raccourcis préparés pour l'iPhone (ils portent le jeton de mode de la personne), en
     /// mémoire.
     shortcut_downloads: crate::shortcuts::Downloads,
@@ -250,6 +252,10 @@ impl Hub {
             Ok(dir) => crate::presence::Presence::open(dir),
             Err(_) => crate::presence::Presence::in_memory(),
         };
+        let audit = match &server_dir {
+            Ok(dir) => crate::audit::AuditLog::open(dir),
+            Err(_) => crate::audit::AuditLog::disabled(),
+        };
         Self {
             state: Mutex::new(HubState {
                 seq: 0,
@@ -263,6 +269,7 @@ impl Hub {
             }),
             tokens,
             presence,
+            audit: Arc::new(audit),
             shortcut_downloads: Default::default(),
             tx,
             commands: Mutex::new(Some(config.commands)),
@@ -285,6 +292,21 @@ impl Hub {
             stopping: AtomicBool::new(false),
             import_staged: AtomicBool::new(false),
         }
+    }
+
+    /// Le journal d'audit.
+    pub fn audit(&self) -> &Arc<crate::audit::AuditLog> {
+        &self.audit
+    }
+
+    /// Le nom d'un équipement, nettoyé, pour le journal d'audit (`None` : inconnu).
+    pub fn device_name(&self, node_id: u64) -> Option<String> {
+        let name = self
+            .lock()
+            .devices
+            .get(&node_id)
+            .map(|d| d.info.name.clone())?;
+        Some(self.clean(&name))
     }
 
     /// Le registre des sessions du direct (voir `cameras/live.rs`).
@@ -564,6 +586,32 @@ impl Hub {
     /// `source` : d'où vient la demande ; écrite au journal, diffusée avec `mode_changed` et
     /// donnée aux règles (`{source}`).
     pub fn set_mode(&self, mode: HomeMode, source: ModeSource) -> ApiResult<bool> {
+        let cause = crate::audit::ModeCause::from_source(&source);
+        self.set_mode_as(mode, source, cause)
+    }
+
+    /// Comme [`Hub::set_mode`], en disant au journal d'audit qui le change et de quelle façon. Une
+    /// ligne n'y entre que si le mode change vraiment.
+    pub fn set_mode_as(
+        &self,
+        mode: HomeMode,
+        source: ModeSource,
+        cause: crate::audit::ModeCause,
+    ) -> ApiResult<bool> {
+        let changed = self.change_mode(mode, source)?;
+        if changed {
+            let mut entry = crate::audit::Entry::new(crate::audit::Action::ModeChanged, &cause.who)
+                .target(mode.key())
+                .source(cause.origin);
+            if let Some(detail) = &cause.detail {
+                entry = entry.detail(detail);
+            }
+            self.audit.record(entry);
+        }
+        Ok(changed)
+    }
+
+    fn change_mode(&self, mode: HomeMode, source: ModeSource) -> ApiResult<bool> {
         let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         if self.mode() == mode {
             return Ok(false);
@@ -850,12 +898,23 @@ impl Hub {
         user_id: &str,
         state: crate::presence::Whereabouts,
         is_active: impl Fn(&str) -> bool,
+        who: &crate::audit::Who,
     ) -> ApiResult<crate::presence::Followed> {
         let declared = self.presence.all();
         let others_home = crate::presence::others_at_home(user_id, &declared, &is_active);
         let changed =
             match crate::presence::mode_after(user_id, state, self.mode(), &declared, is_active) {
-                Some(mode) => self.set_mode(mode, ModeSource::Shortcut)?,
+                // Le mode change tout seul, par la règle de présence : le journal l'attribue à
+                // celui qui a dit partir ou rentrer, d'où l'origine « automatique ».
+                Some(mode) => self.set_mode_as(
+                    mode,
+                    ModeSource::Shortcut,
+                    crate::audit::ModeCause {
+                        who: who.clone(),
+                        origin: crate::audit::Origin::Automatic,
+                        detail: None,
+                    },
+                )?,
                 None => false,
             };
         Ok(crate::presence::Followed {
@@ -1663,6 +1722,46 @@ pub(crate) mod tests {
             protocol::wire::ErrorCode::PlanWithoutFloor
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Chaque vrai changement de mode laisse une ligne au journal d'audit, selon sa source ; un mode
+    /// inchangé n'en laisse aucune.
+    #[test]
+    fn a_mode_change_is_audited_by_its_origin_and_an_unchanged_mode_is_not() {
+        use crate::audit::{Action, Filter, Origin};
+        let dir = temp("mode-audit");
+        let (hub, _commands) = hub_with(&dir, 16);
+        let rule = ModeSource::Rule {
+            name: "Nuit à 23 h".into(),
+        };
+        assert!(hub.set_mode(HomeMode::Nuit, rule).unwrap());
+        assert!(hub
+            .set_mode(HomeMode::Absent, ModeSource::ServerApp)
+            .unwrap());
+        assert!(!hub
+            .set_mode(HomeMode::Absent, ModeSource::Shortcut)
+            .unwrap());
+        assert!(hub.set_mode(HomeMode::Present, ModeSource::Web).unwrap());
+        let entries = hub.audit().read(&Filter::default());
+        assert!(entries.iter().all(|e| e.action == Action::ModeChanged));
+        let seen: Vec<(Option<&str>, Option<Origin>, Option<&str>)> = entries
+            .iter()
+            .rev()
+            .map(|e| (e.target.as_deref(), e.source, e.detail.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (Some("nuit"), Some(Origin::Automation), Some("Nuit à 23 h")),
+                (Some("absent"), Some(Origin::Person), Some("Ostal Server")),
+                (Some("present"), Some(Origin::Person), Some("l'app web")),
+            ]
+        );
+        // La règle n'a pas de personne ; la fenêtre du serveur est une connexion « serveur ».
+        let oldest = entries.last().unwrap();
+        assert!(oldest.user.is_none() && oldest.connection.is_none());
+        assert_eq!(entries[1].connection.as_ref().unwrap().kind, "server");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

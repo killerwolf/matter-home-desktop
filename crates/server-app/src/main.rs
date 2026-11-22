@@ -10,6 +10,7 @@
 mod accounts_ui;
 mod cameras_ui;
 mod descriptions_ui;
+mod journal_ui;
 mod ui;
 
 use std::net::SocketAddr;
@@ -33,7 +34,7 @@ Usage :
   ostal-server-app --data-dir DOSSIER  autre dossier de données
   ostal-server-app --listen ADRESSE:PORT  adresse d'écoute (défaut 0.0.0.0:8443)
   ostal-server-app --open ONGLET     ouvre la fenêtre au lancement sur un onglet :
-                                           vue, appareils, cameras, connexion ou reglages
+                                           vue, appareils, cameras, connexion, journal ou reglages
   ostal-server-app --version | --help";
 
 extern "C" {

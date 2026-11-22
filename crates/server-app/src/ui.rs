@@ -22,6 +22,7 @@ use std::time::Duration;
 use crate::accounts_ui::AccountsUi;
 use crate::cameras_ui::CamerasUi;
 use crate::descriptions_ui::DescriptionsUi;
+use crate::journal_ui::JournalUi;
 use eframe::egui::{self, RichText};
 use ostal_server::backup;
 use ostal_server::setup::{self, IdentityComparison, IdentityState};
@@ -447,6 +448,7 @@ struct App {
     form: AccountForm,
     /// Réglages › Comptes (liste, ajout, fiche d'un compte).
     accounts: AccountsUi,
+    journal: JournalUi,
     /// La configuration a été faite dans cette session : on montre l'écran de fin.
     setup_session: bool,
     show_done: bool,
@@ -515,6 +517,7 @@ impl App {
             page: Page::Start,
             form: AccountForm::default(),
             accounts: AccountsUi::default(),
+            journal: JournalUi::default(),
             setup_session: false,
             show_done: false,
             login_enabled: false,
@@ -686,6 +689,7 @@ impl App {
             self.descriptions.reset();
             self.descriptions_open = false;
             self.accounts.reset();
+            self.journal.reset();
             self.form = AccountForm::default();
         }
         self.tab = tab;
