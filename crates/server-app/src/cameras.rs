@@ -24,7 +24,10 @@ pub const AQARA_HINT: &str = "Aqara G100 (à vérifier sur votre caméra) : dan
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Good,
+    /// Une vraie erreur (rouge).
     Bad,
+    /// À regarder, sans être une erreur : caméra injoignable (orange).
+    Warn,
     Neutral,
 }
 
@@ -62,7 +65,7 @@ pub fn status_line(camera: &CameraAdmin) -> (Tone, String) {
             )
         }
         CameraStatus::Unreachable { detail, .. } => (
-            Tone::Bad,
+            Tone::Warn,
             match detail {
                 Some(d) => format!("Injoignable : {}", after_colon(d)),
                 None => "Injoignable".into(),
@@ -494,7 +497,7 @@ mod tests {
             detail: None,
             since: None,
         };
-        assert_eq!(dot_tone(&camera), Tone::Bad);
+        assert_eq!(dot_tone(&camera), Tone::Warn);
         assert_eq!(problem_text(&camera).as_deref(), Some("Injoignable"));
     }
 
@@ -528,7 +531,7 @@ mod tests {
         assert_eq!(
             status_line(&camera),
             (
-                Tone::Bad,
+                Tone::Warn,
                 "Injoignable : la caméra refuse l'identifiant ou le mot de passe.".into()
             )
         );

@@ -12,6 +12,7 @@ export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau.";
 
 const PAD = 16; // marge autour du plan à l'ajustement (px) : le plan remplit le cadre
 const MARGIN_M = 0.5; // marge autour des pièces et objets (m)
+const LABEL_PAD = 30; // place en plus pour le nom et l'état sous les objets du bas (px)
 const MAX_FIT = 90; // pas plus de 90 px par mètre à l'ajustement
 const ZOOM_OUT = 0.6; // jusqu'à 0,6 fois l'ajustement
 const ZOOM_IN = 14; // jusqu'à 14 fois l'ajustement
@@ -50,6 +51,18 @@ export function fitView(bounds, w, h) {
  */
 export function initialView(bounds, w, h) {
   return fitView(bounds, w, h);
+}
+
+/**
+ * Hauteur (px) que prend le cadre pour montrer `bounds` à l'ajustement dans `w` px de large : celle
+ * du plan ajusté, marges comprises. Le CSS la tient entre un minimum et un maximum (min-height et
+ * max-height de .plan-stage), pour qu'il n'y ait pas de grand vide autour d'un plan étroit.
+ */
+export function stageHeightFor(bounds, w) {
+  const bw = Math.max(bounds.x1 - bounds.x0, 1);
+  const bh = Math.max(bounds.y1 - bounds.y0, 1);
+  const s = Math.max(1, Math.min(MAX_FIT, (w - 2 * PAD) / bw));
+  return Math.ceil(bh * s + 2 * PAD + LABEL_PAD);
 }
 
 export const limitsFor = (fit) => ({ min: fit.s * ZOOM_OUT, max: fit.s * ZOOM_IN });
@@ -177,7 +190,7 @@ export function mountPlan(root, ctx) {
   bar.append(floorsBox, tools);
   // La légende : ce que veulent dire les pastilles et les teintes.
   const legend = html("div", "plan-legend");
-  for (const [cls, text] of [["on", "Allumé"], ["", "Injoignable"], ["tint", "Teinte : température"]]) {
+  for (const [cls, text] of [["on", "Allumé"], ["", "Injoignable"], ["tint", "Teinte"]]) {
     const item = html("span");
     item.append(html("i", cls), text);
     legend.appendChild(item);
@@ -296,7 +309,13 @@ export function mountPlan(root, ctx) {
     mkTool("Recentrer le plan", ["M12 2v4M12 18v4M2 12h4M18 12h4"], recenter, true),
   );
 
+  // La hauteur du cadre suit celle du plan ajusté (le CSS la borne) ; la mesure qui suit le recale.
+  const sizeStage = () => {
+    const w = Math.round(stage.getBoundingClientRect().width);
+    if (bounds && w) stage.style.height = `${stageHeightFor(bounds, w)}px`;
+  };
   const measure = () => {
+    sizeStage();
     const r = svg.getBoundingClientRect();
     const w = Math.round(r.width);
     const h = Math.round(r.height);
@@ -431,6 +450,7 @@ export function mountPlan(root, ctx) {
       layer.appendChild(made.node);
       items.push(made);
     }
+    sizeStage();
     if (size.w) {
       fit = fitView(bounds, size.w, size.h);
       limits = limitsFor(fit);

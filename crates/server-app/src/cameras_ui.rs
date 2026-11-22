@@ -38,6 +38,7 @@ fn tone_color(ui: &egui::Ui, tone: Tone) -> Color32 {
     match tone {
         Tone::Good => p.ok,
         Tone::Bad => p.error,
+        Tone::Warn => p.warn,
         Tone::Neutral => p.text_secondary,
     }
 }
@@ -146,7 +147,6 @@ impl CamerasUi {
 
     fn row(&mut self, ui: &mut egui::Ui, camera: &CameraAdmin) -> bool {
         let color = tone_color(ui, dot_tone(camera));
-        let p = theme::palette(ui);
         let mut open = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = theme::tokens().space.sm;
@@ -160,7 +160,7 @@ impl CamerasUi {
         if let Some(problem) = problem_text(camera) {
             ui.horizontal(|ui| {
                 ui.add_space(theme::tokens().size.dot + theme::tokens().space.sm);
-                ui.add(egui::Label::new(RichText::new(problem).color(p.error)).wrap());
+                ui.add(egui::Label::new(RichText::new(problem).color(color)).wrap());
             });
         }
         ui.add_space(2.0);

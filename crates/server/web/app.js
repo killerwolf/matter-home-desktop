@@ -1268,11 +1268,16 @@ function renderPush() {
       body.appendChild(callout);
       // Les conditions au-dessus du bouton, grisé tant qu'Ostal n'est pas ouvert depuis l'écran d'accueil.
       note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");
+      // La raison du grisé à côté du bouton ; à 390 px, la ligne est trop étroite pour les deux : elle passe dessous.
       const inactive = make("button", "primary", "Activer les notifications sur cet appareil");
       inactive.type = "button";
       inactive.disabled = true;
-      body.appendChild(inactive);
-      note("Inactif dans Safari : ouvrez Ostal depuis l'icône de l'écran d'accueil pour l'activer.");
+      const why = make("p", "w-note", "Inactif dans Safari : ouvrez Ostal depuis l'icône de l'écran d'accueil pour l'activer.");
+      why.id = "notif-inactif";
+      inactive.setAttribute("aria-describedby", why.id);
+      const line = make("div", "btn-why");
+      line.append(inactive, why);
+      body.appendChild(line);
     } else note(support.text, support.reason === "ios-too-old" ? "error" : "w-note");
   } else if (!mine) {
     note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");

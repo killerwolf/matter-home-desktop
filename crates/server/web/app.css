@@ -374,8 +374,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
    reçoit tous les gestes (touch-action: none) : un doigt déplace, deux doigts pincent. */
 .plan {
   display: flex; flex-direction: column; gap: 10px;
-  height: calc(100dvh - var(--web-head-h) - env(safe-area-inset-top) - var(--web-tab-h) - env(safe-area-inset-bottom) - 2 * var(--web-gap));
-  min-height: 320px;
+  --plan-max: calc(100dvh - var(--web-head-h) - env(safe-area-inset-top) - var(--web-tab-h) - env(safe-area-inset-bottom) - 2 * var(--web-gap));
+  max-height: var(--plan-max);
 }
 #view:has(> .plan) { padding-bottom: calc(var(--web-tab-h) + env(safe-area-inset-bottom) + var(--web-gap)); }
 .plan-bar { flex: none; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px var(--web-gap); }
@@ -387,7 +387,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
   border: var(--web-line) solid var(--color-line); border-radius: var(--web-radius); background: var(--color-surface); color: var(--color-text);
 }
 .plan-bar .tools svg { width: 20px; height: 20px; display: block; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-.plan-stage { flex: 1; position: relative; min-height: 0; overflow: hidden; background: var(--color-surface); border: var(--web-line) solid var(--color-line); border-radius: var(--web-radius); }
+/* Hauteur posée par plan.js d'après le plan ajusté ; bornée ici (le bas laisse la place à la barre et à la légende). */
+.plan-stage { flex: 0 1 auto; position: relative; min-height: 160px; max-height: calc(var(--plan-max) - var(--web-control-h) - 56px); overflow: hidden; background: var(--color-surface); border: var(--web-line) solid var(--color-line); border-radius: var(--web-radius); }
 .plan-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
 .plan-svg:active { cursor: grabbing; }
 .plan-svg:focus-visible, .plan .pi:focus-visible { outline: 2px solid var(--color-accent-text); outline-offset: -2px; }
@@ -523,5 +524,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .push-list .who strong { font-size: 15px; line-height: 1.3; }
 .push-list .who span { font-size: var(--web-font-small); color: var(--color-text-secondary); }
 .push-list .btn { flex: none; padding: 0 14px; }
+.btn-why { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.btn-why > button { flex: none; width: auto; }
+.btn-why > p { flex: 1 1 200px; }
 .push-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .push-actions .btn { width: 100%; }

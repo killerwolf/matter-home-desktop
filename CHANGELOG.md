@@ -10,6 +10,13 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Refonte (préversion, finitions)
+
+- App web : le plan de la maison est affiné (`plan.js` et ses tests).
+- Notifications et caméra injoignable : le serveur (« Ostal Server ») signale mieux une caméra qui ne
+  répond plus (`cameras.rs`, `cameras_ui.rs`, page des caméras).
+- Intégration : formatage, clippy (`-D warnings`), tests Rust et tests node au vert.
+
 ### Refonte (préversion, itération 3)
 
 - Intégration : formatage, clippy (`-D warnings`), tests Rust et tests node repris sur les trois

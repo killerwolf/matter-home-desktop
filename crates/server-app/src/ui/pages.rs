@@ -888,6 +888,7 @@ impl App {
             let color = match tone {
                 ostal_server_app::cameras::Tone::Good => p.ok,
                 ostal_server_app::cameras::Tone::Bad => p.error,
+                ostal_server_app::cameras::Tone::Warn => p.warn,
                 ostal_server_app::cameras::Tone::Neutral => p.text_secondary,
             };
             ui.horizontal(|ui| {
