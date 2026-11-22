@@ -1023,7 +1023,7 @@ fn run_audit(args: &[String]) -> ExitCode {
         since: Some(now - f64::from(days) * 86_400.0),
         ..Filter::default()
     };
-    let entries = AuditLog::open(&server_dir).read(&filter);
+    let entries = AuditLog::reader(&server_dir).read(&filter);
     if entries.is_empty() {
         println!("Aucune entrée sur les {days} derniers jours.");
         return ExitCode::SUCCESS;

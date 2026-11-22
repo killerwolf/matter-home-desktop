@@ -153,7 +153,7 @@ pub fn load(log: &AuditLog, user: Option<&str>, period: Period, now: f64) -> Vec
 
 /// Le journal du dossier de données du serveur.
 pub fn open(data_dir: &Path) -> AuditLog {
-    AuditLog::of_data_dir(data_dir)
+    AuditLog::reader(&data_dir.join(ostal_server::persistence::SERVER_DIR))
 }
 
 /// Aujourd'hui, en heure locale.

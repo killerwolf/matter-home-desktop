@@ -337,6 +337,16 @@ impl AuditLog {
         log
     }
 
+    /// Le journal d'un dossier `serveur/`, pour le lire seulement : rien n'est créé ni supprimé
+    /// (la conservation se fait à l'ouverture du serveur, pas ici).
+    pub fn reader(server_dir: &Path) -> AuditLog {
+        AuditLog {
+            dir: Some(server_dir.join(DIR)),
+            purged: Mutex::new(None),
+            throttle: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Un journal qui n'écrit nulle part.
     pub fn disabled() -> AuditLog {
         AuditLog {
@@ -824,7 +834,7 @@ mod tests {
             0o700
         );
         // Une deuxième ouverture (autre processus) retrouve tout, et ajoute à la suite.
-        let again = AuditLog::open(&base);
+        let again = AuditLog::reader(&base);
         again.record(Entry::new(Action::Export, &Who::command_line()).at(at + 120.0));
         let all = again.read_at(&Filter::default(), at + 3600.0);
         assert_eq!(
@@ -1061,7 +1071,7 @@ mod tests {
             format!("{{\"at\":{at},\"action\":\"quelque_chose_de_neuf\",\"result\":\"ok\"}}\n"),
         )
         .unwrap();
-        let read = AuditLog::open(&base).read_at(&Filter::default(), at + 10.0);
+        let read = AuditLog::reader(&base).read_at(&Filter::default(), at + 10.0);
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].action, Action::Other);
         assert_eq!(describe(&read[0]).1, "Action inconnue");
