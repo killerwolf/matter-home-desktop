@@ -2,8 +2,11 @@
 
 [← Retour au README](../README.md)
 
-Onglet **« Automatisations »** : la liste des règles (case cochée = règle activée), l'éditeur
-de la règle sélectionnée et le journal des dernières exécutions.
+Onglet **« Automatisations »** (anciennement « Règles ») : à gauche, une liste de 420 px où chaque
+règle s'écrit en phrase, avec son interrupteur et sa **dernière exécution** (« aujourd'hui 18:30 »).
+Une règle dont la dernière exécution a échoué le dit (icône, cause) et propose **Réessayer**, qui
+relance un essai. À droite, l'éditeur de la règle sélectionnée (**Quand**, **Seulement si**,
+**Alors**, **Essayer maintenant**) ; en bas, la dernière exécution et **Historique ▸**.
 
 ## Composer une règle
 
@@ -45,6 +48,7 @@ Les textes des notifications et des webhooks acceptent :
 | `{regle}` | nom de la règle |
 | `{description}` | pour une détection : la phrase qui décrit l'événement (voir [Descriptions](descriptions.md)) ; vide sans description |
 | `{niveau}` | pour une détection : `normal`, `suspect` ou `critique` ; vide sans description |
+| `{source}` | pour « Quand le mode devient… » : d'où vient le changement (« raccourci iPhone », « app web », « app de bureau », « fenêtre du serveur », « automatisation « Nuit à 23 h » », « autre ») ; vide sinon |
 
 Une règle dont le texte emploie `{description}` ou `{niveau}` **attend la description** de l'événement
 (à la fin du passage, ou dès la première description si « Décrire dès l'ouverture » est coché) avant de

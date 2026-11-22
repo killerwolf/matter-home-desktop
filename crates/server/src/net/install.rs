@@ -3,7 +3,7 @@
 //! | route | effet |
 //! |---|---|
 //! | `GET /api/tokens` | l'état des jetons de mode et de lecture (existe, date de création) |
-//! | `POST /api/tokens/mode/shortcuts` `{"origin"}` | nouveau jeton de mode, deux raccourcis signés à télécharger |
+//! | `POST /api/tokens/mode/shortcuts` `{"origin"}` | nouveau jeton de mode, quatre raccourcis signés à télécharger |
 //! | `POST /api/tokens/read/widget` `{"origin"}` | nouveau jeton de lecture, script du widget prérempli |
 //! | `DELETE /api/tokens/mode`, `DELETE /api/tokens/read` | révoque le jeton (`204`) |
 //! | `GET /app/raccourcis/perso/{id}/{fichier}` | un raccourci préparé, **sans jeton** (lien à toucher) |
@@ -174,8 +174,8 @@ struct ShortcutsResponse {
     expires_in_s: u64,
 }
 
-/// Nouveau jeton de mode et les deux raccourcis qui le portent, signés. Le jeton ne remplace
-/// l'ancien qu'une fois les deux signatures réussies, et si la requête attend toujours : un échec
+/// Nouveau jeton de mode et les quatre raccourcis qui le portent, signés. Le jeton ne remplace
+/// l'ancien qu'une fois les quatre signatures réussies, et si la requête attend toujours : un échec
 /// ou un abandon ne casse rien de ce qui marche.
 async fn mode_shortcuts(
     State(state): State<AppState>,
@@ -188,15 +188,7 @@ async fn mode_shortcuts(
     let still_wanted = wanted.probe();
     let ids = blocking(move || {
         hub.prepare_mode_shortcuts(
-            |token| {
-                ModeShortcut::ALL
-                    .iter()
-                    .map(|&which| {
-                        let plist = shortcuts::mode_shortcut_plist(which, &address, token);
-                        Ok((which.file_name(), signer.sign(&plist)?))
-                    })
-                    .collect()
-            },
+            |token| signer.sign_mode_shortcuts(&address, token),
             still_wanted,
         )
     })
@@ -269,7 +261,7 @@ async fn download(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
-    // Le nom est l'un des deux noms fixes, en ASCII (voir `shortcuts`).
+    // Le nom est l'un des noms de `ModeShortcut::ALL`, en ASCII (voir `shortcuts`).
     if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{file}\"")) {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }

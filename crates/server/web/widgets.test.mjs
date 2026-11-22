@@ -18,11 +18,13 @@ test("seule l'adresse en .ts.net convient ; sinon, un conseil", () => {
 });
 
 test("les noms des raccourcis sont sans accent et les mêmes dans le widget", () => {
-  assert.deepEqual(SHORTCUT_NAMES, ["Mode absent", "Mode present"]);
+  assert.deepEqual(SHORTCUT_NAMES, ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"]);
   for (const name of SHORTCUT_NAMES) assert.match(name, /^[\x20-\x7e]+$/);
   const widget = readFileSync(new URL("./raccourcis/ostal.js", import.meta.url), "utf8");
   assert.match(widget, /const RACCOURCI_ABSENT = "Mode absent";/);
   assert.match(widget, /const RACCOURCI_PRESENT = "Mode present";/);
+  // Le widget n'a que deux boutons : pas de raccourci Nuit ni Vacances dans son script.
+  assert.doesNotMatch(widget, /Mode nuit|Mode vacances/);
 });
 
 test("préparation des raccourcis : la page envoie son adresse et vérifie la réponse", async () => {
@@ -34,17 +36,24 @@ test("préparation des raccourcis : la page envoie son adresse et vérifie la r�
       shortcuts: [
         { name: "Mode absent", url: "/app/raccourcis/perso/abc/Mode%20absent.shortcut" },
         { name: "Mode present", url: "/app/raccourcis/perso/abc/Mode%20present.shortcut" },
+        { name: "Mode nuit", url: "/app/raccourcis/perso/abc/Mode%20nuit.shortcut" },
+        { name: "Mode vacances", url: "/app/raccourcis/perso/abc/Mode%20vacances.shortcut" },
       ],
     };
   };
   const r = await prepareShortcuts(good, "https://mac.ts.net");
   assert.deepEqual(calls, [["POST", "/api/tokens/mode/shortcuts", { origin: "https://mac.ts.net" }]]);
-  assert.equal(r.shortcuts.length, 2);
+  assert.equal(r.shortcuts.length, 4);
   assert.equal(r.expiresInS, 300);
   // Une réponse d'un autre serveur, ou un lien ailleurs : refus.
   await assert.rejects(prepareShortcuts(async () => ({}), "x"), /mettez-le à jour/);
   await assert.rejects(
-    prepareShortcuts(async () => ({ shortcuts: [{ name: "Mode absent", url: "https://ailleurs/x" }, { name: "Mode present", url: "/app/raccourcis/perso/a/b" }] }), "x"),
+    prepareShortcuts(async () => ({ shortcuts: [{ name: "Mode absent", url: "https://ailleurs/x" }, { name: "Mode present", url: "/app/raccourcis/perso/a/b" }, { name: "Mode nuit", url: "/app/raccourcis/perso/a/c" }, { name: "Mode vacances", url: "/app/raccourcis/perso/a/d" }] }), "x"),
+    /mettez-le à jour/,
+  );
+  // Un serveur d'avant (deux raccourcis seulement) : refus, il faut le mettre à jour.
+  await assert.rejects(
+    prepareShortcuts(async () => ({ shortcuts: [{ name: "Mode absent", url: "/app/raccourcis/perso/a/b" }, { name: "Mode present", url: "/app/raccourcis/perso/a/c" }] }), "x"),
     /mettez-le à jour/,
   );
   // L'erreur de l'API (signature impossible…) remonte telle quelle.

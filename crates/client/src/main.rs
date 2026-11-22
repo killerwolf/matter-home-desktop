@@ -1,7 +1,7 @@
 //! Client de bureau Ostal : l'interface, branchée sur `ostal-server`.
 //!
 //! Le client ne pilote rien lui-même et ne garde aucune donnée : tout vient du serveur (HTTPS
-//! et WebSocket, certificat épinglé). Sans serveur, il affiche « déconnecté ». Seuls l'adresse,
+//! et WebSocket, certificat épinglé). Sans serveur, il affiche « Plus de connexion à la maison ». Seuls l'adresse,
 //! l'empreinte du certificat et le jeton de session sont conservés (fichier en 0600).
 //!
 //! - `ostal`           : lance l'interface
@@ -32,14 +32,18 @@ Usage :
   ostal --camera X  ouvre en grand la première caméra dont le nom contient X
   ostal --add      ouvre directement la fenêtre « Ajouter un appareil »
   ostal --device X  ouvre la fiche du premier appareil dont le nom contient X
+  ostal --import F  ouvre la boîte « Importer des données » avec la sauvegarde F (essais)
+  ostal --import-preview  ouvre la confirmation d'import avec une sauvegarde fictive (essais)
+  ostal --error-preview  envoie une commande vouée à l'échec : bandeau d'erreur (essais)
   ostal --version   affiche la version
   ostal --help      affiche cette aide
 
 Les appareils simulés (--demo) et le diagnostic mDNS (--discover) sont des options du
 serveur : ostal-server --demo.
 
-Variables : RUST_LOG=debug pour des journaux détaillés ; OSTAL_THEME=light ou dark, OSTAL_WINDOW=LxH
-impose le thème (essais), sinon celui du système.";
+Variables : RUST_LOG=debug pour des journaux détaillés ; OSTAL_THEME=light ou dark impose le
+thème (essais), sinon celui du système ; OSTAL_WINDOW=LxH agrandit la fenêtre (1280x800 au
+minimum).";
 
 fn main() -> eframe::Result {
     // Journal filtré : jamais d'en-tête `Authorization`, même avec RUST_LOG=trace.
@@ -58,6 +62,7 @@ fn main() -> eframe::Result {
     let mut device_filter = None;
     let mut camera_filter: Option<String> = None;
     let mut period: Option<TimeWindow> = None;
+    let mut import_file: Option<String> = None;
     let mut flags = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -68,6 +73,14 @@ fn main() -> eframe::Result {
                 Some("1w") => period = Some(TimeWindow::All),
                 _ => {
                     eprintln!("--period attend 1h, 24h ou 1w\n\n{HELP}");
+                    std::process::exit(2);
+                }
+            }
+        } else if a == "--import" {
+            match it.next() {
+                Some(v) => import_file = Some(v.clone()),
+                None => {
+                    eprintln!("--import attend le chemin d'une sauvegarde\n\n{HELP}");
                     std::process::exit(2);
                 }
             }
@@ -95,12 +108,21 @@ fn main() -> eframe::Result {
     if let Some(unknown) = args.iter().find(|a| {
         !matches!(
             a.as_str(),
-            "--plan" | "--rules" | "--temperatures" | "--add" | "--edit-plan" | "--cameras"
+            "--plan"
+                | "--import-preview"
+                | "--error-preview"
+                | "--rules"
+                | "--temperatures"
+                | "--add"
+                | "--edit-plan"
+                | "--cameras"
         )
     }) {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
+    let open_import_preview = args.iter().any(|a| a == "--import-preview");
+    let open_error_preview = args.iter().any(|a| a == "--error-preview");
     let open_add = args.iter().any(|a| a == "--add");
     let open_edit_plan = args.iter().any(|a| a == "--edit-plan");
     let open_cameras = args.iter().any(|a| a == "--cameras");
@@ -108,23 +130,27 @@ fn main() -> eframe::Result {
     let open_rules = args.iter().any(|a| a == "--rules");
     let open_temperatures = args.iter().any(|a| a == "--temperatures");
 
-    // OSTAL_WINDOW=1300x800 : taille de la fenêtre (essais et captures d'écran).
+    // Fenêtre : 1280 × 800 par défaut et au minimum (tokens `size.window_desktop_*`).
+    // OSTAL_WINDOW=1400x900 : une taille plus grande (essais et captures d'écran) ; en dessous du
+    // minimum, c'est le minimum.
+    let size_tokens = ostal_theme::tokens().size;
+    let min_size = [size_tokens.window_desktop_w, size_tokens.window_desktop_h];
     let size = std::env::var("OSTAL_WINDOW")
         .ok()
         .and_then(|v| {
             let (w, h) = v.split_once('x')?;
-            let bound = |t: &str| {
+            let bound = |t: &str, min: f32| {
                 let v = t.parse::<f32>().ok().filter(|v| v.is_finite())?;
-                Some(v.clamp(800.0, 8000.0))
+                Some(v.clamp(min, 8000.0))
             };
-            Some([bound(w)?, bound(h)?])
+            Some([bound(w, min_size[0])?, bound(h, min_size[1])?])
         })
-        .unwrap_or([1180.0, 760.0]);
+        .unwrap_or(min_size);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Ostal")
             .with_inner_size(size)
-            .with_min_inner_size([800.0, 520.0])
+            .with_min_inner_size(min_size)
             // Sans icône, eframe remplace celle de l'application dans le Dock par le logo
             // d'egui ; une icône vide garde celle du paquet .app (assets/icon.icns).
             .with_icon(egui::IconData::default()),
@@ -162,6 +188,15 @@ fn main() -> eframe::Result {
             // l'appareil s'ouvre alors dans le panneau de cet onglet (plan ou appareils).
             if let Some(filter) = device_filter {
                 app.select_device_named(filter);
+            }
+            if let Some(file) = import_file {
+                app.import_file_on_arrival(file.into());
+            }
+            if open_error_preview {
+                app.show_error_preview();
+            }
+            if open_import_preview {
+                app.show_import_preview();
             }
             if open_add {
                 app.show_add();

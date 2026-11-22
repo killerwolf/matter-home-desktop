@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod cameras;
+pub mod confirm;
 pub mod controller;
 pub mod descriptions;
 pub mod icon;

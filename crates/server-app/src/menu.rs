@@ -1,8 +1,9 @@
 //! Le modèle du menu de la barre de menus, construit sans interface : `ui.rs` n'a plus qu'à le
 //! transformer en menu natif. Rien d'autre que ces entrées : pas d'option cachée.
 //!
-//! Le menu répond à une question, « est-ce que tout va bien ? » : le titre du résumé, une ligne
-//! par sujet, et une seule action quand quelque chose ne va pas. Les tâches rares (connecter un
+//! Le menu répond à une question, « la maison va bien ? » : le titre du résumé, la phrase qui dit
+//! ce qui ne va pas (ou, quand rien ne cloche, la ligne des appareils), une ligne par autre sujet,
+//! et une seule action quand quelque chose ne va pas. Les tâches rares (connecter un
 //! appareil, accès à distance, réglages, journal) sont dans la fenêtre, où il y a la place de les
 //! expliquer : le menu ne fait que l'ouvrir au bon onglet.
 
@@ -72,7 +73,7 @@ pub enum Entry {
 /// Ce que le menu montre.
 #[derive(Debug, Clone)]
 pub struct MenuInput<'a> {
-    /// Le résumé (« Tout va bien », une ligne par sujet, l'action à proposer).
+    /// Le résumé (« La maison va bien. », une ligne par sujet, l'action à proposer).
     pub overview: &'a Overview,
     /// Le mode de la maison : `Some` tant que le serveur tourne (c'est lui qui le tient).
     pub mode: Option<HomeMode>,
@@ -90,10 +91,15 @@ fn item(action: Action, label: &str) -> Entry {
 pub fn build(i: &MenuInput<'_>) -> Vec<Entry> {
     let o = i.overview;
     let mut m = vec![Entry::Info(o.headline.clone())];
+    // La phrase qui dit ce qui ne va pas prend la place de la ligne du sujet concerné.
+    if let Some(detail) = &o.detail {
+        m.push(Entry::Info(detail.clone()));
+    }
     m.extend(
         o.checks
             .iter()
-            .map(|c| Entry::Info(format!("{} : {}", c.title, c.text))),
+            .filter(|c| Some(c.title) != o.detail_from)
+            .map(|c| Entry::Info(format!("{} : {}", c.title, c.menu_text))),
     );
     // Une seule action, et seulement quand quelque chose attend l'utilisateur.
     if let Some(fix) = &o.fix {
@@ -162,6 +168,7 @@ mod tests {
             total: 13,
             online: 13 - unreachable.len(),
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
+            ..Health::default()
         };
         let cameras = CameraSummary {
             total: 2,
@@ -181,8 +188,8 @@ mod tests {
         assert_eq!(
             infos(&menu),
             [
-                "Tout va bien",
-                "Appareils : 13 appareils, tous joignables",
+                "La maison va bien.",
+                "Appareils : 13 sur 13 joignables",
                 "Caméras : 2 caméras en service · détection indisponible",
                 "Accès à distance : désactivé",
             ]
@@ -211,7 +218,18 @@ mod tests {
             overview: &o,
             mode: Some(HomeMode::Present),
         });
-        assert_eq!(menu[0], Entry::Info("2 points à regarder".into()));
+        assert_eq!(menu[0], Entry::Info("Deux choses à regarder".into()));
+        // Le titre, la phrase de l'appareil injoignable (elle remplace la ligne « Appareils »),
+        // la caméra, l'accès à distance, puis l'action.
+        assert_eq!(
+            infos(&menu),
+            [
+                "Deux choses à regarder",
+                "« Salon » est injoignable.",
+                "Caméras : 2 caméras en service · détection indisponible",
+                "Accès à distance : une autorisation reste à donner",
+            ]
+        );
         assert_eq!(
             menu[4],
             Entry::Item {
@@ -280,7 +298,7 @@ mod tests {
             infos(&menu),
             [
                 "Le serveur est à l'arrêt",
-                "Serveur : le service installé tient les données"
+                "Le service installé utilise encore les données."
             ]
         );
         assert!(!menu.iter().any(|e| matches!(e, Entry::Submenu { .. })));

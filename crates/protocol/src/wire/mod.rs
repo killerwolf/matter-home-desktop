@@ -645,8 +645,10 @@ mod tests {
         snapshot.mode = None;
         assert_eq!(parsed, snapshot, "pas de mode : un serveur sans modes");
 
+        // Un ancien serveur : pas de source ; un ancien client lit le nouveau message sans elle.
         let event = WireEvent::ModeChanged {
             mode: HomeMode::Nuit,
+            source: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(
@@ -654,9 +656,43 @@ mod tests {
             serde_json::json!({"type": "mode_changed", "mode": "nuit"})
         );
         assert_eq!(serde_json::from_value::<WireEvent>(json).unwrap(), event);
+        let with_source = WireEvent::ModeChanged {
+            mode: HomeMode::Nuit,
+            source: Some(crate::mode::ModeSource::Rule {
+                name: "Nuit à 23 h".into(),
+            }),
+        };
+        let json = serde_json::to_value(&with_source).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "mode_changed", "mode": "nuit",
+                "source": {"kind": "rule", "name": "Nuit à 23 h"}})
+        );
+        assert_eq!(
+            serde_json::from_value::<WireEvent>(json).unwrap(),
+            with_source
+        );
+        // Une source inconnue (serveur plus récent) ne fait pas perdre le message.
+        let newer: WireEvent = serde_json::from_value(serde_json::json!({
+            "type": "mode_changed", "mode": "absent", "source": {"kind": "montre"}
+        }))
+        .unwrap();
+        assert_eq!(
+            newer,
+            WireEvent::ModeChanged {
+                mode: HomeMode::Absent,
+                source: Some(crate::mode::ModeSource::Other)
+            }
+        );
         // Conversion vers l'événement interne (journal du client) et retour.
         let internal = event.clone().into_event().unwrap();
-        assert!(matches!(internal, Event::HomeModeChanged(HomeMode::Nuit)));
+        assert!(matches!(
+            internal,
+            Event::HomeModeChanged {
+                mode: HomeMode::Nuit,
+                source: None
+            }
+        ));
         assert_eq!(
             WireEvent::from_event(&internal, &|s| s.to_string()),
             Some(event)

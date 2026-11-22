@@ -443,7 +443,7 @@ mod tests {
             detail: None,
             since: Some(1_700_000_000),
         };
-        assert!(text(StreamState::Waiting, &down).contains("Hors ligne depuis"));
+        assert!(text(StreamState::Waiting, &down).contains("Injoignable depuis"));
         assert!(text(
             StreamState::Waiting,
             &unreachable(CameraProblem::Unreachable)

@@ -90,7 +90,7 @@ aux essais et aux tests.
 | `DELETE /api/devices/{id}/history` | effacer l'historique (202) |
 | `GET`, `PUT /api/plan` | lire, remplacer le plan de la maison (au moins un étage : sinon `plan_without_floor`, 400) |
 | `GET`, `PUT /api/rules` | lire, remplacer les règles |
-| `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances"}` : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
+| `PUT /api/mode` | `{"mode": "present" \| "absent" \| "nuit" \| "vacances", "source": {"kind": "web"}}` (`source` facultatif) : change le mode de la maison (200 `{mode, changed}`). Accepte un jeton de session **ou** le jeton de mode (voir « Le mode de la maison ») |
 | `POST /api/rules/{id}/test` | exécuter une règle maintenant (202 ; résultat en `rule_run`) |
 | `GET /api/rule-runs` | journal des 200 dernières exécutions de règles |
 | `GET /api/export` | sauvegarde `.ostal` (**clés privées et mots de passe des caméras en clair**) |
@@ -159,6 +159,15 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   (`changed: false`). Version du protocole : **3** (les règles de mode
   n'ont pas de repli : un client de version 2, 1.1.0, est refusé d'emblée par `version_incompatible`,
   plutôt que d'échouer à lire l'état complet en boucle).
+- **D'où vient le changement** (ajouté après la 2.0, sans changer la version du protocole) :
+  `mode_changed` porte un champ facultatif `source`, par exemple
+  `{"type": "mode_changed", "mode": "nuit", "source": {"kind": "rule", "name": "Nuit à 23 h"}}`.
+  `kind` vaut `shortcut` (raccourci iPhone : jeton de mode), `web`, `desktop`, `server_app` (fenêtre
+  du serveur), `rule` (automatisation, avec `name`), `widget` ou `other`. Un client l'annonce dans
+  `PUT /api/mode` (`"source": {"kind": "web"}`), mais le serveur ne garde que ce que le jeton
+  permet : avec le jeton de mode, `shortcut` (ou `widget` s'il le dit) ; avec une session, `web` ou
+  `desktop`, sinon `other` (un ancien client n'envoie rien). Une valeur inconnue se lit `other` ; un
+  ancien client ignore le champ.
 - **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode**, un secret
   à part que le serveur crée à la demande (fenêtre du serveur), qui ne vaut que pour cette route :
   `GET /api/state`, le WebSocket, le plan, les règles, l'export… répondent 401 avec lui. Il se
@@ -183,6 +192,36 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
 - **Sauvegarde** : `mode.json` en fait partie (valeur inconnue : sauvegarde refusée). Une sauvegarde
   faite avec cette version est **refusée par un serveur 1.1.0** (il ne connaît pas `mode.json`) : en
   retirer le fichier du `.ostal` n'est pas prévu, mettez le serveur à jour.
+
+## La phrase d'état
+
+`protocol::status` (fonctions pures, sans donnée ni horloge) écrit la phrase d'état de la maison, la
+**même** sur le Mac, le bureau, l'iPhone et le widget. Chaque surface a déjà ses appareils et ses
+caméras : elle en tire les noms des injoignables, et appelle `headline` et `detail`. Rien ne passe
+par l'API (ni champ dans `/api/state`, ni événement) : la phrase est calculée sur chaque surface, et sa
+jumelle en JavaScript (`tiles.js`, `ostal.js`) reprend les mêmes textes, mot pour mot.
+
+**Unité de compte : la catégorie**, pas l'appareil. Un `Point` est une catégorie qui demande
+attention : `Devices(noms)`, `Cameras(noms)` ou `Other(phrase)` (serveur seulement : accès à distance,
+ancienne application, détection suspendue par la chaleur). Deux lampes et trois prises injoignables
+font **un** point.
+
+| Situation | `headline(n)` | `detail(points)` |
+|---|---|---|
+| aucun point | « La maison va bien. » | `None` ; la surface écrit `all_reachable(n)` : « 10 appareils, tous joignables. » |
+| 1 point, 1 appareil | « Une chose à regarder » | « Lampe d'Adam est injoignable. » |
+| 1 point, 2 appareils | « Une chose à regarder » | « Lampe d'Adam et Prise TV sont injoignables. » |
+| 1 point, 3 appareils ou plus | « Une chose à regarder » | « Lampe d'Adam, Prise TV et 1 autre sont injoignables. » (« 2 autres »…) |
+| 1 point, caméras | « Une chose à regarder » | « La caméra Jardin est injoignable. » ; deux : « Les caméras Entrée et Jardin sont injoignables. » |
+| 2 points | « Deux choses à regarder » | la phrase des appareils |
+| 3 points ou plus | « 3 choses à regarder » (en chiffres) | la phrase du premier point |
+
+Le détail est la phrase du premier point, **les appareils passant d'abord**, puis les caméras, puis les
+autres points dans l'ordre reçu. Un point sans nom (liste vide, phrase vide) ne compte pas (`count`).
+Le nom est écrit tel qu'il est enregistré. Un seul mot pour « ne répond pas » : « injoignable ».
+« Hors ligne » et « en ligne » ne s'écrivent jamais, ni dans l'interface, ni dans les textes que le
+serveur envoie (notifications, erreurs de l'API). Le widget, qui n'a que le jeton de lecture, ne voit
+pas les caméras : il ne compte que les appareils.
 
 ## Caméras
 

@@ -135,7 +135,8 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
     assert!(hub.detection().status().watched.is_empty());
 
     // Absent : Surveillance, une session.
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     until("la caméra est surveillée", 5, || camera.playing() == 1).await;
     assert_eq!(hub.detection().status().watched, vec![id]);
 
@@ -193,7 +194,8 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
     assert_eq!(announced, [true, false], "en cours puis terminé");
 
     // Retour en Présent : la veille lâche la session, le spectateur la garde.
-    hub.set_mode(HomeMode::Present).unwrap();
+    hub.set_mode(HomeMode::Present, protocol::mode::ModeSource::Other)
+        .unwrap();
     until("plus de veille", 5, || {
         hub.detection().status().watched.is_empty()
     })
@@ -202,7 +204,8 @@ async fn only_surveillance_cameras_are_watched_and_a_passage_makes_one_event() {
     drop(viewer);
 
     // Nuit : éteinte, la session se ferme et la veille n'en rouvre pas.
-    hub.set_mode(HomeMode::Nuit).unwrap();
+    hub.set_mode(HomeMode::Nuit, protocol::mode::ModeSource::Other)
+        .unwrap();
     until("plus aucune connexion", 15, || camera.open() == 0).await;
     let _ = stop_tx.send(true);
     let _ = std::fs::remove_dir_all(dir);
@@ -263,7 +266,8 @@ async fn a_dead_analysis_thread_releases_the_camera() {
     let broken: DecoderFactory = Arc::new(|| Err("pas de décodeur ici".into()));
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(run(hub.clone(), detector, broken, stop));
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     until("la caméra n'est plus surveillée", 10, || {
         hub.detection().status().watched.is_empty() && hub.camera_viewers(id) == 0
     })
@@ -303,7 +307,8 @@ async fn a_passage_gets_its_description_through_the_watcher() {
     let (detector, _) = person_for(6);
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(run(hub.clone(), detector, synthetic(), stop));
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     let store = hub.detection().store();
     until("l'événement est décrit", 20, || {
         store
@@ -339,7 +344,8 @@ async fn a_clean_shutdown_closes_and_writes_the_passage_in_progress() {
     let (detector, _) = person_for(10_000);
     let (stop_tx, stop) = watch::channel(false);
     let task = tokio::spawn(run(hub.clone(), detector, synthetic(), stop));
-    hub.set_mode(HomeMode::Absent).unwrap();
+    hub.set_mode(HomeMode::Absent, protocol::mode::ModeSource::Other)
+        .unwrap();
     let store = hub.detection().store();
     until("le passage est en cours", 15, || {
         store.all().first().is_some_and(|e| e.in_progress)

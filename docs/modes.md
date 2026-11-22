@@ -11,7 +11,14 @@ Ticket n° 8. Un **mode global**, tenu par le serveur et le même pour tous les 
 - **automatiquement**, depuis l'iPhone, avec Raccourcis (voir plus bas).
 
 Chaque changement est enregistré (`mode.json`, voir [Données](donnees.md)), diffusé aux clients
-(`mode_changed`), inscrit au journal, et peut déclencher des règles. Redemander le mode actuel ne
+(`mode_changed`), inscrit au journal, et peut déclencher des règles. **Chaque changement dit d'où il
+vient** : raccourci iPhone (jeton de mode), app web, app de bureau, fenêtre du serveur,
+automatisation (avec le nom de la règle) ou autre (un client plus ancien, qui ne le dit pas). Le journal du serveur
+écrit « mode : Présent → Absent (raccourci iPhone) », celui de l'app de bureau « Mode : Absent
+(raccourci iPhone) » ; l'app web montre une notification brève (« Mode Absent · raccourci iPhone »)
+quand le changement vient d'ailleurs ; une règle « Quand le mode devient… » peut l'écrire dans sa
+notification avec `{source}`. Le widget Scriptable ne fait que lire : ses boutons lancent les
+raccourcis, qui comptent comme « raccourci iPhone ». Redemander le mode actuel ne
 fait rien (ni écriture, ni diffusion, ni déclenchement) : une automatisation « Arriver » qui part
 alors qu'on est déjà Présent est sans effet.
 
@@ -32,6 +39,12 @@ Choisir l'emplacement **pré-remplit** le tableau, qui reste modifiable ligne pa
 | Extérieure | Diffusion | Surveillance | Surveillance | Surveillance |
 | Intérieure | Éteinte | Surveillance | Éteinte | Surveillance |
 
+- **Une ligne par mode** (`HomeMode::effect()`) : les interfaces disent en une phrase ce que fait le
+  mode des caméras. Elle est **calculée** à partir de ce tableau (`CameraModes::for_placement`), donc
+  jamais en contradiction avec lui : Présent « Caméras intérieures éteintes, extérieures en
+  diffusion. » ; Absent et Vacances « Toutes les caméras en surveillance. » ; Nuit « Caméras
+  intérieures éteintes, extérieures en surveillance. ». C'est la ligne **par défaut** : une caméra
+  dont le tableau a été modifié à la main s'en écarte.
 - **Où le régler** : fenêtre « Caméras… » de l'application du serveur (le seul endroit où les
   caméras se modifient : aucune route de l'API ne les écrit). Les clients, eux, voient
   l'emplacement et le tableau (`CameraView`, sans adresse ni mot de passe) et n'ouvrent rien pour une
@@ -63,7 +76,7 @@ serveur tient deux **jetons à part**, chacun pour une seule porte :
 
 | Jeton | Fichier | Ouvre seulement | Sert à |
 |---|---|---|---|
-| **jeton de mode** | `serveur/jeton-mode.json` | `PUT /api/mode` | les raccourcis « Mode absent » / « Mode present », les automatisations Raccourcis |
+| **jeton de mode** | `serveur/jeton-mode.json` | `PUT /api/mode` | les quatre raccourcis « Mode absent », « Mode present », « Mode nuit », « Mode vacances », les automatisations Raccourcis |
 | **jeton de lecture** | `serveur/jeton-lecture.json` | `GET /api/state`, `GET /api/events` | le widget Scriptable |
 
 Toute autre route répond 401 : ni appareils, ni WebSocket (ni par l'en-tête, ni par le sous-protocole
@@ -97,9 +110,21 @@ lecture ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essai
 
 ## Changer de mode automatiquement avec Raccourcis sur iPhone
 
-Les raccourcis « Mode absent » et « Mode present » installés depuis l'app web font déjà le travail
-de l'étape 4 ci-dessous : une automatisation peut simplement **lancer l'un d'eux** (action « Exécuter
-le raccourci »). La recette à la main reste utile pour les modes Nuit et Vacances.
+Les quatre raccourcis « Mode absent », « Mode present », « Mode nuit » et « Mode vacances »
+installés depuis l'app web font déjà le travail de l'étape 4 ci-dessous : une automatisation peut
+simplement **lancer l'un d'eux** (action « Exécuter le raccourci »). La recette à la main ne sert plus
+que pour un réglage que ces raccourcis ne couvrent pas.
+
+Les noms sont en ASCII, sans accent (« Mode present », pas « Mode présent ») : iOS enregistre un nom de
+fichier accentué en Unicode décomposé, que le lien `shortcuts://run-shortcut?name=…` ne retrouve pas.
+Nuit et Vacances reprennent la couleur et le pictogramme d'Absent (aucune valeur inventée : à
+choisir avec Hamdi). Le **widget** Scriptable n'a que deux boutons, Absent et Présent ; Nuit et
+Vacances se lancent depuis l'app Raccourcis ou l'app web.
+
+**Signature des quatre raccourcis** : le serveur les signe l'un après l'autre
+(`/usr/bin/shortcuts sign`, qui passe par les serveurs d'Apple), au plus 25 s chacun et **55 s en tout**,
+sous la minute au-delà de laquelle une requête sans réponse risque d'être lâchée par Safari (hypothèse, non mesurée) ; au-delà, ou au premier échec,
+rien ne change (l'ancien jeton et les anciens raccourcis marchent toujours).
 
 **Avant de commencer**
 

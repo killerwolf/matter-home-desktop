@@ -101,7 +101,7 @@ impl Fixture {
     }
 }
 
-/// Sans serveur : l'interface est « déconnectée » et n'envoie aucune commande.
+/// Sans serveur : l'interface est sans liaison et n'envoie aucune commande.
 #[test]
 fn starts_disconnected_and_refuses_commands() {
     let mut f = Fixture::new();
@@ -111,7 +111,11 @@ fn starts_disconnected_and_refuses_commands() {
     f.app.test_rule(1);
     assert!(f.app.pending.is_empty(), "aucune requête en vol");
     assert!(matches!(f.app.pairing, Pairing::Idle));
-    assert!(f.app.log.back().is_some_and(|l| l.contains("Déconnecté")));
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.contains("Plus de connexion")));
     assert!(f.app.model.devices.is_empty());
 }
 
@@ -357,7 +361,7 @@ fn a_resync_keeps_the_display_but_asks_for_fresh_series() {
     f.app.pump_network();
     assert!(
         f.app.connected(),
-        "pas de « déconnecté » pour une simple resynchronisation"
+        "pas de « Plus de connexion » pour une simple resynchronisation"
     );
     assert_eq!(f.app.model.devices.len(), 1);
     f.send(Event::Snapshot(Box::new(snapshot(
@@ -1388,8 +1392,8 @@ fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
     assert_eq!(f.app.plan.show_name(), "Étage d'un autre");
     assert!(f.app.sync_alerts().is_empty());
 
-    // Hors ligne avec un brouillon gardé : indiqué aussi.
-    f.app.plan.edit_name("Hors ligne");
+    // Liaison perdue avec un brouillon gardé : indiqué aussi.
+    f.app.plan.edit_name("Liaison perdue");
     disconnect(&mut f);
     let alerts = f.app.sync_alerts();
     assert!(
@@ -1400,7 +1404,7 @@ fn a_pending_draft_shows_in_the_top_bar_and_can_be_dropped() {
     );
     // Sans version du serveur connue, on ne peut pas revenir en arrière.
     assert!(!f.app.plan.revert_to_server());
-    assert_eq!(f.app.plan.show_name(), "Hors ligne");
+    assert_eq!(f.app.plan.show_name(), "Liaison perdue");
 }
 
 /// Pas de retour en arrière pendant un envoi : sa réponse réécrirait le document.
@@ -1487,7 +1491,7 @@ fn the_draft_widgets_draw_without_a_window() {
     ] {
         f.app.view = view;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            f.app.top_bar(ui);
+            f.app.chrome(ui);
             match view {
                 View::Plan => {
                     let _ = f.app.plan.show(ui, &f.app.model);
@@ -2309,11 +2313,38 @@ fn the_home_mode_follows_the_server_and_changes_are_requested_not_assumed() {
     snap.mode = Some(HomeMode::Absent);
     f.connect(snap);
     assert_eq!(f.app.model.mode, HomeMode::Absent);
+    // Un ancien serveur ne dit pas d'où vient le changement.
+    f.live(WireEvent::ModeChanged {
+        mode: HomeMode::Present,
+        source: None,
+    });
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Présent")));
+    // Le journal dit d'où il vient : raccourci, automatisation (avec son nom)…
+    f.live(WireEvent::ModeChanged {
+        mode: HomeMode::Absent,
+        source: Some(protocol::mode::ModeSource::Shortcut),
+    });
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Absent (raccourci iPhone)")));
     f.live(WireEvent::ModeChanged {
         mode: HomeMode::Nuit,
+        source: Some(protocol::mode::ModeSource::Rule {
+            name: "Nuit à 23 h".into(),
+        }),
     });
     assert_eq!(f.app.model.mode, HomeMode::Nuit);
-    assert!(f.app.log.back().is_some_and(|l| l.contains("Mode : Nuit")));
+    assert!(f
+        .app
+        .log
+        .back()
+        .is_some_and(|l| l.ends_with("Mode : Nuit (automatisation « Nuit à 23 h »)")));
 
     f.app.set_mode(HomeMode::Vacances);
     let sent = pending_of(
@@ -2335,7 +2366,8 @@ fn the_home_mode_follows_the_server_and_changes_are_requested_not_assumed() {
     assert_eq!(f.app.model.mode, HomeMode::Nuit);
 }
 
-/// La barre du haut montre le mode (un seul sélecteur, visible depuis toutes les vues).
+/// La barre du haut montre le mode (un seul sélecteur, visible depuis toutes les vues) ; grisé sans
+/// liaison, absent d'un serveur sans modes.
 #[test]
 fn the_top_bar_shows_the_mode_only_when_connected() {
     use protocol::mode::HomeMode;
@@ -2343,7 +2375,7 @@ fn the_top_bar_shows_the_mode_only_when_connected() {
     let ctx = egui::Context::default();
     let texts = |f: &mut Fixture| {
         let mut out = String::new();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| f.app.top_bar(ui));
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| f.app.chrome(ui));
         for clipped in &output.shapes {
             if let egui::epaint::Shape::Text(t) = &clipped.shape {
                 out.push_str(t.galley.text());
@@ -2353,7 +2385,8 @@ fn the_top_bar_shows_the_mode_only_when_connected() {
         output.drop_without_applying_deltas();
         out
     };
-    assert!(!texts(&mut f).contains("Mode :"));
+    // Sans liaison, la pastille est là mais grisée (maquette Bureau-Deconnecte).
+    assert!(texts(&mut f).contains("Mode : Présent"));
     let mut snap = snapshot(1, vec![]);
     snap.mode = Some(HomeMode::Vacances);
     f.connect(snap);
@@ -2364,4 +2397,130 @@ fn the_top_bar_shows_the_mode_only_when_connected() {
     f.connect(old);
     assert!(!f.app.model.has_mode);
     assert!(!texts(&mut f).contains("Mode :"));
+}
+
+/// La phrase d'état : « La maison va bien. », puis « Une chose à regarder » avec l'appareil
+/// injoignable et l'heure, puis « Plus de connexion à la maison » quand la liaison est perdue.
+#[test]
+fn the_status_phrase_follows_the_devices_and_the_link() {
+    let mut f = Fixture::new();
+    let lamp = node(
+        7,
+        "Lampe d'Adam",
+        Capabilities {
+            on_off: true,
+            ..Default::default()
+        },
+    );
+    f.connect(snapshot(1, vec![view(lamp, vec![])]));
+    let fine = f.app.status_phrase();
+    assert_eq!(fine.tone, shell::Tone::Fine);
+    assert_eq!(fine.lead, "La maison va bien.");
+    assert_eq!(fine.target, None);
+
+    f.live(WireEvent::Status {
+        node_id: 7,
+        status: WireStatus::Unreachable {
+            code: ErrorCode::DeviceUnreachable,
+            detail: None,
+            retry_in_s: 0,
+        },
+    });
+    let watch = f.app.status_phrase();
+    assert_eq!(watch.tone, shell::Tone::Watch);
+    assert_eq!(watch.lead, "Une chose à regarder :");
+    assert!(
+        watch
+            .detail
+            .starts_with("« Lampe d'Adam » est injoignable depuis "),
+        "{}",
+        watch.detail
+    );
+    assert_eq!(watch.target, Some(shell::Target::Device(7)));
+
+    f.send(Event::Link(Link::Reconnecting {
+        attempt: 1,
+        retry_in_s: 8,
+        reason: "refusée".into(),
+    }));
+    f.app.pump_network();
+    let lost = f.app.status_phrase();
+    assert_eq!(lost.tone, shell::Tone::Lost);
+    assert_eq!(lost.lead, "Plus de connexion à la maison");
+}
+
+/// Jamais joint : la carte ne parle pas de « liaison perdue » mais d'une adresse sans réponse.
+#[test]
+fn a_never_reached_server_has_its_own_lost_text() {
+    assert_eq!(
+        shell::lost_reason_text(true, "127.0.0.1:9"),
+        "Aucun serveur n'a répondu à 127.0.0.1:9."
+    );
+    assert_eq!(
+        shell::lost_reason_text(false, "127.0.0.1:9"),
+        "Liaison perdue : le serveur ne répond plus."
+    );
+    let f = Fixture::new();
+    assert!(!f.app.ever_connected);
+}
+
+/// Les toasts : 5 au plus, chacun gardé 20 s.
+#[test]
+fn toasts_are_capped_at_five_and_live_twenty_seconds() {
+    let mut f = Fixture::new();
+    for i in 0..8 {
+        f.app.toast("Titre", format!("n°{i}"));
+    }
+    assert_eq!(f.app.toasts.len(), 5);
+    assert_eq!(f.app.toasts[0].message, "n°3");
+    assert_eq!(TOAST_LIFETIME, Duration::from_secs(20));
+}
+
+/// Une erreur de commande reste affichée (plus de limite de 20 s), porte la commande à renvoyer,
+/// et « Réessayer » la renvoie ; une erreur qui ne vient pas d'une commande n'a pas de relance.
+#[test]
+fn a_command_error_stays_and_can_be_retried() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.retry_device(42);
+    let id = f.pending_ids()[0];
+    f.send(Event::Reply {
+        id,
+        result: Err(NetError::Timeout),
+    });
+    f.app.pump_network();
+    let (_, text) = f.app.error_banner.clone().expect("erreur affichée");
+    assert!(text.contains("Reconnexion de l'appareil"));
+    // Aucune expiration : même très « vieille », l'erreur est encore là jusqu'au ✕.
+    assert!(f.app.error_banner.is_some());
+    let (what, request) = f.app.error_retry.clone().expect("commande gardée");
+    assert_eq!(what, "Reconnexion de l'appareil");
+    assert_eq!(request.path, "/api/devices/42/retry");
+    f.app.retry_last_command();
+    assert!(f.app.error_banner.is_none(), "la relance ferme le bandeau");
+    assert!(
+        f.app
+            .pending
+            .values()
+            .any(|p| matches!(p, Pending::Command { .. })),
+        "la commande est repartie"
+    );
+    f.app.show_error("Le plan n'a pas été enregistré".into());
+    assert!(f.app.error_retry.is_none());
+}
+
+/// Les onglets, dans l'ordre de la maquette ; Règles s'appelle Automatisations.
+#[test]
+fn the_tabs_follow_the_mockup_order() {
+    let titles: Vec<_> = View::ALL.iter().map(|v| v.title()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Appareils",
+            "Plan",
+            "Températures",
+            "Caméras",
+            "Automatisations"
+        ]
+    );
 }

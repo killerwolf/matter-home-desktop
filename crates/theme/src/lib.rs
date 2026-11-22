@@ -58,10 +58,15 @@ palette!(
     line,
     text,
     text_secondary,
+    text_faint,
     accent,
+    accent_hover,
     accent_soft,
     accent_text,
     on_accent,
+    lueur,
+    on_lueur,
+    lueur_text,
     ok,
     warn,
     on_warn,
@@ -149,6 +154,8 @@ pub struct Radius {
     pub sm: u8,
     pub md: u8,
     pub lg: u8,
+    /// Cartes et bandeaux.
+    pub card: u8,
 }
 
 /// Dimensions des composants.
@@ -175,6 +182,11 @@ pub struct Size {
     pub detail_panel_max: f32,
     /// Sous cette largeur de fenêtre, le détail remplace la grille au lieu de se mettre à côté.
     pub detail_narrow: f32,
+    /// Fenêtres à taille fixe : app de bureau et fenêtre du serveur.
+    pub window_desktop_w: f32,
+    pub window_desktop_h: f32,
+    pub window_server_w: f32,
+    pub window_server_h: f32,
 }
 
 /// Une tuile d'appareil (écran Appareils).
@@ -182,15 +194,15 @@ pub struct Size {
 pub struct TileTokens {
     /// Largeur d'une tuile.
     pub width: f32,
+    /// Largeur d'une tuile dans l'app de bureau (6 colonnes de 192 et 16 d'écart : 1232 px).
+    pub desktop_width: f32,
     /// Largeur minimale (la web app, qui étire ses tuiles ; le client garde `width`).
     #[allow(dead_code)]
     pub min_width: f32,
     pub height: f32,
     pub radius: u8,
     pub icon: f32,
-    /// Jaune chaud d'une lampe allumée (l'icône ; le fond de la carte en prend un peu).
-    #[serde(deserialize_with = "hex")]
-    pub on_tint: Color32,
+    /// Part de `lueur` (palette) dans le fond d'une tuile allumée ; l'icône est en `lueur`.
     pub on_tint_alpha: f32,
 }
 
@@ -649,6 +661,237 @@ pub fn toggle_switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     response
 }
 
+// ---------------------------------------------------------------------------
+// Composants de la charte « Nuit et Lueur » (refonte)
+// ---------------------------------------------------------------------------
+
+/// Couleurs du glyphe Seuil : une marque, identique en clair et en sombre (kit.md §3).
+const LOGO_NIGHT: Color32 = Color32::from_rgb(0x10, 0x23, 0x2d);
+const LOGO_ARCH: Color32 = Color32::from_rgb(0xf3, 0xef, 0xe6);
+const LOGO_LUEUR: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x3f);
+
+/// Le glyphe Seuil, dessiné au peintre d'après le viewBox 1024 du kit : un carré arrondi, une
+/// arche et un point Lueur. Pas de SVG : aucune crate de rendu n'est embarquée.
+pub fn logo(ui: &mut Ui, size: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Ostal"));
+    let k = size / 1024.0;
+    let at = |x: f32, y: f32| rect.min + Vec2::new(x, y) * k;
+    let painter = ui.painter();
+    let square = egui::Rect::from_min_max(at(100.0, 100.0), at(924.0, 924.0));
+    painter.rect_filled(
+        square,
+        CornerRadius::same((185.0 * k).round().clamp(0.0, 255.0) as u8),
+        LOGO_NIGHT,
+    );
+    // Arche : montant gauche, demi-cercle de rayon 180 centré en (512, 470), montant droit.
+    let mut points = vec![at(332.0, 760.0)];
+    for i in 0..=24 {
+        let a = std::f32::consts::PI * (1.0 + i as f32 / 24.0);
+        points.push(at(512.0 + 180.0 * a.cos(), 470.0 + 180.0 * a.sin()));
+    }
+    points.push(at(692.0, 760.0));
+    let stroke = Stroke::new(64.0 * k, LOGO_ARCH);
+    painter.add(egui::Shape::line(points.clone(), stroke));
+    // Bouts ronds.
+    for end in [points[0], points[points.len() - 1]] {
+        painter.circle_filled(end, 32.0 * k, LOGO_ARCH);
+    }
+    painter.circle_filled(at(512.0, 668.0), 58.0 * k, LOGO_LUEUR);
+    response
+}
+
+/// Logotype : le glyphe de 28 px suivi de « Ostal » en gras (Outfit n'est pas embarquée : la
+/// police d'egui).
+pub fn logotype(ui: &mut Ui) {
+    let t = tokens();
+    let p = palette(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = t.space.sm;
+        logo(ui, 28.0);
+        ui.label(
+            RichText::new("Ostal")
+                .size(t.font.size.heading)
+                .strong()
+                .color(p.text),
+        );
+    });
+}
+
+/// Bouton secondaire : fond `surface_alt`, trait fin (« Copier », « Annuler »).
+pub fn secondary_button(ui: &mut Ui, label: &str) -> Response {
+    let p = palette(ui);
+    ui.add(
+        egui::Button::new(RichText::new(label).color(p.text).strong())
+            .fill(p.surface_alt)
+            .stroke(Stroke::new(1.0, p.line))
+            .corner_radius(radius(tokens().radius.md)),
+    )
+}
+
+/// Bouton destructif : bordure et texte `error` sur fond de surface (« Supprimer »).
+pub fn destructive_button(ui: &mut Ui, label: &str) -> Response {
+    let p = palette(ui);
+    ui.add(
+        egui::Button::new(RichText::new(label).color(p.error).strong())
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.error))
+            .corner_radius(radius(tokens().radius.md)),
+    )
+}
+
+/// Cadre d'une carte : surface, trait `line` de 1 px, rayon de `radius.card`.
+pub fn card_frame(ui: &Ui) -> egui::Frame {
+    let t = tokens();
+    let p = palette(ui);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.line))
+        .corner_radius(radius(t.radius.card))
+        .inner_margin(Margin::same(t.space.md as i8))
+}
+
+/// Largeur du trait d'erreur à gauche d'un bandeau d'erreur.
+const ERROR_BAR: f32 = 4.0;
+
+/// Cadre d'un bandeau d'erreur : surface et trait fin ; la bordure gauche de 4 px en `error`
+/// se peint avec [`error_banner`] (un `Frame` n'a pas de bordure d'un seul côté). La marge
+/// gauche laisse la place du trait.
+pub fn error_banner_frame(ui: &Ui) -> egui::Frame {
+    let t = tokens();
+    let p = palette(ui);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.line))
+        .corner_radius(radius(t.radius.lg))
+        .inner_margin(Margin {
+            left: (t.space.md + ERROR_BAR) as i8,
+            right: t.space.md as i8,
+            top: t.space.sm as i8,
+            bottom: t.space.sm as i8,
+        })
+}
+
+/// Un bandeau d'erreur complet : le cadre, puis la bordure gauche de 4 px en `error`.
+pub fn error_banner<R>(
+    ui: &mut Ui,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let t = tokens();
+    let error = palette(ui).error;
+    let out = error_banner_frame(ui).show(ui, add_contents);
+    let r = out.response.rect;
+    let bar = egui::Rect::from_min_size(r.min, Vec2::new(ERROR_BAR, r.height()));
+    let corner = t.radius.lg;
+    ui.painter().rect_filled(
+        bar,
+        CornerRadius {
+            nw: corner,
+            sw: corner,
+            ne: 0,
+            se: 0,
+        },
+        error,
+    );
+    out
+}
+
+/// Ce que dit un mot d'état (kit.md §10) : la couleur ne porte jamais seule l'information, le
+/// mot et l'icône la doublent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateWord {
+    /// Joignable, réussi, activé : coche verte.
+    Ok,
+    /// Allumé : point Lueur, texte en `lueur_text`.
+    Lit,
+    /// Neutre, désactivé : anneau gris.
+    Neutral,
+    /// À regarder (injoignable) : cercle barré, `warn`.
+    Watch,
+    /// Erreur, échec : croix dans un cercle, `error`.
+    Error,
+}
+
+impl StateWord {
+    /// Couleur du mot et de l'icône.
+    pub fn color(self, p: &Palette) -> Color32 {
+        match self {
+            StateWord::Ok => p.ok,
+            StateWord::Lit => p.lueur_text,
+            StateWord::Neutral => p.text_secondary,
+            StateWord::Watch => p.warn,
+            StateWord::Error => p.error,
+        }
+    }
+}
+
+/// Mot d'état : une icône de 14 px puis le mot, de gauche à droite. `status_pill` reste pour
+/// l'existant.
+pub fn state_word(ui: &mut Ui, state: StateWord, text: &str) -> Response {
+    let t = tokens();
+    let p = palette(ui);
+    let color = state.color(p);
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        let c = rect.center();
+        let at = |x: f32, y: f32| rect.min + Vec2::new(x, y) * (14.0 / 24.0);
+        let painter = ui.painter();
+        match state {
+            StateWord::Ok => {
+                painter.add(egui::Shape::line(
+                    vec![at(5.0, 12.5), at(9.5, 17.0), at(19.0, 7.5)],
+                    Stroke::new(1.8, color),
+                ));
+            }
+            StateWord::Lit => {
+                painter.circle_filled(c, t.size.dot / 2.0, p.lueur);
+            }
+            StateWord::Neutral => {
+                painter.circle_stroke(c, t.size.dot / 2.0 - 0.75, Stroke::new(1.5, color));
+            }
+            StateWord::Watch => {
+                painter.circle_stroke(c, 5.2, Stroke::new(1.5, color));
+                painter.line_segment([at(5.6, 18.4), at(18.4, 5.6)], Stroke::new(1.5, color));
+            }
+            StateWord::Error => {
+                painter.circle_stroke(c, 5.2, Stroke::new(1.5, color));
+                painter.line_segment([at(9.0, 9.0), at(15.0, 15.0)], Stroke::new(1.5, color));
+                painter.line_segment([at(15.0, 9.0), at(9.0, 15.0)], Stroke::new(1.5, color));
+            }
+        }
+        let mut word = RichText::new(text).size(t.font.size.body).color(color);
+        if state != StateWord::Neutral {
+            word = word.strong();
+        }
+        ui.label(word);
+    })
+    .response
+}
+
+/// Pastille du mode de la maison : Présent en Lueur ; les autres modes en `accent_soft` avec une
+/// bordure `accent`. `present` dit si c'est le mode Présent (le thème ne connaît pas `protocol`).
+pub fn mode_pill(ui: &mut Ui, label: &str, present: bool) -> Response {
+    let t = tokens();
+    let p = palette(ui);
+    let (fill, text, stroke) = if present {
+        (p.lueur, p.on_lueur, Stroke::NONE)
+    } else {
+        (p.accent_soft, p.accent_text, Stroke::new(1.5, p.accent))
+    };
+    ui.add(
+        egui::Button::new(
+            RichText::new(label)
+                .size(t.font.size.body)
+                .strong()
+                .color(text),
+        )
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(CornerRadius::same(255)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,6 +1002,9 @@ mod tests {
                 (p.text_secondary, p.surface, "texte secondaire"),
                 (p.warn, p.surface, "pastille d'alerte"),
                 (p.error, p.surface, "pastille d'erreur"),
+                (p.on_lueur, p.lueur, "texte sur lueur (mode Présent)"),
+                (p.lueur_text, p.surface, "lueur en texte"),
+                (p.lueur_text, p.bg, "lueur en texte sur fond"),
             ] {
                 let c = contrast(fg, bg);
                 assert!(c >= 4.5, "{name} ({}) : contraste {c:.1}", dark_name(dark));
@@ -838,6 +1084,126 @@ mod tests {
             assert!(
                 lum(p.no_sensor) > lum(over(p.surface, s.color, t.temperature.fill_alpha)) - 30
             );
+        }
+    }
+
+    /// Palette « Nuit et Lueur » : une tuile allumée reste lisible, son icône se voit, et Lueur
+    /// (allumé) ne se confond pas avec l'alerte (`warn`).
+    #[test]
+    fn lit_tiles_stay_readable_and_lueur_is_not_a_warning() {
+        let t = tokens();
+        for dark in [false, true] {
+            let p = t.palette(dark);
+            let lit = over(p.surface, p.lueur, t.tile.on_tint_alpha);
+            for (fg, what) in [(p.text, "nom"), (p.text_secondary, "valeur secondaire")] {
+                let c = contrast(fg, lit);
+                assert!(
+                    c >= 4.5,
+                    "{what} sur tuile allumée ({}) : {c:.1}",
+                    dark_name(dark)
+                );
+            }
+            // L'icône allumée est en lueur sur le fond teinté : en clair, une ampoule jaune sur
+            // fond très pâle reste sous 3:1 (comme l'ancien jaune) ; on vérifie qu'elle se
+            // distingue au moins du fond.
+            let icon = contrast(p.lueur, lit);
+            assert!(
+                icon >= 1.5,
+                "icône allumée ({}) : {icon:.1}",
+                dark_name(dark)
+            );
+            // Deux teintes bien distinctes : l'écart de teinte entre lueur et warn.
+            let hue = |c: Color32| egui::ecolor::Hsva::from(c).h * 360.0;
+            let gap = (hue(p.lueur) - hue(p.warn)).abs();
+            assert!(
+                gap >= 12.0,
+                "lueur et warn trop proches ({}) : {gap:.0}°",
+                dark_name(dark)
+            );
+        }
+    }
+
+    /// Charte « Nuit et Lueur » : les ajouts de la refonte.
+    #[test]
+    fn refonte_tokens_are_there() {
+        let t = tokens();
+        assert_eq!(t.radius.card, 10);
+        assert_eq!(t.tile.desktop_width, 192.0);
+        assert_eq!(t.tile.width, 180.0);
+        assert_eq!(
+            (t.size.window_desktop_w, t.size.window_desktop_h),
+            (1280.0, 800.0)
+        );
+        assert_eq!(
+            (t.size.window_server_w, t.size.window_server_h),
+            (640.0, 700.0)
+        );
+        assert_eq!(parse_hex("#9aa8ae"), Some(t.palette(false).text_faint));
+        assert_eq!(parse_hex("#08506f"), Some(t.palette(false).accent_hover));
+        // Six colonnes de tuiles et leur écart tiennent dans la fenêtre de bureau.
+        assert!(6.0 * t.tile.desktop_width + 5.0 * t.space.lg <= t.size.window_desktop_w);
+        for dark in [false, true] {
+            let p = t.palette(dark);
+            // text_faint : ⋯ et texte désactivé, jamais du texte à lire. En clair, #9aa8ae est
+            // la valeur de la maquette (2,4:1 sur surface, un contrôle désactivé étant exempté
+            // par WCAG) ; en sombre, on tient 3:1.
+            let floor = if dark { 3.0 } else { 2.0 };
+            assert!(
+                contrast(p.text_faint, p.surface) >= floor,
+                "text_faint ({}) : {:.1}",
+                dark_name(dark),
+                contrast(p.text_faint, p.surface)
+            );
+            assert!(
+                contrast(p.on_accent, p.accent_hover) >= 4.5,
+                "accent survolé"
+            );
+        }
+    }
+
+    #[test]
+    fn state_words_are_readable_and_distinct() {
+        for dark in [false, true] {
+            let p = tokens().palette(dark);
+            for state in [
+                StateWord::Ok,
+                StateWord::Lit,
+                StateWord::Neutral,
+                StateWord::Watch,
+                StateWord::Error,
+            ] {
+                let c = contrast(state.color(p), p.surface);
+                assert!(c >= 4.5, "{state:?} ({}) : {c:.1}", dark_name(dark));
+            }
+        }
+    }
+
+    /// Les composants de la refonte se dessinent sans plantage, dans les deux thèmes.
+    #[test]
+    fn refonte_components_draw() {
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_visuals(visuals(dark));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                logo(ui, 32.0);
+                logotype(ui);
+                secondary_button(ui, "Copier");
+                destructive_button(ui, "Supprimer");
+                card_frame(ui).show(ui, |ui| ui.label("carte"));
+                error_banner(ui, |ui| ui.label("erreur"));
+                for s in [
+                    StateWord::Ok,
+                    StateWord::Lit,
+                    StateWord::Neutral,
+                    StateWord::Watch,
+                    StateWord::Error,
+                ] {
+                    state_word(ui, s, "mot");
+                }
+                mode_pill(ui, "Présent", true);
+                mode_pill(ui, "Nuit", false);
+            });
+            out.textures_delta.clear();
         }
     }
 

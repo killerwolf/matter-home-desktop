@@ -591,8 +591,8 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, ui: EventSink) {
                     Command::TestRule(id) => {
                         let _ = engine_tx.send(automation::EngineCommand::Test(id));
                     }
-                    Command::SetHomeMode(mode) => {
-                        let _ = engine_tx.send(automation::EngineCommand::Mode(mode));
+                    Command::SetHomeMode { mode, source } => {
+                        let _ = engine_tx.send(automation::EngineCommand::Mode(mode, source));
                     }
                     Command::Detection { event, opening, awaiting } => {
                         let _ = engine_tx.send(automation::EngineCommand::Detection(event, opening, awaiting));

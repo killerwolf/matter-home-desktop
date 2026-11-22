@@ -172,8 +172,15 @@ mod tests {
             "--font-family:",
             "--size-row:",
             "--tile-width: 180px;",
-            "--tile-on-tint: #f2b84b;",
+            "--color-lueur:",
+            "--color-on-lueur:",
+            "--color-lueur-text:",
             "--tile-on-tint-alpha: 0.16;",
+            "--tile-desktop-width: 192px;",
+            "--radius-card: 10px;",
+            "--size-window-server-w: 640px;",
+            "--color-text-faint:",
+            "--color-accent-hover:",
             "--color-state-hover: var(--color-surface-alt);",
         ] {
             assert!(css.contains(prefix), "{prefix} manque");
@@ -181,8 +188,8 @@ mod tests {
         let (light, dark) = css
             .split_once("@media (prefers-color-scheme: dark)")
             .unwrap();
-        assert!(light.contains("--color-bg: #f6f5f2;"));
-        assert!(dark.contains("--color-bg: #1b1b1b;"));
+        assert!(light.contains("--color-bg: #f3f5f6;"));
+        assert!(dark.contains("--color-bg: #0b151b;"));
         assert!(!css.contains("meta"));
     }
 }

@@ -35,18 +35,43 @@ seulement hors des pièces est « Sans pièce ». La température d'une pièce e
 capteurs joignables, arrondie à la décimale affichée ; la teinte se calcule depuis cette valeur
 arrondie.
 
+## La palette « Nuit et Lueur »
+
+Quatre couleurs de marque, celles du logo Seuil : **Nuit** `#10232d` (le texte en clair), **Lueur**
+`#f5b33f` (la lumière allumée), **Craie** `#f3efe6` (le trait du logo) et **Ardoise** `#0b6a94`
+(l'accent : boutons, onglets choisis, liens). Les neutres sont légèrement bleutés, vers Nuit.
+
+- **Lueur veut dire « allumé, tout va bien », jamais « attention ».** Elle sert à une lampe allumée
+  (tuile, plan) et au mode **Présent** (pastille du mode : fond `lueur`, texte `on_lueur`).
+  `lueur_text` est la Lueur lisible en texte sur `surface` (plus sombre en clair).
+- L'alerte (`warn` : porte ouverte, pile faible, connexion en cours) est un orange plus rouge
+  (`#b4500e` en clair), pour ne pas se confondre avec Lueur. Un test vérifie l'écart de teinte.
+- Contrastes (clair / sombre) : texte 16,1 / 14,2 ; `on_lueur` sur `lueur` 8,8 / 10,2 ;
+  `lueur_text` 5,9 / 10,4 ; `warn` 5,1 / 6,6 ; texte sur tuile allumée 14,7 / 9,9. L'icône d'une
+  lampe allumée en clair (Lueur sur fond très pâle) reste sous 3:1, comme l'ancien jaune : elle est
+  portée par le fond teinté et le mot « Allumée ».
+
+## Le logotype
+
+`assets/logo/ostal-logotype-clair.svg` (mot en Nuit, pour fond clair) et
+`ostal-logotype-sombre.svg` (mot en Craie, pour fond sombre) : le logo Seuil suivi du mot « Ostal »
+en **Outfit SemiBold (600)**, converti en tracés (aucune police embarquée ni à installer). Outfit est
+sous licence SIL Open Font License 1.1, qui ne s'étend pas aux dessins faits avec la police : le
+crédit est en commentaire dans les fichiers. L'interface garde la police du système ; Outfit ne
+sert qu'au nom. Le logotype est en haut du README et sur l'écran de connexion de l'app web.
+
 ## Les tokens (`design/tokens.json`)
 
 | Groupe | Contenu |
 |---|---|
 | `meta` | version et commentaires ; ignoré par le client et par le générateur CSS |
-| `colors.light`, `colors.dark` | `bg` (fond), `surface`, `surface_alt`, `line`, `text`, `text_secondary`, `accent`, `accent_soft`, `accent_text`, `on_accent`, `ok`, `warn` (alerte), `on_warn`, `error`, `banner_warn`, `banner_info` (bandeaux), `no_sensor` (gris « pas de capteur »), `series_*` (courbes) |
+| `colors.light`, `colors.dark` | `bg` (fond), `surface`, `surface_alt`, `line`, `text`, `text_secondary`, `text_faint` (⋯ et texte désactivé : `#9aa8ae` en clair, 2,4:1 sur `surface`, jamais pour du texte à lire), `accent`, `accent_hover` (accent survolé), `accent_soft`, `accent_text`, `on_accent`, `lueur` (allumé), `on_lueur`, `lueur_text`, `ok`, `warn` (alerte), `on_warn`, `error`, `banner_warn`, `banner_info` (bandeaux), `no_sensor` (gris « pas de capteur »), `series_*` (courbes) |
 | (dans `colors`) | `video_bg` et `video_text` : le fond sombre d'une image vidéo et son texte, les mêmes dans les deux thèmes (voulu) ; `series_1` à `series_8` : les courbes |
 | `temperature` | `stops` : cinq paliers de 2 °C, du bleu à 16 °C au rouge à 24 °C ; `step` ; `fill_alpha` (transparence de l'aplat d'une pièce) |
 | `space` | `xs` 4, `sm` 8, `md` 12, `lg` 16, `xl` 24 |
-| `radius` | `sm` 4, `md` 6, `lg` 8 |
-| `tile` | `width`, `min_width`, `height`, `radius`, `icon` (taille de l'icône), `on_tint` et `on_tint_alpha` (lampe allumée) |
-| `size` | `row` (ligne d'appareil, 30, pour la web app), `dot` (point d'état, 7), `control` (24), `item_gap_y`, `button_pad_x`, `button_pad_y` |
+| `radius` | `sm` 4, `md` 6, `lg` 8, `card` 10 (cartes et bandeaux) |
+| `tile` | `width` (180, repli), `desktop_width` (192 : la tuile de l'app de bureau, six colonnes de 192 et 16 d'écart = 1232 px), `min_width`, `height`, `radius`, `icon` (taille de l'icône), `on_tint_alpha` (part de `lueur` dans le fond d'une lampe allumée) |
+| `size` | `row` (ligne d'appareil, 30, pour la web app), `dot` (point d'état, 7), `control` (24), `item_gap_y`, `button_pad_x`, `button_pad_y`, `window_desktop_w` / `window_desktop_h` (1280 × 800 : app de bureau), `window_server_w` / `window_server_h` (640 × 700 : fenêtre du serveur) |
 | `font` | `family`, `weight` (`normal`, `strong`), `line_height`, `size` (`caption` 11, `body` 13, `title` 15, `heading` 18, `display` 26) |
 | `state` | `hover` et `selected` : le nom d'une couleur de `colors` |
 
@@ -71,8 +96,8 @@ composants.
   une grande icône d'état de `tile.icon`, dessinée avec des formes (`tile_icons`, jamais un glyphe de
   police) ; en dessous le nom (deux lignes au plus, coupé par « … ») ; en bas la valeur en
   `font.size.heading` + 2, et à droite un petit texte (humidité, « Bouton », « injoignable », « pile
-  faible »). Une lampe allumée prend `tile.on_tint` à `tile.on_tint_alpha` sur le fond et une icône
-  jaune ; une porte ou une fenêtre ouverte est en `warn` ; un appareil injoignable est estompé ; une
+  faible »). Une lampe allumée prend `lueur` à `tile.on_tint_alpha` sur le fond et une icône
+  `lueur` ; une porte ou une fenêtre ouverte est en `warn` ; un appareil injoignable est estompé ; une
   pile faible a un petit point `warn` sur l'icône. Un clic agit : bascule (lumière seulement), ouvre, ferme ou arrête
   (volet), ou ouvre le détail (prise, capteur, porte, télécommande, injoignable) ; un second clic
   pendant 400 ms ou pendant une commande est ignoré. Les pièces se rangent en blocs côte à côte
@@ -99,12 +124,30 @@ composants.
 - **Pastille d'état anormal** : un point de `size.dot` et un mot en `caption`, couleur `warn`
   (pile faible) ou `error` (injoignable). Jamais de pastille verte « en ligne ».
 - **Vignette** (`thumbnail`) : une image 16/9 de rayon `radius.md`, le nom dessous, la pièce en
-  légende (`caption`, `text_secondary`). Seul le hors ligne est signalé.
+  légende (`caption`, `text_secondary`). Seul l'« injoignable » est signalé.
 - **Bouton principal** (`primary_button`) : fond `accent`, texte `on_accent`, rayon `radius.md`. Un
   seul par écran (« + Ajouter »).
 - **Onglets** (`tab`) : texte seul ; l'onglet choisi a le fond `accent` et le texte `on_accent`.
 - **Bandeau** (`banner_frame`) : fond `banner_warn` (non enregistré) ou `banner_info` (un choix
   attend), texte `text`.
+
+Composants de la refonte (fonctions ajoutées au thème, sans changer l'existant ; `Severity` et
+`Banner` n'ont pas de nouvelle variante) :
+
+- **Logo Seuil** (`logo(ui, taille)`) : carré arrondi Nuit, arche Craie et point Lueur, dessinés au
+  peintre d'après le viewBox 1024 du kit (aucune crate de rendu SVG). Les couleurs de la marque sont
+  les mêmes en clair et en sombre. **`logotype(ui)`** : le logo de 28 px puis « Ostal » en gras 18, dans
+  la police d'egui (Outfit n'est pas embarquée).
+- **Boutons** : `secondary_button` (fond `surface_alt`, trait `line`) et `destructive_button` (trait et
+  texte `error` sur `surface`), à côté de `primary_button`.
+- **Cartes** : `card_frame` (fond `surface`, trait `line`, rayon `radius.card`) ; `error_banner_frame` et
+  `error_banner` (bandeau d'erreur : `surface`, trait `line`, **bordure gauche de 4 px en `error`**).
+- **Mot d'état** (`state_word(ui, StateWord, texte)`) : une icône de 14 px et le mot, la couleur ne
+  portant jamais seule l'information. `Ok` (coche, `ok`), `Lit` (point `lueur`, texte `lueur_text`),
+  `Neutral` (anneau, `text_secondary`), `Watch` (cercle barré, `warn` : « injoignable »), `Error` (croix,
+  `error`). `status_pill` reste tel quel.
+- **Pastille de mode** (`mode_pill(ui, libellé, présent)`) : Présent en `lueur` (texte `on_lueur`) ; les
+  autres modes en `accent_soft`, bordure `accent`, texte `accent_text`.
 
 ## La web app consomme `design/tokens.css`
 

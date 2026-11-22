@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use protocol::automation::{CoverCommand, OnOffCommand, Rule, RuleSet};
 use protocol::home::HomePlan;
-use protocol::mode::HomeMode;
+use protocol::mode::{HomeMode, ModeSource};
 use protocol::wire::{
     self, ApiError, CustomizeRequest, DeviceView, ErrorCode, HistoryPoint, HistoryQuery,
     HistoryResponse, IdentityInfo, ImportIdentity, ImportSummary, LatestReading, Metric,
@@ -470,8 +470,8 @@ impl Hub {
             }
             Event::PairingDone { .. } | Event::PairingFailed(_) => st.pairing_busy = false,
             // Le hub le publie lui-même (`set_mode`) : un événement venu du backend ne change rien.
-            Event::HomeModeChanged(_)
-            | Event::HomeModeRequested(_)
+            Event::HomeModeChanged { .. }
+            | Event::HomeModeRequested { .. }
             | Event::PairingProgress(_)
             | Event::Notification { .. }
             | Event::Info(_)
@@ -548,7 +548,9 @@ impl Hub {
     /// nouveau mode éteint se ferment d'elles-mêmes (voir `camera_target`). `Ok(false)` : c'était
     /// déjà le mode actuel, rien n'est enregistré, diffusé ni déclenché. Si l'écriture échoue, le
     /// mode ne change pas (il commande les caméras : on ne l'annonce pas sans pouvoir le retenir).
-    pub fn set_mode(&self, mode: HomeMode) -> ApiResult<bool> {
+    /// `source` : d'où vient la demande ; écrite au journal, diffusée avec `mode_changed` et
+    /// donnée aux règles (`{source}`).
+    pub fn set_mode(&self, mode: HomeMode, source: ModeSource) -> ApiResult<bool> {
         let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         if self.mode() == mode {
             return Ok(false);
@@ -562,15 +564,26 @@ impl Hub {
         }
         let mut st = self.lock();
         let previous = std::mem::replace(&mut st.mode, mode);
-        self.publish(&mut st, WireEvent::ModeChanged { mode });
+        self.publish(
+            &mut st,
+            WireEvent::ModeChanged {
+                mode,
+                source: Some(source.clone()),
+            },
+        );
         // Les caméras éteintes changent d'état affiché (`Off`) avec le mode.
         self.publish_cameras(&mut st);
         drop(st);
-        log::info!("mode : {} → {}", previous.label(), mode.label());
+        log::info!(
+            "mode : {} → {} ({})",
+            previous.label(),
+            mode.label(),
+            source.label()
+        );
         // Les caméras en Surveillance changent avec le mode : le superviseur revoit sa liste.
         self.detection.wake();
         // Le moteur peut avoir disparu (arrêt en cours) : le mode est enregistré, c'est l'essentiel.
-        let _ = self.send(Command::SetHomeMode(mode));
+        let _ = self.send(Command::SetHomeMode { mode, source });
         Ok(true)
     }
 
@@ -1488,14 +1501,22 @@ pub(crate) mod tests {
         assert_eq!(hub.mode(), HomeMode::Present);
         assert_eq!(hub.current_snapshot().mode, Some(HomeMode::Present));
 
-        assert!(hub.set_mode(HomeMode::Absent).unwrap());
+        // La fenêtre du serveur (sous-menu « Mode ») : sa source suit le changement partout.
+        assert!(hub
+            .set_mode(HomeMode::Absent, ModeSource::ServerApp)
+            .unwrap());
         // Le même mode redemandé (Raccourcis, à l'arrivée) : rien n'est écrit, diffusé ni lancé.
-        assert!(!hub.set_mode(HomeMode::Absent).unwrap());
+        assert!(!hub
+            .set_mode(HomeMode::Absent, ModeSource::Shortcut)
+            .unwrap());
         assert_eq!(hub.current_snapshot().mode, Some(HomeMode::Absent));
         assert_eq!(home_mode::load(&dir), HomeMode::Absent);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SetHomeMode(HomeMode::Absent))
+            Ok(Command::SetHomeMode {
+                mode: HomeMode::Absent,
+                source: ModeSource::ServerApp
+            })
         ));
         assert!(commands.try_recv().is_err());
         let mut changes = 0;
@@ -1503,8 +1524,9 @@ pub(crate) mod tests {
             let ServerMessage::Event { event, .. } = serde_json::from_str(&m).unwrap() else {
                 panic!()
             };
-            if let WireEvent::ModeChanged { mode } = event {
+            if let WireEvent::ModeChanged { mode, source } = event {
                 assert_eq!(mode, HomeMode::Absent);
+                assert_eq!(source, Some(ModeSource::ServerApp));
                 changes += 1;
             }
         }

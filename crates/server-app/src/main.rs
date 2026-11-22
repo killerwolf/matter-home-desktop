@@ -28,6 +28,7 @@ Usage :
   ostal-server-app                   lance le serveur (réseau réel)
   ostal-server-app --demo            appareils simulés, sans réseau, sans LaunchAgent
   ostal-server-app --demo-setup      comme --demo, avec la fenêtre de première configuration
+  ostal-server-app --demo-blocked    comme --demo, avec l'état Arrêt (ancienne application ouverte)
   ostal-server-app --data-dir DOSSIER  autre dossier de données
   ostal-server-app --listen ADRESSE:PORT  adresse d'écoute (défaut 0.0.0.0:8443)
   ostal-server-app --open ONGLET     ouvre la fenêtre au lancement sur un onglet :
@@ -71,7 +72,8 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let demo_setup = take_flag(&mut args, "--demo-setup");
-    let demo = take_flag(&mut args, "--demo") || demo_setup;
+    let demo_blocked = take_flag(&mut args, "--demo-blocked");
+    let demo = take_flag(&mut args, "--demo") || demo_setup || demo_blocked;
     let data_dir_arg = take_value(&mut args, "--data-dir");
     let listen_arg = take_value(&mut args, "--listen");
     let open = take_value(&mut args, "--open").map(|key| {
@@ -159,6 +161,7 @@ fn main() -> eframe::Result {
             listen,
             demo,
             demo_setup,
+            demo_blocked,
             temp_data_dir,
             log_path,
             args: raw.iter().map(Into::into).collect(),

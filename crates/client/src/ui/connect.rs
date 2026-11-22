@@ -201,38 +201,71 @@ impl ConnectScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, link: &Link, backend: &Backend) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(theme::tokens().space.xl * 2.0);
-                ui.heading("Maison");
-                ui.label(
-                    RichText::new("Connexion à votre serveur Ostal")
-                        .color(theme::palette(ui).text_secondary),
-                );
-                ui.add_space(theme::tokens().space.lg);
+        let p = *theme::palette(ui);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p.bg))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(122.0);
+                    // La carte : 420 px pour le formulaire, 480 px pour les écrans de
+                    // certificat et de versions (maquettes Bureau-*.dc.html).
+                    let wide = matches!(
+                        link,
+                        Link::CertificateChanged { .. } | Link::Incompatible { .. }
+                    ) || matches!(self.stage, Stage::Confirm { .. });
+                    let width = if wide { 480.0 } else { 420.0 };
+                    let pad = if wide { (24, 22) } else { (28, 24) };
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            theme::card_frame(ui)
+                                .inner_margin(egui::Margin::symmetric(pad.0, pad.1))
+                                .show(ui, |ui| {
+                                    ui.set_width(width - 2.0 * pad.0 as f32);
+                                    ui.spacing_mut().item_spacing.y = 6.0;
+                                    // Les champs sur fond blanc gardent un trait fin visible.
+                                    let line = egui::Stroke::new(1.0, p.line);
+                                    let w = &mut ui.visuals_mut().widgets;
+                                    w.inactive.bg_stroke = line;
+                                    w.hovered.bg_stroke = line;
+                                    match link {
+                                        Link::CertificateChanged {
+                                            url,
+                                            expected,
+                                            found,
+                                        } => {
+                                            self.show_message(ui);
+                                            self.certificate_changed(
+                                                ui, backend, url, expected, found,
+                                            );
+                                        }
+                                        Link::Incompatible { message } => {
+                                            self.show_message(ui);
+                                            Self::incompatible(ui, backend, message);
+                                        }
+                                        _ => self.form(ui, backend),
+                                    }
+                                });
+                        },
+                    );
+                });
             });
-            let width = 400.0_f32.min(ui.available_width());
-            ui.vertical_centered(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| match link {
-                        Link::CertificateChanged {
-                            url,
-                            expected,
-                            found,
-                        } => {
-                            self.show_message(ui);
-                            self.certificate_changed(ui, backend, url, expected, found);
-                        }
-                        Link::Incompatible { message } => {
-                            self.show_message(ui);
-                            Self::incompatible(ui, backend, message);
-                        }
-                        _ => self.form(ui, backend),
-                    },
-                );
-            });
+    }
+
+    /// Le logo, « Maison » et la ligne d'accroche, centrés au-dessus du formulaire.
+    fn header(ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            theme::logo(ui, 32.0);
+            ui.label(
+                RichText::new("Maison")
+                    .size(theme::tokens().font.size.heading)
+                    .strong(),
+            );
+            ui.label(
+                RichText::new("Connexion à votre serveur Ostal")
+                    .color(theme::palette(ui).text_secondary),
+            );
         });
     }
 
@@ -262,51 +295,81 @@ impl ConnectScreen {
             self.confirm(ui, backend, &url, &fingerprint);
             return;
         }
+        Self::header(ui);
         let busy = matches!(self.stage, Stage::Probing | Stage::LoggingIn);
         let p = theme::palette(ui);
+        // Une erreur sous son champ : l'icône, le texte en gras (kit §12), role=alert.
         let error = |ui: &mut egui::Ui, which: Field| {
             if let Some((false, text)) = message.as_ref().filter(|_| at == Some(which)) {
-                ui.colored_label(p.error, RichText::new(text).small());
+                ui.horizontal_wrapped(|ui| {
+                    let (icon, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                    let c = icon.center();
+                    let stroke = egui::Stroke::new(1.5, p.error);
+                    ui.painter().circle_stroke(c, 5.5, stroke);
+                    ui.painter().line_segment(
+                        [c + egui::vec2(-2.5, -2.5), c + egui::vec2(2.5, 2.5)],
+                        stroke,
+                    );
+                    ui.painter().line_segment(
+                        [c + egui::vec2(2.5, -2.5), c + egui::vec2(-2.5, 2.5)],
+                        stroke,
+                    );
+                    ui.label(RichText::new(text).size(12.0).strong().color(p.error));
+                });
             }
         };
         let label = |ui: &mut egui::Ui, text: &str| {
-            ui.label(RichText::new(text).color(p.text_secondary));
+            ui.label(RichText::new(text).size(12.0).strong().color(p.text));
+        };
+        // Le champ en erreur garde sa valeur, avec une bordure de 1,5 px en `error`.
+        let invalid = |ui: &mut egui::Ui, which: Field| {
+            if message.as_ref().is_some_and(|(ok, _)| !ok) && at == Some(which) {
+                let w = &mut ui.visuals_mut().widgets;
+                for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                    s.bg_stroke = egui::Stroke::new(1.5, p.error);
+                }
+            }
         };
         let full = ui.available_width();
 
         label(ui, "Adresse du serveur");
-        ui.add_enabled(
-            !busy,
-            egui::TextEdit::singleline(&mut self.url)
-                .hint_text("192.168.1.20:8443 ou mac-mini.local")
-                .desired_width(full),
-        );
+        ui.scope(|ui| {
+            invalid(ui, Field::Server);
+            ui.add_enabled(
+                !busy,
+                egui::TextEdit::singleline(&mut self.url)
+                    .hint_text("192.168.1.20:8443 ou mac-mini.local")
+                    .desired_width(full),
+            );
+        });
         error(ui, Field::Server);
-        ui.add_space(2.0);
         ui.label(
             RichText::new(
-                "Elle s'affiche sur l'autre Mac : menu du serveur, « Connecter un client ».",
+                "Elle s'affiche sur le Mac serveur : menu › Connecter un Mac ou un iPhone…",
             )
-            .small()
+            .size(12.0)
             .color(p.text_secondary),
         );
         ui.add_space(theme::tokens().space.sm);
 
         label(ui, "Adresse à distance (facultatif)");
-        ui.add_enabled(
-            !busy,
-            egui::TextEdit::singleline(&mut self.remote)
-                .hint_text("mac-mini.tail1234.ts.net ou 100.x.y.z")
-                .desired_width(full),
-        );
+        ui.scope(|ui| {
+            invalid(ui, Field::Remote);
+            ui.add_enabled(
+                !busy,
+                egui::TextEdit::singleline(&mut self.remote)
+                    .hint_text("mac-mini.exemple.ts.net ou 100.x.y.z")
+                    .desired_width(full),
+            );
+        });
         error(ui, Field::Remote);
-        ui.add_space(2.0);
         ui.label(
             RichText::new(
                 "Le même serveur, joint par Tailscale quand vous n'êtes pas chez vous. \
                  L'app essaie l'adresse ci-dessus, puis celle-ci. Plusieurs : séparez par un espace.",
             )
-            .small()
+            .size(12.0)
             .color(p.text_secondary),
         );
         if ServerAddr::parse_list(&self.remote)
@@ -331,12 +394,17 @@ impl ConnectScreen {
         ui.add_space(theme::tokens().space.sm);
 
         label(ui, "Mot de passe");
-        let password = ui.add_enabled(
-            !busy,
-            egui::TextEdit::singleline(&mut self.password)
-                .password(true)
-                .desired_width(full),
-        );
+        let password = ui
+            .scope(|ui| {
+                invalid(ui, Field::Password);
+                ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut self.password)
+                        .password(true)
+                        .desired_width(full),
+                )
+            })
+            .inner;
         error(ui, Field::Password);
         ui.add_space(theme::tokens().space.md);
 
@@ -370,20 +438,26 @@ impl ConnectScreen {
                 backend.reset_pinned_certificate(self.pinned_url.clone());
             }
         }
-        ui.add_space(theme::tokens().space.md);
-        // Note de sécurité : une ligne, dépliable.
-        ui.vertical_centered(|ui| {
+        // Note de sécurité : une phrase, « Détails ▸ » replié.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(
                 RichText::new("La connexion est chiffrée ; le mot de passe n'est jamais conservé.")
-                    .small()
+                    .size(12.0)
                     .color(p.text_secondary),
             );
             let text = if self.show_security {
-                "Masquer"
+                "Détails ▾"
             } else {
-                "Détails"
+                "Détails ▸"
             };
-            if ui.small_button(text).clicked() {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(text).size(12.0).color(p.accent_text))
+                        .frame(false),
+                )
+                .clicked()
+            {
                 self.show_security = !self.show_security;
             }
         });
@@ -441,9 +515,15 @@ impl ConnectScreen {
     }
 
     fn confirm(&mut self, ui: &mut egui::Ui, backend: &Backend, url: &str, fingerprint: &str) {
-        ui.heading("Approuver ce serveur ?");
-        ui.label(format!("Première connexion à {url}."));
-        ui.add_space(6.0);
+        let h = theme::tokens().font.size.heading;
+        ui.label(RichText::new("Approuver ce serveur ?").size(h).strong());
+        ui.label(
+            RichText::new(format!(
+                "Première connexion à {}",
+                url.trim_start_matches("https://")
+            ))
+            .color(theme::palette(ui).text_secondary),
+        );
         ui.label(
             "Le serveur présente un certificat qu'il a fabriqué lui-même. Comparez son empreinte \
              avec celle affichée au lancement du serveur (ou par la commande \
@@ -473,19 +553,22 @@ impl ConnectScreen {
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
+            if theme::secondary_button(ui, "Annuler").clicked() {
+                self.password.clear();
+                self.expected.clear();
+                self.stage = Stage::Form;
+            }
             if ui
-                .add_enabled(!mismatch, egui::Button::new("Approuver et se connecter"))
+                .add_enabled_ui(!mismatch, |ui| {
+                    theme::primary_button(ui, "Approuver et se connecter")
+                })
+                .inner
                 .clicked()
             {
                 backend.login(url, fingerprint, self.username.trim(), &self.password);
                 self.password.clear();
                 self.expected.clear();
                 self.stage = Stage::LoggingIn;
-            }
-            if ui.button("Annuler").clicked() {
-                self.password.clear();
-                self.expected.clear();
-                self.stage = Stage::Form;
             }
         });
     }
@@ -500,9 +583,10 @@ impl ConnectScreen {
     ) {
         ui.colored_label(
             theme::palette(ui).error,
-            RichText::new("Le certificat du serveur a changé").heading(),
+            RichText::new("Le certificat du serveur a changé")
+                .size(theme::tokens().font.size.heading)
+                .strong(),
         );
-        ui.add_space(8.0);
         ui.label(format!(
             "Le serveur {url} ne présente plus le certificat que vous aviez approuvé. Rien n'a \
              été envoyé et la connexion est refusée."
@@ -532,7 +616,7 @@ impl ConnectScreen {
                 self.confirm_reset = false;
                 backend.reset_pinned_certificate(Some(url.to_string()));
             }
-            if ui.button("Réessayer").clicked() {
+            if theme::primary_button(ui, "Réessayer").clicked() {
                 backend.reconnect();
             }
         });
@@ -541,17 +625,17 @@ impl ConnectScreen {
     fn incompatible(ui: &mut egui::Ui, backend: &Backend, message: &str) {
         ui.colored_label(
             theme::palette(ui).error,
-            RichText::new("Versions incompatibles").heading(),
+            RichText::new("Versions incompatibles")
+                .size(theme::tokens().font.size.heading)
+                .strong(),
         );
-        ui.add_space(8.0);
-        ui.label(message);
-        ui.add_space(10.0);
+        ui.label(RichText::new(message).color(theme::palette(ui).text_secondary));
         ui.horizontal(|ui| {
-            if ui.button("Réessayer").clicked() {
-                backend.reconnect();
-            }
-            if ui.button("Changer de serveur").clicked() {
+            if theme::secondary_button(ui, "Changer de serveur").clicked() {
                 backend.logout();
+            }
+            if theme::primary_button(ui, "Réessayer").clicked() {
+                backend.reconnect();
             }
         });
     }

@@ -8,6 +8,66 @@ respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 Les téléchargements de chaque version sont sur la
 [page des versions](https://github.com/killerwolf/matter-home-desktop/releases).
 
+## [Unreleased]
+
+### Refonte (préversion, finitions)
+
+- App web : le plan de la maison est affiné (`plan.js` et ses tests).
+- Notifications et caméra injoignable : le serveur (« Ostal Server ») signale mieux une caméra qui ne
+  répond plus (`cameras.rs`, `cameras_ui.rs`, page des caméras).
+- Intégration : formatage, clippy (`-D warnings`), tests Rust et tests node au vert.
+
+### Refonte (préversion, itération 3)
+
+- Intégration : formatage, clippy (`-D warnings`), tests Rust et tests node repris sur les trois
+  surfaces ; le cache du service worker de l'app web est à `ostal-shell-v15` (tests du serveur
+  alignés).
+- Préversion : la version n'est toujours pas incrémentée.
+
+### Refonte (préversion, itération 2)
+
+- Intégration : formatage, clippy et tests repris sur les trois surfaces ; le cache du service worker
+  de l'app web passe à `ostal-shell-v14` (tests du serveur alignés).
+- Préversion : la version n'est toujours pas incrémentée.
+
+### Refonte (préversion, itération 1)
+
+- **Refonte complète selon la nouvelle charte**, sur les trois surfaces à la fois : app web,
+  fenêtre du serveur (« Ostal Server ») et app de bureau. Socle commun : jetons de design, thème
+  clair et sombre, phrase d'état, raccourcis Nuit et Vacances, widget.
+- **Tailles de fenêtre fixes** : app de bureau 1280×800, fenêtre du serveur 640×700.
+- **Fenêtre du serveur** : écrans Caméras, formulaire de caméra, Descriptions, Notifications,
+  Raccourcis, Réglages et Confirmer (nouveau module de confirmation).
+- **App de bureau** : nouvelle coquille (`shell`), caméras, appareils, règles, capteurs,
+  thermomètre et lecteur remis à la charte.
+- **App web** : tuiles, plan, températures, notifications push, manifeste et service worker mis à
+  jour ; tests node ajoutés pour les tuiles.
+- Documentation mise à jour (web, serveur, plan, utilisation, automatisations, installation).
+- Préversion : la version n'est pas incrémentée.
+
+### Modifié
+
+- **Nouvelle palette « Nuit et Lueur »**, celle du logo Seuil, dans l'app de bureau, l'app web et
+  la fenêtre du serveur : neutres légèrement bleutés, texte Nuit (`#10232d`) en clair, fond nuit
+  profonde en sombre. Nouveaux tokens `lueur`, `on_lueur` et `lueur_text` : une lampe allumée et
+  le mode **Présent** (pastille du mode) prennent la Lueur (`#f5b33f`). L'alerte (`warn`) passe à
+  un orange plus rouge (`#b4500e`), pour ne plus se confondre avec une lampe allumée : Lueur veut
+  dire « allumé », jamais « attention ». L'échelle de température ne change pas. Tous les textes
+  gardent un contraste d'au moins 4,5 (testé).
+
+### Ajouté
+
+- **Logotype Ostal** : le logo Seuil et le mot « Ostal » en Outfit SemiBold, en tracés, en
+  variantes claire et sombre (`assets/logo/ostal-logotype-*.svg`). Il apparaît en haut du README et
+  sur l'écran de connexion de l'app web.
+- **Chaque changement de mode dit d'où il vient** : raccourci iPhone (jeton de mode), app web, app
+  de bureau, fenêtre du serveur, automatisation (avec le nom de la règle) ou autre. Le journal du
+  serveur et celui de l'app de bureau l'écrivent (« Mode : Absent (raccourci iPhone) ») ; l'app web
+  montre une notification brève quand le mode change ailleurs ; une règle « Quand le mode
+  devient… » peut l'écrire dans sa notification avec la nouvelle variable `{source}`. Protocole
+  compatible : `mode_changed` et `PUT /api/mode` gagnent un champ facultatif `source`, que les
+  anciens clients ignorent ; un client ne peut annoncer que ce que son jeton permet.
+
 ## [2.0.0] - 2026-11-21
 
 ### Modifié

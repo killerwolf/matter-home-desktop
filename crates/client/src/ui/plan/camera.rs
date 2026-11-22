@@ -51,7 +51,7 @@ impl CameraState {
 
     pub fn label(self) -> &'static str {
         match self {
-            CameraState::Online => "En ligne",
+            CameraState::Online => "Joignable",
             CameraState::Unreachable => "Injoignable",
             CameraState::Unknown => "État inconnu",
             CameraState::Missing => "Supprimée du serveur",
@@ -216,7 +216,7 @@ pub fn paint_fov(
 }
 
 /// Apparence de l'icône selon l'état : une caméra que le serveur ne connaît plus est estompée et
-/// sans objectif, pour ne pas passer pour une caméra en ligne.
+/// sans objectif, pour ne pas passer pour une caméra joignable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconStyle {
     /// Multiplicateur d'opacité du disque, du museau et du contour.
@@ -251,7 +251,7 @@ pub fn paint_icon(
     let (dx, dy) = rotation_vector(rotation);
     let dir = Vec2::new(dx, dy);
     let side = Vec2::new(-dy, dx);
-    // Discret : une caméra en ligne est grise, seul l'anormal prend une couleur.
+    // Discret : une caméra joignable est grise, seul l'anormal prend une couleur.
     let color = if state == CameraState::Online {
         pal.text_secondary
     } else {
@@ -280,7 +280,7 @@ pub fn paint_icon(
         painter.circle_filled(center + dir * 2.0, radius * 0.2, pal.accent_text);
     }
     if state == CameraState::Unreachable {
-        // Barre oblique : caméra hors ligne, visible même sans la couleur.
+        // Barre oblique : caméra injoignable, visible même sans la couleur.
         let off = Vec2::new(1.0, -1.0).normalized() * radius;
         painter.line_segment(
             [center - off, center + off],
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(CameraState::of(None), CameraState::Missing);
         let online = view(CameraStatus::Online);
         assert_eq!(CameraState::of(Some(&online)), CameraState::Online);
-        assert_eq!(tooltip(Some(&online)), "Entrée\nEn ligne");
+        assert_eq!(tooltip(Some(&online)), "Entrée\nJoignable");
         let down = view(CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("secret".into()),
@@ -378,7 +378,7 @@ mod tests {
             detail: None,
             since: Some(1_700_000_000),
         });
-        assert!(tooltip(Some(&since)).contains("\nHors ligne depuis "));
+        assert!(tooltip(Some(&since)).contains("\nInjoignable depuis "));
     }
 
     #[test]

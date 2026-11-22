@@ -33,9 +33,15 @@ function save(value) {
   } catch { /* stockage refusé : la session ne survivra pas à la fermeture */ }
 }
 
+/** Quand le serveur ne répond pas : le titre, puis la piste (le Mac dort le plus souvent). Le même
+ *  texte sert à l'erreur réseau, à l'écran de connexion et au bandeau « La maison ne répond pas ». */
+export const HOUSE_SILENT = "La maison ne répond pas.";
+export const HOUSE_HINT = "Le Mac est peut-être en veille : vérifiez qu'il est allumé et que Tailscale est actif.";
+
 export class ApiError extends Error {
-  constructor(status, code, detail, retryAfter) {
-    super(detail || code);
+  constructor(status, code, detail, retryAfter, hint) {
+    super(hint ? `${detail} ${hint}` : detail || code);
+    this.hint = hint;
     this.status = status;
     this.code = code;
     this.detail = detail;
@@ -58,7 +64,7 @@ export async function request(method, path, body) {
   try {
     response = await fetch(path, { method, headers, body: payload, cache: "no-store", credentials: "omit" });
   } catch {
-    throw new ApiError(0, "network", "Serveur injoignable.");
+    throw new ApiError(0, "network", HOUSE_SILENT, undefined, HOUSE_HINT);
   }
   if (response.ok) {
     return response.status === 204 ? null : response.json().catch(() => null);
@@ -83,7 +89,7 @@ export async function requestBlob(path) {
   try {
     response = await fetch(path, { method: "GET", headers, cache: "no-store", credentials: "omit" });
   } catch {
-    throw new ApiError(0, "network", "Serveur injoignable.");
+    throw new ApiError(0, "network", HOUSE_SILENT, undefined, HOUSE_HINT);
   }
   if (response.ok) return response.blob();
   const data = await response.json().catch(() => ({}));
@@ -128,7 +134,8 @@ export function openSocket(path) {
 }
 
 /**
- * Flux d'événements : `hello`, `snapshot` puis `event`. Se reconnecte tout seul (attente
+ * Flux d'événements : `hello`, `snapshot` puis `event`. L'état annoncé à `onStatus` est
+ * « connecting », « connected » ou « lost » (la liaison est perdue ; elle reprend toute seule). Se reconnecte tout seul (attente
  * croissante) ; un trou de `seq` rouvre la connexion, comme le client de bureau.
  */
 export function connectEvents({ onSnapshot, onEvent, onStatus }) {
@@ -152,7 +159,7 @@ export function connectEvents({ onSnapshot, onEvent, onStatus }) {
         gotSnapshot = true;
         seq = data.seq;
         delay = 1000;
-        onStatus("online");
+        onStatus("connected");
         onSnapshot(data);
       } else if (data.type === "event") {
         if (data.seq !== seq + 1) {
@@ -166,7 +173,7 @@ export function connectEvents({ onSnapshot, onEvent, onStatus }) {
     current.onclose = async () => {
       if (socket === current) socket = null;
       if (closed || current._replaced) return;
-      onStatus("offline");
+      onStatus("lost");
       // Fermé avant le premier état : jeton refusé ? Un 401 renvoie à la connexion ; sans
       // jeton on ne reprend pas en boucle.
       if (!gotSnapshot && !(await checkSession())) return;

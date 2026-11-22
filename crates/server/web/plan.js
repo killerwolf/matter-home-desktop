@@ -8,16 +8,16 @@ import { ICONS, shutterIcon } from "./icons.js";
 import { formatTemperature, roomAverages, symbolOf, tempClass, tileOf } from "./tiles.js";
 
 const NS = "http://www.w3.org/2000/svg";
-export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau";
+export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau.";
 
-const PAD = 28; // marge autour du plan à l'ajustement (px)
+const PAD = 16; // marge autour du plan à l'ajustement (px) : le plan remplit le cadre
 const MARGIN_M = 0.5; // marge autour des pièces et objets (m)
+const LABEL_PAD = 30; // place en plus pour le nom et l'état sous les objets du bas (px)
 const MAX_FIT = 90; // pas plus de 90 px par mètre à l'ajustement
 const ZOOM_OUT = 0.6; // jusqu'à 0,6 fois l'ajustement
 const ZOOM_IN = 14; // jusqu'à 14 fois l'ajustement
 const KEEP_PX = 56; // une part du plan reste toujours à l'écran
 const TAP_SLOP = 8; // en dessous, un doigt qui bouge reste un tap
-const LABELS_ZOOM = 1.8; // les noms apparaissent au-delà de cet agrandissement
 const MARKER_MIN = 0.65; // taille relative des pictogrammes à l'ajustement
 
 // ---------------------------------------------------------------------------
@@ -46,17 +46,23 @@ export function fitView(bounds, w, h) {
 }
 
 /**
- * Vue d'ouverture. En portrait, un plan plus large que haut laisse beaucoup de hauteur vide et ses
- * objets se chevauchent : on s'approche (au plus 1,5 fois), centré, le reste se découvre en glissant.
- * Ailleurs (ou si la hauteur est presque utilisée), c'est l'ajustement complet.
+ * Vue d'ouverture : le plan entier, centré (l'ajustement complet), comme la maquette Web-Plan.
+ * Le zoom et le glissement viennent ensuite, au doigt ou aux boutons.
  */
 export function initialView(bounds, w, h) {
-  const fit = fitView(bounds, w, h);
-  if (h <= w) return fit;
+  return fitView(bounds, w, h);
+}
+
+/**
+ * Hauteur (px) que prend le cadre pour montrer `bounds` à l'ajustement dans `w` px de large : celle
+ * du plan ajusté, marges comprises. Le CSS la tient entre un minimum et un maximum (min-height et
+ * max-height de .plan-stage), pour qu'il n'y ait pas de grand vide autour d'un plan étroit.
+ */
+export function stageHeightFor(bounds, w) {
+  const bw = Math.max(bounds.x1 - bounds.x0, 1);
   const bh = Math.max(bounds.y1 - bounds.y0, 1);
-  const slack = (h - 2 * PAD) / (bh * fit.s); // combien de fois la hauteur utile contient le plan
-  if (slack < 1.3) return fit;
-  return zoomAt(fit, Math.min(1.5, slack), w / 2, h / 2);
+  const s = Math.max(1, Math.min(MAX_FIT, (w - 2 * PAD) / bw));
+  return Math.ceil(bh * s + 2 * PAD + LABEL_PAD);
 }
 
 export const limitsFor = (fit) => ({ min: fit.s * ZOOM_OUT, max: fit.s * ZOOM_IN });
@@ -117,7 +123,9 @@ const html = (tag, className, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
-const short = (text, n = 16) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+const textW = (text, px) => text.length * px * 0.55; // largeur estimée d'un texte (px)
+const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+const short = (text, n = 12) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
 
 const DECOR_ICONS = {
   Door: ICONS.doorClosed, Window: ICONS.windowClosed, Light: ICONS.lightOff, Plug: ICONS.plugOff,
@@ -156,13 +164,18 @@ export function mountPlan(root, ctx) {
   const floorsBox = html("div", "seg");
   floorsBox.setAttribute("role", "group");
   floorsBox.setAttribute("aria-label", "Étage");
-  const tools = html("div", "seg");
+  const tools = html("div", "tools");
   tools.setAttribute("role", "group");
-  tools.setAttribute("aria-label", "Zoom");
-  const mkTool = (label, text, onClick) => {
-    const b = html("button", "", text);
+  tools.setAttribute("aria-label", "Zoom et centrage");
+  // Un bouton de 44 px avec son pictogramme (tracé en DOM : jamais de HTML construit ici).
+  const mkTool = (label, paths, onClick, ring = false) => {
+    const b = html("button", "");
     b.type = "button";
     b.setAttribute("aria-label", label);
+    const icon = el("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+    for (const d of paths) icon.appendChild(el("path", { d }));
+    if (ring) icon.appendChild(el("circle", { cx: 12, cy: 12, r: 7 }));
+    b.appendChild(icon);
     b.addEventListener("click", onClick);
     return b;
   };
@@ -175,7 +188,14 @@ export function mountPlan(root, ctx) {
   message.hidden = true;
   stage.append(svg, message);
   bar.append(floorsBox, tools);
-  wrap.append(bar, stage);
+  // La légende : ce que veulent dire les pastilles et les teintes.
+  const legend = html("div", "plan-legend");
+  for (const [cls, text] of [["on", "Allumé"], ["", "Injoignable"], ["tint", "Teinte"]]) {
+    const item = html("span");
+    item.append(html("i", cls), text);
+    legend.appendChild(item);
+  }
+  wrap.append(bar, stage, legend);
   root.appendChild(wrap);
 
   let floorIndex = firstFilledFloor(ctx.getPlan());
@@ -193,6 +213,63 @@ export function mountPlan(root, ctx) {
   let destroyed = false;
   let raf = 0;
 
+  // ---- étiquettes qui ne se chevauchent pas ----
+  // Les pictogrammes restent toujours visibles. Les noms de pièce cherchent un coin libre ; le nom
+  // court d'un appareil (puis sa valeur) disparaît quand il en toucherait un autre : les appareils
+  // allumés ou injoignables passent d'abord, les objets décoratifs en dernier. En zoomant, tout revient.
+  const declutter = (k) => {
+    const placed = [];
+    const free = (b) => !placed.some((o) => hit(o, b));
+    const at = items.map((i) => ({ i, px: view.tx + view.s * i.x, py: view.ty + view.s * i.y }));
+    for (const { i, px, py } of at) {
+      const r = i.r * k + 2;
+      placed.push({ x0: px - r, y0: py - r, x1: px + r, y1: py + r });
+    }
+    for (const l of labels) {
+      const left = view.tx + view.s * l.x;
+      const top = view.ty + view.s * l.y;
+      const shown = view.s * l.w >= 70;
+      l.node.style.visibility = shown ? "visible" : "hidden";
+      if (!shown) continue;
+      const w = textW(l.node.textContent, 13);
+      const right = left + view.s * l.w;
+      const bottom = top + view.s * l.h;
+      // En haut à gauche, puis en bas à gauche, en haut à droite, en bas à droite.
+      const spots = [
+        { anchor: "start", x: left + 6, y: top + 15, x0: left + 6 },
+        { anchor: "start", x: left + 6, y: bottom - 7, x0: left + 6 },
+        { anchor: "end", x: right - 6, y: top + 15, x0: right - 6 - w },
+        { anchor: "end", x: right - 6, y: bottom - 7, x0: right - 6 - w },
+      ];
+      const fits = (c) => c.x0 + w <= right && c.y - 12 >= top - 2 && c.y + 4 <= bottom + 2;
+      const spot = spots.find((c) => fits(c) && free({ x0: c.x0, y0: c.y - 12, x1: c.x0 + w, y1: c.y + 4 })) ?? spots[0];
+      l.node.setAttribute("text-anchor", spot.anchor);
+      l.node.setAttribute("x", String(spot.x));
+      l.node.setAttribute("y", String(spot.y));
+      placed.push({ x0: spot.x0, y0: spot.y - 12, x1: spot.x0 + w, y1: spot.y + 4 });
+    }
+    const rank = ({ i }) => (i.decor ? 2 : /\b(lit|warn|err)\b/.test(i.node.getAttribute("class") ?? "") ? 0 : 1);
+    for (const e of at.map((a, n) => ({ ...a, n })).sort((a, b) => rank(a) - rank(b) || a.n - b.n)) {
+      const [name, value] = e.i.texts.map(([node]) => node);
+      const base = e.py + e.i.r * k;
+      const box = (node, off, px) => {
+        const w = textW(node.textContent, px);
+        return { x0: e.px - w / 2, y0: base + off - 11, x1: e.px + w / 2, y1: base + off + 3 };
+      };
+      const hasName = name.textContent !== "";
+      const nameBox = hasName ? box(name, e.i.texts[0][1], 12) : null;
+      const nameOk = hasName && free(nameBox);
+      name.style.visibility = nameOk ? "visible" : "hidden";
+      if (nameOk) placed.push(nameBox);
+      if (value) {
+        const valueBox = value.textContent !== "" ? box(value, e.i.texts[1][1], 11) : null;
+        const valueOk = nameOk && valueBox != null && free(valueBox);
+        value.style.visibility = valueOk ? "visible" : "hidden";
+        if (valueOk) placed.push(valueBox);
+      }
+    }
+  };
+
   // ---- vue ----
   const apply = () => {
     raf = 0;
@@ -206,12 +283,7 @@ export function mountPlan(root, ctx) {
       i.body.setAttribute("transform", `scale(${k})`);
       for (const [node, off] of i.texts) node.setAttribute("y", String(i.r * k + off));
     }
-    for (const l of labels) {
-      l.node.setAttribute("x", String(view.tx + view.s * l.x + 6));
-      l.node.setAttribute("y", String(view.ty + view.s * l.y + 15));
-      l.node.style.visibility = view.s * l.w < 70 ? "hidden" : "visible";
-    }
-    svg.classList.toggle("zoomed", fit != null && view.s >= fit.s * LABELS_ZOOM);
+    declutter(k);
   };
   const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
   const setView = (next) => {
@@ -231,9 +303,19 @@ export function mountPlan(root, ctx) {
     fitted = false;
     setView(zoomAt(view, factor, size.w / 2, size.h / 2));
   };
-  tools.append(mkTool("Zoom arrière", "−", () => zoomBy(1 / 1.5)), mkTool("Zoom avant", "+", () => zoomBy(1.5)), mkTool("Recentrer le plan", "Recentrer", recenter));
+  tools.append(
+    mkTool("Zoom avant", ["M12 5v14M5 12h14"], () => zoomBy(1.5)),
+    mkTool("Zoom arrière", ["M5 12h14"], () => zoomBy(1 / 1.5)),
+    mkTool("Recentrer le plan", ["M12 2v4M12 18v4M2 12h4M18 12h4"], recenter, true),
+  );
 
+  // La hauteur du cadre suit celle du plan ajusté (le CSS la borne) ; la mesure qui suit le recale.
+  const sizeStage = () => {
+    const w = Math.round(stage.getBoundingClientRect().width);
+    if (bounds && w) stage.style.height = `${stageHeightFor(bounds, w)}px`;
+  };
   const measure = () => {
+    sizeStage();
     const r = svg.getBoundingClientRect();
     const w = Math.round(r.width);
     const h = Math.round(r.height);
@@ -264,9 +346,9 @@ export function mountPlan(root, ctx) {
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
     body.append(disc, icon);
-    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
+    group.append(el("circle", { r: 24 }, "phit"), body, name, value);
     const entry = {
-      node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
+      node: group, x: item.x, y: item.y, body, r: 17, texts: [[name, 15], [value, 29]],
       update() {
         const dev = devices().get(id);
         if (!dev) {
@@ -283,7 +365,7 @@ export function mountPlan(root, ctx) {
         const shown = symbol === dev.info.icon ? dev : { ...dev, info: { ...dev.info, icon: symbol } };
         const e = ctx.getExpect(id);
         const t = tileOf(shown, e && Date.now() - e.at < 5000 ? e : null);
-        group.setAttribute("class", `pi${t.lit ? " lit" : ""}${t.dim ? " dim" : ""}${t.iconWarn || t.valueWarn || t.lowBattery ? " warn" : ""}${t.small?.kind === "err" ? " err" : ""}`);
+        group.setAttribute("class", `pi${t.lit ? " lit" : ""}${t.iconWarn || t.valueWarn || t.lowBattery ? " warn" : ""}${t.small?.kind === "err" ? " err" : ""}`);
         setIcon(icon, t.icon);
         const text = t.value ?? t.small?.text ?? "";
         value.textContent = text;
@@ -305,7 +387,7 @@ export function mountPlan(root, ctx) {
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 14 }, "pbg"), icon);
     group.append(body, name);
-    return { node: group, x: item.x, y: item.y, body, r: 14, texts: [[name, 13]], update() {} };
+    return { node: group, x: item.x, y: item.y, body, r: 14, decor: true, texts: [[name, 15]], update() {} };
   }
 
   function cameraItem(item) {
@@ -318,16 +400,16 @@ export function mountPlan(root, ctx) {
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 17 }, "pbg"), icon);
-    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
+    group.append(el("circle", { r: 24 }, "phit"), body, name, value);
     return {
-      node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
+      node: group, x: item.x, y: item.y, body, r: 17, texts: [[name, 15], [value, 29]],
       update() {
         const cam = ctx.getCameras().find((c) => String(c.id) === id);
         const online = cam?.status?.state === "online";
-        group.setAttribute("class", `pi cam-pi${online ? "" : " dim"}`);
-        value.textContent = cam ? (online ? "" : "hors ligne") : "inconnue";
+        group.setAttribute("class", `pi cam-pi${online ? "" : " err"}`);
+        value.textContent = cam ? (online ? "" : "injoignable") : "inconnue";
         name.textContent = short(cam?.name ?? "Caméra");
-        group.setAttribute("aria-label", `${cam?.name ?? "Caméra"}${online ? "" : ", hors ligne"}`);
+        group.setAttribute("aria-label", `${cam?.name ?? "Caméra"}${online ? "" : ", injoignable"}`);
         group.dataset.camera = id;
       },
     };
@@ -353,7 +435,7 @@ export function mountPlan(root, ctx) {
       const label = el("text", {}, "plabel");
       label.textContent = r.name;
       layer.appendChild(label);
-      labels.push({ node: label, x: r.x, y: r.y, w: r.w });
+      labels.push({ node: label, x: r.x, y: r.y, w: r.w, h: r.h });
     }
     // Les champs des caméras sous les objets, les objets par-dessus.
     for (const i of floor.items ?? []) {
@@ -368,6 +450,7 @@ export function mountPlan(root, ctx) {
       layer.appendChild(made.node);
       items.push(made);
     }
+    sizeStage();
     if (size.w) {
       fit = fitView(bounds, size.w, size.h);
       limits = limitsFor(fit);

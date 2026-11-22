@@ -1,18 +1,18 @@
 // App web Ostal : appareils en tuiles, températures, caméras. Sans framework, sans build.
 import * as api from "./api.js";
-import { ICONS, mountIcons } from "./icons.js";
+import { ICONS, eventIcon, modeIcon, mountIcons } from "./icons.js";
 import {
-  CLICK_GUARD_MS, EXPECT_TTL_MS, batteryLow, formatTemperature, groups, isOn, isStale, position,
-  tempClass, temperature, tileOf, watts,
+  CLICK_GUARD_MS, EXPECT_TTL_MS, batteryLow, clockText, formatTemperature, groups, isOn, isStale, position,
+  statusSummary, tempClass, temperature, tileOf, unreachableSince, watts,
 } from "./tiles.js";
 import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
 import { mountPlan } from "./plan.js";
 import { createPlayer, createSnapshot, webCodecsSupported } from "./cameras.js";
 import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents, niveauLabel, playClip, whenText } from "./events.js";
-import { DEFAULT_MODE, MODES, cameraOff, isMode, modeLabel, offText } from "./mode.js";
+import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
-import { copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
+import { SHORTCUT_NAMES, copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -26,8 +26,12 @@ const state = {
   cameras: [],
   mode: DEFAULT_MODE, // le mode global de la maison, tenu par le serveur
   hasMode: false, // le serveur a annoncé un mode : sinon la pastille reste cachée
-  connection: "connecting",
+  connection: "connecting", // « connecting », « connected » ou « lost » (voir api.connectEvents)
   loaded: false,
+  updatedAt: null, // l'heure du dernier état ou événement reçu (« À jour à 18:42 »)
+  lostAt: null, // la liaison perdue après avoir été établie : le bandeau « La maison ne répond pas »
+  notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
+  tokens: null, // GET /api/tokens : { mode: { exists, created }, read: { … } } (carte « Installer »)
 };
 const expects = new Map(); // id -> { on, motion, at, acked, req, timer }
 let tab = "devices";
@@ -49,10 +53,12 @@ function applySnapshot(s) {
   state.hasMode = isMode(s.mode);
   state.mode = state.hasMode ? s.mode : DEFAULT_MODE;
   state.loaded = true;
+  state.updatedAt = Date.now();
   scheduleRender(true);
 }
 
 function applyEvent(e) {
+  state.updatedAt = Date.now();
   const d = (id) => state.devices.get(id);
   switch (e.type) {
     case "device_updated": {
@@ -76,7 +82,16 @@ function applyEvent(e) {
     case "cover_motion": if (d(e.node_id)) d(e.node_id).cover_motion = e.motion; break;
     case "plan_changed": state.plan = e.plan; scheduleRender(true); return;
     case "cameras_changed": state.cameras = e.cameras; scheduleRender(true); return;
-    case "mode_changed": if (isMode(e.mode)) state.mode = e.mode; scheduleRender(true); return;
+    case "mode_changed": {
+      // Un changement venu d'ailleurs (raccourci, automatisation, autre app) : une notification
+      // brève dit d'où il vient. Pas pour celui que cette app vient de demander.
+      const notice = e.mode !== state.mode ? modeChangeNotice(e.mode, e.source, modeRequested) : null;
+      if (e.mode === modeRequested) modeRequested = null;
+      if (isMode(e.mode)) state.mode = e.mode;
+      if (notice) showModeNotice(notice);
+      scheduleRender(true);
+      return;
+    }
     case "detection": {
       // Un passage commence (« en cours »), se met à jour, se termine, ou reçoit sa description
       // (même `id` à chaque fois) : en tête de liste, sans relancer les vidéos de l'onglet. La
@@ -119,13 +134,60 @@ function clearExpect(id) {
   scheduleRender(false);
 }
 
-function toast(text) {
+function toast(text, role = "alert") {
   const node = document.createElement("div");
-  node.className = "banner toast";
-  node.setAttribute("role", "alert");
+  node.className = role === "status" ? "banner info toast" : "banner toast";
+  node.setAttribute("role", role);
   node.textContent = text;
   document.body.appendChild(node);
   setTimeout(() => node.remove(), 4000);
+}
+
+/** La confirmation d'un geste qu'on ne défait pas : un dialogue [Annuler][action] dont les deux
+ *  boutons se partagent la largeur (le dialogue natif ne peut pas nommer ses boutons). Rend une
+ *  promesse : `true` si l'action est choisie. Annuler a le focus ; Échap et le fond annulent aussi. */
+let confirmDone = null; // ferme le dialogue ouvert avec une réponse
+function askConfirm({ title, text, action, plain = false }) {
+  if (confirmDone) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const box = $("#confirm");
+    const opener = document.activeElement;
+    $("#confirm-title").textContent = title;
+    $("#confirm-text").textContent = text;
+    const ok = $("#confirm-ok");
+    ok.textContent = action;
+    ok.classList.toggle("plain", plain);
+    const finish = (answer) => {
+      confirmDone = null;
+      box.hidden = true;
+      $("#sheet").inert = false;
+      box.removeEventListener("click", onBackdrop);
+      $("#confirm-cancel").removeEventListener("click", onCancel);
+      ok.removeEventListener("click", onOk);
+      if (opener && document.contains(opener) && !opener.closest("[hidden]")) opener.focus();
+      resolve(answer);
+    };
+    const onCancel = () => finish(false);
+    const onOk = () => finish(true);
+    const onBackdrop = (e) => { if (e.target === box) finish(false); };
+    box.addEventListener("click", onBackdrop);
+    $("#confirm-cancel").addEventListener("click", onCancel);
+    ok.addEventListener("click", onOk);
+    confirmDone = finish;
+    $("#sheet").inert = true; // la feuille derrière devient inerte (ni focus ni lecteur d'écran)
+    box.hidden = false;
+    $("#confirm-cancel").focus();
+  });
+}
+
+/** Un changement de mode venu d'ailleurs : « Mode Absent · raccourci iPhone ». Sur Appareils, il
+ *  prend quelques secondes la place de la carte d'état ; ailleurs, une notification brève. */
+let noticeTimer = null;
+function showModeNotice(text) {
+  if (tab !== "devices") { toast(text, "status"); return; }
+  state.notice = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { state.notice = ""; scheduleRender(false); }, 6000);
 }
 
 /** Envoie une commande. Une tuile avec une commande en cours ignore un nouveau tap (ni double
@@ -172,12 +234,25 @@ function scheduleRender(structure) {
   requestAnimationFrame(() => { renderQueued = false; render(); });
 }
 
+const make = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+/** Un pictogramme de ICONS (chaîne fixe du code, jamais une donnée de la maison). */
+const icon = (name, className = "ico") => {
+  const node = make("span", className);
+  node.innerHTML = ICONS[name] ?? "";
+  return node;
+};
+
 function tileElement(id) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "tile";
   b.dataset.id = id;
-  b.innerHTML = '<span class="icon"></span><span class="name"></span><span class="bottom"><span class="value"></span><span class="small"></span></span>';
+  b.innerHTML = `<span class="icon"></span><span class="name"></span><span class="value"><span class="ico">${ICONS.blocked}</span><span class="vtext"></span></span><span class="small"></span>`;
   return b;
 }
 
@@ -187,21 +262,127 @@ function patchTile(b, dev, bridgeCount) {
   const t = bridgeCount != null
     ? { icon: ICONS.bridge, iconWarn: false, value: `${bridgeCount} appareil${bridgeCount > 1 ? "s" : ""}`, valueWarn: false, small: isStale(dev) ? { kind: "err", text: "injoignable" } : null, lit: false, dim: isStale(dev), action: "detail" }
     : tileOf(dev, live);
+  // Injoignable : le mot prend la place de la valeur (orange, avec son icône), pas de seconde ligne.
+  const unreachable = t.small?.kind === "err";
+  const valueText = unreachable ? t.small.text : (t.value ?? "");
+  // Injoignable : « depuis 18:02 » dessous (d'après last_seen), rien si le serveur ne sait pas.
+  const since = unreachable && dev.status?.state === "unreachable" ? unreachableSince(dev) : null;
+  const small = unreachable ? (since ? { kind: "err", text: since } : null) : t.small;
   b.classList.toggle("lit", t.lit);
-  b.classList.toggle("dim", t.dim);
+  b.classList.toggle("unreach", unreachable);
   b.classList.toggle("pending", Boolean(live) && !live.acked);
   b.dataset.action = t.action;
-  const icon = b.querySelector(".icon");
-  if (icon._html !== t.icon) { icon.innerHTML = t.icon; icon._html = t.icon; }
-  icon.classList.toggle("warn", t.iconWarn);
-  b.querySelector(".name").textContent = dev.info.name;
+  const ico = b.querySelector(".icon");
+  if (ico._html !== t.icon) { ico.innerHTML = t.icon; ico._html = t.icon; }
+  ico.classList.toggle("warn", t.iconWarn);
+  const nameEl = b.querySelector(".name");
+  nameEl.textContent = dev.info.name;
+  b.title = dev.info.name; // le nom complet, quand la ligne le coupe
+  b.querySelector(".vtext").textContent = valueText;
   const value = b.querySelector(".value");
-  value.textContent = t.value ?? "";
   value.classList.toggle("warn", t.valueWarn);
-  const small = b.querySelector(".small");
-  small.textContent = t.small?.text ?? "";
-  small.className = `small ${t.small?.kind ?? ""}`;
-  b.setAttribute("aria-label", [dev.info.name, t.value, t.small?.text].filter(Boolean).join(", "));
+  value.classList.toggle("off", valueText === "Éteinte");
+  const note = b.querySelector(".small");
+  note.textContent = small?.text ?? "";
+  note.className = `small ${small?.kind ?? ""}`;
+  b.setAttribute("aria-label", [dev.info.name, valueText, small?.text].filter(Boolean).join(", "));
+}
+
+/** La carte d'état : la phrase de statusSummary (jumelle de protocol::status), puis « À jour à ».
+ *  Un changement de mode venu d'ailleurs la remplace quelques secondes (« Mode Absent · raccourci iPhone »). */
+function patchStatus() {
+  const slot = $("#status-slot");
+  if (!slot) return;
+  slot.hidden = !state.loaded || Boolean(state.lostAt);
+  if (slot.hidden) return;
+  if (state.notice) {
+    if (slot._key !== `notice:${state.notice}`) {
+      slot._key = `notice:${state.notice}`;
+      const p = make("p", "notice");
+      p.setAttribute("role", "status");
+      p.append(icon("info"), make("span", "", state.notice));
+      slot.replaceChildren(p);
+    }
+    return;
+  }
+  const s = statusSummary(state.devices, state.cameras);
+  const key = JSON.stringify([s.title, s.detail, s.ok]);
+  if (slot._key !== key) {
+    slot._key = key;
+    const card = make("section", "card");
+    card.setAttribute("aria-label", "État de la maison");
+    const row = make("div", `state ${s.ok ? "ok" : "warn"}`);
+    row.setAttribute("role", "status");
+    const text = make("div");
+    text.append(make("div", "state-title", s.title), make("div", "state-detail", s.detail));
+    row.append(icon(s.ok ? "okCircle" : "alert"), text);
+    const time = make("div", "state-time");
+    time.id = "state-time";
+    text.appendChild(time);
+    card.appendChild(row);
+    slot.replaceChildren(card);
+  }
+  const time = $("#state-time");
+  if (time && state.updatedAt) time.textContent = `À jour à ${clockText(state.updatedAt)}`;
+}
+
+/** Les trois étapes de « Installer sur l'iPhone » : l'état vient des jetons (GET /api/tokens) et de
+ *  l'abonnement de cet appareil aux notifications. `null` tant que les jetons ne sont pas connus. */
+function installSteps() {
+  if (!state.tokens) return null;
+  const support = push.pushSupport(pushEnv());
+  return [
+    { done: Boolean(state.tokens.mode?.exists), parts: ["Ajouter les raccourcis de mode : ", ["Absent", "Présent", "Nuit", "Vacances"], "."], open: openWidgets },
+    { done: Boolean(state.tokens.read?.exists), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
+    // Un navigateur qui ne sait pas recevoir de notifications (ordinateur, Android sans push) n'a rien à y faire.
+    { done: Boolean(pushUi.mine) || support.reason === "unsupported", parts: ["Activer les ", ["notifications"], " sur cet iPhone."], open: openNotifications },
+  ];
+}
+
+function patchInstall() {
+  const slot = $("#install-slot");
+  if (!slot) return;
+  const steps = state.loaded && !state.lostAt ? installSteps() : null;
+  const current = steps?.findIndex((x) => !x.done) ?? -1;
+  slot.hidden = current < 0; // tout est fait : la carte disparaît
+  if (slot.hidden) { slot._key = null; return; }
+  const key = JSON.stringify(steps.map((x) => x.done));
+  if (slot._key === key) return;
+  slot._key = key;
+  const done = steps.filter((x) => x.done).length;
+  const card = make("section", "install");
+  card.setAttribute("aria-labelledby", "install-title");
+  const head = make("div", "install-head");
+  const h2 = make("h2", "", "Installer sur l'iPhone");
+  h2.id = "install-title";
+  head.append(h2, make("span", "install-step", `Étape ${done + 1} sur ${steps.length}`));
+  const bar = make("div", "progress");
+  bar.setAttribute("aria-hidden", "true");
+  steps.forEach((_, i) => bar.appendChild(make("span", i <= done ? "done" : "")));
+  const text = make("p");
+  for (const part of steps[current].parts) {
+    if (Array.isArray(part)) part.forEach((word, i) => { if (i > 0) text.append(i === part.length - 1 ? " et " : ", "); text.appendChild(make("strong", "", word)); });
+    else text.append(part);
+  }
+  const go = make("button", "link-button", "Continuer l'installation");
+  go.type = "button";
+  go.addEventListener("click", () => steps[current].open());
+  card.append(head, bar, text, go);
+  slot.replaceChildren(card);
+}
+
+function roomElement(key, title, note) {
+  const section = make("article", "room");
+  section.dataset.room = key;
+  const head = make("div", "room-head");
+  head.appendChild(make("h3", "", title));
+  // La température moyenne de la pièce, juste à côté de son nom ; l'étage vient après.
+  const pill = make("span", "pill");
+  pill.hidden = true;
+  head.appendChild(pill);
+  if (note) head.appendChild(make("span", "note", note));
+  section.appendChild(head);
+  return section;
 }
 
 function renderDevices() {
@@ -211,70 +392,41 @@ function renderDevices() {
     view._signature = signature;
     view._tab = "devices";
     view.replaceChildren();
-    if (state.devices.size === 0) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…";
-      view.appendChild(empty);
-    }
-    const rooms = document.createElement("div");
-    rooms.className = "rooms";
+    const status = make("div");
+    status.id = "status-slot";
+    const install = make("div");
+    install.id = "install-slot";
+    install.hidden = true;
+    const note = make("p", "view-note");
+    note.id = "rooms-note";
+    note.hidden = true;
+    view.append(status, install, make("h2", "view-title", "Pièces"), note);
+    if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…"));
+    const rooms = make("div", "rooms");
+    rooms.id = "rooms";
     view.appendChild(rooms);
     for (const g of layout.groups) {
-      const section = document.createElement("section");
-      section.className = "room";
-      section.dataset.room = g.key;
-      const head = document.createElement("div");
-      head.className = "room-head";
-      const h2 = document.createElement("h2");
-      h2.textContent = g.title;
-      head.appendChild(h2);
-      // La pastille de température, juste à côté du nom de la pièce ; l'étage vient après.
-      const pill = document.createElement("span");
-      pill.className = "pill";
-      pill.hidden = true;
-      head.appendChild(pill);
-      if (g.note) { const n = document.createElement("span"); n.className = "note"; n.textContent = g.note; head.appendChild(n); }
-      section.appendChild(head);
-      const grid = document.createElement("div");
-      grid.className = "tiles";
-      for (const id of g.ids) grid.appendChild(tileElement(id));
-      section.appendChild(grid);
+      const section = roomElement(g.key, g.title, g.note);
+      for (const id of g.ids) section.appendChild(tileElement(id));
       rooms.appendChild(section);
     }
     if (layout.bridges.length) {
       // Les ponts forment un dernier bloc, comme une pièce.
-      const section = document.createElement("section");
-      section.className = "room bridges";
-      const head = document.createElement("div");
-      head.className = "room-head";
-      const h2 = document.createElement("h2");
-      h2.textContent = "Ponts";
-      head.appendChild(h2);
-      const grid = document.createElement("div");
-      grid.className = "tiles";
-      for (const id of layout.bridges) { const t = tileElement(id); t.dataset.bridge = "1"; grid.appendChild(t); }
-      section.append(head, grid);
+      const section = roomElement("bridges", "Ponts", null);
+      delete section.dataset.room;
+      section.classList.add("bridges");
+      for (const id of layout.bridges) { const t = tileElement(id); t.dataset.bridge = "1"; section.appendChild(t); }
       rooms.appendChild(section);
     }
     if (state.loaded) {
-      const out = document.createElement("div");
-      out.className = "section-title";
-      const notif = document.createElement("button");
-      notif.className = "ghost";
+      const out = make("div", "section-title");
+      const notif = make("button", "ghost", "Notifications");
       notif.id = "notifications";
-      notif.textContent = "Notifications";
-      out.appendChild(notif);
-      const widgets = document.createElement("button");
-      widgets.className = "ghost";
+      const widgets = make("button", "ghost", "Widgets et raccourcis");
       widgets.id = "widgets";
-      widgets.textContent = "Widgets et raccourcis";
-      out.appendChild(widgets);
-      const button = document.createElement("button");
-      button.className = "ghost";
-      button.id = "logout";
-      button.textContent = "Se déconnecter";
-      out.appendChild(button);
+      const logout = make("button", "ghost", "Se déconnecter");
+      logout.id = "logout";
+      out.append(notif, widgets, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -293,6 +445,21 @@ function renderDevices() {
       : null;
     patchTile(b, dev, count);
   }
+  // La pièce prend la teinte Lueur s'il y a une lampe allumée, la bordure orange s'il y a un appareil injoignable.
+  for (const section of view.querySelectorAll(".room")) {
+    section.classList.toggle("lit", Boolean(section.querySelector(".tile.lit")));
+    section.classList.toggle("alert", Boolean(section.querySelector(".tile.unreach")));
+  }
+  // La maison ne répond pas : les cartes restent, atténuées, avec l'heure de la dernière lecture.
+  const lost = Boolean(state.lostAt);
+  $("#rooms")?.classList.toggle("stale", lost);
+  const note = $("#rooms-note");
+  if (note) {
+    note.hidden = !lost;
+    if (lost) note.textContent = `Dernières valeurs connues. Lu à ${clockText(state.updatedAt ?? state.lostAt)}.`;
+  }
+  patchStatus();
+  patchInstall();
   if (sheetId) renderSheet();
 }
 
@@ -375,7 +542,7 @@ function renderPlan() {
       getCameras: () => state.cameras,
       getExpect: (id) => expects.get(id) ?? null,
       get loaded() { return state.loaded; },
-      onOpenDevice: openDetail,
+      onOpenDevice: (id) => openDetail(id, "half"),
       onOpenCameras: () => selectTab("cameras"),
     });
   } else plan.update();
@@ -410,13 +577,18 @@ function reconcileCams() {
   // Les vignettes à l'écran qui ne lisent pas de flux (pas de flux réduit, ou au-delà du plafond)
   // montrent l'image fixe du serveur, rafraîchie toutes les 20 s.
   const still = new Set(visible.filter((c) => !live.has(c)));
-  const showMsg = (c, st) => { c.msg.textContent = st.text; c.msg.hidden = st.kind === "live"; };
+  // Flux actif : le libellé « En direct » (ou « Image fixe · HH:MM ») sous le nom ; sinon le message au centre.
+  const showMsg = (c, st, stillImage) => {
+    c.msg.textContent = st.text;
+    c.msg.hidden = st.kind === "live";
+    c.state.textContent = st.kind !== "live" ? "" : stillImage ? `Image fixe · ${clockText(Date.now())} · Touchez pour ouvrir` : "En direct";
+  };
   for (const c of camCards) {
     if (live.has(c) && !c.player) {
       c.snap?.stop();
       players = players.filter((p) => p !== c.snap);
       c.snap = null;
-      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => showMsg(c, st));
+      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => showMsg(c, st, false));
       players.push(c.player);
     } else if (!live.has(c) && c.player) {
       c.player.stop();
@@ -424,7 +596,7 @@ function reconcileCams() {
       c.player = null;
     }
     if (still.has(c) && !c.snap && !c.player) {
-      c.snap = createSnapshot(c.cam.id, c.canvas, (st) => showMsg(c, st));
+      c.snap = createSnapshot(c.cam.id, c.canvas, (st) => showMsg(c, st, true));
       players.push(c.snap);
     } else if (!still.has(c) && c.snap) {
       c.snap.stop();
@@ -432,6 +604,7 @@ function reconcileCams() {
       c.snap = null;
     }
     if (!c.player && !c.snap) {
+      c.state.textContent = "";
       c.msg.hidden = false;
       c.msg.textContent = c.thumb ? "En attente…" : "Touchez pour ouvrir";
     }
@@ -506,26 +679,32 @@ function renderDetections() {
     b.type = "button";
     b.className = "ev";
     b.dataset.event = ev.id;
+    // La capture, ou à défaut le pictogramme de la classe, sur un fond sombre.
+    const thumb = make("span", "thumb");
+    thumb.setAttribute("aria-hidden", "true");
+    const pic = make("span", "ico");
+    pic.innerHTML = eventIcon(ev.classes);
+    thumb.appendChild(pic);
     const canvas = document.createElement("canvas");
     canvas.width = 160; canvas.height = 90;
-    const text = document.createElement("span");
-    text.className = "ev-text";
-    const what = document.createElement("strong");
-    what.textContent = ev.in_progress ? `${classesText(ev)} · en cours` : classesText(ev);
-    const where = document.createElement("span");
-    where.textContent = `${ev.camera_name} · ${whenText(ev.start)}`;
-    text.append(what, where);
-    if (ev.description) {
-      const desc = document.createElement("span");
-      desc.className = `ev-desc${niveauLabel(ev.niveau) ? ` niv-${ev.niveau}` : ""}`;
-      desc.textContent = descriptionText(ev);
-      text.append(desc);
+    canvas.hidden = true;
+    thumb.appendChild(canvas);
+    const text = make("span", "ev-text");
+    text.appendChild(make("strong", "", `${classesText(ev)} · ${ev.camera_name}${ev.in_progress ? " · en cours" : ""}`));
+    text.appendChild(make("span", "", whenText(ev.start)));
+    if (ev.description) text.appendChild(make("span", "ev-desc", descriptionText(ev)));
+    const level = niveauLabel(ev.niveau);
+    if (level) {
+      // Le niveau a toujours son mot et son icône : « normal », « suspect » (orange), « critique » (rouge).
+      const row = make("span", `ev-level niv-${ev.niveau}`);
+      row.append(icon(ev.niveau === 0 ? "okCircle" : ev.niveau === 1 ? "alert" : "errorX"), level);
+      text.appendChild(row);
     }
-    b.append(canvas, text);
+    b.append(thumb, text);
     b.addEventListener("click", () => openEvent(ev));
     li.appendChild(b);
     ul.appendChild(li);
-    thumbs.draw(ev.id, canvas);
+    thumbs.draw(ev.id, canvas).then((ok) => { if (ok) canvas.hidden = false; });
   }
   box.appendChild(ul);
 }
@@ -582,10 +761,10 @@ function openEvent(ev) {
   }
   const del = document.createElement("button");
   del.type = "button";
-  del.className = "ghost danger";
+  del.className = "btn danger-btn";
   del.textContent = "Supprimer l'événement";
   del.addEventListener("click", async () => {
-    if (!confirm("Supprimer cet événement, sa capture et son clip ?")) return;
+    if (!await askConfirm({ title: "Supprimer cet événement ?", text: "Sa capture et son clip seront supprimés aussi.", action: "Supprimer" })) return;
     try {
       await deleteEvent(ev.id);
       detections.list = detections.list.filter((x) => x.id !== ev.id);
@@ -633,7 +812,11 @@ function renderCameras() {
     msg.className = "msg";
     const cap = document.createElement("div");
     cap.className = "cap";
-    cap.textContent = cam.name;
+    const capName = document.createElement("strong");
+    capName.textContent = cam.name;
+    const capState = document.createElement("span");
+    capState.className = "cap-state";
+    cap.append(capName, capState);
     el.append(canvas, msg, cap);
     grid.appendChild(el);
     // Éteinte dans le mode actuel : ni flux ni image fixe (le serveur les refuserait).
@@ -651,7 +834,7 @@ function renderCameras() {
     el.classList.add("ok");
     const thumb = Boolean(cam.has_sub_stream);
     msg.textContent = thumb ? "En attente…" : "Touchez pour ouvrir";
-    camCards.push({ el, cam, canvas, msg, fs, playable: true, thumb, player: null, snap: null, visible: false });
+    camCards.push({ el, cam, canvas, msg, state: capState, fs, playable: true, thumb, player: null, snap: null, visible: false });
   }
   view.appendChild(grid);
   view.appendChild(detections.box);
@@ -767,8 +950,11 @@ let sheetOpener = null;
 
 /** Affiche la feuille : le fond devient inerte (ni focus ni lecteur d'écran), le focus entre
  *  dans la feuille et reviendra à l'élément qui l'a ouverte à la fermeture. */
-function showSheet() {
+function showSheet(size = "") {
   if ($("#sheet").hidden) sheetOpener = document.activeElement;
+  $("#sheet").classList.toggle("half", size === "half"); // la feuille à demi ouverte (appareil touché sur le plan)
+  $("#sheet").classList.toggle("tall", size === "tall"); // Widgets et raccourcis, Notifications : presque tout l'écran
+  $("#sheet").scrollTop = 0;
   $("#sheet").hidden = false;
   $("#sheet-backdrop").hidden = false;
   $("#app").inert = true;
@@ -784,6 +970,7 @@ function closeSheet() {
   $("#app").inert = false;
   sheetId = null;
   pushUi.open = false;
+  modeUi.open = false;
   if (wasOpen) {
     const target = sheetOpener;
     sheetOpener = null;
@@ -791,11 +978,11 @@ function closeSheet() {
   }
 }
 
-function openDetail(id) {
+function openDetail(id, size = "") {
   if (!state.devices.has(id)) return;
   sheetId = id;
   renderSheet(true);
-  showSheet();
+  showSheet(size);
 }
 
 function button(label, onClick, active) {
@@ -807,40 +994,63 @@ function button(label, onClick, active) {
   return b;
 }
 
+/** Le texte de la fiche : la grande valeur, et sous elle la pièce et ce qui se passe. */
+function sheetTexts(dev, t) {
+  const err = t.small?.kind === "err";
+  const parts = [groupTitle(dev.id)];
+  if (dev.cover_motion === "opening") parts.push("Ouverture en cours");
+  else if (dev.cover_motion === "closing") parts.push("Fermeture en cours");
+  if (t.small && !err) parts.push(dev.info.caps.temperature && !t.lowBattery ? `Humidité ${t.small.text}` : t.small.text);
+  return {
+    value: err ? t.small.text : (t.value ?? ""),
+    warn: err || t.valueWarn,
+    lit: t.lit,
+    sub: parts.filter(Boolean).join(" · "),
+  };
+}
+
 function renderSheet(rebuild) {
   const dev = state.devices.get(sheetId);
   if (!dev) { closeSheet(); return; }
   const t = tileOf(dev, null);
+  const texts = sheetTexts(dev, t);
   $("#sheet-title").textContent = dev.info.name;
   const body = $("#sheet-body");
   if (!rebuild && body.dataset.id === dev.id) {
     // Mise à jour en place : la valeur et l'état des boutons, sans refaire la feuille.
-    body.querySelector(".sheet-value").textContent = t.value ?? "";
-    body.querySelector(".sheet-value").hidden = t.value == null;
-    body.querySelector(".sheet-value").classList.toggle("warn", t.valueWarn);
-    body.querySelector(".sheet-sub").textContent = t.small?.text ?? "";
+    const v = body.querySelector(".sheet-value");
+    v.textContent = texts.value;
+    v.hidden = texts.value === "";
+    v.classList.toggle("warn", texts.warn);
+    v.classList.toggle("lit", texts.lit);
+    body.querySelector(".sheet-sub").textContent = texts.sub;
+    for (const b of body.querySelectorAll("[data-power]")) b.setAttribute("aria-pressed", String((t.lit || isOn(dev) === true) === (b.dataset.power === "on")));
     return;
   }
   body.dataset.id = dev.id;
   const frag = document.createDocumentFragment();
   const value = document.createElement("div");
-  value.className = `sheet-value${t.valueWarn ? " warn" : ""}`;
-  value.textContent = t.value ?? "";
-  value.hidden = t.value == null;
+  value.className = `sheet-value${texts.warn ? " warn" : ""}${texts.lit ? " lit" : ""}`;
+  value.textContent = texts.value;
+  value.hidden = texts.value === "";
   const sub = document.createElement("div");
   sub.className = "muted sheet-sub";
-  sub.textContent = t.small?.text ?? "";
+  sub.textContent = texts.sub;
   frag.append(value, sub);
 
   const caps = dev.info.caps;
   const controls = document.createElement("div");
   controls.className = "controls";
+  controls.setAttribute("role", "group");
+  controls.setAttribute("aria-label", `Commandes de ${dev.info.name}`);
   const stale = isStale(dev);
   if (caps.on_off && !stale) {
-    controls.append(
-      button("Allumer", () => sendCommand(dev, "on-off", "On", { on: true })),
-      button("Éteindre", () => sendCommand(dev, "on-off", "Off", { on: false })),
-    );
+    const on = button("Allumer", () => sendCommand(dev, "on-off", "On", { on: true }));
+    const off = button("Éteindre", () => sendCommand(dev, "on-off", "Off", { on: false }));
+    on.dataset.power = "on";
+    off.dataset.power = "off";
+    for (const b of [on, off]) b.setAttribute("aria-pressed", String((isOn(dev) === true) === (b.dataset.power === "on")));
+    controls.append(on, off);
   }
   if (caps.cover && !stale) {
     controls.append(
@@ -867,7 +1077,7 @@ function renderSheet(rebuild) {
         plot.appendChild(r);
       }
       plot.appendChild(lineChart(series, end - 86400, end));
-    }).catch(() => { plot.textContent = "Historique indisponible."; });
+    }).catch(() => { plot.className = "w-note"; plot.textContent = "Historique indisponible."; });
   }
 
   const details = document.createElement("details");
@@ -880,7 +1090,7 @@ function renderSheet(rebuild) {
     ["Type", (dev.info.device_types ?? []).join(", ") || null],
     ["Fabricant", dev.info.vendor], ["Produit", dev.info.product],
     ["Nœud", dev.id],
-    ["Liaison", dev.status?.state === "online" ? "en ligne" : dev.status?.state === "connecting" ? "connexion…" : "injoignable"],
+    ["Liaison", dev.status?.state === "online" ? "joignable" : dev.status?.state === "connecting" ? "connexion…" : "injoignable"],
     ["Dernière communication", dev.last_seen ? new Date(dev.last_seen * 1000).toLocaleString("fr-FR") : null],
     ["Pile", dev.latest.battery ? `${Math.round(dev.latest.battery.value)} %${batteryLow(dev) ? " (faible)" : ""}` : batteryLow(dev) ? "faible" : null],
     ["Puissance", dev.latest.power ? watts(dev.latest.power.value) : null],
@@ -894,6 +1104,8 @@ function renderSheet(rebuild) {
   }
   details.append(summary, dl);
   frag.appendChild(details);
+  const via = dev.info.bridge && state.devices.get(dev.info.bridge.node_id);
+  if (via) frag.appendChild(make("p", "w-note", `Exposé par ${via.info.name}.`));
   body.replaceChildren(frag);
 }
 
@@ -953,7 +1165,7 @@ async function syncPush() {
       return (await loadRegistration()) ? pushDeps() : null;
     });
     if (view) pushUi.mine = view;
-  } catch { /* serveur ancien ou hors ligne : réessayé au prochain démarrage */ }
+  } catch { /* serveur ancien ou injoignable : réessayé au prochain démarrage */ }
 }
 
 /** Ouvre la feuille : la clé du serveur et l'abonnement de cet appareil sont chargés d'abord
@@ -965,7 +1177,7 @@ async function openNotifications() {
   pushUi.message = "";
   pushUi.error = "";
   renderPush();
-  showSheet();
+  showSheet("tall");
   try {
     pushUi.status = await api.request("GET", "/api/push");
     const support = push.pushSupport(pushEnv());
@@ -987,7 +1199,7 @@ function checkbox(label, checked, onChange) {
   input.type = "checkbox";
   input.checked = checked;
   input.addEventListener("change", () => onChange(input.checked, input));
-  row.append(input, document.createTextNode(` ${label}`));
+  row.append(input, document.createTextNode(label));
   return row;
 }
 
@@ -1012,85 +1224,126 @@ function renderPush() {
   const body = $("#sheet-body");
   body.dataset.id = "notifications";
   body.replaceChildren();
-  const note = (text, cls = "ev-note") => { const p = document.createElement("p"); p.className = cls; p.textContent = text; body.appendChild(p); return p; };
-  note("Recevez les alertes de la maison sur cet appareil même quand l'app est fermée. Le message part chiffré par le service de notifications d'Apple (ou de votre navigateur) : lui ne peut pas le lire.");
+  const note = (text, cls = "w-note") => { const p = make("p", cls, text); body.appendChild(p); return p; };
+  note("Recevez les alertes de la maison sur cet appareil même quand l'app est fermée. Le message part chiffré par le service de notifications d'Apple (ou de votre navigateur) : lui ne peut pas le lire.", "ev-note");
   if (pushUi.error) note(pushUi.error, "error");
   if (pushUi.message) note(pushUi.message);
   const st = pushUi.status;
   if (!st) { if (!pushUi.error) note("Chargement…"); return; }
 
-  body.appendChild(checkbox("Notifications activées sur le serveur", st.enabled, (on) => pushAction(() => api.request("PUT", "/api/push", { enabled: on }))));
+  // L'interrupteur du serveur : coupé, rien n'est envoyé, à aucun appareil.
+  const serverRow = make("div", "switch-row");
+  const label = make("span", "", "Notifications activées sur le serveur");
+  label.id = "notif-serveur";
+  const toggle = make("button", "switch");
+  toggle.type = "button";
+  toggle.setAttribute("role", "switch");
+  toggle.setAttribute("aria-checked", String(st.enabled));
+  toggle.setAttribute("aria-labelledby", "notif-serveur");
+  toggle.disabled = pushUi.busy;
+  toggle.addEventListener("click", () => pushAction(() => api.request("PUT", "/api/push", { enabled: !st.enabled })));
+  serverRow.append(label, toggle);
+  body.appendChild(serverRow);
+  if (pushUi.busy) note("Un instant : une action est en cours.");
   if (!st.enabled) note("Coupées : rien n'est envoyé, à aucun appareil.");
 
-  const h = document.createElement("h3");
-  h.textContent = "Cet appareil";
-  body.appendChild(h);
+  body.appendChild(make("h3", "", "Cet appareil"));
   const support = push.pushSupport(pushEnv());
   const mine = pushUi.mine && st.subscriptions.find((s) => s.id === pushUi.mine.id);
   if (!support.ok && !mine) {
-    note(support.text);
+    if (support.steps) {
+      // Dans Safari : d'abord ajouter Ostal à l'écran d'accueil.
+      const callout = make("div", "callout");
+      const steps = make("ol", "steps");
+      support.steps.forEach((text, i) => {
+        const li = make("li");
+        const text_ = make("div", "step-body");
+        text_.appendChild(make("p", "", text));
+        li.append(make("span", "step-n now", String(i + 1)), text_);
+        steps.appendChild(li);
+      });
+      const inner = make("div", "step-body");
+      inner.append(make("strong", "", "Ajouter Ostal à l'écran d'accueil"), make("p", "", support.text), steps);
+      callout.appendChild(inner);
+      body.appendChild(callout);
+      // Les conditions au-dessus du bouton, grisé tant qu'Ostal n'est pas ouvert depuis l'écran d'accueil.
+      note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");
+      // La raison du grisé à côté du bouton ; à 390 px, la ligne est trop étroite pour les deux : elle passe dessous.
+      const inactive = make("button", "primary", "Activer les notifications sur cet appareil");
+      inactive.type = "button";
+      inactive.disabled = true;
+      const why = make("p", "w-note", "Inactif dans Safari : ouvrez Ostal depuis l'icône de l'écran d'accueil pour l'activer.");
+      why.id = "notif-inactif";
+      inactive.setAttribute("aria-describedby", why.id);
+      const line = make("div", "btn-why");
+      line.append(inactive, why);
+      body.appendChild(line);
+    } else note(support.text, support.reason === "ios-too-old" ? "error" : "w-note");
   } else if (!mine) {
-    const b = document.createElement("button");
+    note("iOS 16.4 ou plus, et Ostal ajouté à l'écran d'accueil.");
+    const b = make("button", "primary", "Activer les notifications sur cet appareil");
     b.type = "button";
-    b.className = "primary";
-    b.textContent = "Activer les notifications sur cet appareil";
     b.disabled = pushUi.busy || !st.public_key;
     // La permission est la première chose demandée au toucher (exigence de Safari).
     b.addEventListener("click", () => pushAction(async () => {
       const result = await push.subscribe(pushDeps());
-      if (result.status === "denied") throw new Error("Notifications refusées : réautorisez-les dans Réglages › Notifications › Maison.");
+      if (result.status === "denied") throw new Error("Notifications refusées : réautorisez-les dans Réglages › Notifications › Ostal.");
       pushUi.mine = result.view;
       pushUi.message = "Cet appareil est abonné.";
     }));
     body.appendChild(b);
+    // Un bouton grisé dit toujours pourquoi.
+    if (b.disabled) note(st.public_key ? "Un instant : une action est en cours." : "Le serveur n'a pas encore de clé de notification : redémarrez-le et rouvrez cette feuille.");
   } else {
     for (const c of push.CATEGORIES) {
       body.appendChild(checkbox(c.label, mine.categories[c.id] !== false, (on) => pushAction(() => api.request("PUT", `/api/push/subscriptions/${mine.id}`, { categories: { ...mine.categories, [c.id]: on } }))));
     }
-    const row = document.createElement("div");
-    row.className = "controls";
-    row.append(
-      button("Envoyer un essai", () => pushAction(async () => {
-        await api.request("POST", `/api/push/subscriptions/${mine.id}/test`);
-        pushUi.message = "Essai envoyé : il arrive dans quelques secondes.";
-      })),
-      button("Désactiver sur cet appareil", () => pushAction(async () => {
-        await push.unsubscribe(pushDeps(), mine.id);
-        pushUi.mine = null;
-        pushUi.message = "Cet appareil ne recevra plus rien.";
-      })),
-    );
+    const row = make("div", "push-actions");
+    const test = make("button", "btn", "Envoyer un essai");
+    test.type = "button";
+    test.disabled = pushUi.busy || !st.enabled;
+    test.addEventListener("click", () => pushAction(async () => {
+      await api.request("POST", `/api/push/subscriptions/${mine.id}/test`);
+      pushUi.message = "Essai envoyé : il arrive dans quelques secondes.";
+    }));
+    const off = make("button", "btn danger-btn", "Désactiver sur cet appareil");
+    off.type = "button";
+    off.disabled = pushUi.busy;
+    off.addEventListener("click", () => pushAction(async () => {
+      await push.unsubscribe(pushDeps(), mine.id);
+      pushUi.mine = null;
+      pushUi.message = "Cet appareil ne recevra plus rien.";
+    }));
+    row.append(test, off);
     body.appendChild(row);
+    if (test.disabled) note(st.enabled ? "Un instant : une action est en cours." : "Rallumez les notifications du serveur pour envoyer un essai.");
   }
 
-  const h2 = document.createElement("h3");
-  h2.textContent = "Appareils abonnés";
-  body.appendChild(h2);
+  body.appendChild(make("h3", "", "Appareils abonnés"));
   if (!st.subscriptions.length) note("Aucun.");
-  const ul = document.createElement("ul");
-  ul.className = "push-list";
+  const ul = make("ul", "push-list");
   for (const s of st.subscriptions) {
-    const li = document.createElement("li");
-    const text = document.createElement("span");
-    const parts = [s.label + (pushUi.mine?.id === s.id ? " (cet appareil)" : ""), s.service, `depuis le ${push.dateText(s.created_at)}`];
+    const li = make("li");
+    const who = make("div", "who");
+    who.appendChild(make("strong", "", s.label + (pushUi.mine?.id === s.id ? " (cet appareil)" : "")));
+    const parts = [s.service, `depuis le ${push.dateText(s.created_at)}`].filter(Boolean);
     if (s.last_error) parts.push(`dernier envoi : ${s.last_error}`);
-    text.textContent = parts.join(" · ");
-    const revoke = document.createElement("button");
+    who.appendChild(make("span", "", parts.join(" · ")));
+    const revoke = make("button", "btn danger-btn", "Révoquer");
     revoke.type = "button";
-    revoke.className = "ghost danger";
-    revoke.textContent = "Révoquer";
-    revoke.addEventListener("click", () => {
-      if (!confirm(`Révoquer « ${s.label} » ? Il ne recevra plus de notifications.`)) return;
+    revoke.setAttribute("aria-label", `Révoquer ${s.label}`);
+    revoke.disabled = pushUi.busy;
+    revoke.addEventListener("click", async () => {
+      if (!await askConfirm({ title: `Révoquer « ${s.label} » ?`, text: "Il ne recevra plus de notifications.", action: "Révoquer" })) return;
       pushAction(async () => {
         await api.request("DELETE", `/api/push/subscriptions/${s.id}`);
         if (pushUi.mine?.id === s.id) pushUi.mine = null;
       });
     });
-    li.append(text, revoke);
+    li.append(who, revoke);
     ul.appendChild(li);
   }
   body.appendChild(ul);
-  note("iPhone et iPad : iOS 16.4 ou plus, app ajoutée à l'écran d'accueil et ouverte par l'adresse .ts.net. Détails : docs/notifications.md.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,13 +1357,15 @@ async function openWidgets() {
   Object.assign(widgetsUi, { tokens: null, links: null, busy: "", message: "", error: "" });
   $("#sheet-title").textContent = "Widgets et raccourcis";
   renderWidgets();
-  showSheet();
+  showSheet("tall");
   await refreshTokens();
 }
 
 async function refreshTokens() {
   try {
     widgetsUi.tokens = await api.request("GET", "/api/tokens");
+    state.tokens = widgetsUi.tokens; // la carte « Installer sur l'iPhone » suit les jetons
+    scheduleRender(false);
   } catch (error) {
     widgetsUi.tokens = null;
     if (error?.status !== 401) widgetsUi.error = error?.message || "État des jetons indisponible.";
@@ -1137,7 +1392,12 @@ const clipboardDeps = () => ({
 });
 
 async function installShortcuts() {
-  if (widgetsUi.tokens?.mode?.exists && !confirm("Un nouveau jeton de mode remplace l'ancien : les raccourcis et les automatisations Raccourcis déjà installés avec l'ancien cesseront de marcher. Continuer ?")) return;
+  if (widgetsUi.tokens?.mode?.exists && !await askConfirm({
+    title: "Remplacer le jeton de mode ?",
+    text: "Les raccourcis et les automatisations installés avec l'ancien cesseront de marcher.",
+    action: "Continuer",
+    plain: true,
+  })) return;
   widgetsUi.busy = "shortcuts";
   widgetsUi.error = "";
   widgetsUi.message = "Signature des raccourcis sur le Mac…";
@@ -1163,9 +1423,9 @@ async function installWidget() {
   let manual = "";
   try {
     const { result, text } = await copyLater(pending, clipboardDeps());
-    if (result === "copied") widgetsUi.message = "Widget copié : colle-le dans Scriptable.";
+    if (result === "copied") widgetsUi.message = "Widget copié : collez-le dans Scriptable.";
     else {
-      widgetsUi.message = "Copie impossible ici : copie le texte ci-dessous à la main.";
+      widgetsUi.message = "Copie impossible ici : copiez le texte ci-dessous à la main.";
       manual = text;
     }
   } catch (error) {
@@ -1177,10 +1437,10 @@ async function installWidget() {
 }
 
 async function revokeToken(kind) {
-  const what = kind === "mode"
-    ? "le jeton de mode ? Les raccourcis et automatisations qui l'utilisent ne marcheront plus"
-    : "le jeton de lecture ? Le widget affichera « Jeton révoqué »";
-  if (!confirm(`Révoquer ${what}.`)) return;
+  const ok = await askConfirm(kind === "mode"
+    ? { title: "Révoquer le jeton de mode ?", text: "Les raccourcis et automatisations qui l'utilisent ne marcheront plus.", action: "Révoquer" }
+    : { title: "Révoquer le jeton de lecture ?", text: "Le widget affichera « Jeton révoqué » jusqu'à ce qu'il soit recopié.", action: "Révoquer" });
+  if (!ok) return;
   try {
     await api.request("DELETE", `/api/tokens/${kind}`);
     if (kind === "mode") widgetsUi.links = null;
@@ -1192,58 +1452,110 @@ async function revokeToken(kind) {
   await refreshTokens();
 }
 
+/** Où l'on trouve Scriptable (le lien est écrit ici et non dans index.html : la coquille ne porte aucune adresse externe). */
+const SCRIPTABLE_URL = "https://apps.apple.com/app/scriptable/id1405459188";
+
 function renderWidgets(manualText = "") {
   const body = $("#sheet-body");
   body.dataset.id = "widgets";
   body.replaceChildren();
-  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
-  const note = (text, cls = "ev-note") => { const p = el("p", cls, text); body.appendChild(p); return p; };
-  const button = (label, cls, onClick, disabled = false) => {
-    const b = el("button", cls, label);
+  const note = (text, cls = "w-note") => { const p = make("p", cls, text); body.appendChild(p); return p; };
+  const act = (label, cls, onClick, disabled = false) => {
+    const b = make("button", cls, label);
     b.type = "button";
     b.disabled = disabled;
     b.addEventListener("click", onClick);
     return b;
   };
-  const tokenLine = (token, none) => (token?.exists ? `Jeton actif ${sinceText(token.created)}`.trim() + "." : none);
+  // Une étape numérotée : `state` « now » (à faire), « done » (faite) ou rien (grisée).
+  const step = (n, state_, content) => {
+    const li = make("li");
+    const badge = make("span", `step-n${state_ ? ` ${state_}` : ""}`, state_ === "done" ? "✓" : String(n));
+    badge.setAttribute("aria-hidden", "true");
+    const inner = make("div", "step-body");
+    inner.append(...content);
+    li.append(badge, inner);
+    return li;
+  };
+  const status = (parent, text) => {
+    const p = make("p", "w-status");
+    p.append(icon("okCircle"), make("span", "", text));
+    parent.appendChild(p);
+  };
+  // Comme la maquette : « Jeton actif depuis le 20/11/2026. » pour le mode, « Jeton de lecture actif. » pour le widget.
+  const tokenLine = (token, label, withDate) => (token?.exists ? `${label} actif${withDate ? ` ${sinceText(token.created)}` : ""}`.trim() + "." : null);
 
-  note("Mets l'état de la maison sur l'écran d'accueil et change de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.");
+  note("Mettez l'état de la maison sur l'écran d'accueil et changez de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.", "ev-note");
   if (widgetsUi.error) note(widgetsUi.error, "error");
-  if (widgetsUi.message) note(widgetsUi.message);
+  if (widgetsUi.message) note(widgetsUi.message, "ev-note");
   const info = originInfo(location);
-  if (!info.usable) note(info.warning, "error");
   const busy = widgetsUi.busy !== "";
 
-  // 1. Les raccourcis de mode.
-  body.appendChild(el("h3", null, "1. Les raccourcis Mode absent et Mode present"));
-  note(tokenLine(widgetsUi.tokens?.mode, "Pas encore de jeton de mode."));
-  note("Installer crée un nouveau jeton de mode, écrit dans les deux raccourcis : les raccourcis et automatisations installés avec l'ancien jeton cessent de marcher. Supprime d'abord, dans Raccourcis, les anciens « Mode absent », « Mode present » et « Mode présent » (sinon iOS crée « Mode absent 1 », que le widget n'appelle pas).");
-  const row = el("div", "controls");
-  row.appendChild(button(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
-  if (widgetsUi.tokens?.mode?.exists) row.appendChild(button("Révoquer", "ghost", () => revokeToken("mode"), busy));
-  body.appendChild(row);
-  if (widgetsUi.links) {
-    const links = el("div", "controls");
-    for (const s of widgetsUi.links.shortcuts) {
-      const a = el("a", "widgets-link", s.name);
-      a.href = s.url;
-      links.appendChild(a);
+  // 1. Les raccourcis de mode : Absent, Présent, Nuit et Vacances.
+  const modes = make("section", "w-section");
+  modes.setAttribute("aria-labelledby", "titre-raccourcis");
+  const h3 = make("h3", "", "Raccourcis des modes");
+  h3.id = "titre-raccourcis";
+  modes.appendChild(h3);
+  const modeLine = tokenLine(widgetsUi.tokens?.mode, "Jeton", true);
+  if (modeLine) status(modes, modeLine); else modes.appendChild(make("p", "w-note", "Pas encore de jeton de mode."));
+  modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
+  // Hors adresse .ts.net : les boutons sont grisés et la raison est dite juste à côté.
+  if (!info.usable) modes.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
+  modes.appendChild(make("p", "w-note", "Installer crée un nouveau jeton de mode : les raccourcis et automatisations installés avec l'ancien cessent de marcher."));
+  // À part et en tête : supprimer les anciens raccourcis (sinon iOS crée « Mode absent 1 »).
+  const callout = make("div", "callout");
+  const calloutBadge = make("span", "step-n now", "1");
+  calloutBadge.setAttribute("aria-hidden", "true");
+  callout.append(calloutBadge, make("p", "", "Dans l'app Raccourcis, supprimez les anciens « Mode absent », « Mode present » et « Mode présent » (sinon iOS crée « Mode absent 1 »)."));
+  modes.appendChild(callout);
+  const list = make("ol", "steps");
+  SHORTCUT_NAMES.forEach((name, i) => {
+    const link = widgetsUi.links?.shortcuts.find((x) => x.name === name);
+    const content = [make("p", "", i === 0 ? `Touchez « ${name} », puis « Ajouter le raccourci ».` : `Même chose pour « ${name} ».`)];
+    if (link) {
+      const a = make("a", "widgets-link", name);
+      a.href = link.url;
+      content.push(a);
     }
-    body.appendChild(links);
-    note(`Touche chaque bouton, puis « Ajouter le raccourci ». Liens valables ${Math.round(widgetsUi.links.expiresInS / 60)} minutes. Si rien ne se passe, ouvre cette page dans Safari (le téléchargement peut échouer dans l'app installée sur l'écran d'accueil).`);
+    list.appendChild(step(i + 2, link ? "now" : "", content));
+  });
+  list.appendChild(step(SHORTCUT_NAMES.length + 2, "", [make("p", "", "Revenez ici et vérifiez le mode.")]));
+  modes.appendChild(list);
+  if (widgetsUi.links) {
+    modes.appendChild(make("p", "w-note", `Liens valables ${Math.round(widgetsUi.links.expiresInS / 60)} minutes. Si rien ne se passe, ouvrez cette page dans Safari : le téléchargement peut échouer dans l'app installée sur l'écran d'accueil.`));
   }
+  if (widgetsUi.tokens?.mode?.exists) modes.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("mode"), busy));
+  body.appendChild(modes);
+  body.appendChild(document.createElement("hr"));
 
   // 2. Le widget Scriptable.
-  body.appendChild(el("h3", null, "2. Le widget Scriptable"));
-  note(tokenLine(widgetsUi.tokens?.read, "Pas encore de jeton de lecture."));
-  note("Installe Scriptable (App Store, gratuit), puis touche « Installer le widget » : le script est copié avec l'adresse et un jeton de lecture, qui ne permet que de lire l'état de la maison. Dans Scriptable : « + », colle, nomme le script Ostal. Ajoute ensuite le widget Scriptable sur l'écran d'accueil et choisis le script Ostal.");
-  if (widgetsUi.tokens?.read?.exists) note("Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié.");
-  const row2 = el("div", "controls");
-  row2.appendChild(button(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
-  if (widgetsUi.tokens?.read?.exists) row2.appendChild(button("Révoquer", "ghost", () => revokeToken("read"), busy));
-  body.appendChild(row2);
+  const widget = make("section", "w-section");
+  widget.setAttribute("aria-labelledby", "titre-widget");
+  const h3w = make("h3", "", "Widget Scriptable");
+  h3w.id = "titre-widget";
+  widget.appendChild(h3w);
+  const readLine = tokenLine(widgetsUi.tokens?.read, "Jeton de lecture", false);
+  if (readLine) status(widget, readLine); else widget.appendChild(make("p", "w-note", "Pas encore de jeton de lecture."));
+  const store = make("a", "link-button", "Installer Scriptable (App Store, gratuit)");
+  store.href = SCRIPTABLE_URL;
+  store.target = "_blank";
+  store.rel = "noopener noreferrer";
+  widget.appendChild(store);
+  widget.appendChild(act(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
+  if (!info.usable) widget.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
+  const wlist = make("ol", "steps");
+  ["Dans Scriptable, touchez « + ».", "Collez le script copié.", "Nommez le script « Ostal ».", "Ajoutez le widget Scriptable à l'écran d'accueil et choisissez le script Ostal."]
+    .forEach((text, i) => wlist.appendChild(step(i + 1, i === 0 ? "now" : "", [make("p", "", text)])));
+  widget.appendChild(wlist);
+  widget.appendChild(make("p", "w-status", "Le widget ne propose que Absent et Présent."));
+  if (widgetsUi.tokens?.read?.exists) {
+    widget.appendChild(make("p", "w-note", "Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié."));
+    widget.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("read"), busy));
+  }
+  body.appendChild(widget);
   if (manualText) {
-    const area = el("textarea", "widgets-script");
+    const area = make("textarea", "widgets-script");
     area.value = manualText;
     area.readOnly = true;
     area.setAttribute("aria-label", "Script Ostal à copier");
@@ -1273,73 +1585,120 @@ async function openFromUrl(url) {
 const TITLES = { devices: "Appareils", plan: "Plan", temps: "Températures", cameras: "Caméras" };
 
 // ---------------------------------------------------------------------------
-// Le mode de la maison : une pastille en haut, un tap ouvre les quatre choix
+// Le mode de la maison : la pastille en haut et l'entrée « Mode » de la barre du bas ouvrent la
+// même feuille, avec les quatre choix et ce que chacun fait des caméras
 // ---------------------------------------------------------------------------
 const modeChip = $("#mode-chip");
-const modeMenu = $("#mode-menu");
-
-for (const m of MODES) {
-  const item = document.createElement("button");
-  item.type = "button";
-  item.setAttribute("role", "menuitemradio");
-  item.dataset.mode = m.id;
-  item.textContent = m.label;
-  item.addEventListener("click", () => chooseMode(m.id));
-  modeMenu.appendChild(item);
-}
+const modeTab = $("#tab-mode");
+/** Le mode que cette app vient de demander (pas de notification pour lui). */
+let modeRequested = null;
+const modeUi = { open: false, pending: null };
 
 function renderModeChip() {
-  modeChip.hidden = !state.loaded || !state.hasMode;
-  if (modeChip.hidden) closeModeMenu(false);
+  const shown = state.loaded && state.hasMode;
+  modeChip.hidden = !shown;
+  modeTab.hidden = !shown;
   const label = modeLabel(state.mode);
-  modeChip.textContent = `Mode : ${label}`;
-  modeChip.setAttribute("aria-label", `Mode de la maison : ${label}. Changer de mode.`);
-  for (const item of modeMenu.children) item.setAttribute("aria-checked", String(item.dataset.mode === state.mode));
+  const lost = Boolean(state.lostAt);
+  const key = JSON.stringify([shown, state.mode, lost]);
+  if (modeChip._key === key) return;
+  modeChip._key = key;
+  const present = state.mode === "present";
+  const aria = lost ? `Mode : ${label}. Modifiable quand la maison répond.` : `Mode : ${label}. Changer de mode`;
+  // La pastille : « Mode : Présent » ; les autres modes ont en plus leur pictogramme.
+  const pill = make("span", "pill");
+  if (!present) { const pic = make("span", "ico"); pic.innerHTML = modeIcon(state.mode); pill.appendChild(pic); }
+  pill.append(`Mode : ${label}`);
+  modeChip.replaceChildren(pill);
+  modeChip.className = `mode-chip${present ? " present" : ""}${lost ? " lost" : ""}`;
+  modeChip.setAttribute("aria-label", aria);
+  modeChip.setAttribute("aria-disabled", String(lost));
+  // L'entrée de la barre du bas : le mode actuel, avec l'icône de ce mode.
+  $("#tab-mode-icon").innerHTML = modeIcon(state.mode);
+  $("#tab-mode-label").textContent = label;
+  modeTab.className = `tab-mode${present ? " present" : ""}${lost ? " lost" : ""}`;
+  modeTab.setAttribute("aria-label", aria);
+  modeTab.setAttribute("aria-disabled", String(lost));
 }
 
-function closeModeMenu(refocus) {
-  if (modeMenu.hidden) return;
-  modeMenu.hidden = true;
-  modeChip.setAttribute("aria-expanded", "false");
-  if (refocus) modeChip.focus();
+function openModeSheet() {
+  if (!state.loaded || !state.hasMode || state.lostAt) return;
+  closeSheet();
+  modeUi.open = true;
+  modeUi.pending = null;
+  $("#sheet-title").textContent = "Mode de la maison";
+  renderModeSheet();
+  showSheet();
 }
 
-function openModeMenu() {
-  modeMenu.hidden = false;
-  modeChip.setAttribute("aria-expanded", "true");
-  (modeMenu.querySelector('[aria-checked="true"]') ?? modeMenu.firstElementChild)?.focus();
+function renderModeSheet() {
+  const body = $("#sheet-body");
+  body.dataset.id = "mode";
+  const list = make("div", "modes");
+  list.setAttribute("role", "group");
+  list.setAttribute("aria-label", "Mode de la maison");
+  for (const m of MODES) {
+    const active = m.id === state.mode;
+    const row = make("button", `mode-row ${m.id === "present" ? "present" : "away"}`);
+    row.type = "button";
+    row.dataset.mode = m.id;
+    row.setAttribute("aria-pressed", String(active));
+    row.disabled = modeUi.pending !== null;
+    const pic = make("span", "ico");
+    pic.innerHTML = modeIcon(m.id);
+    const text = make("span", "mode-text");
+    text.append(make("span", "mode-name", m.label), make("span", "mode-effect", effect(m.id)));
+    row.append(pic, text);
+    // Le choix ne s'affiche qu'une fois le serveur confirmé : en attendant, « Envoi… » ; ensuite « Actif ».
+    if (modeUi.pending === m.id) row.appendChild(make("span", "mode-state", "Envoi…"));
+    else if (active) {
+      const mark = make("span", "mode-state");
+      if (m.id !== "present") mark.appendChild(icon("check"));
+      mark.append("Actif");
+      row.appendChild(mark);
+    }
+    row.addEventListener("click", () => chooseMode(m.id));
+    list.appendChild(row);
+  }
+  body.replaceChildren(list);
 }
 
-/** Demande le changement au serveur. La pastille suit sa réponse (et l'événement `mode_changed`
+/** Demande le changement au serveur. La feuille suit sa réponse (et l'événement `mode_changed`
  *  qu'il diffuse à tous) : rien n'est affiché avant sa confirmation. */
 async function chooseMode(id) {
-  closeModeMenu(true);
-  if (id === state.mode) return;
+  if (modeUi.pending || id === state.mode) return;
+  modeRequested = id;
+  modeUi.pending = id;
+  renderModeSheet();
   try {
-    const result = await api.request("PUT", "/api/mode", { mode: id });
+    const result = await api.request("PUT", "/api/mode", { mode: id, source: { kind: "web" } });
     if (isMode(result?.mode)) { state.mode = result.mode; scheduleRender(true); }
   } catch (error) {
+    modeRequested = null;
     toast(error.detail || "Le mode n'a pas pu être changé.");
   }
+  modeUi.pending = null;
+  if (modeUi.open) renderModeSheet();
 }
 
-modeChip.addEventListener("click", () => (modeMenu.hidden ? openModeMenu() : closeModeMenu(true)));
-document.addEventListener("click", (e) => {
-  if (!modeMenu.hidden && !modeMenu.contains(e.target) && !modeChip.contains(e.target)) closeModeMenu(false);
-});
-modeMenu.addEventListener("keydown", (e) => {
-  const items = [...modeMenu.children];
-  const at = items.indexOf(document.activeElement);
-  if (e.key === "Escape") { e.preventDefault(); closeModeMenu(true); }
-  else if (e.key === "ArrowDown") { e.preventDefault(); items[(at + 1) % items.length].focus(); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); items[(at - 1 + items.length) % items.length].focus(); }
-});
+modeChip.addEventListener("click", openModeSheet);
+modeTab.addEventListener("click", openModeSheet);
+
+/** « La maison ne répond pas » : le bandeau, sous l'en-tête, sur tous les onglets. Les dernières
+ *  valeurs restent à l'écran (atténuées sur Appareils). */
+function renderLost() {
+  const lost = state.loaded && Boolean(state.lostAt);
+  $("#lost").hidden = !lost;
+  const retrying = lost && state.connection === "connecting";
+  const retry = $("#retry");
+  retry.textContent = retrying ? "Nouvelle tentative…" : "Réessayer";
+  retry.disabled = retrying;
+}
 
 function render() {
   renderModeChip();
-  const conn = $("#conn");
-  conn.hidden = state.connection === "online";
-  conn.textContent = state.connection === "connecting" ? "connexion…" : "hors ligne";
+  renderLost();
+  if (modeUi.open && !modeUi.pending) renderModeSheet();
   if (tab === "devices") renderDevices();
   else if (tab === "plan") {
     structureDirty = false;
@@ -1368,20 +1727,27 @@ function selectTab(name) {
   if (name !== "temps") stopTemps();
   if (name !== "plan") stopPlan();
   $("#title").textContent = TITLES[name];
-  document.querySelectorAll("#tabs [role=tab]").forEach((b) => {
-    b.setAttribute("aria-selected", String(b.dataset.tab === name));
-    b.tabIndex = b.dataset.tab === name ? 0 : -1;
+  document.querySelectorAll("#tabs [data-tab]").forEach((b) => {
+    if (b.dataset.tab === name) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   });
-  view.setAttribute("aria-labelledby", `tab-${name}`);
   view._tab = null;
   structureDirty = true;
   window.scrollTo(0, 0);
   render();
 }
 
-function showLogin(message) {
+/** Le message d'erreur sous le mot de passe (avec son icône), ou rien. */
+function setLoginError(text) {
+  $("#login-error").hidden = !text;
+  $("#login-error-text").textContent = text ?? "";
+  $("#login-password").setAttribute("aria-invalid", text ? "true" : "false");
+}
+
+/** `info` : une information qui prend la place de la phrase d'accueil (« Session expirée »). */
+function showLogin(message, info = false) {
   events?.close();
   events = null;
+  confirmDone?.(false);
   closeSheet();
   exitFull();
   stopPlayers();
@@ -1391,11 +1757,18 @@ function showLogin(message) {
   $("#app").hidden = true;
   $("#topbar").hidden = true;
   $("#tabs").hidden = true;
-  const err = $("#login-error");
-  err.hidden = !message;
-  err.textContent = message ?? "";
+  $("#login-info").hidden = !(info && message);
+  $("#login-info-text").textContent = info ? (message ?? "") : "";
+  $("#login-intro").hidden = Boolean(info && message);
+  setLoginError(info ? "" : message);
   state.devices.clear();
   state.loaded = false;
+  state.updatedAt = null;
+  state.lostAt = null;
+  state.tokens = null;
+  state.notice = "";
+  pushUi.mine = null;
+  $("#lost").hidden = true;
   historyCache.clear();
 }
 
@@ -1409,11 +1782,27 @@ function start() {
   events = api.connectEvents({
     onSnapshot: applySnapshot,
     onEvent: applyEvent,
-    onStatus: (s) => { state.connection = s; scheduleRender(false); },
+    onStatus: (s) => {
+      state.connection = s;
+      // La liaison perdue après avoir été établie : le bandeau reste, sans clignoter à chaque nouvel essai.
+      if (s === "connected") state.lostAt = null;
+      else if (s === "lost" && state.loaded && !state.lostAt) state.lostAt = Date.now();
+      scheduleRender(false);
+    },
   });
+  loadTokens();
   // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
   if (location.hash) openFromUrl(location.href);
   syncPush();
+}
+
+/** Les jetons (mode et lecture) : l'état de la carte « Installer sur l'iPhone ». Un serveur plus
+ *  ancien ou injoignable : pas de carte. */
+async function loadTokens() {
+  try {
+    state.tokens = await api.request("GET", "/api/tokens");
+  } catch { state.tokens = null; }
+  scheduleRender(false);
 }
 
 function loginMessage(error) {
@@ -1421,7 +1810,7 @@ function loginMessage(error) {
     case "invalid_credentials": return "Identifiant ou mot de passe incorrect.";
     case "too_many_attempts": return `Trop d'essais. Réessayez dans ${error.retryAfter ?? 30} s.`;
     case "version_incompatible": return "Le serveur et l'app ne parlent pas la même version. Mettez le serveur à jour.";
-    case "network": return "Serveur injoignable.";
+    case "network": return `${api.HOUSE_SILENT} ${api.HOUSE_HINT}`;
     default: return "Connexion impossible.";
   }
 }
@@ -1433,29 +1822,49 @@ $("#login-form").addEventListener("submit", async (event) => {
   const submit = formEl.querySelector("button[type=submit]");
   if (submit.disabled) return; // pas de double envoi
   submit.disabled = true;
+  // Dès la première tentative, « Session expirée » s'efface : la phrase d'accueil revient, et c'est
+  // le résultat de cette tentative (ou rien) qui s'affiche, jamais les deux messages ensemble.
+  $("#login-info").hidden = true;
+  $("#login-intro").hidden = false;
+  setLoginError("");
   try {
     await api.login(String(form.get("username")), String(form.get("password")));
     formEl.reset();
+    setLoginError("");
     submit.disabled = false;
     start();
   } catch (error) {
     console.error(error);
-    $("#login-error").hidden = false;
-    $("#login-error").textContent = loginMessage(error);
+    setLoginError(loginMessage(error));
+    if (error.code === "invalid_credentials") { formEl.elements.password.value = ""; formEl.elements.password.focus(); }
   } finally {
     submit.disabled = false;
   }
 });
 
-api.onUnauthorized(() => showLogin("Session expirée : reconnectez-vous."));
+api.onUnauthorized(() => showLogin("Session expirée : reconnectez-vous.", true));
 
 $("#tabs").addEventListener("click", (event) => {
-  const b = event.target.closest("[role=tab]");
+  const b = event.target.closest("[data-tab]");
   if (b) selectTab(b.dataset.tab);
 });
+$("#lost-title-text").textContent = api.HOUSE_SILENT;
+$("#lost-hint").textContent = api.HOUSE_HINT;
+$("#retry").addEventListener("click", () => { state.connection = "connecting"; renderLost(); events?.restart(); });
 $("#sheet-close").addEventListener("click", closeSheet);
 $("#sheet-backdrop").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (e) => {
+  if (confirmDone) {
+    // La confirmation est au premier plan : Échap l'annule, Tab reste entre ses deux boutons.
+    if (e.key === "Escape") { e.preventDefault(); confirmDone(false); }
+    else if (e.key === "Tab") {
+      const first = $("#confirm-cancel");
+      const last = $("#confirm-ok");
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    return;
+  }
   if (e.key === "Escape" && fullCam?.mode === "css") { exitFull(); return; }
   if ($("#sheet").hidden) return;
   if (e.key === "Escape") { closeSheet(); return; }
@@ -1540,5 +1949,6 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+mountIcons(); // les pictogrammes de l'écran de connexion (l'erreur, l'information)
 if (api.hasToken()) start();
 else showLogin();

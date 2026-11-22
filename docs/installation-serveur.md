@@ -67,7 +67,7 @@ haut à droite (le serveur tourne, un point est à regarder), arche fine sans po
 arche fine avec un point d'exclamation (le serveur ne tourne pas : problème ou configuration à
 terminer).
 
-Le menu répond à « est-ce que tout va bien ? » : un titre (« Tout va bien », « 1 point à
+Le menu répond à « la maison va bien ? » : un titre (« La maison va bien. », « Une chose à
 regarder », « Le serveur est à l'arrêt »), une ligne par sujet (appareils, caméras et détection,
 accès à distance) et, seulement quand quelque chose ne va pas, une action (« Voir l'appareil
 injoignable… »). Viennent ensuite le sous-menu « Mode de la maison », puis « Ouvrir Ostal

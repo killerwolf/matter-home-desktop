@@ -1,4 +1,4 @@
-//! « Est-ce que tout va bien ? » : le résumé que montrent le menu de la barre de menus, l'icône et
+//! « La maison va bien ? » : le résumé que montrent le menu de la barre de menus, l'icône et
 //! l'onglet « Vue d'ensemble » de la fenêtre. Un seul calcul pour les trois, sans interface, donc
 //! testable : une phrase de titre, une ligne par sujet (appareils, caméras, accès à distance) et,
 //! quand quelque chose ne va pas, **une** action à proposer.
@@ -6,10 +6,10 @@
 //! Les mots sont ceux de l'utilisateur : pas de « Serve », de « tailnet » ni de « flux » ici.
 
 use ostal_server::cameras::CameraAdmin;
+use protocol::status::{self, Point};
 use protocol::wire::{CameraStatus, DetectionStatusView};
 
-use crate::startup::Blocker;
-use crate::status::{Health, Phase};
+use crate::status::{clock, Health, Phase};
 use crate::tailscale::WebAccess;
 
 /// Les onglets de la fenêtre.
@@ -94,7 +94,29 @@ pub struct Check {
     pub title: &'static str,
     pub level: Level,
     pub text: String,
+    /// La version courte du menu (« 10 sur 10 joignables ») ; la même que `text` quand elle
+    /// n'a pas de forme plus courte.
+    pub menu_text: String,
     pub fix: Option<Fix>,
+}
+
+/// Une phrase : majuscule au début, un point à la fin si rien ne la termine.
+pub fn sentence(text: &str) -> String {
+    let text = text.trim();
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out: String = first.to_uppercase().chain(chars).collect();
+    if !out.ends_with(['.', '…', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
+
+/// Une phrase du résumé sans son point final : « Lampe d'Adam est injoignable ».
+fn clause(phrase: String) -> String {
+    phrase.trim_end_matches('.').to_string()
 }
 
 /// Ce que le résumé sait des caméras et de la détection (lu dans le hub du serveur).
@@ -104,7 +126,7 @@ pub struct CameraSummary {
     pub online: usize,
     /// Éteintes dans le mode actuel de la maison (voulu, pas une panne).
     pub off: usize,
-    /// Noms des caméras hors ligne (triés).
+    /// Noms des caméras injoignables (triés).
     pub unreachable: Vec<String>,
     pub detection: DetectionSummary,
 }
@@ -129,15 +151,23 @@ pub fn is_thermal_pause(reason: &str) -> bool {
     reason.contains("chaud")
 }
 
-/// La phrase de l'onglet Appareils : combien répondent, et ce que font les autres. Elle dit la
-/// même chose que la ligne « Appareils » du résumé (au démarrage, les appareils se connectent).
+/// La phrase de l'onglet Appareils : combien sont joignables, et ce que font les autres. Elle dit
+/// la même chose que la ligne « Appareils » du résumé (au démarrage, les appareils se
+/// connectent).
 pub fn devices_sentence(health: &Health) -> String {
     let n = health.online;
+    if n == 0 && health.total > 0 {
+        return format!("Aucun appareil sur {} n'est joignable.", health.total);
+    }
     let mut text = format!(
-        "{n} appareil{} sur {} répond{} au serveur.",
+        "{n} appareil{} sur {} {}.",
         plural(n),
         health.total,
-        if n > 1 { "ent" } else { "" },
+        if n > 1 {
+            "sont joignables"
+        } else {
+            "est joignable"
+        },
     );
     let connecting = health
         .total
@@ -187,10 +217,15 @@ impl CameraSummary {
 /// Le résumé complet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Overview {
-    /// « Tout va bien », « 1 point à regarder », « Le serveur est à l'arrêt »…
+    /// « La maison va bien. », « Une chose à regarder », « Le serveur est à l'arrêt »…
     pub headline: String,
     pub level: Level,
     pub checks: Vec<Check>,
+    /// La phrase qui dit ce qui ne va pas (celle de `protocol::status::detail`), ou la raison de
+    /// l'arrêt. `None` quand rien n'est à regarder.
+    pub detail: Option<String>,
+    /// Le titre de la ligne dont vient `detail` : le menu ne la répète pas.
+    pub detail_from: Option<&'static str>,
     /// L'action unique du menu quand quelque chose ne va pas.
     pub fix: Option<Fix>,
 }
@@ -215,18 +250,9 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-/// « Salon », « Salon et Cuisine », « Salon, Cuisine et 3 autres ».
-fn names(list: &[String]) -> String {
-    match list {
-        [] => String::new(),
-        [a] => a.clone(),
-        [a, b] => format!("{a} et {b}"),
-        [a, b, rest @ ..] => format!("{a}, {b} et {} autre{}", rest.len(), plural(rest.len())),
-    }
-}
-
 fn devices_check(health: &Health) -> Check {
     let missing = health.unreachable.len();
+    let mut menu_text = None;
     let (level, text, fix) = if health.total == 0 {
         (
             Level::Info,
@@ -234,12 +260,14 @@ fn devices_check(health: &Health) -> Check {
             fix("Ajouter un appareil…", Tab::Devices),
         )
     } else if missing == 0 {
+        menu_text = Some(format!(
+            "{} sur {} joignable{}",
+            health.online,
+            health.total,
+            plural(health.online)
+        ));
         let text = if health.online == health.total {
-            if health.total == 1 {
-                "1 appareil, joignable".to_string()
-            } else {
-                format!("{} appareils, tous joignables", health.total)
-            }
+            clause(status::all_reachable(health.total))
         } else {
             // Certains sont encore en cours de connexion (au démarrage) : ce n'est pas une panne.
             format!(
@@ -249,14 +277,18 @@ fn devices_check(health: &Health) -> Check {
         };
         (Level::Ok, text, None)
     } else {
+        let mut phrase = clause(Point::Devices(health.unreachable.clone()).phrase());
+        // « depuis 18:02 » : seulement pour un appareil, et si le hub sait quand il a répondu.
+        if let [only] = health.unreachable_details.as_slice() {
+            if let Some(at) = only.last_seen.and_then(clock) {
+                phrase.push_str(&format!(" depuis {at}"));
+            }
+        }
         (
             Level::Warn,
             format!(
-                "{} sur {} joignables · injoignable{} : {}",
-                health.online,
-                health.total,
-                plural(missing),
-                names(&health.unreachable)
+                "{} sur {} joignables · {phrase}",
+                health.online, health.total
             ),
             fix(
                 if missing > 1 {
@@ -271,6 +303,7 @@ fn devices_check(health: &Health) -> Check {
     Check {
         title: "Appareils",
         level,
+        menu_text: menu_text.unwrap_or_else(|| text.clone()),
         text,
         fix,
     }
@@ -283,6 +316,7 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
             title,
             level: Level::Info,
             text: "aucune pour l'instant".into(),
+            menu_text: "aucune pour l'instant".into(),
             fix: fix("Ajouter une caméra…", Tab::Cameras),
         };
     }
@@ -304,13 +338,20 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
         level = Level::Warn;
         action = fix(
             if down > 1 {
-                "Voir les caméras hors ligne…"
+                "Voir les caméras injoignables…"
             } else {
-                "Voir la caméra hors ligne…"
+                "Voir la caméra injoignable…"
             },
             Tab::Cameras,
         );
-        text.push_str(&format!(" · hors ligne : {}", names(&cameras.unreachable)));
+        // En milieu de ligne : « la caméra « Garage » est injoignable ».
+        let phrase = clause(Point::Cameras(cameras.unreachable.clone()).phrase());
+        let mut letters = phrase.chars();
+        let lower: String = letters
+            .next()
+            .map(|c| c.to_lowercase().chain(letters).collect())
+            .unwrap_or_default();
+        text.push_str(&format!(" · {lower}"));
     }
     if cameras.off > 0 {
         text.push_str(&format!(
@@ -348,6 +389,7 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
     Check {
         title,
         level,
+        menu_text: text.clone(),
         text,
         fix: action,
     }
@@ -356,7 +398,7 @@ fn cameras_check(cameras: &CameraSummary) -> Check {
 fn web_check(web: &WebAccess) -> Check {
     let (level, text, action) = match web {
         WebAccess::Checking => (Level::Info, "vérification…", None),
-        WebAccess::On { .. } => (Level::Ok, "activé (iPhone, hors de la maison)", None),
+        WebAccess::On { .. } => (Level::Ok, "activé", None),
         WebAccess::Off { .. } => (Level::Info, "désactivé", None),
         WebAccess::NotInstalled => (Level::Info, "pas configuré", None),
         WebAccess::Disconnected => (
@@ -385,6 +427,7 @@ fn web_check(web: &WebAccess) -> Check {
         title: "Accès à distance",
         level,
         text: text.into(),
+        menu_text: text.into(),
         fix: action,
     }
 }
@@ -397,7 +440,11 @@ pub fn build(
     web: &WebAccess,
     desktop_doubt: bool,
 ) -> Overview {
-    let stopped = |headline: &str, level: Level, text: String, action: Option<Fix>| Overview {
+    let stopped = |headline: &str,
+                   level: Level,
+                   text: String,
+                   detail: Option<String>,
+                   action: Option<Fix>| Overview {
         headline: headline.into(),
         level,
         checks: if text.is_empty() {
@@ -406,38 +453,43 @@ pub fn build(
             vec![Check {
                 title: "Serveur",
                 level,
+                menu_text: text.clone(),
                 text,
                 fix: None,
             }]
         },
+        detail_from: detail.as_ref().map(|_| "Serveur"),
+        detail,
         fix: action,
     };
     match phase {
-        Phase::Starting => stopped("Démarrage en cours…", Level::Info, String::new(), None),
-        Phase::Stopping => stopped("Arrêt en cours…", Level::Info, String::new(), None),
+        Phase::Starting => stopped(
+            "Démarrage en cours…",
+            Level::Info,
+            String::new(),
+            None,
+            None,
+        ),
+        Phase::Stopping => stopped("Arrêt en cours…", Level::Info, String::new(), None, None),
         Phase::NeedsSetup => stopped(
             "Configuration à terminer",
             Level::Warn,
             "il reste une étape avant de démarrer".into(),
+            Some("Il reste une étape avant de démarrer.".into()),
             fix("Terminer la configuration…", Tab::Overview),
         ),
         Phase::Blocked(b) => stopped(
             "Le serveur est à l'arrêt",
             Level::Error,
-            b.short().into(),
-            fix(
-                if *b == Blocker::OtherApp {
-                    "Voir pourquoi…"
-                } else {
-                    "Voir comment le relancer…"
-                },
-                Tab::Overview,
-            ),
+            b.short().trim_end_matches('.').to_string(),
+            Some(b.short().into()),
+            fix("Voir pourquoi…", Tab::Overview),
         ),
         Phase::Problem(_) => stopped(
             "Le serveur ne tourne pas",
             Level::Error,
-            "il s'est arrêté sur une erreur".into(),
+            "il s'est arrêté après une erreur".into(),
+            Some("Il s'est arrêté après une erreur.".into()),
             fix("Voir le problème…", Tab::Overview),
         ),
         Phase::Running => {
@@ -447,29 +499,56 @@ pub fn build(
             }
             checks.push(web_check(web));
             if desktop_doubt {
+                let text = "un programme « ostal » tourne : si c'est l'ancienne application de bureau, fermez-la";
                 checks.push(Check {
                     title: "Ancienne application",
                     level: Level::Warn,
-                    text:
-                        "un programme « ostal » tourne : si c'est l'ancienne version 0.2, fermez-la"
-                            .into(),
+                    text: text.into(),
+                    menu_text: text.into(),
                     fix: None,
                 });
             }
-            let waiting = checks.iter().filter(|c| c.level.needs_attention()).count();
+            // Une chose à regarder par catégorie, jamais une par appareil.
+            let points: Vec<(&'static str, Point)> = checks
+                .iter()
+                .filter(|c| c.level.needs_attention())
+                .map(|c| {
+                    let point = match c.title {
+                        "Appareils" if !health.unreachable.is_empty() => {
+                            Point::Devices(health.unreachable.clone())
+                        }
+                        "Caméras" => match cameras {
+                            Some(cam) if !cam.unreachable.is_empty() => {
+                                Point::Cameras(cam.unreachable.clone())
+                            }
+                            _ => Point::Other(sentence(&c.text)),
+                        },
+                        _ => Point::Other(sentence(&c.text)),
+                    };
+                    (c.title, point)
+                })
+                .collect();
+            let only: Vec<Point> = points.iter().map(|(_, p)| p.clone()).collect();
+            let waiting = status::count(&only);
+            // La ligne que `status::detail` met en avant : on retrouve sa catégorie.
+            let detail = status::detail(&only);
+            let detail_from = detail.as_ref().and_then(|d| {
+                points
+                    .iter()
+                    .find(|(_, p)| &p.phrase() == d)
+                    .map(|(title, _)| *title)
+            });
             let level = checks.iter().map(|c| c.level).max().unwrap_or(Level::Ok);
             Overview {
-                headline: match waiting {
-                    0 => "Tout va bien".into(),
-                    1 => "1 point à regarder".into(),
-                    n => format!("{n} points à regarder"),
-                },
-                // « Info » (désactivé, pas configuré) n'entame pas le « Tout va bien ».
+                headline: status::headline(waiting),
+                // « Info » (désactivé, pas configuré) n'entame pas le « La maison va bien. ».
                 level: if waiting == 0 { Level::Ok } else { level },
                 fix: checks
                     .iter()
                     .filter(|c| c.level.needs_attention())
                     .find_map(|c| c.fix.clone()),
+                detail,
+                detail_from,
                 checks,
             }
         }
@@ -479,12 +558,14 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::startup::Blocker;
 
     fn health(total: usize, unreachable: &[&str]) -> Health {
         Health {
             total,
             online: total - unreachable.len(),
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
+            ..Health::default()
         }
     }
 
@@ -525,24 +606,25 @@ mod tests {
                 dns: "mac.exemple.ts.net".into(),
             },
         );
-        assert_eq!(o.headline, "Tout va bien");
+        assert_eq!(o.headline, "La maison va bien.");
         assert_eq!(o.level, Level::Ok);
         assert_eq!(o.fix, None);
+        assert_eq!(o.detail, None);
         assert_eq!(
             texts(&o),
             [
                 "Appareils : 13 appareils, tous joignables",
                 "Caméras : 3 caméras en service · détection active sur 2",
-                "Accès à distance : activé (iPhone, hors de la maison)",
+                "Accès à distance : activé",
             ]
         );
     }
 
     #[test]
     fn what_is_simply_not_set_up_is_not_a_problem() {
-        // Ni appareil, ni caméra, ni accès à distance : rien à réparer, donc « Tout va bien ».
+        // Ni appareil, ni caméra, ni accès à distance : rien à réparer, donc « La maison va bien. ».
         let o = running(&health(0, &[]), &cameras(0, &[]), &WebAccess::NotInstalled);
-        assert_eq!(o.headline, "Tout va bien");
+        assert_eq!(o.headline, "La maison va bien.");
         assert_eq!(o.level, Level::Ok);
         assert_eq!(o.fix, None);
         assert!(o.checks.iter().all(|c| c.level == Level::Info));
@@ -551,7 +633,7 @@ mod tests {
             &cameras(1, &[]),
             &WebAccess::Off { dns: None },
         );
-        assert_eq!(o.headline, "Tout va bien");
+        assert_eq!(o.headline, "La maison va bien.");
     }
 
     #[test]
@@ -561,12 +643,14 @@ mod tests {
             &cameras(2, &[]),
             &WebAccess::Off { dns: None },
         );
-        assert_eq!(o.headline, "1 point à regarder");
+        assert_eq!(o.headline, "Une chose à regarder");
         assert_eq!(o.level, Level::Warn);
         assert_eq!(
             o.checks[0].text,
-            "12 sur 13 joignables · injoignable : Salon"
+            "12 sur 13 joignables · « Salon » est injoignable"
         );
+        assert_eq!(o.detail.as_deref(), Some("« Salon » est injoignable."));
+        assert_eq!(o.detail_from, Some("Appareils"));
         assert_eq!(
             o.fix,
             Some(Fix {
@@ -588,14 +672,14 @@ mod tests {
                 url: "https://login.tailscale.com/f/serve".into(),
             },
         );
-        assert_eq!(o.headline, "3 points à regarder");
+        assert_eq!(o.headline, "3 choses à regarder");
         assert_eq!(
             o.checks[0].text,
-            "1 sur 5 joignables · injoignables : A, B et 2 autres"
+            "1 sur 5 joignables · « A », « B » et 2 autres sont injoignables"
         );
         assert_eq!(
             o.checks[1].text,
-            "1 sur 3 en service · hors ligne : Entrée et Jardin · détection suspendue (le Mac est trop chaud)"
+            "1 sur 3 en service · les caméras « Entrée » et « Jardin » sont injoignables · détection suspendue (le Mac est trop chaud)"
         );
         assert_eq!(o.fix.as_ref().map(|f| f.tab), Some(Tab::Devices));
         // Le lien d'autorisation n'est jamais écrit dans le résumé.
@@ -608,13 +692,15 @@ mod tests {
             total: 8,
             online: 3,
             unreachable: vec![],
+            ..Health::default()
         };
         let o = running(&h, &cameras(0, &[]), &WebAccess::Checking);
-        assert_eq!(o.headline, "Tout va bien");
+        assert_eq!(o.headline, "La maison va bien.");
         assert_eq!(
             o.checks[0].text,
             "3 sur 8 joignables, les autres se connectent"
         );
+        assert_eq!(o.checks[0].menu_text, "3 sur 8 joignables");
     }
 
     #[test]
@@ -633,7 +719,7 @@ mod tests {
 
     #[test]
     fn only_cameras_that_answer_count_as_in_service() {
-        // 4 caméras : 1 répond, 1 éteinte dans ce mode, 1 hors ligne, 1 pas encore vérifiée.
+        // 4 caméras : 1 répond, 1 éteinte dans ce mode, 1 injoignable, 1 pas encore vérifiée.
         let mut c = cameras(4, &["Garage"]);
         c.online = 1;
         c.off = 1;
@@ -641,7 +727,7 @@ mod tests {
         assert_eq!(check.level, Level::Warn);
         assert_eq!(
             check.text,
-            "1 sur 4 en service · hors ligne : Garage · 1 éteinte dans ce mode · 1 pas encore vérifiée"
+            "1 sur 4 en service · la caméra « Garage » est injoignable · 1 éteinte dans ce mode · 1 pas encore vérifiée"
         );
         // Toutes répondent : la forme courte.
         assert_eq!(cameras_check(&cameras(2, &[])).text, "2 caméras en service");
@@ -666,59 +752,80 @@ mod tests {
                 "2 caméras en service · détection en pause un instant"
             );
             let o = running(&health(3, &[]), &c, &WebAccess::Off { dns: None });
-            assert_eq!((o.headline.as_str(), o.level), ("Tout va bien", Level::Ok));
+            assert_eq!(
+                (o.headline.as_str(), o.level),
+                ("La maison va bien.", Level::Ok)
+            );
             assert_eq!(o.fix, None);
         }
-        // La chaleur dure : elle reste un point à regarder.
+        // La chaleur dure : elle reste une chose à regarder.
         assert!(is_thermal_pause("le Mac est trop chaud"));
         let mut c = cameras(2, &[]);
         c.detection.paused = Some("le Mac est trop chaud".into());
         c.detection.thermal = true;
         let o = running(&health(3, &[]), &c, &WebAccess::Off { dns: None });
-        assert_eq!(o.headline, "1 point à regarder");
+        assert_eq!(o.headline, "Une chose à regarder");
         assert_eq!(o.fix.map(|f| f.tab), Some(Tab::Cameras));
+        // Pas de caméra injoignable : la phrase vient de la ligne elle-même.
+        assert_eq!(o.detail_from, Some("Caméras"));
     }
 
     #[test]
     fn the_devices_sentence_counts_only_those_that_answer() {
         assert_eq!(
             devices_sentence(&health(8, &[])),
-            "8 appareils sur 8 répondent au serveur."
+            "8 appareils sur 8 sont joignables."
         );
         assert_eq!(
             devices_sentence(&health(1, &[])),
-            "1 appareil sur 1 répond au serveur."
+            "1 appareil sur 1 est joignable."
+        );
+        let none = Health {
+            total: 3,
+            online: 0,
+            unreachable: vec!["Salon".into()],
+            ..Health::default()
+        };
+        assert_eq!(
+            devices_sentence(&none),
+            "Aucun appareil sur 3 n'est joignable."
         );
         assert_eq!(
             devices_sentence(&health(5, &["Salon"])),
-            "4 appareils sur 5 répondent au serveur."
+            "4 appareils sur 5 sont joignables."
         );
         // Au démarrage : rien n'est injoignable, mais tous ne répondent pas encore.
         let starting = Health {
             total: 8,
             online: 3,
             unreachable: vec![],
+            ..Health::default()
         };
         assert_eq!(
             devices_sentence(&starting),
-            "3 appareils sur 8 répondent au serveur. Les autres se connectent."
+            "3 appareils sur 8 sont joignables. Les autres se connectent."
         );
         let almost = Health {
             total: 8,
             online: 6,
             unreachable: vec!["Salon".into()],
+            ..Health::default()
         };
         assert_eq!(
             devices_sentence(&almost),
-            "6 appareils sur 8 répondent au serveur. Le dernier se connecte."
+            "6 appareils sur 8 sont joignables. Le dernier se connecte."
         );
     }
 
     #[test]
     fn a_public_funnel_is_flagged() {
         let o = running(&health(1, &[]), &cameras(0, &[]), &WebAccess::Funnel);
-        assert_eq!(o.headline, "1 point à regarder");
+        assert_eq!(o.headline, "Une chose à regarder");
         assert_eq!(o.fix.map(|f| f.tab), Some(Tab::Connect));
+        assert_eq!(
+            o.detail.as_deref(),
+            Some("Ce Mac est ouvert à tout Internet par Tailscale.")
+        );
     }
 
     #[test]
@@ -734,7 +841,11 @@ mod tests {
         assert_eq!(o.headline, "Le serveur est à l'arrêt");
         assert_eq!(o.level, Level::Error);
         assert_eq!(o.checks.len(), 1);
-        assert_eq!(o.fix.unwrap().label, "Voir comment le relancer…");
+        assert_eq!(o.fix.unwrap().label, "Voir pourquoi…");
+        assert_eq!(
+            o.detail.as_deref(),
+            Some("Le service installé utilise encore les données.")
+        );
         let o = build(
             &Phase::Problem("détail technique".into()),
             &h,
@@ -754,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uncertain_old_desktop_app_is_a_point_to_look_at() {
+    fn an_uncertain_old_desktop_app_is_something_to_look_at() {
         let o = build(
             &Phase::Running,
             &health(1, &[]),
@@ -762,8 +873,10 @@ mod tests {
             &WebAccess::Checking,
             true,
         );
-        assert_eq!(o.headline, "1 point à regarder");
+        assert_eq!(o.headline, "Une chose à regarder");
         assert!(texts(&o).iter().any(|t| t.contains("ostal")));
+        // Aucune version dans le texte : l'ancienne application, c'est tout.
+        assert!(!texts(&o).join(" ").contains("0.2"));
     }
 
     #[test]

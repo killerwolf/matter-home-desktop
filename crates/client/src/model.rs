@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use protocol::automation::RuleSet;
 use protocol::events::{Capabilities, CoverMotion};
 use protocol::home::HomePlan;
-use protocol::mode::HomeMode;
+use protocol::mode::{HomeMode, ModeSource};
 use protocol::wire::{
     CameraBehavior, CameraView, DeviceView, ErrorCode, Metric, RuleRunView, Snapshot, WireEvent,
     WireMode, WireNode, WireStatus, RULE_RUNS_KEPT,
@@ -194,7 +194,7 @@ pub enum Change {
         value: f64,
         at: f64,
     },
-    /// Un appareil devient injoignable ou revient en ligne : ligne de journal.
+    /// Un appareil devient injoignable ou redevient joignable : ligne de journal.
     Journal(String),
     PairingProgress(String),
     PairingDone {
@@ -217,7 +217,8 @@ pub enum Change {
     /// La liste des caméras (`Model::cameras`) vient de changer.
     CamerasChanged,
     /// Le mode de la maison a changé (`Model::mode` est déjà à jour) : une ligne au journal.
-    ModeChanged(HomeMode),
+    /// Le nouveau mode et, si le serveur la donne, sa source (pour le journal).
+    ModeChanged(HomeMode, Option<ModeSource>),
 }
 
 #[derive(Debug, Default)]
@@ -304,7 +305,7 @@ impl Model {
                             .unwrap_or_default()
                     )),
                     WireStatus::Online if was_unreachable => {
-                        Some(format!("{} de nouveau en ligne", d.info.name))
+                        Some(format!("{} de nouveau joignable", d.info.name))
                     }
                     _ => None,
                 };
@@ -394,9 +395,9 @@ impl Model {
                 self.detections.truncate(DETECTIONS_KEPT);
                 Change::Detection(line)
             }
-            WireEvent::ModeChanged { mode } => {
+            WireEvent::ModeChanged { mode, source } => {
                 self.mode = mode;
-                Change::ModeChanged(mode)
+                Change::ModeChanged(mode, source)
             }
             // Un événement d'un serveur plus récent : ignoré (son `seq` a déjà été compté).
             WireEvent::Unknown => Change::Nothing,
@@ -608,7 +609,7 @@ mod tests {
                     status: WireStatus::Online
                 }
             ),
-            Change::Journal("Salon de nouveau en ligne".into())
+            Change::Journal("Salon de nouveau joignable".into())
         );
     }
 

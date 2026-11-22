@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1b1b1b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f5f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b151b" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Maison">
+<meta name="apple-mobile-web-app-title" content="Ostal">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Ostal</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -20,33 +20,43 @@
 <body>
 <div id="app">
   <header id="topbar" hidden>
-    <h1 id="title">Appareils</h1>
-    <div class="topright">
-      <span id="conn" class="conn" role="status" aria-live="polite" hidden></span>
-      <button id="mode-chip" class="mode-chip" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="mode-menu" hidden></button>
-    </div>
-    <div id="mode-menu" class="mode-menu" role="menu" aria-label="Mode de la maison" hidden></div>
+    <h1 id="title" class="sr-only">Appareils</h1>
+    <picture class="brand">
+      <source srcset="logotype-sombre.svg" media="(prefers-color-scheme: dark)">
+      <img src="logotype-clair.svg" alt="Ostal" width="100" height="32">
+    </picture>
+    <button id="mode-chip" class="mode-chip" type="button" aria-haspopup="dialog" hidden></button>
   </header>
-  <main id="view" role="tabpanel" aria-labelledby="tab-devices"></main>
-  <nav id="tabs" role="tablist" aria-label="Sections" hidden>
-    <button role="tab" id="tab-devices" aria-controls="view" data-tab="devices" aria-selected="true"><span class="ico" data-ico="home"></span><span>Appareils</span></button>
-    <button role="tab" id="tab-plan" aria-controls="view" data-tab="plan" aria-selected="false"><span class="ico" data-ico="plan"></span><span>Plan</span></button>
-    <button role="tab" id="tab-temps" aria-controls="view" data-tab="temps" aria-selected="false"><span class="ico" data-ico="thermo"></span><span>Températures</span></button>
-    <button role="tab" id="tab-cameras" aria-controls="view" data-tab="cameras" aria-selected="false"><span class="ico" data-ico="camera"></span><span>Caméras</span></button>
+  <section id="lost" aria-labelledby="lost-title" hidden>
+    <h2 id="lost-title"><span class="ico" data-ico="alert"></span><span id="lost-title-text"></span></h2>
+    <p id="lost-hint"></p>
+    <button id="retry" class="primary" type="button">Réessayer</button>
+  </section>
+  <main id="view"></main>
+  <nav id="tabs" aria-label="Navigation principale" hidden>
+    <button type="button" id="tab-devices" data-tab="devices" aria-current="page"><span class="ico" data-ico="tabHome"></span><span>Appareils</span></button>
+    <button type="button" id="tab-plan" data-tab="plan"><span class="ico" data-ico="tabPlan"></span><span>Plan</span></button>
+    <button type="button" id="tab-temps" data-tab="temps"><span class="ico" data-ico="tabTemp"></span><span>Temp.</span></button>
+    <button type="button" id="tab-cameras" data-tab="cameras"><span class="ico" data-ico="tabCamera"></span><span>Caméras</span></button>
+    <button type="button" id="tab-mode" class="tab-mode" aria-haspopup="dialog"><span class="ico" id="tab-mode-icon"></span><span id="tab-mode-label">Présent</span></button>
   </nav>
 </div>
 
 <section id="login" hidden>
   <form id="login-form" method="post" autocomplete="on">
-    <h1>Ostal</h1>
-    <p class="muted">Connectez-vous avec le compte du serveur.</p>
+    <h1><picture>
+      <source srcset="logotype-sombre.svg" media="(prefers-color-scheme: dark)">
+      <img src="logotype-clair.svg" alt="Ostal" width="199" height="64">
+    </picture></h1>
+    <p id="login-intro" class="login-intro">Connectez-vous avec le compte du serveur.</p>
+    <p id="login-info" class="notice" role="status" hidden><span class="ico" data-ico="info"></span><span id="login-info-text"></span></p>
     <label>Identifiant
       <input name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
     </label>
     <label>Mot de passe
-      <input name="password" type="password" autocomplete="current-password" required>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required aria-describedby="login-error">
     </label>
-    <p id="login-error" class="error" role="alert" hidden></p>
+    <p id="login-error" class="field-error" role="alert" hidden><span class="ico" data-ico="errorX"></span><span id="login-error-text"></span></p>
     <button type="submit" class="primary">Se connecter</button>
   </form>
 </section>
@@ -60,6 +70,17 @@
   </header>
   <div id="sheet-body"></div>
 </aside>
+
+<div id="confirm" hidden>
+  <div class="confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button id="confirm-cancel" type="button">Annuler</button>
+      <button id="confirm-ok" type="button"></button>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="app.js"></script>
 </body>

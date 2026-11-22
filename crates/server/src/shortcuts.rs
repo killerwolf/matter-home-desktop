@@ -1,7 +1,8 @@
 //! Ce que la page « Widgets et raccourcis » de l'app web installe sur l'iPhone, **déjà rempli** :
 //!
-//! - les deux raccourcis de mode (« Mode absent », « Mode present »), avec l'adresse publique du
-//!   serveur et le jeton de mode écrits dedans, puis signés par `/usr/bin/shortcuts sign` ;
+//! - les quatre raccourcis de mode (« Mode absent », « Mode present », « Mode nuit »,
+//!   « Mode vacances »), avec l'adresse publique du serveur et le jeton de mode écrits dedans,
+//!   puis signés par `/usr/bin/shortcuts sign` ;
 //! - le script du widget Scriptable, avec l'adresse et le jeton de lecture écrits dedans.
 //!
 //! Rien à taper sur l'iPhone. Les noms des raccourcis sont **sans accent** : le nom importé vient du
@@ -19,6 +20,8 @@ use rand::RngCore;
 /// Noms des raccourcis : ceux des fichiers téléchargés, et ceux que le widget appelle.
 pub const ABSENT_NAME: &str = "Mode absent";
 pub const PRESENT_NAME: &str = "Mode present";
+pub const NUIT_NAME: &str = "Mode nuit";
+pub const VACANCES_NAME: &str = "Mode vacances";
 
 /// Le script du widget, avec deux emplacements à remplir.
 const WIDGET_TEMPLATE: &str = include_str!("../web/raccourcis/ostal.js");
@@ -27,6 +30,11 @@ const TOKEN_SLOT: &str = "const TOKEN = \"__JETON_DE_LECTURE__\";";
 
 /// Délai d'une signature : elle passe par les serveurs d'Apple (compte iCloud du Mac).
 const SIGN_TIMEOUT: Duration = Duration::from_secs(25);
+/// Délai de l'ensemble des signatures. Elles se font l'une après l'autre ; la requête de l'app web
+/// n'a pas de délai à elle, mais Safari lâche une requête restée sans réponse environ une minute.
+/// Quatre signatures de 25 s feraient 100 s : on s'arrête à 55 s, avec le même message d'erreur,
+/// et rien ne change (le jeton n'est remplacé que si tout a réussi).
+const SIGN_BUDGET: Duration = Duration::from_secs(55);
 const SHORTCUTS_BIN: &str = "/usr/bin/shortcuts";
 
 /// Le raccourci d'un mode.
@@ -34,16 +42,25 @@ const SHORTCUTS_BIN: &str = "/usr/bin/shortcuts";
 pub enum ModeShortcut {
     Absent,
     Present,
+    Nuit,
+    Vacances,
 }
 
 impl ModeShortcut {
-    pub const ALL: [ModeShortcut; 2] = [ModeShortcut::Absent, ModeShortcut::Present];
+    pub const ALL: [ModeShortcut; 4] = [
+        ModeShortcut::Absent,
+        ModeShortcut::Present,
+        ModeShortcut::Nuit,
+        ModeShortcut::Vacances,
+    ];
 
     /// Nom du raccourci (et du fichier, sans `.shortcut`), en ASCII.
     pub fn name(self) -> &'static str {
         match self {
             ModeShortcut::Absent => ABSENT_NAME,
             ModeShortcut::Present => PRESENT_NAME,
+            ModeShortcut::Nuit => NUIT_NAME,
+            ModeShortcut::Vacances => VACANCES_NAME,
         }
     }
 
@@ -52,6 +69,8 @@ impl ModeShortcut {
         match self {
             ModeShortcut::Absent => "absent",
             ModeShortcut::Present => "present",
+            ModeShortcut::Nuit => "nuit",
+            ModeShortcut::Vacances => "vacances",
         }
     }
 
@@ -59,13 +78,18 @@ impl ModeShortcut {
         match self {
             ModeShortcut::Absent => "Absent",
             ModeShortcut::Present => "Présent",
+            ModeShortcut::Nuit => "Nuit",
+            ModeShortcut::Vacances => "Vacances",
         }
     }
 
-    /// Couleur et pictogramme de l'icône (ceux des raccourcis d'avant).
+    /// Couleur et pictogramme de l'icône (ceux des raccourcis d'avant). Nuit et Vacances
+    /// reprennent ceux d'Absent : on n'invente ni couleur ni glyphe sans l'accord d'Hamdi.
     fn icon(self) -> (i64, i64) {
         match self {
-            ModeShortcut::Absent => (4292093695, 59446),
+            ModeShortcut::Absent | ModeShortcut::Nuit | ModeShortcut::Vacances => {
+                (4292093695, 59446)
+            }
             ModeShortcut::Present => (431817727, 59511),
         }
     }
@@ -421,11 +445,48 @@ impl Signer {
     /// Signe un raccourci (plist XML) et rend le fichier `.shortcut`. Bloquant (quelques secondes) :
     /// à appeler hors des threads du réseau. Aucun contenu (ni jeton) dans les erreurs ni le journal.
     pub fn sign(self, plist: &str) -> Result<Vec<u8>, ApiError> {
+        self.sign_within(plist, SIGN_TIMEOUT)
+    }
+
+    fn sign_within(self, plist: &str, timeout: Duration) -> Result<Vec<u8>, ApiError> {
         match self {
             Signer::Unsigned => Ok(plist.as_bytes().to_vec()),
-            Signer::Apple => sign_with(Path::new(SHORTCUTS_BIN), plist, SIGN_TIMEOUT),
+            Signer::Apple => sign_with(Path::new(SHORTCUTS_BIN), plist, timeout),
         }
     }
+
+    /// Les raccourcis de `ModeShortcut::ALL`, remplis puis signés l'un après l'autre : `(nom de
+    /// fichier, contenu)`. Un échec, ou le délai total ([`SIGN_BUDGET`]), annule tout.
+    pub fn sign_mode_shortcuts(
+        self,
+        address: &str,
+        token: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, ApiError> {
+        sign_all(SIGN_BUDGET, |which, timeout| {
+            self.sign_within(&mode_shortcut_plist(which, address, token), timeout)
+        })
+    }
+}
+
+/// Signe tous les raccourcis avec `sign(raccourci, délai restant)`, sans dépasser `budget` en tout.
+fn sign_all(
+    budget: Duration,
+    mut sign: impl FnMut(ModeShortcut, Duration) -> Result<Vec<u8>, ApiError>,
+) -> Result<Vec<(String, Vec<u8>)>, ApiError> {
+    let deadline = Instant::now() + budget;
+    let mut files = Vec::with_capacity(ModeShortcut::ALL.len());
+    for which in ModeShortcut::ALL {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            log::error!(
+                "signature des raccourcis : délai total de {}s dépassé",
+                budget.as_secs()
+            );
+            return Err(sign_error("délai dépassé"));
+        }
+        files.push((which.file_name(), sign(which, left.min(SIGN_TIMEOUT))?));
+    }
+    Ok(files)
 }
 
 fn sign_with(program: &Path, plist: &str, timeout: Duration) -> Result<Vec<u8>, ApiError> {
@@ -684,6 +745,79 @@ mod tests {
         );
     }
 
+    /// Chaque raccourci envoie une clé de mode que le serveur connaît, et dit le bon mode.
+    #[test]
+    fn every_shortcut_sends_a_known_mode_and_says_it() {
+        use protocol::mode::HomeMode;
+        assert_eq!(ModeShortcut::ALL.len(), HomeMode::ALL.len());
+        for which in ModeShortcut::ALL {
+            let mode = HomeMode::from_key(which.mode()).expect("clé de mode connue");
+            assert_eq!(which.label(), mode.label());
+            let xml = mode_shortcut_plist(which, "https://m.ts.net", TOKEN);
+            assert!(xml.contains(&format!("<string>{}</string>", mode.key())));
+            assert!(xml.contains(&format!("Maison en mode {}.", mode.label())));
+            assert_eq!(which.file_name(), format!("{}.shortcut", which.name()));
+        }
+        // Nuit et Vacances reprennent l'icône d'Absent.
+        assert_eq!(ModeShortcut::Nuit.icon(), ModeShortcut::Absent.icon());
+        assert_eq!(ModeShortcut::Vacances.icon(), ModeShortcut::Absent.icon());
+    }
+
+    #[test]
+    fn four_shortcuts_are_prepared_and_signed_within_the_total_budget() {
+        // Sans signature (essais) : quatre fichiers, dans l'ordre, chacun avec son mode.
+        let files = Signer::Unsigned
+            .sign_mode_shortcuts("https://m.ts.net", TOKEN)
+            .unwrap();
+        let names: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Mode absent.shortcut",
+                "Mode present.shortcut",
+                "Mode nuit.shortcut",
+                "Mode vacances.shortcut"
+            ]
+        );
+        assert!(String::from_utf8_lossy(&files[3].1).contains("<string>vacances</string>"));
+        // Chaque signature reçoit au plus SIGN_TIMEOUT, et moins quand le budget fond.
+        let mut asked = Vec::new();
+        let files = sign_all(Duration::from_secs(55), |_, left| {
+            asked.push(left);
+            Ok(b"x".to_vec())
+        })
+        .unwrap();
+        assert_eq!(files.len(), 4);
+        assert!(asked.iter().all(|d| *d <= SIGN_TIMEOUT));
+        assert!(asked
+            .windows(2)
+            .all(|w| w[1] <= w[0] + Duration::from_millis(1)));
+        // Budget épuisé : erreur claire, avant toute signature.
+        let mut called = false;
+        let e = sign_all(Duration::ZERO, |_, _| {
+            called = true;
+            Ok(vec![])
+        })
+        .unwrap_err();
+        assert!(!called);
+        assert_eq!(e.code, ErrorCode::Unavailable);
+        assert!(e.detail.as_deref().unwrap().contains("Rien n'a changé"));
+        // Un échec en route annule tout.
+        let mut n = 0;
+        assert!(sign_all(Duration::from_secs(55), |_, _| {
+            n += 1;
+            if n == 3 {
+                Err(sign_error("essai"))
+            } else {
+                Ok(vec![])
+            }
+        })
+        .is_err());
+        assert_eq!(n, 3);
+        // Le budget total laisse la place de quatre signatures « normales » (quelques secondes).
+        assert!(SIGN_BUDGET >= 4 * Duration::from_secs(10) && SIGN_BUDGET >= SIGN_TIMEOUT);
+    }
+
     #[test]
     fn the_plist_is_well_formed_for_plutil() {
         // `plutil -lint` (macOS) relit le fichier comme le ferait `shortcuts sign`.
@@ -692,19 +826,21 @@ mod tests {
             return;
         }
         let dir = PrivateDir::create().unwrap();
-        let file = dir.0.join("essai.shortcut");
-        let xml = mode_shortcut_plist(ModeShortcut::Absent, "https://m.ts.net", TOKEN);
-        write_private(&file, xml.as_bytes()).unwrap();
-        let out = Command::new(plutil)
-            .arg("-lint")
-            .arg(&file)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
+        for which in ModeShortcut::ALL {
+            let file = dir.0.join(which.file_name());
+            let xml = mode_shortcut_plist(which, "https://m.ts.net", TOKEN);
+            write_private(&file, xml.as_bytes()).unwrap();
+            let out = Command::new(plutil)
+                .arg("-lint")
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{which:?} : {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        }
     }
 
     #[test]
@@ -713,9 +849,12 @@ mod tests {
             assert!(which.name().is_ascii());
         }
         let page = include_str!("../web/widgets.js");
-        assert!(
-            page.contains(&format!("\"{ABSENT_NAME}\""))
-                && page.contains(&format!("\"{PRESENT_NAME}\""))
+        for which in ModeShortcut::ALL {
+            assert!(page.contains(&format!("\"{}\"", which.name())), "{which:?}");
+        }
+        assert_eq!(
+            ModeShortcut::ALL.map(ModeShortcut::name),
+            ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"]
         );
         assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_ABSENT = \"{ABSENT_NAME}\";")));
         assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_PRESENT = \"{PRESENT_NAME}\";")));

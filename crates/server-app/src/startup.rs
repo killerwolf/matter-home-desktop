@@ -137,28 +137,54 @@ impl Blocker {
         }
     }
 
-    /// Quelques mots pour le menu.
+    /// Une phrase pour le menu et le titre de la fenêtre.
     pub fn short(&self) -> &'static str {
         match self {
-            Blocker::OtherApp => "déjà ouvert",
-            Blocker::Service => "le service installé tient les données",
-            Blocker::OtherServer => "un autre serveur tient les données",
-            Blocker::OldApp => "l'ancienne application Matter Home Server tourne",
-            Blocker::Unknown => "les données sont utilisées ailleurs",
-            Blocker::DesktopV02 => "l'ancienne application de bureau tourne",
+            Blocker::OtherApp => "Ostal Server est déjà ouvert.",
+            Blocker::Service => "Le service installé utilise encore les données.",
+            Blocker::OtherServer => "Un autre serveur utilise les données.",
+            Blocker::OldApp => "L'ancienne application tient encore les données.",
+            Blocker::Unknown => "Les données sont utilisées ailleurs.",
+            Blocker::DesktopV02 => "L'ancienne application de bureau tourne.",
         }
     }
 
-    /// L'explication complète, avec la marche à suivre.
-    pub fn explain(&self) -> String {
+    /// Pourquoi, et quoi faire : le texte de la carte de la fenêtre (les commandes à taper sont
+    /// à part, voir [`Blocker::commands`]).
+    pub fn advice(&self) -> &'static str {
         match self {
-            Blocker::OtherApp => "Ostal Server est déjà ouvert : cherchez son icône dans la barre de menus.".into(),
-            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Pour passer à cette application : ouvrez le Terminal une seule fois, allez dans le dossier de l'archive du serveur (celui où se trouve « uninstall.sh ») et lancez « ./uninstall.sh » : il demande le mot de passe administrateur du Mac, et vos données restent en place. Si ce dossier n'existe plus, retéléchargez l'archive sur la page des versions, ou tapez ces deux commandes : « sudo launchctl bootout system/dev.ostal.server-daemon » puis « sudo rm -f /Library/LaunchDaemons/dev.ostal.server-daemon.plist /usr/local/bin/ostal-server » (pour un service installé avec Matter Home : « sudo launchctl bootout system/dev.matter-home-desktop.server » puis « sudo rm -f /Library/LaunchDaemons/dev.matter-home-desktop.server.plist /usr/local/bin/matter-home-server »). Rouvrez ensuite Ostal Server. Rien n'est démarré en attendant.".into(),
-            Blocker::OtherServer => "Un autre serveur Ostal (lancé à la main) utilise déjà les données. Arrêtez-le, puis rouvrez Ostal Server. Rien n'est démarré en attendant.".into(),
-            Blocker::OldApp => "L'ancienne application Matter Home Server est encore ouverte. Quittez-la (son icône dans la barre de menus → Quitter) : Ostal Server reprend alors ses données (une copie, l'ancien dossier reste intact) et démarre. Rien n'est démarré en attendant. Supprimez ensuite « Matter Home Server » du dossier Applications.".into(),
-            Blocker::Unknown => "Les données sont déjà utilisées par un autre programme Ostal. Fermez-le, puis rouvrez Ostal Server. Rien n'est démarré en attendant.".into(),
-            Blocker::DesktopV02 => "L'ancienne application de bureau (version 0.2) est ouverte. Elle ne signale pas qu'elle utilise les données : si le serveur démarrait en même temps, les deux se disputeraient vos appareils. Fermez-la (sur tous vos Mac), le serveur démarrera alors tout seul. Au démarrage, même message si l'application de bureau a été mise à jour pendant qu'elle était ouverte, ou si on ne peut pas savoir laquelle tourne : fermez-la puis rouvrez-la. Le client Ostal V1 n'est pas concerné.".into(),
+            Blocker::OtherApp => "Ostal Server est déjà ouvert : cherchez son icône dans la barre de menus.",
+            Blocker::Service => "Le serveur est déjà installé sur ce Mac comme service (ancienne méthode, au Terminal) et il utilise les données. Ouvrez le Terminal une seule fois, allez dans le dossier de l'archive (celui où se trouve uninstall.sh) et lancez la commande ci-dessous : elle demande le mot de passe administrateur, et vos données restent en place. Rouvrez ensuite Ostal Server.",
+            Blocker::OtherServer => "Un autre serveur lancé à la main utilise les données : arrêtez-le, puis réessayez.",
+            Blocker::OldApp => "L'ancienne application Matter Home Server est encore ouverte. Quittez-la depuis son icône de la barre de menus. Ostal Server reprend alors ses données, sous forme de copie : l'ancien dossier reste intact. Supprimez ensuite « Matter Home Server » du dossier Applications.",
+            Blocker::Unknown => "Un autre programme Ostal utilise les données : fermez-le, puis réessayez.",
+            Blocker::DesktopV02 => "L'ancienne application de bureau est ouverte. Fermez-la sur tous vos Mac : le serveur démarrera alors tout seul.",
         }
+    }
+
+    /// Les commandes à recopier dans le Terminal, quand il y en a. La première est celle du
+    /// dossier de l'archive ; les suivantes servent si ce dossier n'existe plus.
+    pub fn commands(&self) -> Vec<String> {
+        match self {
+            Blocker::Service => vec![
+                "./uninstall.sh".into(),
+                "sudo launchctl bootout system/dev.ostal.server-daemon".into(),
+                format!("sudo rm -f {SERVICE_PLIST} /usr/local/bin/ostal-server"),
+                "sudo launchctl bootout system/dev.matter-home-desktop.server".into(),
+                format!("sudo rm -f {LEGACY_SERVICE_PLIST} /usr/local/bin/matter-home-server"),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Le texte complet, pour le journal : la marche à suivre puis les commandes.
+    pub fn explain(&self) -> String {
+        let mut text = self.advice().to_string();
+        for command in self.commands() {
+            text.push_str(&format!("\n  {command}"));
+        }
+        text.push_str("\nRien n'est démarré en attendant.");
+        text
     }
 }
 
@@ -478,15 +504,16 @@ mod tests {
 
     #[test]
     fn explanations_give_the_way_out() {
-        assert!(Blocker::Service.explain().contains("./uninstall.sh"));
-        assert!(Blocker::Service.explain().contains("données restent"));
+        assert_eq!(Blocker::Service.commands()[0], "./uninstall.sh");
+        assert!(Blocker::Service.advice().contains("données restent"));
         assert!(Blocker::Service
             .explain()
             .contains("mot de passe administrateur"));
         // Le dossier de l'archive a pu disparaître : les commandes équivalentes sont données.
         assert!(Blocker::Service.explain().contains("launchctl bootout"));
         assert!(Blocker::Service.explain().contains(SERVICE_PLIST));
-        assert!(Blocker::DesktopV02.explain().contains("version 0.2"));
+        assert!(Blocker::DesktopV02.advice().contains("Fermez-la"));
+        assert!(Blocker::OtherServer.commands().is_empty());
     }
 
     const PS: &str = "    1    05-03:04:05 /sbin/launchd\n  501       01:02 /Applications/Ostal Server.app/Contents/MacOS/ostal-server-app\n  777    12:00:01 /usr/local/bin/ostal-server\n  900       45:10 /Applications/Ostal.app/Contents/MacOS/ostal\nbruit\n";
@@ -537,7 +564,7 @@ mod tests {
         // Sans numéro lisible, un ancien serveur lancé à la main compte comme un autre serveur.
         assert_eq!(classify_holder(None, &procs, false), Holder::OtherServer);
         let b = Blocker::from_holder(Holder::OldApp);
-        assert!(b.explain().contains("Quittez-la"), "{}", b.explain());
+        assert!(b.advice().contains("Quittez-la"), "{}", b.advice());
     }
 
     const APP: &str = "/Applications/Matter Home Desktop.app/Contents/MacOS/matter-home-desktop";

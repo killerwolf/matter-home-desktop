@@ -4,8 +4,9 @@
 
 // ─────────────────────────────────────────────────────────────
 //  Ostal — widget Scriptable (petit et moyen)
-//  Montre : le mode de la maison, les lumières allumées,
-//  la dernière alerte. Rien à modifier : l'adresse du serveur et
+//  Montre : le mode de la maison, une phrase d'état, les lumières
+//  allumées, et deux boutons (Absent, Présent). Rien à modifier :
+//  l'adresse du serveur et
 //  le jeton de lecture sont écrits ci-dessous par l'app web
 //  (« Widgets et raccourcis » › « Installer le widget »).
 //  Le jeton de lecture ne permet que de lire l'état : ni appareils,
@@ -18,28 +19,37 @@ const TOKEN = "__JETON_DE_LECTURE__";
 
 // Noms exacts des raccourcis installés par l'app web (sans accent : iOS
 // enregistre les accents d'un nom de fichier d'une façon que le lien
-// shortcuts:// ne retrouve pas).
+// shortcuts:// ne retrouve pas). Le widget n'a que deux boutons : Nuit et
+// Vacances sont des raccourcis à lancer depuis l'app Raccourcis ou l'app web.
 const RACCOURCI_ABSENT = "Mode absent";
 const RACCOURCI_PRESENT = "Mode present";
 
 const NOM_SCRIPT = Script.name(); // « Ostal »
 const CACHE = "ostal-cache.json";
 
+// Présent est en Lueur ; les autres modes en accent (charte « Nuit et Lueur »).
 const MODES = {
-  present: { label: "Présent", symbol: "house.fill", light: "#1f8a4c", dark: "#4ccf7f" },
-  absent: { label: "Absent", symbol: "lock.fill", light: "#c2410c", dark: "#fb923c" },
-  nuit: { label: "Nuit", symbol: "moon.fill", light: "#4338ca", dark: "#a5b4fc" },
-  vacances: { label: "Vacances", symbol: "airplane", light: "#0369a1", dark: "#7dd3fc" },
+  present: { label: "Présent", symbol: "house.fill" },
+  absent: { label: "Absent", symbol: "lock.fill" },
+  nuit: { label: "Nuit", symbol: "moon.fill" },
+  vacances: { label: "Vacances", symbol: "airplane" },
 };
-const CLASSES = { personne: "Personne", chat: "Chat", chien: "Chien", vehicule: "Véhicule" };
 
+const dyn = (clair, sombre) => Color.dynamic(new Color(clair), new Color(sombre));
 const C = {
-  bg: Color.dynamic(new Color("#ffffff"), new Color("#1c1c1e")),
-  text: Color.dynamic(new Color("#111111"), new Color("#f2f2f7")),
-  dim: Color.dynamic(new Color("#6b6b70"), new Color("#a1a1a8")),
-  warn: Color.dynamic(new Color("#b45309"), new Color("#fbbf24")),
-  bad: Color.dynamic(new Color("#b91c1c"), new Color("#f87171")),
-  btn: Color.dynamic(new Color("#f1f1f4"), new Color("#2c2c2e")),
+  bg: dyn("#ffffff", "#12202a"),
+  text: dyn("#10232d", "#e8eef1"),
+  dim: dyn("#50626b", "#9aacb5"),
+  line: dyn("#d3dce0", "#2a3c47"),
+  btn: dyn("#e9eef0", "#192a35"),
+  warn: dyn("#b4500e", "#f08a3c"),
+  bad: dyn("#b42318", "#f27066"),
+  ok: dyn("#1f7a46", "#4cc07e"),
+  lueur: dyn("#f5b33f", "#ffc35a"),
+  lueurTexte: dyn("#8a5a00", "#ffc35a"),
+  surLueur: new Color("#10232d"),
+  accent: dyn("#0b6a94", "#5fb6de"),
+  accentSoft: dyn("#e2f0f6", "#12303d"),
 };
 
 // ───────── Réglages ─────────
@@ -100,12 +110,6 @@ function estLumiere(d) {
 
 async function lireEtat() {
   const state = await api("/api/state");
-  let events = [];
-  try {
-    const ev = await api("/api/events?limit=1");
-    events = (ev && ev.events) || [];
-  } catch (e) { /* détection absente ou indisponible : on s'en passe */ }
-
   const devices = state.devices || [];
   const lumieres = devices.filter(estLumiere);
   const allumees = lumieres.filter((d) => latest(d, "on_off") === 1 && (d.status || {}).state !== "unreachable");
@@ -114,33 +118,12 @@ async function lireEtat() {
     const b = latest(d, "battery");
     return latest(d, "battery_low") === 1 || (b !== null && b < 15);
   }).length;
-
-  // Une « alerte » = une règle qui notifie (Notify), ou n'importe quelle règle en échec.
-  // Les règles ordinaires (« à 23:00, passer en Nuit ») ne comptent pas.
-  const notifiantes = new Set(
-    ((state.rules && state.rules.rules) || [])
-      .filter((r) => (r.actions || []).some((a) => a.type === "Notify"))
-      .map((r) => String(r.id))
-  );
-  let alerte = null;
-  for (const r of state.rule_runs || []) {
-    if (r.ok && !notifiantes.has(String(r.rule_id))) continue;
-    if (!alerte || r.at > alerte.at) alerte = { at: r.at, texte: r.name, ok: r.ok };
-  }
-  for (const e of events) {
-    const at = e.end || e.start;
-    if (!alerte || at > alerte.at) {
-      const quoi = CLASSES[(e.classes || [])[0]] || "Détection";
-      alerte = { at, texte: quoi + " · " + e.camera_name, ok: true };
-    }
-  }
   return {
     mode: state.mode || null,
     lumieres: lumieres.length,
     allumees: allumees.length,
     injoignables,
     piles,
-    alerte,
     lu: Date.now(),
   };
 }
@@ -196,65 +179,85 @@ function symbole(stack, name, size, color) {
   return img;
 }
 function modeInfo(mode) {
-  const m = MODES[mode] || { label: mode ? mode : "—", symbol: "house", light: "#555555", dark: "#bbbbbb" };
-  return { ...m, color: Color.dynamic(new Color(m.light), new Color(m.dark)) };
+  const m = MODES[mode] || { label: mode ? mode : "—", symbol: "house" };
+  return { ...m, color: mode === "present" ? C.lueurTexte : C.accent };
 }
 
-// Colonne « état » (sert au petit et au moyen widget).
-function colonneEtat(parent, s, note) {
-  const col = parent.addStack();
-  col.layoutVertically();
+// Le titre de la phrase d'état : la même règle que partout (protocol::status::headline,
+// tiles.js). Un « point » est une catégorie à regarder, pas un appareil : deux lampes
+// injoignables font « Une chose à regarder ».
+function titreEtat(points) {
+  if (points === 0) return "La maison va bien.";
+  if (points === 1) return "Une chose à regarder";
+  if (points === 2) return "Deux choses à regarder";
+  return points + " choses à regarder";
+}
+// Le jeton de lecture ne donne pas les caméras : le widget ne compte que les appareils.
+const pointsEtat = (s) => (s.injoignables > 0 ? 1 : 0);
 
-  const top = col.addStack();
+// En-tête : « Ostal » à gauche, pastille du mode à droite.
+function entete(parent, s) {
+  const top = parent.addStack();
   top.centerAlignContent();
+  texte(top, "Ostal", 11, C.dim, { bold: true });
+  top.addSpacer();
   const m = modeInfo(s.mode);
-  symbole(top, m.symbol, 14, m.color);
-  top.addSpacer(5);
-  texte(top, "Maison", 13, C.dim, { bold: true });
-  col.addSpacer(4);
+  if (s.mode === "present") symbole(top, "circle.fill", 10, C.lueur);
+  else symbole(top, m.symbol, 12, m.color);
+  top.addSpacer(6);
+  texte(top, s.mode ? m.label : "Mode inconnu", 13, m.color, { bold: true });
+}
 
-  texte(col, s.mode ? m.label : "Mode inconnu", 24, m.color, { bold: true });
-  col.addSpacer(4);
+// Phrase d'état puis « 1 lumière allumée · 1 injoignable » (sert au petit et au moyen widget).
+function corpsEtat(parent, s) {
+  const points = pointsEtat(s);
+  const t = parent.addStack();
+  t.centerAlignContent();
+  symbole(t, points === 0 ? "checkmark.circle" : "exclamationmark.triangle", 16, points === 0 ? C.ok : C.warn);
+  t.addSpacer(6);
+  texte(t, titreEtat(points), 15, points === 0 ? C.text : C.warn, { bold: true, lines: 2 });
+  parent.addSpacer(6);
 
-  const l = col.addStack();
+  const l = parent.addStack();
   l.centerAlignContent();
-  symbole(l, s.allumees > 0 ? "lightbulb.fill" : "lightbulb", 12, s.allumees > 0 ? C.warn : C.dim);
-  l.addSpacer(4);
+  symbole(l, s.allumees > 0 ? "lightbulb.fill" : "lightbulb", 14, s.allumees > 0 ? C.lueurTexte : C.dim);
+  l.addSpacer(5);
   const lt = s.lumieres === 0 ? "Aucune lumière"
     : s.allumees === 0 ? "Tout est éteint"
     : plural(s.allumees, "lumière allumée", "lumières allumées");
-  texte(l, lt, 12, C.text);
-
-  if (s.injoignables || s.piles) {
-    col.addSpacer(2);
-    const parts = [];
-    if (s.injoignables) parts.push(plural(s.injoignables, "injoignable", "injoignables"));
-    if (s.piles) parts.push(plural(s.piles, "pile faible", "piles faibles"));
-    texte(col, "⚠︎ " + parts.join(" · "), 11, C.warn);
+  texte(l, lt, 13, C.text);
+  const alertes = [];
+  if (s.injoignables) alertes.push(s.injoignables + " injoignable" + (s.injoignables > 1 ? "s" : ""));
+  if (s.piles) alertes.push(plural(s.piles, "pile faible", "piles faibles"));
+  if (alertes.length) {
+    l.addSpacer(10);
+    symbole(l, "nosign", 14, C.warn);
+    l.addSpacer(4);
+    texte(l, alertes.join(" · "), 13, C.warn, { bold: true });
   }
-
-  col.addSpacer(4);
-  if (s.alerte) {
-    texte(col, s.alerte.texte, 11, s.alerte.ok ? C.text : C.bad, { lines: 2 });
-    texte(col, heure(s.alerte.at * 1000), 10, C.dim);
-  } else {
-    texte(col, "Aucune alerte récente", 11, C.dim);
-  }
-  col.addSpacer();
-  texte(col, note, 9, note.startsWith("Hors") ? C.bad : C.dim);
-  return col;
 }
 
-function bouton(parent, label, symbol, color, url) {
+// Bouton de mode : celui du mode actuel est plein (Présent en Lueur, Absent en accent doux).
+function bouton(parent, label, mode, actuel, url) {
+  const choisi = actuel === mode;
   const b = parent.addStack();
-  b.backgroundColor = C.btn;
+  b.size = new Size(150, 44);
   b.cornerRadius = 10;
-  b.setPadding(6, 8, 6, 8);
+  b.borderWidth = 1;
+  if (choisi && mode === "present") {
+    b.backgroundColor = C.lueur;
+    b.borderColor = C.lueur;
+  } else if (choisi) {
+    b.backgroundColor = C.accentSoft;
+    b.borderColor = C.accent;
+  } else {
+    b.backgroundColor = C.btn;
+    b.borderColor = C.line;
+  }
   b.centerAlignContent();
   b.url = url;
-  symbole(b, symbol, 13, color);
-  b.addSpacer(6);
-  texte(b, label, 13, C.text, { bold: true });
+  b.addSpacer();
+  texte(b, label, 15, choisi && mode === "present" ? C.surLueur : C.text, { bold: true });
   b.addSpacer();
   return b;
 }
@@ -263,40 +266,35 @@ function widgetMessage(titre, detail, url) {
   const w = new ListWidget();
   w.backgroundColor = C.bg;
   w.setPadding(14, 14, 14, 14);
-  const top = w.addStack();
-  top.centerAlignContent();
-  symbole(top, "house", 14, C.dim);
-  top.addSpacer(5);
-  texte(top, "Maison", 13, C.dim, { bold: true });
+  texte(w, "Ostal", 11, C.dim, { bold: true });
   w.addSpacer(8);
-  texte(w, titre, 15, C.text, { bold: true, lines: 2 });
+  texte(w, titre, 15, C.warn, { bold: true, lines: 2 });
   w.addSpacer(4);
-  texte(w, detail, 11, C.dim, { lines: 4 });
+  texte(w, detail, 12, C.dim, { lines: 4 });
   w.addSpacer();
   w.url = url;
   return w;
 }
 
-function construireWidget(family, s, note) {
+function construireWidget(family, s, note, perime) {
   const w = new ListWidget();
   w.backgroundColor = C.bg;
   w.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000);
+  w.setPadding(12, 14, 12, 14);
+  entete(w, s);
+  w.addSpacer(8);
+  corpsEtat(w, s);
   if (family === "medium" || family === "large") {
-    w.setPadding(12, 14, 12, 12);
+    // Deux boutons seulement : Absent et Présent (Nuit et Vacances : raccourcis).
+    w.addSpacer(8);
     const row = w.addStack();
-    colonneEtat(row, s, note);
-    row.addSpacer(10);
-    const btns = row.addStack();
-    btns.layoutVertically();
-    btns.size = new Size(130, 0);
-    bouton(btns, "Absent", MODES.absent.symbol, modeInfo("absent").color, shortcutUrl(RACCOURCI_ABSENT));
-    btns.addSpacer(6);
-    bouton(btns, "Présent", MODES.present.symbol, modeInfo("present").color, shortcutUrl(RACCOURCI_PRESENT));
-    btns.addSpacer();
-  } else {
-    w.setPadding(12, 14, 12, 12);
-    colonneEtat(w, s, note);
+    bouton(row, "Absent", "absent", s.mode, shortcutUrl(RACCOURCI_ABSENT));
+    row.addSpacer();
+    bouton(row, "Présent", "present", s.mode, shortcutUrl(RACCOURCI_PRESENT));
   }
+  w.addSpacer();
+  // 11 pt : jamais sous 10.
+  texte(w, note, 11, perime ? C.warn : C.dim);
   // Toucher le fond du widget ouvre l'app web Ostal.
   const base = serveur();
   w.url = base ? base + "/app/" : scriptUrl();
@@ -305,6 +303,9 @@ function construireWidget(family, s, note) {
 
 // ───────── Messages ─────────
 
+const MAISON_NE_REPOND_PAS = "La maison ne répond pas.";
+const VERIFIER_LE_MAC = "Vérifie que le Mac est allumé et que Tailscale est activé.";
+
 function messageErreur(e) {
   if (e instanceof HttpError) {
     if (e.status === 0 && e.message === "pas_installe") return "Widget pas installé : copie-le depuis l'app web (Widgets et raccourcis › Installer le widget).";
@@ -312,7 +313,7 @@ function messageErreur(e) {
     if (e.status === 426) return "Version du serveur différente : mets à jour Ostal.";
     return "Le serveur a répondu une erreur (" + e.status + (e.message ? ", " + e.message : "") + ").";
   }
-  return "Serveur injoignable. Vérifie que Tailscale est activé sur l'iPhone et que le Mac est allumé.";
+  return MAISON_NE_REPOND_PAS + " " + VERIFIER_LE_MAC;
 }
 
 async function info(msg) {
@@ -327,11 +328,11 @@ async function etatPourWidget() {
   try {
     const s = await lireEtat();
     ecrireCache(s);
-    return { s, note: "À jour à " + heure(s.lu) };
+    return { s, note: "À jour à " + heure(s.lu), perime: false };
   } catch (e) {
     const cache = lireCache();
     if (e instanceof HttpError && (e.status === 401 || e.status === 0)) return { erreur: e };
-    if (cache) return { s: cache, note: "Hors ligne · lu à " + heure(cache.lu) };
+    if (cache) return { s: cache, note: "injoignable · lu à " + heure(cache.lu), perime: true };
     return { erreur: e };
   }
 }
@@ -341,9 +342,12 @@ async function rendreWidget(family) {
   if (r.erreur) {
     const auth = r.erreur instanceof HttpError && (r.erreur.status === 401 || r.erreur.status === 0);
     const base = serveur();
-    return widgetMessage(auth ? "Widget à recopier" : "Serveur injoignable", messageErreur(r.erreur), base ? base + "/app/" : scriptUrl());
+    const reseau = !(r.erreur instanceof HttpError);
+    const titre = auth ? "Widget à recopier" : reseau ? MAISON_NE_REPOND_PAS : "Le serveur a un souci";
+    const detail = reseau ? VERIFIER_LE_MAC : messageErreur(r.erreur);
+    return widgetMessage(titre, detail, base ? base + "/app/" : scriptUrl());
   }
-  return construireWidget(family, r.s, r.note);
+  return construireWidget(family, r.s, r.note, r.perime);
 }
 
 // ───────── Point d'entrée ─────────

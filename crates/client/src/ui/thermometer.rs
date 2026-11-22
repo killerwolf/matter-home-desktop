@@ -9,7 +9,7 @@ use super::{ago, Device, ViewRequests};
 use ostal_client::series::{compute_stats, DeviceSeries, Series, TimeWindow};
 use protocol::events::now_unix;
 use protocol::format::{format_humidity, format_temperature};
-use protocol::wire::{Metric, WireMode};
+use protocol::wire::Metric;
 
 pub(super) fn local_time(t: f64, with_seconds: bool) -> String {
     chrono::DateTime::from_timestamp(t as i64, 0)
@@ -54,124 +54,43 @@ pub fn show(
     let now = now_unix();
     let empty = Series::default();
     let temperature = series.get(Metric::Temperature).unwrap_or(&empty);
-    let humidity = series.get(Metric::Humidity).unwrap_or(&empty);
 
-    // Valeur actuelle (celle de l'état complet, tenue à jour par les événements).
-    ui.horizontal(|ui| {
-        match device.temperature() {
-            Some(s) => {
-                ui.label(
-                    RichText::new(format_temperature(s.value))
-                        .size(56.0)
-                        .strong()
-                        .color(pal.series_temperature),
-                );
-            }
-            None => {
-                ui.label(
-                    RichText::new("— °C")
-                        .size(56.0)
-                        .strong()
-                        .color(pal.text_secondary),
-                );
-            }
-        }
-        if device.info.caps.humidity || device.humidity().is_some() {
-            ui.add_space(24.0);
-            let text = device
-                .humidity()
-                .map(|s| format_humidity(s.value))
-                .unwrap_or_else(|| "— %".into());
-            ui.label(
-                RichText::new(format!("💧 {text}"))
-                    .size(30.0)
-                    .color(pal.series_humidity),
-            );
-        }
-    });
-    let mut line = match device.temperature() {
+    // Valeur actuelle (celle de l'état complet, tenue à jour par les événements) : en grand,
+    // l'humidité dessous en secondaire.
+    let big = match device.temperature() {
+        Some(s) => RichText::new(format_temperature(s.value)).color(pal.text),
+        None => RichText::new("— °C").color(pal.text_secondary),
+    };
+    ui.label(big.size(theme::tokens().font.size.display).strong());
+    if device.info.caps.humidity || device.humidity().is_some() {
+        let text = device
+            .humidity()
+            .map(|s| format_humidity(s.value))
+            .unwrap_or_else(|| "— %".into());
+        ui.label(RichText::new(format!("Humidité {text}")).color(pal.text_secondary));
+    }
+    let line = match device.temperature() {
         Some(s) => format!("Mesure reçue {}", ago(now - s.at)),
         None => "En attente de la première mesure…".into(),
     };
-    match &device.mode {
-        Some(WireMode::Subscription { max_interval_s }) => {
-            line.push_str(&format!(
-                " · souscription active (rapport au moins toutes les {max_interval_s} s)"
-            ));
-        }
-        Some(WireMode::Polling { every_s }) => {
-            line.push_str(&format!(
-                " · interrogation toutes les {every_s} s (souscription impossible)"
-            ));
-        }
-        None => {}
-    }
-    ui.label(line);
+    ui.label(RichText::new(line).size(12.0).color(pal.text_secondary));
     history_status(ui, series, req);
     ui.add_space(8.0);
 
-    // Fenêtre, statistiques et export.
+    // Périodes, puis Min / Max / Moyenne sur une ligne.
     let start = window.start(now);
-    ui.horizontal(|ui| {
-        ui.label("Fenêtre :");
-        for w in TimeWindow::ALL {
-            ui.selectable_value(window, w, w.label());
-        }
-        ui.separator();
-        if ui
-            .add_enabled(
-                !temperature.is_empty() && series.loading.is_none(),
-                egui::Button::new("Exporter en CSV"),
-            )
-            .on_hover_text("Fichier produit par le serveur pour la fenêtre choisie.")
-            .clicked()
-        {
-            req.export_csv = true;
-        }
-    });
-    if let Some((ok, msg)) = export_message {
-        let color = if *ok { pal.ok } else { pal.error };
-        ui.colored_label(color, msg.as_str());
-    }
-
+    periods(ui, window);
     let temp_stats = compute_stats(temperature.since(start));
-    let hum_stats = compute_stats(humidity.since(start));
-    egui::Grid::new("stats")
-        .num_columns(5)
-        .spacing([24.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("");
-            ui.strong("Min");
-            ui.strong("Max");
-            ui.strong("Moyenne");
-            ui.strong("Points");
-            ui.end_row();
-            match temp_stats {
-                Some(st) => {
-                    ui.label("Température");
-                    ui.label(format_temperature(st.min));
-                    ui.label(format_temperature(st.max));
-                    ui.label(format_temperature(st.mean));
-                    ui.label(st.count.to_string());
-                }
-                None => {
-                    ui.label("Température");
-                    ui.label("—");
-                    ui.label("—");
-                    ui.label("—");
-                    ui.label("0");
-                }
-            }
-            ui.end_row();
-            if let Some(st) = hum_stats {
-                ui.label("Humidité");
-                ui.label(format_humidity(st.min));
-                ui.label(format_humidity(st.max));
-                ui.label(format_humidity(st.mean));
-                ui.label(st.count.to_string());
-                ui.end_row();
-            }
-        });
+    let stats = match temp_stats {
+        Some(st) => format!(
+            "Min {} · Max {} · Moyenne {}",
+            format_temperature(st.min),
+            format_temperature(st.max),
+            format_temperature(st.mean)
+        ),
+        None => "Aucune mesure sur cette période.".into(),
+    };
+    ui.label(RichText::new(stats).size(12.0).color(pal.text_secondary));
     ui.add_space(8.0);
 
     // Graphique température (axe gauche) ; l'humidité n'a pas la même échelle, elle
@@ -184,7 +103,7 @@ pub fn show(
         .max(start);
     Plot::new(("temperature_plot", device.info.node_id))
         .legend(Legend::default())
-        .height(260.0)
+        .height(200.0)
         .x_axis_formatter(|mark, _| local_time(mark.value, false))
         .y_axis_formatter(|mark, _| format!("{:.1} °C", mark.value))
         .label_formatter(|pos| {
@@ -208,4 +127,42 @@ pub fn show(
                     .width(2.0),
             );
         });
+    ui.add_space(8.0);
+    if ui
+        .add_enabled(
+            !temperature.is_empty() && series.loading.is_none(),
+            egui::Button::new("Exporter en CSV"),
+        )
+        .on_hover_text("Fichier produit par le serveur pour la période choisie.")
+        .clicked()
+    {
+        req.export_csv = true;
+    }
+    if let Some((ok, msg)) = export_message {
+        let color = if *ok { pal.ok } else { pal.error };
+        ui.colored_label(color, msg.as_str());
+    }
+}
+
+/// Les périodes en pastilles : la choisie en `accent`, les autres en `surface_alt`.
+pub(super) fn periods(ui: &mut egui::Ui, window: &mut TimeWindow) {
+    let pal = theme::palette(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for w in TimeWindow::ALL {
+            let on = *window == w;
+            let (fill, color) = if on {
+                (pal.accent, pal.on_accent)
+            } else {
+                (pal.surface_alt, pal.text)
+            };
+            let button = egui::Button::new(RichText::new(w.label()).color(color))
+                .fill(fill)
+                .corner_radius(4)
+                .min_size(egui::vec2(0.0, 26.0));
+            if ui.add(button).clicked() {
+                *window = w;
+            }
+        }
+    });
 }

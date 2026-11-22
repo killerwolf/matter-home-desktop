@@ -2,7 +2,7 @@
 
 [← Retour au README](../README.md)
 
-Onglet **« Plan de la maison »** en haut de la fenêtre.
+Onglet **« Plan »** (le deuxième, après « Appareils »).
 
 ## Consultation
 

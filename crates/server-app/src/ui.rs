@@ -32,6 +32,7 @@ use ostal_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use ostal_server_app::tailscale::{self, WebAccess};
 use ostal_server_app::{agent, icon, system};
 use ostal_theme as theme;
+use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -45,13 +46,26 @@ const VISIBLE_TICK: Duration = Duration::from_millis(500);
 
 const SLEEP_NOTE: &str = "Tant que Ostal Server est ouvert, ce Mac ne se met pas en veille tout seul (l'écran peut s'éteindre). Si vous fermez le capot d'un portable, il s'endort quand même : laissez le capot ouvert, ou branchez-le sur secteur avec un écran externe.";
 
+/// La hauteur de la barre de titre de macOS, comprise dans les 700 px de la fenêtre.
+const TITLE_BAR: f32 = 28.0;
+
+/// La hauteur de la barre d'onglets.
+const TAB_BAR: f32 = 42.0;
+
 /// `open` : l'onglet sur lequel ouvrir la fenêtre dès le lancement (`--open`, pour les essais).
 pub fn run(handle: Handle, demo: bool, open: Option<Tab>) -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Ostal Server")
-            .with_inner_size([640.0, 700.0])
-            .with_min_inner_size([560.0, 480.0])
+            // 640 × 700 comme dans les maquettes : la barre de titre de macOS (28 px) en fait
+            // partie, la zone dessinée mesure 640 × 672 ; avec la barre d'onglets de 42 px, le
+            // corps d'une page fait 630 px. Taille fixe : aucune mise en page ne s'adapte.
+            .with_inner_size([
+                theme::tokens().size.window_server_w,
+                theme::tokens().size.window_server_h - TITLE_BAR,
+            ])
+            .with_resizable(false)
+            .with_maximize_button(false)
             .with_visible(false),
         // Pas d'icône dans le Dock : l'application ne vit que dans la barre de menus (la clé
         // LSUIElement de l'Info.plist fait la même chose pour l'application installée).
@@ -209,6 +223,15 @@ enum Native {
     Sub(Submenu, Vec<Native>),
 }
 
+/// Le raccourci clavier d'une action du menu : ⌘, pour les Réglages, ⌘Q pour quitter.
+fn shortcut(action: &Action) -> Option<Accelerator> {
+    match action {
+        Action::Open(Tab::Settings) => Some(Accelerator::new(Modifiers::META, Code::Comma)),
+        Action::Quit => Some(Accelerator::new(Modifiers::META, Code::KeyQ)),
+        _ => None,
+    }
+}
+
 /// Ajoute une entrée à un menu ou à un sous-menu natif et rend l'élément gardé pour les mises à
 /// jour sur place.
 fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
@@ -228,7 +251,7 @@ fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
             enabled,
             checked: None,
         } => {
-            let item = MenuItem::with_id(action.id(), label, *enabled, None);
+            let item = MenuItem::with_id(action.id(), label, *enabled, shortcut(action));
             parent.append_item(&item);
             Native::Item(item)
         }
@@ -350,6 +373,12 @@ struct AccountForm {
     confirm: String,
 }
 
+/// La cause affichée quand un fichier choisi n'est pas une sauvegarde (le détail va au journal).
+const BACKUP_UNUSABLE: &str = "Ce fichier n'est pas une sauvegarde Ostal utilisable.";
+
+/// La cause affichée quand l'ouverture à la connexion ne peut pas être modifiée.
+const LOGIN_FAILED: &str = "Le démarrage à l'ouverture de session n'a pas pu être modifié.";
+
 /// Lit et compare une sauvegarde (hors du fil principal).
 fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, String> {
     let inspected = backup::inspect(&file).map(|s| s.describe());
@@ -362,14 +391,19 @@ fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, 
             replace_ack: false,
             stopped_ack: false,
         }),
-        (Err(e), _) | (_, Err(e)) => Err(format!(
-            "Ce fichier n'est pas une sauvegarde utilisable : {e:#}"
-        )),
+        (Err(e), _) | (_, Err(e)) => {
+            log::warn!("sauvegarde illisible : {e:#}");
+            Err(BACKUP_UNUSABLE.into())
+        }
     }
 }
 
 impl AccountForm {
     fn check(&self) -> Result<(), String> {
+        // Champs vides : une phrase simple plutôt que la règle complète du serveur.
+        if self.username.trim().is_empty() {
+            return Err("Choisissez un identifiant pour continuer.".into());
+        }
         setup::check_credentials(&self.username, &self.password)?;
         if self.password != self.confirm {
             return Err("Les deux mots de passe sont différents.".into());
@@ -378,9 +412,24 @@ impl AccountForm {
     }
 }
 
+/// Ce que « Réessayer » refait après une erreur de la fenêtre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Retry {
+    Device(u64),
+    PushEnabled(bool),
+    RevokeSubscription(String),
+    RevokeReadToken,
+    DeleteModeToken,
+    GenerateModeToken,
+    Login(bool),
+    Mode(protocol::mode::HomeMode),
+}
+
 struct App {
     handle: Handle,
     demo: bool,
+    /// Dernier débordement mesuré du contenu, en px (démo seulement).
+    last_overflow: i32,
     tray: TrayIcon,
     actions: Receiver<Action>,
     shown_menu: Vec<Entry>,
@@ -402,6 +451,10 @@ struct App {
     login_enabled: bool,
     login_checked_at: std::time::Instant,
     local_notice: Option<Notice>,
+    /// Ce que « Réessayer » refait pour l'erreur affichée (`None` : rien à reprendre).
+    local_retry: Option<Retry>,
+    /// La carte ouverte de l'onglet Connexion (une seule à la fois ; 0 : l'ordinateur).
+    connect_open: usize,
     /// Analyse d'une sauvegarde en cours (fil d'arrière-plan).
     picking: Option<Receiver<Result<Restore, String>>>,
     // Interrupteur : l'écran de fin a déjà activé l'ouverture à la connexion.
@@ -410,7 +463,7 @@ struct App {
     tab: Tab,
     /// À ouvrir dès que le serveur a fini de démarrer (`--open`).
     open_at_start: Option<Tab>,
-    /// Le résumé « est-ce que tout va bien ? » : menu, icône et vue d'ensemble le partagent.
+    /// Le résumé « la maison va bien ? » : menu, icône et vue d'ensemble le partagent.
     overview: Overview,
     cameras: CamerasUi,
     /// La page « Descriptions » (ticket n° 19), ouverte depuis l'onglet Caméras.
@@ -447,6 +500,7 @@ impl App {
         let app = Self {
             handle,
             demo,
+            last_overflow: i32::MIN,
             tray,
             actions,
             shown_menu: Vec::new(),
@@ -464,6 +518,8 @@ impl App {
             login_enabled: false,
             login_checked_at: std::time::Instant::now() - Duration::from_secs(60),
             local_notice: None,
+            local_retry: None,
+            connect_open: 0,
             login_defaulted: false,
             picking: None,
             tab: Tab::Overview,
@@ -540,7 +596,8 @@ impl App {
         match agent::apply_default(&dir, &marker, &exe, self.demo) {
             agent::DefaultOutcome::Failed(e) => {
                 log::warn!("ouverture à la connexion non activée : {e}");
-                self.local_notice = Some(Notice::Err(e));
+                self.local_notice = Some(Notice::Err(LOGIN_FAILED.into()));
+                self.local_retry = Some(Retry::Login(true));
             }
             agent::DefaultOutcome::Enabled => {
                 log::info!("ouverture à la connexion activée par défaut");
@@ -574,10 +631,18 @@ impl App {
                     .transpose()
                 {
                     Ok(_) => None,
-                    Err(e) => Some(Notice::Err(format!("{e:#}"))),
+                    Err(e) => {
+                        log::warn!("choix de démarrage non enregistré : {e:#}");
+                        Some(Notice::Err(LOGIN_FAILED.into()))
+                    }
                 };
+                self.local_retry = self.local_notice.as_ref().map(|_| Retry::Login(on));
             }
-            Err(e) => self.local_notice = Some(Notice::Err(format!("{e:#}"))),
+            Err(e) => {
+                log::warn!("démarrage à l'ouverture de session non modifié : {e:#}");
+                self.local_notice = Some(Notice::Err(LOGIN_FAILED.into()));
+                self.local_retry = Some(Retry::Login(on));
+            }
         }
         self.login_checked_at = std::time::Instant::now() - Duration::from_secs(60);
         self.refresh_login();
@@ -735,10 +800,18 @@ impl App {
     /// Change le mode de la maison (menu ou vue d'ensemble).
     fn set_mode(&mut self, st: &State, mode: protocol::mode::HomeMode) {
         if let Some(hub) = &st.hub {
-            if let Err(e) = hub.0.set_mode(mode) {
-                log::warn!("mode non changé : {e:?}");
-                self.local_notice = Some(Notice::Err("Le mode n'a pas pu être enregistré.".into()));
-            }
+            self.set_mode_on(&hub.0.clone(), mode);
+        }
+    }
+
+    /// Change le mode sur le hub ; en cas d'échec, une cause et « Réessayer ».
+    fn set_mode_on(&mut self, hub: &Arc<ostal_server::hub::Hub>, mode: protocol::mode::HomeMode) {
+        if let Err(e) = hub.set_mode(mode, protocol::mode::ModeSource::ServerApp) {
+            log::warn!("mode non changé : {e:?}");
+            self.local_notice = Some(Notice::Err(
+                "Le mode n'a pas pu être enregistré : le serveur n'a pas pu enregistrer ce changement.".into(),
+            ));
+            self.local_retry = Some(Retry::Mode(mode));
         }
     }
 
@@ -814,6 +887,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Couleur d'effacement de la fenêtre : le fond du thème actif, jamais le gris sombre d'eframe.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     fn on_exit(&mut self) {
         // Cmd+Q ou fin de session : arrêt propre du serveur avant de sortir.
         let _ = self.handle.tx.send(Cmd::Quit);
@@ -866,8 +944,14 @@ impl eframe::App for App {
             if effects.open_window {
                 self.show_window(ctx);
             }
-            // `--open` : la fenêtre s'ouvre sur l'onglet demandé dès que le serveur tourne.
-            if st.phase == Phase::Running && !self.show_done {
+            // `--open` : la fenêtre s'ouvre sur l'onglet demandé dès que le serveur tourne (ou
+            // qu'il est à l'arrêt : état Arrêt des captures).
+            let ready = match st.phase {
+                Phase::Running => !self.show_done,
+                Phase::Blocked(_) | Phase::Problem(_) => true,
+                _ => false,
+            };
+            if ready {
                 if let Some(tab) = self.open_at_start.take() {
                     self.open_tab(tab);
                     self.show_window(ctx);
@@ -898,15 +982,48 @@ impl eframe::App for App {
         let st = self.handle.snapshot();
         // Les onglets : dès que la première configuration est finie.
         if self.tabs_visible(&st) {
-            egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
+            let p = theme::palette(ui);
+            egui::Panel::top("tabs")
+                .exact_size(TAB_BAR)
+                .frame(
+                    egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(egui::Stroke::new(1.0, p.line))
+                        .inner_margin(egui::Margin::symmetric(12, 0)),
+                )
+                .show(ui, |ui| self.tab_bar(ui));
             // Onglet Caméras : l'avertissement de sécurité reste en pied de fenêtre.
             if self.tab == Tab::Cameras && st.hub.is_some() && !self.descriptions_open {
                 egui::Panel::bottom("cameras_footer").show(ui, crate::cameras_ui::footer);
             }
         }
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.content(ui, &ctx, &st));
-        });
+        // Le corps : 16 px en haut et en bas, 20 px sur les côtés (kit.md §5).
+        // Le fond est celui du thème : un cadre sans remplissage laisserait voir la couleur
+        // d'effacement de la fenêtre (gris très sombre), invisible en sombre mais noir en clair.
+        let bg = theme::palette(ui).bg;
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(bg)
+                    .inner_margin(egui::Margin::symmetric(20, 16)),
+            )
+            .show(ui, |ui| {
+                let out = egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.content(ui, &ctx, &st));
+                // Le défilement masquerait un débordement : en démo, on le mesure et on le journalise.
+                if self.demo {
+                    let overflow = (out.content_size.y - out.inner_rect.height()).round() as i32;
+                    if overflow != self.last_overflow {
+                        self.last_overflow = overflow;
+                        log::info!(
+                            "mesure : contenu {:.0} px pour {:.0} px visibles (débordement {overflow} px)",
+                            out.content_size.y,
+                            out.inner_rect.height()
+                        );
+                    }
+                }
+            });
     }
 }
 
@@ -917,7 +1034,10 @@ mod tests {
     use protocol::mode::HomeMode;
 
     fn connect_menu(address: &str, with_submenu: bool) -> Vec<Entry> {
-        let mut m = vec![Entry::Info("8 appareils en ligne".into()), Entry::Separator];
+        let mut m = vec![
+            Entry::Info("Appareils : 8 sur 8 joignables".into()),
+            Entry::Separator,
+        ];
         if with_submenu {
             m.push(Entry::Submenu {
                 label: "Connecter un client".into(),
@@ -1029,6 +1149,7 @@ mod tests {
             total: 5,
             online: 5 - unreachable.len(),
             unreachable: unreachable.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         };
         let overview = overview::build(
             &Phase::Running,
@@ -1087,7 +1208,9 @@ mod tests {
         let file = dir.join("faux.ostal");
         std::fs::write(&file, "ce n'est pas une sauvegarde").unwrap();
         let err = inspect_backup(&dir, file).err().expect("refusé");
-        assert!(err.contains("pas une sauvegarde utilisable"), "{err}");
+        // Une phrase en français : ni chemin ni erreur système (le détail va au journal).
+        assert_eq!(err, BACKUP_UNUSABLE);
+        assert!(!err.contains("faux.ostal") && !err.contains(':'), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

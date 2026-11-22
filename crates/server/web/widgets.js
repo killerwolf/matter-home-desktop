@@ -1,15 +1,17 @@
-// « Widgets et raccourcis » : installe sur l'iPhone, sans rien taper, les deux raccourcis de mode
-// et le widget Scriptable. Le serveur les prépare avec son adresse et un jeton à part :
-// - `POST /api/tokens/mode/shortcuts` : nouveau jeton de mode, deux raccourcis signés à toucher ;
+// « Widgets et raccourcis » : installe sur l'iPhone, sans rien taper, les quatre raccourcis de mode
+// (Absent, Présent, Nuit, Vacances) et le widget Scriptable. Le serveur les prépare avec son adresse
+// et un jeton à part :
+// - `POST /api/tokens/mode/shortcuts` : nouveau jeton de mode, quatre raccourcis signés à toucher ;
 // - `POST /api/tokens/read/widget` : nouveau jeton de lecture, le script du widget prérempli.
 //
 // Ici, seulement la logique sans navigateur (essai : `node --test crates/server/web/widgets.test.mjs`).
 // L'affichage est dans app.js ; le presse-papiers et l'appel à l'API sont passés en paramètre.
 
-/** Noms des deux raccourcis, sans accent : iOS enregistre un nom de fichier accentué en Unicode
+/** Noms des quatre raccourcis, sans accent : iOS enregistre un nom de fichier accentué en Unicode
  *  décomposé, et `shortcuts://run-shortcut?name=…` (composé) ne le retrouve pas. Mêmes noms dans
- *  le serveur (shortcuts.rs) et dans le widget (ostal.js). */
-export const SHORTCUT_NAMES = ["Mode absent", "Mode present"];
+ *  le serveur (shortcuts.rs, `ModeShortcut::ALL`) ; le widget (ostal.js) n'en appelle que deux,
+ *  Absent et Présent. */
+export const SHORTCUT_NAMES = ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"];
 
 /** Raccourcis et widget ne savent joindre que l'adresse en .ts.net : sur une autre (le port 8443,
  *  au certificat auto-signé), on le dit avant d'essayer. */
@@ -25,7 +27,7 @@ export function originInfo(loc) {
   };
 }
 
-/** Prépare les deux raccourcis (nouveau jeton de mode). `request` est `api.request`. */
+/** Prépare les quatre raccourcis (nouveau jeton de mode). `request` est `api.request`. */
 export async function prepareShortcuts(request, origin) {
   const result = await request("POST", "/api/tokens/mode/shortcuts", { origin });
   const shortcuts = Array.isArray(result?.shortcuts) ? result.shortcuts : [];

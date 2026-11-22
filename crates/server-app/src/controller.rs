@@ -21,8 +21,12 @@ use protocol::wire::WireStatus;
 
 use crate::sleep::SleepGuard;
 use crate::startup::{self, Blocker, Decision, Inputs, LockOutcome, SetupNeed};
-use crate::status::{Health, Phase};
+use crate::status::{Health, Listed, Phase, Unreachable};
 use crate::{agent, system};
+
+/// La cause affichée quand le serveur s'est arrêté sur une erreur (le détail va au journal).
+pub const STOPPED_AFTER_ERROR: &str =
+    "Le serveur s'est arrêté après une erreur. Réessayez, ou rouvrez Ostal Server.";
 
 pub struct Config {
     pub data_dir: PathBuf,
@@ -31,6 +35,8 @@ pub struct Config {
     pub demo: bool,
     /// En démo, passe quand même par la configuration (identité et compte).
     pub demo_setup: bool,
+    /// En démo, simule l'ancienne application encore ouverte (l'état Arrêt de la fenêtre).
+    pub demo_blocked: bool,
     /// Dossier jetable créé par l'application, supprimé à la sortie.
     pub temp_data_dir: bool,
     pub log_path: PathBuf,
@@ -333,6 +339,10 @@ impl Controller {
             s.hub = None;
         });
         let demo_skips_setup = self.cfg.demo && !self.cfg.demo_setup;
+        if self.cfg.demo && self.cfg.demo_blocked {
+            self.set_phase(Phase::Blocked(Blocker::OldApp));
+            return;
+        }
         // Le service launchd installé : on ne prend même pas le verrou (il le reprendrait en vain
         // à chaque relance), on explique.
         if !self.cfg.demo && system::service_installed() {
@@ -574,9 +584,7 @@ impl Controller {
             AfterStop::StayInProblem => {
                 log::error!("erreur fatale du serveur");
                 self.stop_or_exit();
-                self.set_phase(Phase::Problem(
-                    "Le serveur s'est arrêté après une erreur. Consultez le journal, puis rouvrez Ostal Server.".into(),
-                ));
+                self.set_phase(Phase::Problem(STOPPED_AFTER_ERROR.into()));
             }
             AfterStop::Relaunch => {
                 log::warn!("import en attente : arrêt propre puis relance pour l'appliquer");
@@ -688,13 +696,40 @@ fn health_of(server: &Server) -> Health {
         ..Health::default()
     };
     for d in &snapshot.devices {
+        let room = snapshot
+            .plan
+            .0
+            .room_name_of(d.device.node_id)
+            .map(str::to_owned);
+        let reachable = !matches!(d.status, WireStatus::Unreachable { .. });
+        health.listed.push(Listed {
+            name: d.device.name.clone(),
+            room: room.clone(),
+            reachable,
+        });
         match d.status {
             WireStatus::Online => health.online += 1,
-            WireStatus::Unreachable { .. } => health.unreachable.push(d.device.name.clone()),
+            WireStatus::Unreachable { .. } => health.unreachable_details.push(Unreachable {
+                id: d.device.node_id,
+                name: d.device.name.clone(),
+                room,
+                last_seen: d.last_seen,
+            }),
             WireStatus::Connecting => {}
         }
     }
-    health.unreachable.sort();
+    health
+        .unreachable_details
+        .sort_by(|a, b| a.name.cmp(&b.name));
+    health.unreachable = health
+        .unreachable_details
+        .iter()
+        .map(|u| u.name.clone())
+        .collect();
+    // Par pièce (celles du plan d'abord, les appareils sans pièce à la fin), puis par nom.
+    health.listed.sort_by(|a, b| {
+        (a.room.is_none(), &a.room, &a.name).cmp(&(b.room.is_none(), &b.room, &b.name))
+    });
     health
 }
 
