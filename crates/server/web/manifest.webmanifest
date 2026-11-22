@@ -1,6 +1,6 @@
 {
   "name": "Ostal",
-  "short_name": "Maison",
+  "short_name": "Ostal",
   "description": "Les appareils, les températures et les caméras de la maison.",
   "lang": "fr",
   "start_url": "/app/",

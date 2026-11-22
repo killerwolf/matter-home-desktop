@@ -21,7 +21,7 @@ use protocol::wire::WireStatus;
 
 use crate::sleep::SleepGuard;
 use crate::startup::{self, Blocker, Decision, Inputs, LockOutcome, SetupNeed};
-use crate::status::{Health, Phase};
+use crate::status::{Health, Listed, Phase, Unreachable};
 use crate::{agent, system};
 
 pub struct Config {
@@ -688,13 +688,40 @@ fn health_of(server: &Server) -> Health {
         ..Health::default()
     };
     for d in &snapshot.devices {
+        let room = snapshot
+            .plan
+            .0
+            .room_name_of(d.device.node_id)
+            .map(str::to_owned);
+        let reachable = !matches!(d.status, WireStatus::Unreachable { .. });
+        health.listed.push(Listed {
+            name: d.device.name.clone(),
+            room: room.clone(),
+            reachable,
+        });
         match d.status {
             WireStatus::Online => health.online += 1,
-            WireStatus::Unreachable { .. } => health.unreachable.push(d.device.name.clone()),
+            WireStatus::Unreachable { .. } => health.unreachable_details.push(Unreachable {
+                id: d.device.node_id,
+                name: d.device.name.clone(),
+                room,
+                last_seen: d.last_seen,
+            }),
             WireStatus::Connecting => {}
         }
     }
-    health.unreachable.sort();
+    health
+        .unreachable_details
+        .sort_by(|a, b| a.name.cmp(&b.name));
+    health.unreachable = health
+        .unreachable_details
+        .iter()
+        .map(|u| u.name.clone())
+        .collect();
+    // Par pièce (celles du plan d'abord, les appareils sans pièce à la fin), puis par nom.
+    health.listed.sort_by(|a, b| {
+        (a.room.is_none(), &a.room, &a.name).cmp(&(b.room.is_none(), &b.room, &b.name))
+    });
     health
 }
 

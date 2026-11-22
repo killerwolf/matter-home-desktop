@@ -209,3 +209,79 @@ export function tempClass(celsius) {
 }
 
 export const formatTemperature = oneDecimal;
+
+// ---------------------------------------------------------------------------
+// La phrase d'état : jumelle de `protocol::status` (crates/protocol/src/status.rs) ; les mêmes
+// textes, mot pour mot, essayés par tiles.test.mjs avec les mêmes cas.
+// ---------------------------------------------------------------------------
+
+/** « Lampe d'Adam est injoignable. », « A et B sont injoignables. », « A, B et 1 autre sont
+ *  injoignables. » ; pour des caméras, « La caméra X est injoignable. » et « Les caméras … ». */
+export function unreachablePhrase(names, cameras = false) {
+  const one = cameras ? "La caméra " : "";
+  const many = cameras ? "Les caméras " : "";
+  if (names.length === 0) return "";
+  if (names.length === 1) return `${one}${names[0]} est injoignable.`;
+  if (names.length === 2) return `${many}${names[0]} et ${names[1]} sont injoignables.`;
+  const others = names.length - 2;
+  return `${many}${names[0]}, ${names[1]} et ${others} ${others > 1 ? "autres" : "autre"} sont injoignables.`;
+}
+
+/** Le titre pour `n` points (catégories) à regarder. */
+export function headline(n) {
+  if (n === 0) return "La maison va bien.";
+  if (n === 1) return "Une chose à regarder";
+  if (n === 2) return "Deux choses à regarder";
+  return `${n} choses à regarder`;
+}
+
+/** « 10 appareils, tous joignables. » (le détail quand tout va bien). */
+export function allReachable(devices) {
+  if (devices === 0) return "Aucun appareil.";
+  if (devices === 1) return "1 appareil, joignable.";
+  return `${devices} appareils, tous joignables.`;
+}
+
+/**
+ * Les points à regarder : une catégorie qui demande attention, jamais un appareil. `points` :
+ * [{ kind: "devices" | "cameras" | "other", names?: [], text?: "" }]. Le détail est la phrase du
+ * premier point non vide, les appareils passant d'abord, puis les caméras, puis les autres.
+ */
+export function summarize(points, deviceCount) {
+  const rank = { devices: 0, cameras: 1, other: 2 };
+  const phrase = (p) => (p.kind === "other" ? String(p.text ?? "").trim() : unreachablePhrase(p.names ?? [], p.kind === "cameras"));
+  const real = points.filter((p) => phrase(p) !== "");
+  const first = real.reduce((best, p) => (best === null || rank[p.kind] < rank[best.kind] ? p : best), null);
+  return {
+    count: real.length,
+    title: headline(real.length),
+    detail: first ? phrase(first) : allReachable(deviceCount),
+  };
+}
+
+/** Un appareil « injoignable » au sens de la phrase d'état : le serveur l'a déclaré tel. Un
+ *  appareil qui se connecte encore n'est pas à regarder. */
+export const isUnreachable = (d) => d.status?.state === "unreachable";
+
+/**
+ * La phrase d'état de l'accueil : `devices` est la Map de l'app, `cameras` la liste du serveur.
+ * Les ponts n'entrent ni dans le compte ni dans les noms (comme sur le Mac). Rend
+ * { title, detail, count, ok }.
+ */
+export function statusSummary(devices, cameras = []) {
+  const bridges = bridgeIds(devices);
+  const shown = [...devices.values()].filter((d) => !bridges.has(d.id));
+  const byName = (a, b) => a.localeCompare(b, "fr");
+  const points = [
+    { kind: "devices", names: shown.filter(isUnreachable).map((d) => d.info.name).sort(byName) },
+    { kind: "cameras", names: (cameras ?? []).filter((c) => c.status?.state === "unreachable").map((c) => c.name).sort(byName) },
+  ];
+  const s = summarize(points, shown.length);
+  return { ...s, ok: s.count === 0 };
+}
+
+/** « 18:42 », l'heure locale d'un instant en millisecondes. */
+export function clockText(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}

@@ -1,8 +1,10 @@
-//! Onglet « Appareils » : des tuiles rangées par pièce. Chaque tuile a une grande icône d'état, le
-//! nom (deux lignes au plus) et une valeur ; le clic agit directement sur une lumière, une prise
-//! ou un volet, et ouvre le détail pour le reste. Un bouton « ⋯ » (dessiné) et le clic droit
-//! ouvrent le détail de toutes les tuiles. Les ponts sont à la fin, en tuiles plus discrètes.
-//! On ne signale que l'anormal : pile faible, injoignable.
+//! Onglet « Appareils » : des tuiles de 192 × 112 rangées par pièce, sur 6 colonnes fixes (4 quand
+//! la fiche de 360 px est ouverte). Chaque tuile a une icône, le nom et une valeur ; le clic
+//! bascule une lumière ou un volet, et ouvre la fiche pour tout le reste, **prises comprises** (une
+//! prise peut alimenter un frigo : pas de bouton d'état sur la tuile, on allume depuis la fiche).
+//! Le « ⋯ », toujours visible en `text_faint`, et le clic droit ouvrent la fiche de toutes les
+//! tuiles. Les ponts sont à la fin, en tuiles discrètes de 192 × 56. On ne signale que l'anormal :
+//! pile faible, injoignable (à contraste plein, avec l'heure depuis laquelle).
 //!
 //! La partie « quoi afficher » (`tile_of`, `groups`, `columns_for`) est pure et testée ; le
 //! dessin (`show`) n'en dépend que par ces résultats.
@@ -10,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use ostal_client::model::Device;
 use protocol::automation::CoverCommand;
 use protocol::events::CoverMotion;
@@ -138,6 +140,13 @@ pub fn open_label(open: bool) -> &'static str {
     }
 }
 
+/// « 18:02 » : l'heure locale d'un instant Unix.
+pub fn clock(unix: f64) -> String {
+    chrono::DateTime::from_timestamp(unix as i64, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
 /// Valeur d'une ligne quand l'appareil n'en a aucune à donner.
 pub const NO_VALUE: &str = "—";
 
@@ -252,9 +261,14 @@ pub struct Tile {
     pub value_warn: bool,
     /// Le petit texte : l'humidité, « Bouton », « injoignable », « pile faible ».
     pub small: Option<(Option<Severity>, String)>,
+    /// « depuis 18:02 » : depuis quand un appareil est injoignable (d'après `last_seen`).
+    pub since: Option<String>,
+    /// Vraiment injoignable (et pas seulement « connexion… ») : bordure orange, contraste plein.
+    pub unreachable: bool,
     /// Lumière allumée : le fond de la carte prend un peu de jaune.
     pub lit: bool,
-    /// Estompée : appareil injoignable.
+    /// Sans nouvelles de l'appareil : sa dernière mesure ne vaut plus rien. Rien n'est estompé,
+    /// l'injoignable se lit à contraste plein.
     pub dim: bool,
     /// Petit badge orange.
     pub low_battery: bool,
@@ -333,7 +347,7 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
         small = Some(if matches!(d.status, WireStatus::Connecting) {
             (None, "connexion…".into())
         } else {
-            (Some(Severity::Error), UNREACHABLE.into())
+            (Some(Severity::Warn), UNREACHABLE.into())
         });
     } else if caps.temperature {
         value = d.temperature().map(|t| one_decimal(t.value));
@@ -384,11 +398,18 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
     } else {
         TileAction::Detail
     };
+    let unreachable = matches!(d.status, WireStatus::Unreachable { .. });
+    let since = d
+        .last_seen
+        .filter(|_| unreachable)
+        .map(|t| format!("depuis {}", clock(t)));
     Tile {
         icon,
         value,
         value_warn,
         small,
+        since,
+        unreachable,
         lit: icon == IconKind::LightOn,
         dim: stale,
         low_battery,
@@ -405,35 +426,38 @@ pub fn has_curve(d: &Device) -> bool {
 }
 
 /// Écart entre deux tuiles.
-const GAP: f32 = 8.0;
-/// Colonnes de tuiles d'une pièce, au plus.
-pub const MAX_BLOCK_COLUMNS: usize = 4;
-/// Hauteur de l'en-tête d'une pièce.
-const HEAD_H: f32 = 34.0;
-/// Écarts entre deux pièces qui se suivent, de gauche à droite puis à la ligne.
-const BLOCK_GAP_X: f32 = 28.0;
-const BLOCK_GAP_Y: f32 = 14.0;
+const GAP: f32 = 16.0;
+/// Colonnes de la grille sans la fiche : 6 tuiles de 192 px et 16 d'écart tiennent dans 1 232 px.
+pub const GRID_COLUMNS: usize = 6;
+/// Hauteur de l'en-tête d'une pièce (titre de 15 px, puis 8 px d'écart).
+const HEAD_H: f32 = 30.0;
+/// Écarts entre deux pièces qui se suivent, de gauche à droite puis à la ligne : ceux de la grille.
+const BLOCK_GAP_X: f32 = GAP;
+const BLOCK_GAP_Y: f32 = GAP;
 /// Hauteur d'une tuile de pont (plus basse).
-const BRIDGE_H: f32 = 70.0;
+const BRIDGE_H: f32 = 56.0;
 
-/// Nombre de colonnes de tuiles qui tiennent dans `width` (au moins une).
+/// Nombre de colonnes de tuiles qui tiennent dans `width` (au moins une) : 6 dans 1 232 px, 4
+/// quand la fiche de 360 px prend sa place.
 pub fn columns_for(width: f32) -> usize {
-    let tile = theme::tokens().tile.width;
-    (((width + GAP) / (tile + GAP)).floor() as usize).max(1)
+    let tile = theme::tokens().tile.desktop_width;
+    // Une demi-pixel de tolérance : la largeur d'egui est arrondie au pixel physique.
+    (((width + GAP + 0.5) / (tile + GAP)).floor() as usize).max(1)
 }
 
-/// Colonnes d'une pièce de `count` appareils : au plus `MAX_BLOCK_COLUMNS`, et ce qui tient.
+/// Colonnes d'une pièce de `count` appareils : au plus celles de la grille, et ce qui tient.
 pub fn block_columns(count: usize, width: f32) -> usize {
-    count.clamp(1, MAX_BLOCK_COLUMNS).min(columns_for(width))
+    count.clamp(1, GRID_COLUMNS).min(columns_for(width))
 }
 
-/// Taille d'une pièce : son en-tête, puis ses tuiles sur `columns` colonnes.
-pub fn block_size(count: usize, columns: usize, tile_h: f32) -> Vec2 {
-    let tile_w = theme::tokens().tile.width;
+/// Taille d'une pièce : son en-tête (absent pour les ponts, `head` vaut 0), puis ses tuiles sur
+/// `columns` colonnes.
+pub fn block_size(count: usize, columns: usize, head: f32, tile_h: f32) -> Vec2 {
+    let tile_w = theme::tokens().tile.desktop_width;
     let rows = count.div_ceil(columns.max(1)).max(1);
     Vec2::new(
         columns as f32 * (tile_w + GAP) - GAP,
-        HEAD_H + rows as f32 * (tile_h + GAP) - GAP,
+        head + rows as f32 * (tile_h + GAP) - GAP,
     )
 }
 
@@ -443,7 +467,7 @@ pub fn place_blocks(sizes: &[Vec2], width: f32) -> (Vec<egui::Pos2>, f32) {
     let (mut x, mut y, mut line_h) = (0.0_f32, 0.0_f32, 0.0_f32);
     let mut positions = Vec::with_capacity(sizes.len());
     for size in sizes {
-        if x > 0.0 && x + size.x > width {
+        if x > 0.0 && x + size.x > width + 0.5 {
             y += line_h + BLOCK_GAP_Y;
             x = 0.0;
             line_h = 0.0;
@@ -495,8 +519,12 @@ pub fn show(
     if devices.is_empty() {
         ui.add_space(theme::tokens().space.xl);
         ui.vertical_centered(|ui| {
-            ui.label("Aucun appareil appairé pour l'instant.");
-            ui.label("Le bouton « + Ajouter » en haut à droite ouvre l'appairage.");
+            let secondary = theme::palette(ui).text_secondary;
+            ui.label(RichText::new("Aucun appareil appairé pour l'instant.").color(secondary));
+            ui.label(
+                RichText::new("Le bouton « + Ajouter » en haut à droite ouvre l'appairage.")
+                    .color(secondary),
+            );
         });
         return out;
     }
@@ -513,9 +541,10 @@ pub fn show(
             bridges: false,
         })
         .collect();
+    // Les ponts n'ont pas de titre : leurs tuiles discrètes se rangent à la suite des pièces.
     if !layout.bridges.is_empty() {
         blocks.push(Block {
-            title: "Ponts",
+            title: "",
             floor: None,
             average: None,
             ids: &layout.bridges,
@@ -525,21 +554,24 @@ pub fn show(
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            ui.add_space(theme::tokens().space.sm);
             let width = ui.available_width();
             let sizes: Vec<(usize, Vec2)> = blocks
                 .iter()
                 .map(|b| {
                     let columns = block_columns(b.ids.len(), width);
-                    let h = if b.bridges { BRIDGE_H } else { tokens.height };
-                    (columns, block_size(b.ids.len(), columns, h))
+                    let (head, h) = if b.bridges {
+                        (0.0, BRIDGE_H)
+                    } else {
+                        (HEAD_H, tokens.height)
+                    };
+                    (columns, block_size(b.ids.len(), columns, head, h))
                 })
                 .collect();
             let sizes_only: Vec<Vec2> = sizes.iter().map(|s| s.1).collect();
             let (positions, total) = place_blocks(&sizes_only, width);
-            // De la marge en bas : la dernière pièce n'est pas collée au Journal.
+            // De la marge en bas : la dernière pièce n'est pas collée au journal.
             let (area, _) = ui.allocate_exact_size(
-                Vec2::new(width, total + theme::tokens().space.xl * 2.0),
+                Vec2::new(width, total + theme::tokens().space.lg),
                 Sense::hover(),
             );
             for ((block, (columns, size)), pos) in blocks.iter().zip(&sizes).zip(positions) {
@@ -547,44 +579,50 @@ pub fn show(
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                    theme::room_heading(ui, block.title, block.floor, block.average);
-                });
-                let tile_h = if block.bridges {
-                    BRIDGE_H
+                let (head, tile_h) = if block.bridges {
+                    (0.0, BRIDGE_H)
                 } else {
-                    tokens.height
+                    (HEAD_H, tokens.height)
                 };
+                if !block.bridges {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        theme::room_heading(ui, block.title, block.floor, block.average);
+                    });
+                }
                 for (i, id) in block.ids.iter().enumerate() {
                     let (col, row) = (i % columns, i / columns);
                     let tile_rect = Rect::from_min_size(
                         rect.min
                             + Vec2::new(
-                                col as f32 * (tokens.width + GAP),
-                                HEAD_H + row as f32 * (tile_h + GAP),
+                                col as f32 * (tokens.desktop_width + GAP),
+                                head + row as f32 * (tile_h + GAP),
                             ),
-                        Vec2::new(tokens.width, tile_h),
+                        Vec2::new(tokens.desktop_width, tile_h),
                     );
                     if !ui.is_rect_visible(tile_rect) {
                         continue;
                     }
                     let d = &devices[id];
+                    if block.bridges {
+                        bridge_card(
+                            ui,
+                            *id,
+                            &d.info.name,
+                            &bridge_note(devices, *id),
+                            tile_rect,
+                            selected == Some(*id),
+                            &mut out,
+                        );
+                        continue;
+                    }
                     let pending = expect.get(id).filter(|e| e.pending(d, now));
                     let busy = pending.is_some_and(|e| e.blocks_click(now));
-                    let mut tile = tile_of(d, pending);
-                    if block.bridges {
-                        tile.icon = IconKind::Generic;
-                        tile.value = None;
-                        tile.lit = false;
-                        tile.action = TileAction::Detail;
-                        if tile.small.is_none() {
-                            tile.small = Some((None, bridge_note(devices, *id)));
-                        }
-                    }
+                    let tile = tile_of(d, pending);
                     card(
                         ui,
                         *id,
                         &d.info.name,
+                        &bridge_via(devices, d),
                         &tile,
                         tile_rect,
                         pending.is_some(),
@@ -598,17 +636,97 @@ pub fn show(
     out
 }
 
-fn severity_color(p: &theme::Palette, severity: Option<Severity>) -> Color32 {
-    severity.map_or(p.text_secondary, |s| s.color(p))
+/// « via Passerelle TaHoma » : la troisième ligne d'un appareil exposé par un pont.
+fn bridge_via(devices: &BTreeMap<u64, Device>, d: &Device) -> String {
+    d.info
+        .bridge
+        .and_then(|link| devices.get(&link.node_id))
+        .filter(|_| d.info.caps.cover)
+        .map(|b| format!("via {}", b.info.name))
+        .unwrap_or_default()
 }
 
-/// Une carte. `discreet` se déduit de la hauteur : un pont est plus bas et plus gris. `busy` : une
-/// commande vient de partir, un clic de plus est ignoré.
+/// Pont : une tuile discrète de 192 × 56, sans bordure, qui ouvre sa fiche.
+fn bridge_card(
+    ui: &mut Ui,
+    id: u64,
+    name: &str,
+    note: &str,
+    rect: Rect,
+    selected: bool,
+    out: &mut Outcome,
+) {
+    let t = theme::tokens();
+    let p = theme::palette(ui);
+    let response = ui
+        .interact(rect, ui.make_persistent_id(("tile", id)), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name}, pont, {note}"))
+    });
+    let painter = ui.painter();
+    let fill = if selected {
+        p.accent_soft
+    } else if response.hovered() {
+        t.hover(p)
+    } else {
+        p.surface_alt
+    };
+    painter.rect_filled(rect, t.tile.radius, fill);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            t.tile.radius,
+            Stroke::new(2.0, p.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            t.tile.radius,
+            Stroke::new(2.0, p.accent_text),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let icon_center = rect.left_center() + Vec2::new(14.0 + 10.0, 0.0);
+    tile_icons::paint(painter, icon_center, 20.0, IconKind::Generic, p, 1.0);
+    let x = rect.left() + 14.0 + 20.0 + 10.0;
+    let name_galley = painter.layout_no_wrap(
+        name.to_owned(),
+        FontId::proportional(t.font.size.body),
+        p.text,
+    );
+    let note_galley = painter.layout_no_wrap(
+        note.to_owned(),
+        FontId::proportional(t.font.size.caption + 1.0),
+        p.text_secondary,
+    );
+    let total = name_galley.size().y + note_galley.size().y;
+    let top = rect.center().y - total / 2.0;
+    let note_y = top + name_galley.size().y;
+    painter.galley(egui::pos2(x, top), name_galley, p.text);
+    painter.galley(egui::pos2(x, note_y), note_galley, p.text_secondary);
+    if response.clicked() || response.secondary_clicked() {
+        out.detail = Some(id);
+    }
+}
+
+/// Pose une ligne de texte dont le bas est à `y`, puis remonte `y` de sa hauteur.
+fn put_line(painter: &egui::Painter, x: f32, y: &mut f32, text: &str, size: f32, color: Color32) {
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), color);
+    *y -= galley.size().y;
+    painter.galley(egui::pos2(x, *y), galley, color);
+}
+
+/// Une carte de 192 × 112. `via` : la troisième ligne d'un volet exposé par un pont (vide sinon).
+/// `busy` : une commande vient de partir, un clic de plus est ignoré.
 #[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut Ui,
     id: u64,
     name: &str,
+    via: &str,
     tile: &Tile,
     rect: Rect,
     expecting: bool,
@@ -618,7 +736,6 @@ fn card(
 ) {
     let t = theme::tokens();
     let p = theme::palette(ui);
-    let discreet = rect.height() < t.tile.height - 1.0;
     let base = ui.make_persistent_id(("tile", id));
     let response = ui
         .interact(rect, base, Sense::click())
@@ -628,13 +745,20 @@ fn card(
         let value = tile.value.as_deref().unwrap_or("");
         egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name}, {value}"))
     });
+    // Le « ⋯ » : 28 × 28, dans le coin haut droit de la marge, toujours visible.
     let more_rect = Rect::from_min_size(
-        rect.right_top() + Vec2::new(-30.0, 6.0),
-        Vec2::new(24.0, 20.0),
+        rect.right_top() + Vec2::new(-14.0 - 28.0, 12.0),
+        Vec2::splat(28.0),
     );
     let more = ui.interact(more_rect, base.with("more"), Sense::click());
+    more.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            true,
+            format!("Plus d'options pour {name}"),
+        )
+    });
     let radius = t.tile.radius;
-    let fade = if tile.dim { 0.5 } else { 1.0 };
 
     let painter = ui.painter();
     let hovered = response.hovered() || more.hovered();
@@ -642,8 +766,8 @@ fn card(
     painter.rect_filled(
         rect,
         radius,
-        if selected {
-            t.selected(p)
+        if selected && !tile.lit {
+            p.accent_soft
         } else if hovered && !tile.lit {
             t.hover(p)
         } else {
@@ -653,8 +777,14 @@ fn card(
     if tile.lit {
         painter.rect_filled(rect, radius, p.lueur.gamma_multiply(t.tile.on_tint_alpha));
     }
-    let border = if expecting || selected {
+    let border = if selected {
+        Stroke::new(2.0, p.accent)
+    } else if expecting {
         Stroke::new(1.5, p.accent_text)
+    } else if tile.unreachable {
+        Stroke::new(1.5, p.warn)
+    } else if tile.lit {
+        Stroke::new(1.0, p.lueur)
     } else {
         Stroke::new(1.0, p.line)
     };
@@ -668,14 +798,10 @@ fn card(
         );
     }
 
-    let pad = 10.0;
-    let icon_size = if discreet {
-        t.tile.icon * 0.7
-    } else {
-        t.tile.icon
-    };
-    let icon_center = rect.left_top() + Vec2::splat(pad + icon_size / 2.0);
-    tile_icons::paint(painter, icon_center, icon_size, tile.icon, p, fade);
+    let (pad_x, pad_y) = (14.0, 12.0);
+    let icon_size = t.tile.icon;
+    let icon_center = rect.left_top() + Vec2::new(pad_x + icon_size / 2.0, pad_y + icon_size / 2.0);
+    tile_icons::paint(painter, icon_center, icon_size, tile.icon, p, 1.0);
     if tile.low_battery {
         painter.circle_filled(
             icon_center + Vec2::new(icon_size * 0.5, -icon_size * 0.5),
@@ -683,67 +809,109 @@ fn card(
             p.warn,
         );
     }
-    // Le bouton « détail » : trois points, visibles seulement au survol ou au focus.
-    if hovered || focused {
-        if more.hovered() {
-            painter.rect_filled(more_rect, 4.0, t.hover(p));
-        }
-        tile_icons::paint_more(painter, more_rect, p.text);
+    if more.hovered() {
+        painter.rect_filled(more_rect, 6.0, t.hover(p));
     }
+    tile_icons::paint_more(
+        painter,
+        more_rect,
+        if more.hovered() { p.text } else { p.text_faint },
+    );
 
-    // Nom : deux lignes au plus, coupé aux espaces, avec « … » en fin de deuxième ligne.
-    let name_color = if discreet { p.text_secondary } else { p.text }.gamma_multiply(fade);
-    let name_top = rect.top() + pad + icon_size + 6.0;
+    // Du bas vers le haut : la troisième ligne éventuelle, la valeur, puis le nom au-dessus.
+    let width = rect.width() - 2.0 * pad_x;
+    let mut y = rect.bottom() - pad_y;
+    let left = rect.left() + pad_x;
+    if let Some(since) = tile.since.as_deref().filter(|_| tile.unreachable) {
+        put_line(
+            painter,
+            left,
+            &mut y,
+            since,
+            t.font.size.body,
+            p.text_secondary,
+        );
+    } else if !via.is_empty() {
+        put_line(
+            painter,
+            left,
+            &mut y,
+            via,
+            t.font.size.caption + 1.0,
+            p.text_secondary,
+        );
+    }
+    // La valeur : en Lueur pour « Allumée », en orange pour une porte ouverte, sinon secondaire ;
+    // l'humidité suit la température (« 20,1 °C · 48 % »).
+    let mut value_x = 0.0;
+    if tile.unreachable {
+        // Cercle barré et le mot : la couleur ne porte jamais seule l'information.
+        let height = t.font.size.body + 2.0;
+        let c = egui::pos2(rect.left() + pad_x + 7.0, y - height / 2.0 + 1.0);
+        painter.circle_stroke(c, 5.2, Stroke::new(1.5, p.warn));
+        painter.line_segment(
+            [c + Vec2::new(-3.7, 3.7), c + Vec2::new(3.7, -3.7)],
+            Stroke::new(1.5, p.warn),
+        );
+        value_x = 19.0;
+        put_line(
+            painter,
+            left + value_x,
+            &mut y,
+            UNREACHABLE,
+            t.font.size.body,
+            p.warn,
+        );
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        parts.extend(tile.value.clone());
+        if let Some((severity, text)) = &tile.small {
+            let _ = severity;
+            parts.push(text.clone());
+        }
+        let text = parts.join(" · ");
+        if !text.is_empty() {
+            let color = if tile.value_warn {
+                p.warn
+            } else if tile.lit {
+                p.lueur_text
+            } else if tile.small.as_ref().is_some_and(|(s, _)| s.is_some()) {
+                p.warn
+            } else {
+                p.text_secondary
+            };
+            if tile.lit {
+                painter.circle_filled(
+                    egui::pos2(rect.left() + pad_x + 3.5, y - 8.0),
+                    t.size.dot / 2.0,
+                    p.lueur,
+                );
+                value_x = 12.0;
+            }
+            let mut job = egui::text::LayoutJob::single_section(
+                text,
+                egui::TextFormat::simple(FontId::proportional(t.font.size.body), color),
+            );
+            job.wrap.max_width = (width - value_x).max(20.0);
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            let galley = painter.layout_job(job);
+            y -= galley.size().y;
+            painter.galley(egui::pos2(rect.left() + pad_x + value_x, y), galley, color);
+        }
+    }
+    // Le nom : une ligne, « … » s'il est trop long.
     let mut job = egui::text::LayoutJob::single_section(
         name.to_owned(),
-        egui::TextFormat::simple(FontId::proportional(t.font.size.body), name_color),
+        egui::TextFormat::simple(FontId::proportional(t.font.size.title), p.text),
     );
-    job.wrap.max_width = rect.width() - 2.0 * pad;
-    job.wrap.max_rows = if discreet { 1 } else { 2 };
+    job.wrap.max_width = width;
+    job.wrap.max_rows = 1;
     job.wrap.break_anywhere = false;
     job.wrap.overflow_character = Some('…');
     let galley = painter.layout_job(job);
-    painter.galley(egui::pos2(rect.left() + pad, name_top), galley, name_color);
-
-    // Valeur en grand, petit texte à droite sur la même ligne.
-    let base_y = rect.bottom() - pad;
-    let small_width = if let Some((severity, text)) = &tile.small {
-        let color = severity_color(p, *severity).gamma_multiply(if severity.is_some() {
-            1.0
-        } else {
-            fade
-        });
-        let galley = painter.layout_no_wrap(
-            text.clone(),
-            FontId::proportional(t.font.size.caption),
-            color,
-        );
-        let w = galley.size().x;
-        painter.galley(
-            egui::pos2(rect.right() - pad - w, base_y - galley.size().y),
-            galley,
-            color,
-        );
-        w + 6.0
-    } else {
-        0.0
-    };
-    if let Some(value) = &tile.value {
-        let color = if tile.value_warn { p.warn } else { p.text }.gamma_multiply(fade);
-        let mut job = egui::text::LayoutJob::single_section(
-            value.clone(),
-            egui::TextFormat::simple(FontId::proportional(t.font.size.heading + 2.0), color),
-        );
-        job.wrap.max_width = (rect.width() - 2.0 * pad - small_width).max(20.0);
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        let galley = painter.layout_job(job);
-        painter.galley(
-            egui::pos2(rect.left() + pad, base_y - galley.size().y),
-            galley,
-            color,
-        );
-    }
+    y -= galley.size().y + 1.0;
+    painter.galley(egui::pos2(rect.left() + pad_x, y), galley, p.text);
 
     if more.clicked() || more.secondary_clicked() || response.secondary_clicked() {
         out.detail = Some(id);
@@ -1152,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_tile_is_dimmed_says_so_and_only_opens_the_detail() {
+    fn an_unreachable_tile_says_so_at_full_contrast_and_only_opens_the_detail() {
         let mut d = online(typed(
             device(
                 1,
@@ -1174,8 +1342,14 @@ mod tests {
         assert!(tile.dim);
         assert_eq!(
             tile.small,
-            Some((Some(Severity::Error), "injoignable".to_string()))
+            Some((Some(Severity::Warn), "injoignable".to_string()))
         );
+        // Contraste plein, bordure orange, et depuis quand (d'après `last_seen`).
+        assert!(tile.unreachable);
+        assert!(tile
+            .since
+            .as_deref()
+            .is_some_and(|s| s.starts_with("depuis ")));
         assert_eq!(tile.value, None);
         // Une commande à un appareil injoignable échouerait : le clic ouvre le détail.
         assert_eq!(tile.action, TileAction::Detail);
@@ -1242,27 +1416,27 @@ mod tests {
     #[test]
     fn rooms_flow_side_by_side_with_regular_gaps_and_wrap() {
         let tile = theme::tokens().tile;
-        let three = block_size(3, 3, tile.height);
-        let two = block_size(2, 2, tile.height);
-        // Largeur d'une pièce de trois colonnes : trois tuiles et deux écarts.
-        assert_eq!(three.x, 3.0 * tile.width + 2.0 * GAP);
+        let three = block_size(3, 3, HEAD_H, tile.height);
+        let two = block_size(2, 2, HEAD_H, tile.height);
+        // Largeur d'une pièce de trois colonnes : trois tuiles de 192 px et deux écarts de 16.
+        assert_eq!(three.x, 3.0 * tile.desktop_width + 2.0 * GAP);
         assert_eq!(three.y, HEAD_H + tile.height);
-        // 1 900 px : trois pièces de trois colonnes se suivent, la quatrième passe à la ligne.
-        let sizes = [three, three, three, two, three];
-        let (pos, total) = place_blocks(&sizes, 1900.0);
+        // 1 232 px (6 colonnes) : deux pièces de trois colonnes se suivent, la troisième passe à
+        // la ligne, et la quatrième (deux colonnes) la suit avec le même écart.
+        let sizes = [three, three, three, two];
+        let (pos, total) = place_blocks(&sizes, 1232.0);
         assert_eq!(pos[0], egui::pos2(0.0, 0.0));
-        assert_eq!(pos[1].y, 0.0);
-        assert_eq!(pos[1].x, three.x + BLOCK_GAP_X, "écart régulier");
-        assert_eq!(pos[2].y, 0.0);
-        // La quatrième ne tient plus (1 752 + 368 > 1 900) : elle passe à la ligne, et la
-        // cinquième la suit avec le même écart.
-        assert_eq!(pos[3], egui::pos2(0.0, three.y + BLOCK_GAP_Y));
-        assert_eq!(pos[4].y, pos[3].y);
-        assert_eq!(pos[4].x, two.x + BLOCK_GAP_X, "écart régulier");
-        assert_eq!(total, pos[3].y + three.y);
-        // 1 300 px : deux pièces par ligne.
-        let (pos, _) = place_blocks(&sizes, 1300.0);
-        assert_eq!(pos.iter().filter(|p| p.y == 0.0).count(), 2);
+        assert_eq!(
+            pos[1],
+            egui::pos2(three.x + BLOCK_GAP_X, 0.0),
+            "écart régulier"
+        );
+        assert_eq!(pos[2], egui::pos2(0.0, three.y + BLOCK_GAP_Y));
+        assert_eq!(pos[3], egui::pos2(three.x + BLOCK_GAP_X, pos[2].y));
+        assert_eq!(total, pos[2].y + three.y);
+        // Avec la fiche de 360 px (872 px, 4 colonnes) : une pièce de trois colonnes par ligne.
+        let (pos, _) = place_blocks(&sizes, 872.0);
+        assert_eq!(pos[1].y, three.y + BLOCK_GAP_Y);
         // Plus étroit qu'une pièce : une par ligne, sans boucle ni position négative.
         let (pos, total) = place_blocks(&sizes, 100.0);
         assert!(pos.windows(2).all(|w| w[1].y > w[0].y));
@@ -1270,18 +1444,30 @@ mod tests {
     }
 
     #[test]
-    fn a_room_has_at_most_four_columns_and_never_more_than_fit() {
-        assert_eq!(block_columns(1, 1900.0), 1);
-        assert_eq!(block_columns(3, 1900.0), 3);
-        assert_eq!(block_columns(9, 1900.0), MAX_BLOCK_COLUMNS);
-        // Une fenêtre étroite : ce qui tient, au moins une colonne.
-        assert_eq!(block_columns(9, 400.0), 2);
+    fn the_grid_has_six_fixed_columns_and_four_beside_the_detail_panel() {
+        let size = theme::tokens().size;
+        // 1 280 px de fenêtre, 24 px de marge de chaque côté : 6 colonnes.
+        let full = size.window_desktop_w - 48.0;
+        assert_eq!(columns_for(full), 6);
+        // La fiche de 360 px prend sa place : 4 colonnes.
+        assert_eq!(columns_for(full - size.detail_panel), 4);
+        assert_eq!(columns_for(10.0), 1);
+        // Une pièce a au plus 6 colonnes, et jamais plus que ce qui tient.
+        assert_eq!(block_columns(1, full), 1);
+        assert_eq!(block_columns(3, full), 3);
+        assert_eq!(block_columns(9, full), GRID_COLUMNS);
+        assert_eq!(block_columns(9, full - size.detail_panel), 4);
         assert_eq!(block_columns(9, 100.0), 1);
-        // Une pièce de 7 appareils : 4 colonnes, 2 rangées.
+        // Une pièce de 7 appareils sur 4 colonnes : 2 rangées.
         let tile = theme::tokens().tile;
         assert_eq!(
-            block_size(7, 4, tile.height).y,
+            block_size(7, 4, HEAD_H, tile.height).y,
             HEAD_H + 2.0 * tile.height + GAP
+        );
+        // Un pont : tuile de 192 × 56, sans titre.
+        assert_eq!(
+            block_size(1, 1, 0.0, BRIDGE_H),
+            Vec2::new(tile.desktop_width, BRIDGE_H)
         );
     }
 }

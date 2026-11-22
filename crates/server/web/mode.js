@@ -49,3 +49,14 @@ export function modeChangeNotice(mode, source, requested) {
   const from = sourceLabel(source);
   return from ? `Mode ${modeLabel(mode)} · ${from}` : `Mode ${modeLabel(mode)}`;
 }
+
+/** Ce que le mode fait des caméras, en une ligne : jumelle de `HomeMode::effect` (protocol/mode.rs),
+ *  les mêmes phrases. C'est la ligne par défaut : une caméra réglée à la main s'en écarte. */
+const EFFECTS = {
+  present: "Caméras intérieures éteintes, extérieures en diffusion.",
+  absent: "Toutes les caméras en surveillance.",
+  nuit: "Caméras intérieures éteintes, extérieures en surveillance.",
+  vacances: "Toutes les caméras en surveillance.",
+};
+
+export const effect = (id) => EFFECTS[isMode(id) ? id : DEFAULT_MODE];

@@ -622,7 +622,7 @@ impl Job {
                 result: Err(internal()),
             },
             Job::Revoke { .. } => Event::Notice(
-                "Déconnecté. Le serveur n'a pas pu être prévenu (erreur interne) : le jeton a \
+                "Session fermée. Le serveur n'a pas pu être prévenu (erreur interne) : le jeton a \
                  été supprimé de ce Mac."
                     .into(),
             ),
@@ -652,7 +652,7 @@ fn run(shared: &Arc<Shared>, job: Job) {
             creds,
             request,
         } => {
-            // Déconnecté (ou session remplacée) entre la demande et son tour dans la file : le
+            // Session fermée (ou session remplacée) entre la demande et son tour dans la file : le
             // jeton de cette session ne part plus nulle part.
             if shared.generation() != generation {
                 shared.emit(Event::Reply {
@@ -728,11 +728,11 @@ fn run(shared: &Arc<Shared>, job: Job) {
             )
             .and_then(http::Response::into_result);
             shared.emit(Event::Notice(match revoked {
-                Ok(_) => "Déconnecté : le jeton a été révoqué sur le serveur.".into(),
+                Ok(_) => "Session fermée : le jeton a été révoqué sur le serveur.".into(),
                 Err(e) if e.is_unauthorized() => {
-                    "Déconnecté (le jeton n'était plus valable).".into()
+                    "Session fermée (le jeton n'était plus valable).".into()
                 }
-                Err(_) => "Déconnecté. Le serveur n'a pas pu être prévenu : le jeton a été \
+                Err(_) => "Session fermée. Le serveur n'a pas pu être prévenu : le jeton a été \
                            supprimé de ce Mac et expirera de lui-même sur le serveur."
                     .into(),
             }));

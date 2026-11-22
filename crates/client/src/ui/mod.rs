@@ -2,7 +2,7 @@
 //! `net::Backend` (qui rend la main aussitôt) et lit les `net::Event` à chaque image.
 //!
 //! Elle n'affiche que ce que le serveur lui a envoyé (état complet, puis événements) : pas de
-//! cache, pas de mode local. Déconnectée, elle affiche « déconnecté » et n'autorise aucune
+//! cache, pas de mode local. Sans liaison, elle affiche « Plus de connexion à la maison » et n'autorise aucune
 //! commande.
 
 mod camera_text;
@@ -17,6 +17,7 @@ mod plan;
 mod player;
 mod rules;
 mod sensors;
+mod shell;
 mod snapshot;
 mod sync;
 mod temperatures;
@@ -73,6 +74,15 @@ enum View {
 }
 
 impl View {
+    /// Les onglets, dans l'ordre de la barre.
+    const ALL: [View; 5] = [
+        View::Devices,
+        View::Plan,
+        View::Temperatures,
+        View::Cameras,
+        View::Rules,
+    ];
+
     /// Nom de l'onglet.
     fn title(self) -> &'static str {
         match self {
@@ -222,8 +232,14 @@ pub struct MatterApp {
     native_menu: Option<native_menu::NativeMenu>,
     /// Événements du menu Édition, injectés dans la prochaine image d'egui.
     edit_events: Vec<egui::Event>,
-    /// Dernière erreur d'une commande, affichée sous la barre du haut.
+    /// Dernière erreur, affichée sous les onglets jusqu'à ce qu'on la ferme (×).
     error_banner: Option<(Instant, String)>,
+    /// La commande derrière l'erreur affichée, quand c'en est une : « Réessayer » la renvoie.
+    error_retry: Option<(&'static str, Request)>,
+    /// Les commandes en vol (de quoi les renvoyer si elles échouent), par numéro de requête.
+    sent_commands: HashMap<u64, Request>,
+    /// Le journal est déplié (replié sur une ligne par défaut).
+    log_open: bool,
     log: VecDeque<String>,
     toasts: Vec<Toast>,
     view: View,
@@ -305,9 +321,12 @@ impl MatterApp {
             native_menu: None,
             edit_events: Vec::new(),
             error_banner: None,
+            error_retry: None,
+            sent_commands: HashMap::new(),
+            log_open: false,
             log: VecDeque::new(),
             toasts: Vec::new(),
-            view: View::Plan,
+            view: View::Devices,
             plan: plan::PlanView::new(),
             rules: rules::RulesView::new(),
             events_view: events::EventsView::new(),
@@ -435,23 +454,29 @@ impl MatterApp {
         }
     }
 
+    /// Affiche une erreur : elle reste jusqu'à ce qu'on la ferme. Sans commande à renvoyer.
     fn show_error(&mut self, text: String) {
         self.push_log(text.clone());
         self.error_banner = Some((Instant::now(), text));
+        self.error_retry = None;
     }
 
     // -----------------------------------------------------------------------
     // Requêtes
     // -----------------------------------------------------------------------
 
-    /// Envoie une requête au serveur, sauf si l'on est déconnecté : aucune commande n'est
+    /// Envoie une requête au serveur, sauf si la liaison est perdue : aucune commande n'est
     /// acceptée sur des données qui ne sont plus à jour.
     fn request(&mut self, pending: Pending, request: Request) -> Option<u64> {
         if !self.connected() {
-            self.push_log("Déconnecté : commande non envoyée.".into());
+            self.push_log("Plus de connexion : commande non envoyée.".into());
             return None;
         }
+        let command = matches!(pending, Pending::Command { .. }).then(|| request.clone());
         let id = self.backend.call(request);
+        if let (Some(request), Pending::Command { .. }) = (command, &pending) {
+            self.sent_commands.insert(id, request);
+        }
         self.pending.insert(id, pending);
         Some(id)
     }
@@ -465,7 +490,7 @@ impl MatterApp {
         private: bool,
     ) -> Option<u64> {
         if !self.connected() {
-            self.push_log("Déconnecté : commande non envoyée.".into());
+            self.push_log("Plus de connexion : commande non envoyée.".into());
             return None;
         }
         let id = self.backend.download(request, dest, private);
@@ -636,7 +661,7 @@ impl MatterApp {
     /// il testerait la version d'avant la modification.
     fn test_rule(&mut self, id: u64) {
         if !self.connected() {
-            self.push_log("Déconnecté : commande non envoyée.".into());
+            self.push_log("Plus de connexion : commande non envoyée.".into());
             return;
         }
         if !self.rules.editing() {
@@ -1086,6 +1111,7 @@ impl MatterApp {
         self.series.clear();
         self.temp_series.clear();
         self.pending.clear();
+        self.sent_commands.clear();
         let now = Instant::now();
         if keep_drafts {
             let had_draft = self.plan.editing() || self.rules.editing();
@@ -1114,6 +1140,7 @@ impl MatterApp {
             self.log.clear();
             self.toasts.clear();
             self.error_banner = None;
+            self.error_retry = None;
         }
         self.test_after_save = None;
         // Une vérification ou une confirmation d'import ne vaut que pour le serveur qui l'a
@@ -1383,6 +1410,7 @@ impl MatterApp {
                 let ours = |expect: &HashMap<u64, devices::Expect>| {
                     node.is_some_and(|n| expect.get(&n).is_some_and(|e| e.request == Some(id)))
                 };
+                let sent = self.sent_commands.remove(&id);
                 match result {
                     Ok(_) => {
                         if let (true, Some(n)) = (ours(&self.expect), node) {
@@ -1396,6 +1424,8 @@ impl MatterApp {
                             self.expect.remove(&n);
                         }
                         self.show_error(format!("{what} : {}", e.message()));
+                        // L'erreur vient d'une commande : « Réessayer » la renvoie telle quelle.
+                        self.error_retry = sent.map(|request| (what, request));
                     }
                 }
             }
@@ -1559,7 +1589,7 @@ impl MatterApp {
             return;
         };
         if !self.connected() {
-            self.push_log("Déconnecté : commande non envoyée.".into());
+            self.push_log("Plus de connexion : commande non envoyée.".into());
             return;
         }
         // La lecture (jusqu'à 128 Mo) se fait dans un fil réseau ; le contenu revient partagé.
@@ -1599,6 +1629,7 @@ impl MatterApp {
     }
 
     /// Fenêtre d'information ou de confirmation du menu Fichier.
+    #[allow(deprecated)]
     fn data_dialog_window(&mut self, ctx: &egui::Context) {
         let Some(dialog) = &self.data_dialog else {
             return;
@@ -1607,88 +1638,107 @@ impl MatterApp {
         let mut confirmed = false;
         let mut replace_confirmed = false;
         let mut arm_replace = false;
-        egui::Window::new("Données")
-            .collapsible(false)
-            .resizable(false)
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::new("data_veil"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(16, 35, 45, 107),
+                );
+                ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            });
+        egui::Area::new(egui::Id::new("data_card"))
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_max_width(460.0);
-                match dialog {
-                    DataDialog::Busy(text) => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(text);
-                        });
-                        close = ui.button("Fermer").clicked();
-                    }
-                    DataDialog::Message { ok, text } => {
-                        let color = if *ok {
-                            theme::palette(ui).ok
-                        } else {
-                            theme::palette(ui).error
-                        };
-                        ui.colored_label(color, text);
-                        ui.add_space(6.0);
-                        close = ui.button("OK").clicked();
-                    }
-                    DataDialog::ConfirmImport {
-                        path,
-                        summary,
-                        identity_warning,
-                        replace_armed,
-                        ..
-                    } => {
-                        ui.label(format!("Importer {} ?", path.display()));
-                        ui.label(summary);
-                        ui.add_space(4.0);
+                theme::card_frame(ui)
+                    .inner_margin(egui::Margin::same(22))
+                    .shadow(egui::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: Color32::from_black_alpha(64),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(420.0 - 44.0);
+                        ui.spacing_mut().item_spacing.y = 10.0;
                         ui.label(
+                            RichText::new("Données")
+                                .size(theme::tokens().font.size.heading)
+                                .strong(),
+                        );
+                        match dialog {
+                            DataDialog::Busy(text) => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(text);
+                                });
+                                close = ui.button("Fermer").clicked();
+                            }
+                            DataDialog::Message { ok, text } => {
+                                let color = if *ok {
+                                    theme::palette(ui).ok
+                                } else {
+                                    theme::palette(ui).error
+                                };
+                                ui.colored_label(color, text);
+                                ui.add_space(6.0);
+                                close = ui.button("OK").clicked();
+                            }
+                            DataDialog::ConfirmImport {
+                                path,
+                                summary,
+                                identity_warning,
+                                replace_armed,
+                                ..
+                            } => {
+                                ui.label(format!("Importer {} ?", path.display()));
+                                ui.label(summary);
+                                ui.add_space(4.0);
+                                ui.label(
                             "Les données du serveur seront remplacées. Le serveur redémarre pour \
                              appliquer l'import (une copie de secours de ses données est gardée \
                              à côté) ; l'application se reconnecte toute seule.",
                         );
-                        ui.add_space(6.0);
-                        match (identity_warning, *replace_armed) {
-                            (None, _) => {
-                                ui.horizontal(|ui| {
-                                    confirmed = ui.button("Importer").clicked();
-                                    close = ui.button("Annuler").clicked();
-                                });
-                            }
-                            (Some(warning), false) => {
-                                ui.colored_label(theme::palette(ui).error, warning);
                                 ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    arm_replace =
-                                        ui.button("Remplacer l'identité du serveur…").clicked();
-                                    close = ui.button("Annuler").clicked();
-                                });
-                            }
-                            (Some(_), true) => {
-                                ui.colored_label(
+                                match (identity_warning, *replace_armed) {
+                                    (None, _) => {
+                                        (confirmed, close) = mac_confirm(ui, "Importer");
+                                    }
+                                    (Some(warning), false) => {
+                                        ui.colored_label(theme::palette(ui).error, warning);
+                                        ui.add_space(6.0);
+                                        (arm_replace, close) =
+                                            mac_confirm(ui, "Remplacer l'identité du serveur…");
+                                    }
+                                    (Some(_), true) => {
+                                        ui.colored_label(
                                     theme::palette(ui).error,
                                     "Dernière confirmation : l'identité Matter du serveur sera \
                                      remplacée. Les appareils appairés avec l'ancienne ne seront \
                                      plus reconnus et devront être réappairés.",
                                 );
+                                        ui.add_space(6.0);
+                                        (replace_confirmed, close) = mac_confirm(
+                                            ui,
+                                            "Oui, remplacer l'identité et importer",
+                                        );
+                                    }
+                                }
+                            }
+                            DataDialog::ImportStarted => {
+                                ui.label(
+                                    "Import accepté. Le serveur redémarre pour l'appliquer : la \
+                             connexion va se couper puis revenir d'elle-même.",
+                                );
                                 ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    replace_confirmed = ui
-                                        .button("Oui, remplacer l'identité et importer")
-                                        .clicked();
-                                    close = ui.button("Annuler").clicked();
-                                });
+                                close = ui.button("OK").clicked();
                             }
                         }
-                    }
-                    DataDialog::ImportStarted => {
-                        ui.label(
-                            "Import accepté. Le serveur redémarre pour l'appliquer : la \
-                             connexion va se couper puis revenir d'elle-même.",
-                        );
-                        ui.add_space(6.0);
-                        close = ui.button("OK").clicked();
-                    }
-                }
+                    });
             });
         if arm_replace {
             if let Some(DataDialog::ConfirmImport { replace_armed, .. }) = &mut self.data_dialog {
@@ -1795,8 +1845,12 @@ impl MatterApp {
     // -----------------------------------------------------------------------
 
     fn pairing_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label("Code de l'app Maison : 11 chiffres, ou code QR « MT:… ».");
+        let p = *theme::palette(ui);
         let busy = matches!(self.pairing, Pairing::InProgress(_)) || self.model.pairing_busy;
+        ui.label(
+            RichText::new("Code de l'app Maison : 11 chiffres, ou code QR « MT:… ».")
+                .color(p.text_secondary),
+        );
         let response = ui.add_enabled(
             !busy,
             egui::TextEdit::singleline(&mut self.code)
@@ -1804,29 +1858,42 @@ impl MatterApp {
                 .desired_width(f32::INFINITY),
         );
         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let ready = !busy && !self.code.trim().is_empty();
         let clicked = ui
-            .add_enabled(
-                !busy && !self.code.trim().is_empty(),
-                egui::Button::new("Appairer"),
-            )
+            .add_enabled_ui(ready, |ui| theme::primary_button(ui, "Appairer"))
+            .inner
             .clicked();
-        if (clicked || enter) && !busy && !self.code.trim().is_empty() {
+        if !ready && !busy {
+            ui.label(
+                RichText::new("Saisissez le code pour continuer.")
+                    .size(12.0)
+                    .color(p.text_secondary),
+            );
+        }
+        if (clicked || enter) && ready {
             let code = self.code.trim().to_string();
             self.pair(code);
         }
         match &self.pairing {
-            Pairing::Idle => {}
+            Pairing::Idle => {
+                if busy {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Appairage en cours…").color(p.text_secondary));
+                    });
+                }
+            }
             Pairing::InProgress(m) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(m);
+                    ui.label(RichText::new(m).color(p.text_secondary));
                 });
             }
             Pairing::Success(m) => {
-                ui.colored_label(theme::palette(ui).ok, format!("✔ {m}"));
+                theme::state_word(ui, theme::StateWord::Ok, m);
             }
             Pairing::Failed(m) => {
-                ui.colored_label(theme::palette(ui).error, format!("✖ {m}"));
+                theme::state_word(ui, theme::StateWord::Error, m);
             }
         }
     }
@@ -1878,20 +1945,71 @@ impl MatterApp {
             .filter(|id| self.model.devices.contains_key(id))
     }
 
-    /// Fenêtre ouverte par « + Ajouter » : l'appairage d'un appareil.
+    /// Fenêtre ouverte par « + Ajouter » : l'appairage d'un appareil, dans une carte de 380 px
+    /// centrée sur un voile.
+    #[allow(deprecated)]
     fn add_window(&mut self, ctx: &egui::Context) {
         if !self.add_open {
             return;
         }
-        let mut open = true;
-        egui::Window::new("Ajouter un appareil")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::new("add_veil"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(16, 35, 45, 107),
+                );
+                // Le voile avale les clics : rien ne se passe derrière la carte.
+                ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            });
+        let mut close = false;
+        egui::Area::new(egui::Id::new("add_card"))
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .default_width(380.0)
-            .show(ctx, |ui| self.pairing_panel(ui));
-        self.add_open = open;
+            .show(ctx, |ui| {
+                theme::card_frame(ui)
+                    .inner_margin(egui::Margin::same(22))
+                    .shadow(egui::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: Color32::from_black_alpha(64),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(380.0 - 44.0);
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        let line = egui::Stroke::new(1.0, theme::palette(ui).line);
+                        let w = &mut ui.visuals_mut().widgets;
+                        w.inactive.bg_stroke = line;
+                        w.hovered.bg_stroke = line;
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Ajouter un appareil")
+                                    .size(theme::tokens().font.size.heading)
+                                    .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(egui::Button::new("×").frame(false))
+                                        .on_hover_text("Fermer")
+                                        .clicked()
+                                    {
+                                        close = true;
+                                    }
+                                },
+                            );
+                        });
+                        self.pairing_panel(ui);
+                    });
+            });
+        if close {
+            self.add_open = false;
+        }
     }
 
     /// Échap ferme le panneau de détail. Pendant l'édition du nom (ou la confirmation
@@ -1939,11 +2057,21 @@ impl MatterApp {
             return;
         }
         let size = theme::tokens().size;
+        let surface = theme::palette(ui).surface;
+        // Largeur fixe de 360 px, fond de carte : la grille passe alors à 4 colonnes.
         egui::Panel::right("device_detail")
-            .resizable(true)
-            .default_size(size.detail_panel)
-            .size_range(size.detail_panel_min..=size.detail_panel_max)
-            .show(ui, |ui| self.details(ui, layout));
+            .resizable(false)
+            .exact_size(size.detail_panel)
+            .frame(
+                egui::Frame::new()
+                    .fill(surface)
+                    .inner_margin(egui::Margin::symmetric(18, 16)),
+            )
+            .show(ui, |ui| {
+                // 360 px moins les marges : rien ne doit élargir la fiche.
+                ui.set_max_width(size.detail_panel - 36.0);
+                self.details(ui, layout)
+            });
     }
 
     /// Fenêtre étroite : le détail prend toute la largeur, à la place de la vue. Rend `true` s'il
@@ -2322,245 +2450,69 @@ impl MatterApp {
         }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let mut menu_export = false;
-        let mut menu_import = false;
-        let mut logout = false;
-        let mut chosen_mode = None;
-        // Sur macOS, Fichier est dans la barre de menus du Mac : pas de rangée dans la fenêtre.
-        let in_window_menu = self.native_menu.is_none();
-        egui::Panel::top("top").show(ui, |ui| {
-            if in_window_menu {
-                egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Fichier", |ui| {
-                    let connected = self.connected();
-                    if ui
-                        .add_enabled(connected, egui::Button::new("Exporter mes données…"))
-                        .on_disabled_hover_text("Indisponible : pas de connexion au serveur")
-                        .clicked()
-                    {
-                        menu_export = true;
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(connected, egui::Button::new("Importer des données…"))
-                        .on_disabled_hover_text("Indisponible : pas de connexion au serveur")
-                        .clicked()
-                    {
-                        menu_import = true;
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Se déconnecter").clicked() {
-                        logout = true;
-                        ui.close();
-                    }
-                });
-                });
-            }
-            ui.horizontal(|ui| {
-                ui.heading("Maison");
-                ui.add_space(8.0);
-                if self.connected() {
-                    for view in [
-                        View::Plan,
-                        View::Devices,
-                        View::Temperatures,
-                        View::Cameras,
-                        View::Rules,
-                    ] {
-                        if theme::tab(ui, self.view == view, view.title()).clicked() {
-                            if view != self.view {
-                                self.close_detail();
-                            }
-                            self.view = view;
-                        }
-                    }
-                }
-                // Un brouillon ou un choix en attente reste visible depuis toutes les vues.
-                for alert in self.sync_alerts() {
-                    let text = RichText::new(&alert.label)
-                        .small()
-                        .strong()
-                        .color(theme::palette(ui).warn);
-                    let clicked = ui
-                        .add(egui::Button::new(text).frame(false))
-                        .on_hover_text(&alert.detail)
-                        .clicked();
-                    if clicked && self.connected() {
-                        self.view = alert.view;
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Le mode de la maison, visible depuis toutes les vues : un clic ouvre les
-                    // quatre choix (le serveur confirme, le sélecteur suit l'événement).
-                    if self.connected() && self.model.has_mode {
-                        // Présent : quelqu'un est là, la maison est « allumée » (Lueur).
-                        let p = theme::palette(ui);
-                        let shown = RichText::new(format!(" Mode : {} ", self.model.mode.label()))
-                            .strong();
-                        let shown = if self.model.mode == HomeMode::Present {
-                            shown.color(p.on_lueur).background_color(p.lueur)
-                        } else {
-                            shown.color(p.accent_text)
-                        };
-                        ui.menu_button(shown, |ui| {
-                            for mode in HomeMode::ALL {
-                                if ui
-                                    .selectable_label(mode == self.model.mode, mode.label())
-                                    .clicked()
-                                {
-                                    chosen_mode = Some(mode);
-                                    ui.close();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("Mode de la maison : commande les caméras et les automatisations");
-                    }
-                    if self.connected() && theme::primary_button(ui, "+ Ajouter").clicked() {
-                        self.add_open = true;
-                        // Un appairage fini (réussi ou non) ne s'affiche pas à la réouverture.
-                        if matches!(self.pairing, Pairing::Success(_) | Pairing::Failed(_)) {
-                            self.pairing = Pairing::Idle;
-                        }
-                    }
-                    if matches!(self.pairing, Pairing::InProgress(_)) || self.model.pairing_busy {
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("Appairage…").small());
-                        ui.spinner();
-                    }
-                    match &self.link {
-                        Link::Connected {
-                            server_version,
-                            server,
-                        } => {
-                            // Un clic sur l'adresse ouvre un petit menu ; l'adresse complète
-                            // est dans l'infobulle quand elle est tronquée.
-                            let full = server_address(server);
-                            // À distance (autre adresse, ou Tailscale) : l'adresse réellement
-                            // utilisée est dans l'infobulle.
-                            let used = ostal_client::net::stream::active_address()
-                                .filter(|_| ostal_client::net::stream::is_remote())
-                                .map(|a| a.authority());
-                            let shown = shorten(&full, MAX_ADDRESS_CHARS);
-                            let suffix = if used.is_some() { " · à distance" } else { "" };
-                            let text = RichText::new(format!("● {shown} · {server_version}{suffix}"))
-                                .small()
-                                .color(theme::palette(ui).ok);
-                            let reply = ui.menu_button(text, |ui| {
-                                if ui.button("Copier l'adresse").clicked() {
-                                    ui.ctx().copy_text(full.clone());
-                                    ui.close();
-                                }
-                                if ui.button("Se déconnecter / changer de serveur").clicked() {
-                                    logout = true;
-                                    ui.close();
-                                }
-                            });
-                            let used_line = used
-                                .map(|u| format!("\nAdresse utilisée (à distance) : {u}"))
-                                .unwrap_or_default();
-                            reply.response.on_hover_text(format!(
-                                "{full}{used_line}\nServeur {server_version}\nClic : copier l'adresse ou changer de serveur"
-                            ));
-                        }
-                        Link::Resyncing => {
-                            ui.label(RichText::new("● resynchronisation…").small());
-                        }
-                        _ => {
-                            let p = theme::palette(ui);
-                            ui.label(
-                                RichText::new(" DÉCONNECTÉ ")
-                                    .strong()
-                                    .color(p.on_warn)
-                                    .background_color(p.warn),
-                            )
-                            .on_hover_text("Pas de connexion au serveur Ostal.");
-                        }
-                    }
-                });
-            });
-            if let Some((at, text)) = &self.error_banner {
-                if at.elapsed() < Duration::from_secs(20) {
-                    ui.colored_label(theme::palette(ui).error, text);
-                }
-            }
-        });
-        if let Some(mode) = chosen_mode.filter(|m| *m != self.model.mode) {
-            self.set_mode(mode);
-        }
-        if menu_export {
-            self.export_data();
-        }
-        if menu_import {
-            self.import_data();
-        }
-        if logout {
-            self.backend.logout();
-        }
-    }
-
+    /// Les notifications d'information : en haut à droite, sous les onglets, 320 px, 5 au plus.
+    /// Elles s'effacent seules après `TOAST_LIFETIME` ; les erreurs, elles, restent (bandeau).
     fn toasts_ui(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         self.toasts.retain(|t| t.until > now);
         let mut dismissed = None;
+        let top = 52.0 + 36.0 + 42.0 + 12.0;
         for (i, t) in self.toasts.iter().enumerate() {
             egui::Area::new(egui::Id::unique(("toast", i)))
-                .anchor(egui::Align2::RIGHT_TOP, [-12.0, 56.0 + i as f32 * 78.0])
+                .anchor(egui::Align2::RIGHT_TOP, [-24.0, top + i as f32 * 76.0])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_max_width(320.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("🔔 {}", t.title)).strong());
-                            if ui.small_button("✕").clicked() {
-                                dismissed = Some(i);
-                            }
+                    theme::card_frame(ui)
+                        .inner_margin(egui::Margin::symmetric(12, 10))
+                        .shadow(egui::Shadow {
+                            offset: [0, 6],
+                            blur: 18,
+                            spread: 0,
+                            color: Color32::from_black_alpha(46),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(296.0);
+                            ui.horizontal_top(|ui| {
+                                ui.label("🔔");
+                                ui.vertical(|ui| {
+                                    ui.set_width(236.0);
+                                    ui.label(RichText::new(&t.title).strong());
+                                    ui.label(
+                                        RichText::new(&t.message)
+                                            .color(theme::palette(ui).text_secondary),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        if ui
+                                            .add(egui::Button::new("×").frame(false))
+                                            .on_hover_text("Fermer")
+                                            .clicked()
+                                        {
+                                            dismissed = Some(i);
+                                        }
+                                    },
+                                );
+                            });
                         });
-                        ui.label(&t.message);
-                    });
                 });
         }
         if let Some(i) = dismissed {
             self.toasts.remove(i);
         }
     }
+}
 
-    fn disconnected_panel(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(60.0);
-            ui.heading("Déconnecté");
-            ui.add_space(8.0);
-            match &self.link {
-                Link::Connecting => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Connexion au serveur…");
-                    });
-                }
-                Link::Reconnecting {
-                    reason, retry_in_s, ..
-                } => {
-                    ui.label(format!("Liaison perdue : {reason}"));
-                    ui.label(format!(
-                        "Nouvel essai automatique dans {retry_in_s} s au plus."
-                    ));
-                    if ui.button("Réessayer maintenant").clicked() {
-                        self.backend.reconnect();
-                    }
-                }
-                _ => {}
-            }
-            ui.add_space(8.0);
-            ui.small(
-                "Aucune donnée n'est affichée ni modifiable tant que le serveur n'est pas joint.",
-            );
-            if ui.button("Changer de serveur").clicked() {
-                self.backend.logout();
-            }
-        });
-    }
+/// Les boutons d'une confirmation sur Mac : `[Destructif] [Annuler]` à droite, Annuler plein et
+/// par défaut (kit §15). Rend (destructif cliqué, annulé).
+fn mac_confirm(ui: &mut egui::Ui, destructive: &str) -> (bool, bool) {
+    let (mut yes, mut cancel) = (false, false);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        cancel = theme::primary_button(ui, "Annuler").clicked();
+        yes = theme::destructive_button(ui, destructive).clicked();
+    });
+    (yes, cancel)
 }
 
 /// Chemin de l'import réel : `replace_identity=1` seulement quand l'utilisateur a confirmé
@@ -2639,7 +2591,7 @@ fn describe_backup(s: &ImportSummary) -> String {
 
 fn status_badge(p: &theme::Palette, status: &WireStatus) -> (Color32, &'static str) {
     match status {
-        WireStatus::Online => (p.ok, "En ligne"),
+        WireStatus::Online => (p.ok, "Joignable"),
         WireStatus::Connecting => (p.warn, "Connexion…"),
         WireStatus::Unreachable { .. } => (p.error, "Injoignable"),
     }
@@ -2707,30 +2659,14 @@ impl eframe::App for MatterApp {
             return;
         }
 
-        self.top_bar(ui);
+        self.chrome(ui);
         self.toasts_ui(&ui.ctx().clone());
         self.data_dialog_window(&ui.ctx().clone());
         self.close_prompt_window(&ui.ctx().clone());
-
-        egui::Panel::bottom("log")
-            .resizable(true)
-            .default_size(90.0)
-            .show(ui, |ui| {
-                egui::CollapsingHeader::new("Journal")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                for line in &self.log {
-                                    ui.small(line);
-                                }
-                            });
-                    });
-            });
+        self.log_bar(ui);
 
         if !self.connected() {
-            egui::CentralPanel::default().show(ui, |ui| self.disconnected_panel(ui));
+            self.lost_panel(ui);
             return;
         }
 
@@ -2766,7 +2702,10 @@ impl eframe::App for MatterApp {
         if show_detail {
             self.detail_panel(ui, &layout);
         }
-        egui::CentralPanel::default().show(ui, |ui| {
+        let page = egui::Frame::new()
+            .fill(theme::palette(ui).bg)
+            .inner_margin(egui::Margin::symmetric(24, 16));
+        egui::CentralPanel::default().frame(page).show(ui, |ui| {
             if show_detail && self.detail_full(ui, &layout) {
                 return;
             }
@@ -2796,7 +2735,7 @@ impl eframe::App for MatterApp {
                     // Les événements à droite, la mosaïque (ou la caméra ouverte) à gauche.
                     egui::Panel::right("events-panel")
                         .resizable(false)
-                        .exact_size(300.0)
+                        .exact_size(360.0)
                         .show(ui, |ui| self.events_view.show(ui, &self.model));
                     cameras::show(ui, &self.model, self.plan.plan());
                 }

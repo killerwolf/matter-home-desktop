@@ -542,7 +542,7 @@ fn connection_loss_then_automatic_reconnection_with_a_fresh_state() {
     let pinned = server.fingerprint.clone();
     server.kill();
 
-    // Coupure : l'interface est prévenue (elle affichera « déconnecté »).
+    // Coupure : l'interface est prévenue (elle affichera « Plus de connexion à la maison »).
     client.wait_link(T, |l| matches!(l, Link::Reconnecting { .. }));
     // Pendant la coupure, une commande échoue franchement.
     let err = client.call(Request::get("/api/state")).unwrap_err();

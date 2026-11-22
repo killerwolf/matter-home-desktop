@@ -2,8 +2,11 @@
 
 [← Retour au README](../README.md)
 
-Onglet **« Automatisations »** : la liste des règles (case cochée = règle activée), l'éditeur
-de la règle sélectionnée et le journal des dernières exécutions.
+Onglet **« Automatisations »** (anciennement « Règles ») : à gauche, une liste de 420 px où chaque
+règle s'écrit en phrase, avec son interrupteur et sa **dernière exécution** (« aujourd'hui 18:30 »).
+Une règle dont la dernière exécution a échoué le dit (icône, cause) et propose **Réessayer**, qui
+relance un essai. À droite, l'éditeur de la règle sélectionnée (**Quand**, **Seulement si**,
+**Alors**, **Essayer maintenant**) ; en bas, la dernière exécution et **Historique ▸**.
 
 ## Composer une règle
 

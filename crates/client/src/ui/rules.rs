@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use super::plan::{glyph, icon_of};
 use super::sync::{Failure, Incoming, SyncState};
@@ -666,9 +666,9 @@ impl RulesView {
     ) -> RulesAction {
         let mut action = RulesAction::None;
         let mut changed = false;
+        let mut retry: Option<u64> = None;
 
         ui.horizontal(|ui| {
-            ui.heading("Automatisations");
             if ui.button("+ Nouvelle règle").clicked() {
                 let id = self.set.next_id();
                 self.set.rules.push(Rule::new(id));
@@ -753,10 +753,18 @@ impl RulesView {
             });
 
         egui::Panel::left("rules_list")
-            .resizable(true)
-            .default_size(320.0)
+            .resizable(false)
+            .exact_size(420.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 0,
+                right: 12,
+                top: 0,
+                bottom: 0,
+            }))
+            .show_separator_line(false)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
                     if self.set.rules.is_empty() {
                         ui.label("Aucune règle. Cliquez sur « + Nouvelle règle ».");
                     }
@@ -764,10 +772,10 @@ impl RulesView {
                         let _ = row; // (utilisé seulement par les tests)
                         let selected = self.selected == Some(rule.id);
                         let p = theme::palette(ui);
-                        let fill = if selected {
-                            theme::tokens().selected(p)
+                        let (fill, line) = if selected {
+                            (p.accent_soft, egui::Stroke::new(1.0, p.accent))
                         } else {
-                            Color32::TRANSPARENT
+                            (p.surface, egui::Stroke::new(1.0, p.line))
                         };
                         // Le clic de la ligne est posé AVANT son contenu (`sense` du scope) : un
                         // clic sur l'interrupteur, posé après, l'emporte sur lui.
@@ -776,10 +784,9 @@ impl RulesView {
                             |ui| {
                                 egui::Frame::new()
                                     .fill(fill)
-                                    .corner_radius(theme::tokens().radius.md)
-                                    .inner_margin(egui::Margin::same(
-                                        theme::tokens().space.sm as i8,
-                                    ))
+                                    .stroke(line)
+                                    .corner_radius(theme::tokens().radius.card)
+                                    .inner_margin(egui::Margin::symmetric(14, 12))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
@@ -804,37 +811,6 @@ impl RulesView {
                                                     .strong()
                                                     .color(name_color),
                                             );
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    if let Some(last) = runs
-                                                        .iter()
-                                                        .rev()
-                                                        .find(|r| r.rule_id == rule.id)
-                                                    {
-                                                        // Une réussite reste discrète ; un échec le dit avec le mot.
-                                                        let (text, color) = if last.ok {
-                                                            (
-                                                                ago(now_unix() - last.at),
-                                                                p.text_secondary,
-                                                            )
-                                                        } else {
-                                                            (
-                                                                format!(
-                                                                    "échec {}",
-                                                                    ago(now_unix() - last.at)
-                                                                ),
-                                                                p.warn,
-                                                            )
-                                                        };
-                                                        ui.label(
-                                                            RichText::new(text)
-                                                                .small()
-                                                                .color(color),
-                                                        );
-                                                    }
-                                                },
-                                            );
                                         });
                                         ui.label(
                                             RichText::new(summary_with(
@@ -842,9 +818,48 @@ impl RulesView {
                                                 devices,
                                                 &self.cameras,
                                             ))
-                                            .small()
-                                            .color(p.text_secondary),
+                                            .color(p.text),
                                         );
+                                        // « Dernière exécution », et en échec : l'icône, la cause et
+                                        // « Réessayer ».
+                                        match runs.iter().rev().find(|r| r.rule_id == rule.id) {
+                                            Some(last) if last.ok => {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "Dernière exécution : {}",
+                                                        when(last.at)
+                                                    ))
+                                                    .size(12.0)
+                                                    .color(p.text_secondary),
+                                                );
+                                            }
+                                            Some(last) => {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        RichText::new("✖").strong().color(p.error),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Dernière exécution {} : {}",
+                                                            when(last.at),
+                                                            last.detail
+                                                        ))
+                                                        .size(12.0)
+                                                        .color(p.error),
+                                                    );
+                                                    if ui.small_button("Réessayer").clicked() {
+                                                        retry = Some(rule.id);
+                                                    }
+                                                });
+                                            }
+                                            None => {
+                                                ui.label(
+                                                    RichText::new("Pas encore exécutée")
+                                                        .size(12.0)
+                                                        .color(p.text_secondary),
+                                                );
+                                            }
+                                        }
                                     })
                             },
                         );
@@ -856,6 +871,9 @@ impl RulesView {
                 });
             });
 
+        if let Some(id) = retry {
+            action = RulesAction::Test(id);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             let Some(idx) = self
                 .selected
@@ -1453,6 +1471,23 @@ impl RulesView {
             changed = true;
         }
         (changed, request)
+    }
+}
+
+/// « aujourd'hui 18:30 », « hier 22:30 », sinon « 03/11 22:30 » (heure locale).
+fn when(at: f64) -> String {
+    use chrono::{Duration, Local, TimeZone};
+    let Some(t) = Local.timestamp_opt(at as i64, 0).single() else {
+        return String::new();
+    };
+    let today = Local::now().date_naive();
+    let clock = t.format("%H:%M");
+    if t.date_naive() == today {
+        format!("aujourd'hui {clock}")
+    } else if t.date_naive() == today - Duration::days(1) {
+        format!("hier {clock}")
+    } else {
+        format!("{} {clock}", t.format("%d/%m"))
     }
 }
 

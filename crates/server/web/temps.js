@@ -4,6 +4,7 @@
 // durée est gardé dans le localStorage de l'app. Mêmes règles que le client de bureau.
 import { cursorLabel, gapThreshold, lineSegments, periodRange, tempChart, valueOnCurve } from "./charts.js";
 import { formatTemperature } from "./tiles.js";
+import { ICONS } from "./icons.js";
 import { adoptLegacyKey } from "./api.js";
 
 const WINDOWS = [
@@ -115,7 +116,7 @@ export function mountTemps(root, { request, getSensors }) {
     const name = make("span", "lname");
     label.append(box, sw, name);
     first.appendChild(label);
-    s.cells = { tr, box, name, cur: make("td", "num"), min: make("td", "num"), max: make("td", "num") };
+    s.cells = { tr, box, name, cur: make("td", "num cur"), min: make("td", "num"), max: make("td", "num") };
     tr.append(first, s.cells.cur, s.cells.min, s.cells.max);
     body.appendChild(tr);
   }
@@ -133,14 +134,17 @@ export function mountTemps(root, { request, getSensors }) {
       c.tr.classList.toggle("stale", s.stale);
       c.name.textContent = s.room && !s.label.includes(s.room) ? `${s.label} (${s.room})` : s.label;
       if (s.stale) {
-        c.cur.textContent = "injoignable";
-        c.cur.className = "num err";
+        // Injoignable : orange, avec l'icône et le mot (jamais la couleur seule) ; ni min ni max.
+        const mark = make("span", "ico");
+        mark.innerHTML = ICONS.blocked;
+        c.cur.replaceChildren(mark, "injoignable");
+        c.cur.className = "num cur unreach";
       } else {
         c.cur.textContent = s.current == null ? NONE : formatTemperature(s.current);
-        c.cur.className = "num";
+        c.cur.className = "num cur";
       }
-      c.min.textContent = s.range ? formatTemperature(s.range.lo) : NONE;
-      c.max.textContent = s.range ? formatTemperature(s.range.hi) : NONE;
+      c.min.textContent = s.range && !s.stale ? formatTemperature(s.range.lo) : NONE;
+      c.max.textContent = s.range && !s.stale ? formatTemperature(s.range.hi) : NONE;
     }
   }
 
@@ -198,7 +202,7 @@ export function mountTemps(root, { request, getSensors }) {
     const width = Math.max(280, Math.floor(plot.clientWidth));
     if (!force && width === drawnWidth && chart) return;
     drawnWidth = width;
-    const height = width < 520 ? 220 : width < 1000 ? 280 : 340;
+    const height = width < 520 ? 260 : width < 1000 ? 300 : 340;
     const w = windowOf();
     const visible = sensors.filter((s) => !prefs.hidden.has(s.id));
     chart = tempChart(visible.map((s) => ({ colorIndex: s.colorIndex, dashed: s.dashed, segments: s.segments })), end - w.seconds, end, { width, height });

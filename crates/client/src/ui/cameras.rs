@@ -5,7 +5,7 @@
 //!   (une Aqara G100 ne tient pas trois canaux à la fois) : sa tuile invite à ouvrir la caméra ;
 //! - une tuile n'appelle `player` que si elle est à l'écran (zone de défilement comprise) et dans
 //!   la limite de [`MAX_LIVE_TILES`] : ne plus appeler `player` coupe la connexion ;
-//! - une caméra qui n'est pas « en ligne » n'ouvre aucun flux : on ne harcèle pas une caméra
+//! - une caméra qui n'est pas « joignable » n'ouvre aucun flux : on ne harcèle pas une caméra
 //!   injoignable.
 //!
 //! L'état de la page (caméra ouverte, flux principal demandé) vit dans la mémoire d'egui, pour ne
@@ -149,7 +149,7 @@ pub fn tile_visible(clip: egui::Rect, tile: egui::Rect) -> bool {
     clip.intersects(tile)
 }
 
-/// Une tuile veut un flux si sa caméra est en ligne et en a un réduit, ou si elle en lisait déjà
+/// Une tuile veut un flux si sa caméra est joignable et en a un réduit, ou si elle en lisait déjà
 /// un (la caméra devient injoignable : le serveur reprend tout seul, la tuile continue de
 /// l'afficher et le message du lecteur dit ce qui se passe).
 fn tile_wants_stream(ctx: &egui::Context, camera: &CameraView, off: bool) -> bool {
@@ -185,7 +185,7 @@ fn repeats(detail: &str, problem: &str) -> bool {
 /// Phrase d'état d'une caméra : (état, détail éventuel, gravité si anormal).
 pub fn status_text(status: &CameraStatus) -> (&'static str, Option<String>, Option<Severity>) {
     match status {
-        CameraStatus::Online => ("En ligne", None, None),
+        CameraStatus::Online => ("Joignable", None, None),
         CameraStatus::Unreachable {
             problem,
             detail,
@@ -273,16 +273,16 @@ fn empty_state(ui: &mut egui::Ui) {
     });
 }
 
-/// Le mot d'une caméra qui ne répond pas : « hors ligne » (la maquette), alors que les appareils
+/// Le mot d'une caméra qui ne répond pas : « injoignable » (la maquette), alors que les appareils
 /// disent « injoignable ».
-pub const CAMERA_OFFLINE: &str = "hors ligne";
+pub const CAMERA_OFFLINE: &str = "injoignable";
 
-/// Une caméra hors ligne : « hors ligne » en orange et un nom grisé.
+/// Une caméra injoignable : « injoignable » en orange et un nom grisé.
 fn is_offline(camera: &CameraView) -> bool {
     matches!(camera.status, CameraStatus::Unreachable { .. })
 }
 
-/// Anomalie à signaler sur une vignette : seulement « hors ligne ».
+/// Anomalie à signaler sur une vignette : seulement « injoignable ».
 fn badge_of(camera: &CameraView) -> Option<(Severity, &'static str)> {
     is_offline(camera).then_some((Severity::Warn, CAMERA_OFFLINE))
 }
@@ -499,7 +499,7 @@ fn detail(
     );
     ui.painter()
         .rect_filled(rect, 4.0, theme::palette(ui).video_bg);
-    // Toujours appelé, même hors ligne : le lecteur dit l'état (injoignable, reprise…) et le
+    // Toujours appelé, même injoignable : le lecteur dit l'état (injoignable, reprise…) et le
     // serveur reprend la caméra tout seul. Le seul choix du flux est le réglage de l'en-tête.
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         player_compact(ui, model, camera.id, kind);
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn statuses_read_in_french_with_the_reason() {
-        assert_eq!(status_text(&CameraStatus::Online).0, "En ligne");
+        assert_eq!(status_text(&CameraStatus::Online).0, "Joignable");
         let (label, text, _) = status_text(&CameraStatus::Unreachable {
             problem: CameraProblem::Unauthorized,
             detail: Some("401".into()),
@@ -734,7 +734,7 @@ mod tests {
             detail: None,
             since: Some(1_700_000_000),
         });
-        assert!(text.unwrap().contains("Hors ligne depuis"));
+        assert!(text.unwrap().contains("Injoignable depuis"));
     }
 
     #[test]

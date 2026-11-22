@@ -17,8 +17,20 @@ serveur (`ostal-server create-account`).
    connexion est **refusée** avec les deux empreintes affichées ; un geste explicite est nécessaire
    pour approuver le nouveau certificat.
 
-Sans serveur, l'application affiche « DÉCONNECTÉ » et se reconnecte seule (attente de 1 s
-jusqu'à 30 s). Rien n'est affiché ni commandé tant que le serveur n'est pas joint.
+Sans serveur, la phrase d'état devient « Plus de connexion à la maison », l'adresse de la barre
+du haut passe en orange avec « injoignable », et une carte explique : « Liaison perdue : le
+serveur ne répond plus. » (le Mac serveur est peut-être en veille ou éteint), avec **Changer de
+serveur** et **Réessayer maintenant**. L'application se reconnecte seule (attente de 1 s jusqu'à
+30 s). Rien n'est affiché ni commandé tant que le serveur n'est pas joint.
+
+## L'écran, de haut en bas
+
+La fenêtre fait 1280 × 800 (c'est aussi son minimum). De haut en bas : la barre du haut (logotype,
+pastille **Mode**, adresse du serveur, **+ Ajouter**), la phrase d'état (« La maison va bien. » ou
+« Une chose à regarder : … » avec **Voir l'appareil**), les onglets **Appareils**, **Plan**,
+**Températures**, **Caméras**, **Automatisations**, le contenu, puis le journal replié sur sa
+dernière ligne (un clic le déplie). Une erreur de commande reste affichée sous les onglets
+jusqu'au ✕ et propose **Réessayer** ; les notifications d'information disparaissent seules.
 **Fichier → Se déconnecter** révoque le jeton et efface les informations de connexion.
 
 ## Appairer un appareil
@@ -62,12 +74,13 @@ ne la connaît pas : la fiche le signale, seules les commandes sont possibles.
 
 ## Fiche d'un appareil
 
-Sélectionnez un appareil dans la liste de gauche. La fiche montre son état (en ligne,
+Cliquez sur une tuile de la grille (une lumière ou un volet se commande d'un clic ; une prise,
+un capteur ou une porte ouvrent leur fiche ; le ⋯ de chaque tuile ouvre la fiche). La fiche, un panneau de 360 px à droite (la grille passe de 6 à 4 colonnes), montre son état (joignable,
 connexion, injoignable avec la prochaine tentative), le niveau de sa pile, puis une section
 par type de mesure :
 
 - **Thermomètre** : grande valeur, humidité, mode de réception (souscription ou interrogation
-  périodique), choix de la fenêtre (15 min, 1 h, 7 jours), min / max / moyenne,
+  périodique), choix de la période (15 min, 1 h, 24 h, 7 jours), min / max / moyenne,
   graphique, **Exporter en CSV** (fichier produit par le serveur, enregistré à l'endroit que vous
   choisissez, colonnes `timestamp_unix`, `datetime_local`, `temperature_c`, `humidity_pct`).
 - **Détecteur d'ouverture** : « Ouvert » ou « Fermé », depuis quand, nombre d'ouvertures sur

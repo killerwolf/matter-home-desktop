@@ -4,7 +4,7 @@
 //! elles ne se distinguent que par la forme, jamais par la couleur :
 //!
 //! - en marche : arche épaisse et point (quelqu'un est là) ;
-//! - en marche, un point à regarder : la même, avec une pastille en haut à droite, détourée ;
+//! - en marche, une chose à regarder : la même, avec une pastille en haut à droite, détourée ;
 //! - démarrage : arche fine, sans point (personne encore) ;
 //! - le serveur ne tourne pas : arche fine et point d'exclamation sous elle.
 //!

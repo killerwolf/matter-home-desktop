@@ -35,6 +35,8 @@ test("le conseil donné quand on ne peut pas s'abonner", () => {
   const notInstalled = pushSupport({ ...full, ua: IPHONE_17, standalone: false });
   assert.equal(notInstalled.reason, "ios-not-installed");
   assert.match(notInstalled.text, /écran d'accueil/);
+  assert.equal(notInstalled.steps.length, 3, "les trois étapes pour ajouter Ostal à l'écran d'accueil");
+  assert.doesNotMatch(JSON.stringify(notInstalled), /Maison/, "un seul nom : Ostal");
   assert.equal(pushSupport({ ...full, ua: IPHONE_17, standalone: true }).ok, true);
   assert.equal(pushSupport({ ...full, ua: IPHONE_17, standalone: true, hasPushManager: false }).reason, "unsupported");
   assert.equal(pushSupport({ ...full, ua: IPHONE_17, standalone: true, permission: "denied" }).reason, "denied");

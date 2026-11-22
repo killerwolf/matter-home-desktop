@@ -1,7 +1,7 @@
 // Essai à la main (non embarqué dans le serveur) : node crates/server/web/mode.test.mjs
 // Le mode de la maison : valeurs, libellés, et caméras éteintes selon le mode.
 import assert from "node:assert/strict";
-import { DEFAULT_MODE, MODES, cameraBehavior, cameraOff, isMode, modeChangeNotice, modeLabel, offText, sourceLabel } from "./mode.js";
+import { DEFAULT_MODE, MODES, cameraBehavior, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText, sourceLabel } from "./mode.js";
 
 // Les quatre modes du serveur, dans l'ordre, avec des libellés français.
 assert.deepEqual(MODES.map((m) => m.id), ["present", "absent", "nuit", "vacances"]);
@@ -47,5 +47,12 @@ assert.equal(modeChangeNotice("nuit", undefined, "nuit"), null);
 assert.equal(modeChangeNotice("nuit", { kind: "web" }, null), "Mode Nuit · app web", "une autre app web");
 assert.equal(modeChangeNotice("nuit", { kind: "desktop" }, "nuit"), "Mode Nuit · app de bureau");
 assert.equal(modeChangeNotice("dehors", { kind: "web" }, null), null);
+
+// L'effet d'un mode : jumelle de HomeMode::effect (protocol/mode.rs), les mêmes phrases.
+assert.equal(effect("present"), "Caméras intérieures éteintes, extérieures en diffusion.");
+assert.equal(effect("absent"), "Toutes les caméras en surveillance.");
+assert.equal(effect("nuit"), "Caméras intérieures éteintes, extérieures en surveillance.");
+assert.equal(effect("vacances"), "Toutes les caméras en surveillance.");
+assert.equal(effect("inconnu"), effect("present"), "un mode inconnu se lit comme Présent");
 
 console.log("mode.test.mjs : ok");

@@ -13,12 +13,7 @@ use protocol::format::{format_energy, format_position, format_power};
 use protocol::wire::Metric;
 
 fn window_selector(ui: &mut egui::Ui, window: &mut TimeWindow) {
-    ui.horizontal(|ui| {
-        ui.label("Fenêtre :");
-        for w in TimeWindow::ALL {
-            ui.selectable_value(window, w, w.label());
-        }
-    });
+    super::thermometer::periods(ui, window);
 }
 
 /// Détecteur d'ouverture : état actuel, nombre d'ouvertures, chronologie.
@@ -40,7 +35,7 @@ pub fn door(
                 ("Fermé", pal.ok)
             };
             ui.horizontal(|ui| {
-                ui.label(RichText::new(text).size(48.0).strong().color(color));
+                ui.label(RichText::new(text).size(26.0).strong().color(color));
                 if let Some(since) = device.open_since {
                     ui.label(format!(
                         "depuis {} ({})",
@@ -53,7 +48,7 @@ pub fn door(
         None => {
             ui.label(
                 RichText::new("État inconnu")
-                    .size(32.0)
+                    .size(18.0)
                     .color(pal.text_secondary),
             );
         }
@@ -128,13 +123,12 @@ pub fn power(
     let now = now_unix();
     let empty = Series::default();
     let power = series.get(Metric::Power).unwrap_or(&empty);
-    ui.heading("Consommation électrique");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         match device.power() {
             Some(s) => {
                 ui.label(
                     RichText::new(format_power(s.value))
-                        .size(48.0)
+                        .size(26.0)
                         .strong()
                         .color(pal.series_power),
                 );
@@ -142,7 +136,7 @@ pub fn power(
             None if device.info.caps.power => {
                 ui.label(
                     RichText::new("— W")
-                        .size(48.0)
+                        .size(26.0)
                         .strong()
                         .color(pal.text_secondary),
                 );
@@ -244,8 +238,7 @@ pub fn cover(
     let current = device.position().map(|s| s.value);
     let mut command = None;
 
-    ui.heading("Volet");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         match current {
             Some(p) => {
                 let color = if p <= 0.0 {
@@ -255,7 +248,7 @@ pub fn cover(
                 };
                 ui.label(
                     RichText::new(format_position(p))
-                        .size(48.0)
+                        .size(26.0)
                         .strong()
                         .color(color),
                 );
@@ -263,7 +256,7 @@ pub fn cover(
             None => {
                 ui.label(
                     RichText::new("Position inconnue")
-                        .size(32.0)
+                        .size(18.0)
                         .color(pal.text_secondary),
                 );
             }
@@ -276,14 +269,14 @@ pub fn cover(
             None => None,
         };
         if let Some((text, color)) = motion {
-            ui.label(RichText::new(text).size(20.0).color(color));
+            ui.label(RichText::new(text).size(13.0).color(color));
         }
     });
     if !position_aware {
         ui.small("Moteur sans retour de position (radio à sens unique, type RTS) : seules les commandes sont possibles.");
     }
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button("▲ Ouvrir").clicked() {
             command = Some(CoverCommand::Open);
         }
@@ -295,7 +288,7 @@ pub fn cover(
         }
     });
     if position_aware {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Ouverture :");
             let mut value = device
                 .cover_slider

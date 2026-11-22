@@ -10,6 +10,21 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Refonte (préversion, itération 1)
+
+- **Refonte complète selon la nouvelle charte**, sur les trois surfaces à la fois : app web,
+  fenêtre du serveur (« Ostal Server ») et app de bureau. Socle commun : jetons de design, thème
+  clair et sombre, phrase d'état, raccourcis Nuit et Vacances, widget.
+- **Tailles de fenêtre fixes** : app de bureau 1280×800, fenêtre du serveur 640×700.
+- **Fenêtre du serveur** : écrans Caméras, formulaire de caméra, Descriptions, Notifications,
+  Raccourcis, Réglages et Confirmer (nouveau module de confirmation).
+- **App de bureau** : nouvelle coquille (`shell`), caméras, appareils, règles, capteurs,
+  thermomètre et lecteur remis à la charte.
+- **App web** : tuiles, plan, températures, notifications push, manifeste et service worker mis à
+  jour ; tests node ajoutés pour les tuiles.
+- Documentation mise à jour (web, serveur, plan, utilisation, automatisations, installation).
+- Préversion : la version n'est pas incrémentée.
+
 ### Modifié
 
 - **Nouvelle palette « Nuit et Lueur »**, celle du logo Seuil, dans l'app de bureau, l'app web et

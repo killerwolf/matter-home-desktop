@@ -64,14 +64,15 @@ export function pushSupport(env) {
   if (ios && !env.standalone) {
     return {
       ok: false, reason: "ios-not-installed",
-      text: "Sur iPhone et iPad, les notifications ne marchent que depuis l'app ajoutée à l'écran d'accueil : dans Safari, touchez Partager puis « Sur l'écran d'accueil », puis ouvrez Maison depuis l'écran d'accueil.",
+      text: "Ajoutez d'abord Ostal à l'écran d'accueil : sur iPhone et iPad, les notifications ne marchent que depuis l'app installée.",
+      steps: ["Touchez Partager.", "Touchez « Sur l'écran d'accueil ».", "Touchez « Ajouter », puis ouvrez Ostal depuis l'écran d'accueil."],
     };
   }
   if (!env.hasServiceWorker || !env.hasPushManager || !env.hasNotification) {
     return { ok: false, reason: "unsupported", text: "Ce navigateur ne sait pas recevoir de notifications (ou la page n'est pas servie en HTTPS avec un certificat reconnu : utilisez l'adresse .ts.net)." };
   }
   if (env.permission === "denied") {
-    return { ok: false, reason: "denied", text: "Les notifications sont refusées pour cette app. Réautorisez-les dans Réglages › Notifications › Maison, puis revenez ici." };
+    return { ok: false, reason: "denied", text: "Les notifications sont refusées pour cette app. Réautorisez-les dans Réglages › Notifications › Ostal, puis revenez ici." };
   }
   return { ok: true };
 }

@@ -194,7 +194,7 @@ pub enum Change {
         value: f64,
         at: f64,
     },
-    /// Un appareil devient injoignable ou revient en ligne : ligne de journal.
+    /// Un appareil devient injoignable ou redevient joignable : ligne de journal.
     Journal(String),
     PairingProgress(String),
     PairingDone {
@@ -305,7 +305,7 @@ impl Model {
                             .unwrap_or_default()
                     )),
                     WireStatus::Online if was_unreachable => {
-                        Some(format!("{} de nouveau en ligne", d.info.name))
+                        Some(format!("{} de nouveau joignable", d.info.name))
                     }
                     _ => None,
                 };
@@ -609,7 +609,7 @@ mod tests {
                     status: WireStatus::Online
                 }
             ),
-            Change::Journal("Salon de nouveau en ligne".into())
+            Change::Journal("Salon de nouveau joignable".into())
         );
     }
 

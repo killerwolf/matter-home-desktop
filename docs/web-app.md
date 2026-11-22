@@ -1,5 +1,26 @@
 # App web mobile (PWA)
 
+## Refonte « Nuit et Lueur » (préversion, sans changement de version)
+
+- **Coquille** : en-tête de 52 px (logotype de 32 px, pastille de mode à cible de 44 px) et barre du
+  bas à cinq entrées : Appareils, Plan, Temp., Caméras et **Mode**. Mode montre le mode actuel avec
+  son icône et ouvre la feuille des modes (quatre lignes, l'effet de chaque mode d'après `effect`
+  de `mode.js`, « Actif » sur le mode du serveur). Le choix ne s'affiche qu'après la réponse du
+  serveur. Le menu déroulant n'existe plus.
+- **Appareils** : carte de phrase d'état (`statusSummary` de `tiles.js`, jumelle de
+  `protocol::status`, essayée par `tiles.test.mjs`) avec « À jour à HH:MM » ; carte « Installer sur
+  l'iPhone » (étapes : raccourcis, widget, notifications, d'après `GET /api/tokens` et l'abonnement
+  push) qui disparaît quand tout est fait ; pièces en cartes sur deux colonnes, une ligne par appareil.
+- **La maison ne répond pas** : bandeau « La maison ne répond pas. » avec la piste (Mac en veille,
+  Tailscale) et « Réessayer » ; les cartes restent à 0,55 d'opacité avec « Dernières valeurs
+  connues. Lu à HH:MM. » ; la pastille de mode passe en gris. Le texte vient de `api.js`
+  (`HOUSE_SILENT`, `HOUSE_HINT`), repris par l'écran de connexion.
+- **Confirmations** : un dialogue `[Annuler][Révoquer]` dans la page (`askConfirm`) remplace
+  `confirm()` pour supprimer un événement, révoquer un jeton ou un abonnement.
+- **Vocabulaire** : « injoignable » partout (jamais « hors ligne » ni « en ligne »), un seul nom : « Ostal ».
+- **Plan** : noms courts toujours visibles, légende, boutons de 44 px, feuille à demi ouverte.
+- Les couleurs viennent toutes de `var(--color-…)` ; aucun `style=`, aucune URL externe dans `index.html`.
+
 [← Retour au README](../README.md) · [Protocole](protocole.md) · [Design system](design-system.md)
 
 Ticket n° 15. Le serveur sert lui-même une app web pensée pour le mobile (iPhone, iPad, et aussi

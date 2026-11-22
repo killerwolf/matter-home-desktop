@@ -8,7 +8,7 @@ import { ICONS, shutterIcon } from "./icons.js";
 import { formatTemperature, roomAverages, symbolOf, tempClass, tileOf } from "./tiles.js";
 
 const NS = "http://www.w3.org/2000/svg";
-export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau";
+export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau.";
 
 const PAD = 28; // marge autour du plan à l'ajustement (px)
 const MARGIN_M = 0.5; // marge autour des pièces et objets (m)
@@ -17,7 +17,6 @@ const ZOOM_OUT = 0.6; // jusqu'à 0,6 fois l'ajustement
 const ZOOM_IN = 14; // jusqu'à 14 fois l'ajustement
 const KEEP_PX = 56; // une part du plan reste toujours à l'écran
 const TAP_SLOP = 8; // en dessous, un doigt qui bouge reste un tap
-const LABELS_ZOOM = 1.8; // les noms apparaissent au-delà de cet agrandissement
 const MARKER_MIN = 0.65; // taille relative des pictogrammes à l'ajustement
 
 // ---------------------------------------------------------------------------
@@ -117,7 +116,7 @@ const html = (tag, className, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
-const short = (text, n = 16) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+const short = (text, n = 12) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
 
 const DECOR_ICONS = {
   Door: ICONS.doorClosed, Window: ICONS.windowClosed, Light: ICONS.lightOff, Plug: ICONS.plugOff,
@@ -156,13 +155,18 @@ export function mountPlan(root, ctx) {
   const floorsBox = html("div", "seg");
   floorsBox.setAttribute("role", "group");
   floorsBox.setAttribute("aria-label", "Étage");
-  const tools = html("div", "seg");
+  const tools = html("div", "tools");
   tools.setAttribute("role", "group");
-  tools.setAttribute("aria-label", "Zoom");
-  const mkTool = (label, text, onClick) => {
-    const b = html("button", "", text);
+  tools.setAttribute("aria-label", "Zoom et centrage");
+  // Un bouton de 44 px avec son pictogramme (tracé en DOM : jamais de HTML construit ici).
+  const mkTool = (label, paths, onClick, ring = false) => {
+    const b = html("button", "");
     b.type = "button";
     b.setAttribute("aria-label", label);
+    const icon = el("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+    for (const d of paths) icon.appendChild(el("path", { d }));
+    if (ring) icon.appendChild(el("circle", { cx: 12, cy: 12, r: 7 }));
+    b.appendChild(icon);
     b.addEventListener("click", onClick);
     return b;
   };
@@ -175,7 +179,14 @@ export function mountPlan(root, ctx) {
   message.hidden = true;
   stage.append(svg, message);
   bar.append(floorsBox, tools);
-  wrap.append(bar, stage);
+  // La légende : ce que veulent dire les pastilles et les teintes.
+  const legend = html("div", "plan-legend");
+  for (const [cls, text] of [["on", "Allumé"], ["", "Injoignable"], ["tint", "Teinte : température"]]) {
+    const item = html("span");
+    item.append(html("i", cls), text);
+    legend.appendChild(item);
+  }
+  wrap.append(bar, stage, legend);
   root.appendChild(wrap);
 
   let floorIndex = firstFilledFloor(ctx.getPlan());
@@ -211,7 +222,6 @@ export function mountPlan(root, ctx) {
       l.node.setAttribute("y", String(view.ty + view.s * l.y + 15));
       l.node.style.visibility = view.s * l.w < 70 ? "hidden" : "visible";
     }
-    svg.classList.toggle("zoomed", fit != null && view.s >= fit.s * LABELS_ZOOM);
   };
   const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
   const setView = (next) => {
@@ -231,7 +241,11 @@ export function mountPlan(root, ctx) {
     fitted = false;
     setView(zoomAt(view, factor, size.w / 2, size.h / 2));
   };
-  tools.append(mkTool("Zoom arrière", "−", () => zoomBy(1 / 1.5)), mkTool("Zoom avant", "+", () => zoomBy(1.5)), mkTool("Recentrer le plan", "Recentrer", recenter));
+  tools.append(
+    mkTool("Zoom avant", ["M12 5v14M5 12h14"], () => zoomBy(1.5)),
+    mkTool("Zoom arrière", ["M5 12h14"], () => zoomBy(1 / 1.5)),
+    mkTool("Recentrer le plan", ["M12 2v4M12 18v4M2 12h4M18 12h4"], recenter, true),
+  );
 
   const measure = () => {
     const r = svg.getBoundingClientRect();
@@ -264,9 +278,9 @@ export function mountPlan(root, ctx) {
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
     body.append(disc, icon);
-    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
+    group.append(el("circle", { r: 24 }, "phit"), body, name, value);
     const entry = {
-      node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
+      node: group, x: item.x, y: item.y, body, r: 17, texts: [[name, 15], [value, 29]],
       update() {
         const dev = devices().get(id);
         if (!dev) {
@@ -283,7 +297,7 @@ export function mountPlan(root, ctx) {
         const shown = symbol === dev.info.icon ? dev : { ...dev, info: { ...dev.info, icon: symbol } };
         const e = ctx.getExpect(id);
         const t = tileOf(shown, e && Date.now() - e.at < 5000 ? e : null);
-        group.setAttribute("class", `pi${t.lit ? " lit" : ""}${t.dim ? " dim" : ""}${t.iconWarn || t.valueWarn || t.lowBattery ? " warn" : ""}${t.small?.kind === "err" ? " err" : ""}`);
+        group.setAttribute("class", `pi${t.lit ? " lit" : ""}${t.iconWarn || t.valueWarn || t.lowBattery ? " warn" : ""}${t.small?.kind === "err" ? " err" : ""}`);
         setIcon(icon, t.icon);
         const text = t.value ?? t.small?.text ?? "";
         value.textContent = text;
@@ -305,7 +319,7 @@ export function mountPlan(root, ctx) {
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 14 }, "pbg"), icon);
     group.append(body, name);
-    return { node: group, x: item.x, y: item.y, body, r: 14, texts: [[name, 13]], update() {} };
+    return { node: group, x: item.x, y: item.y, body, r: 14, texts: [[name, 15]], update() {} };
   }
 
   function cameraItem(item) {
@@ -318,16 +332,16 @@ export function mountPlan(root, ctx) {
     const name = el("text", { "text-anchor": "middle" }, "pname");
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 17 }, "pbg"), icon);
-    group.append(el("circle", { r: 24 }, "phit"), body, value, name);
+    group.append(el("circle", { r: 24 }, "phit"), body, name, value);
     return {
-      node: group, x: item.x, y: item.y, body, r: 17, texts: [[value, 14], [name, 27]],
+      node: group, x: item.x, y: item.y, body, r: 17, texts: [[name, 15], [value, 29]],
       update() {
         const cam = ctx.getCameras().find((c) => String(c.id) === id);
         const online = cam?.status?.state === "online";
-        group.setAttribute("class", `pi cam-pi${online ? "" : " dim"}`);
-        value.textContent = cam ? (online ? "" : "hors ligne") : "inconnue";
+        group.setAttribute("class", `pi cam-pi${online ? "" : " err"}`);
+        value.textContent = cam ? (online ? "" : "injoignable") : "inconnue";
         name.textContent = short(cam?.name ?? "Caméra");
-        group.setAttribute("aria-label", `${cam?.name ?? "Caméra"}${online ? "" : ", hors ligne"}`);
+        group.setAttribute("aria-label", `${cam?.name ?? "Caméra"}${online ? "" : ", injoignable"}`);
         group.dataset.camera = id;
       },
     };

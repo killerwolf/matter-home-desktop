@@ -31,8 +31,6 @@ pub struct CamerasUi {
     test_general: Vec<(Tone, String)>,
     /// La liste du hub, relue à chaque image.
     cameras: Vec<CameraAdmin>,
-    /// « Supprimer » a été cliqué dans le formulaire : on attend la confirmation.
-    confirm_delete: bool,
 }
 
 fn tone_color(ui: &egui::Ui, tone: Tone) -> Color32 {
@@ -114,14 +112,12 @@ impl CamerasUi {
     fn open_form(&mut self, form: Form) {
         self.form = Some(form);
         self.error = None;
-        self.confirm_delete = false;
         self.clear_test();
     }
 
     fn close_form(&mut self) {
         self.form = None;
         self.error = None;
-        self.confirm_delete = false;
         self.clear_test();
     }
 
@@ -308,25 +304,12 @@ impl CamerasUi {
             ui.add_space(10.0);
             ui.separator();
             let name = form.name.clone();
-            if self.confirm_delete {
-                ui.colored_label(
-                    tone_color(ui, Tone::Bad),
-                    format!("Supprimer « {name} » ? Elle disparaît aussi des clients."),
-                );
-                ui.horizontal(|ui| {
-                    if ui.button("Oui, supprimer").clicked() {
-                        delete = Some(id);
-                    }
-                    if ui.button("Non").clicked() {
-                        self.confirm_delete = false;
-                    }
-                });
-            } else if ui
-                .button(RichText::new("Supprimer cette caméra…").color(p.error))
-                .clicked()
+            if theme::destructive_button(ui, "Supprimer cette caméra…").clicked()
+                && ostal_server_app::confirm::ask(
+                    &ostal_server_app::confirm::Confirmation::DeleteCamera { name },
+                )
             {
-                self.confirm_delete = true;
-                self.error = None;
+                delete = Some(id);
             }
         }
 
@@ -336,7 +319,6 @@ impl CamerasUi {
                 Ok(()) => self.close_form(),
                 Err(e) => {
                     self.error = Some(e.0);
-                    self.confirm_delete = false;
                 }
             }
         } else if test {
@@ -384,14 +366,19 @@ fn modes_ui(ui: &mut egui::Ui, form: &mut Form) {
         form.set_emplacement(chosen);
     });
     ui.add_space(space.xs);
+    // Quatre colonnes, une par mode : le nom au-dessus, le choix dessous.
     egui::Grid::new("camera_modes")
-        .num_columns(2)
+        .num_columns(4)
         .spacing([space.md, space.xs])
         .show(ui, |ui| {
             for mode in HomeMode::ALL {
-                ui.label(mode.label());
+                ui.label(RichText::new(mode.label()).strong());
+            }
+            ui.end_row();
+            for mode in HomeMode::ALL {
                 let mut behavior = form.modes.get(mode);
                 egui::ComboBox::from_id_salt(("camera_mode", mode.key()))
+                    .width(110.0)
                     .selected_text(behavior.label())
                     .show_ui(ui, |ui| {
                         for option in CameraBehavior::ALL {
@@ -399,8 +386,8 @@ fn modes_ui(ui: &mut egui::Ui, form: &mut Form) {
                         }
                     });
                 form.modes.set(mode, behavior);
-                ui.end_row();
             }
+            ui.end_row();
         });
     ui.label(
         RichText::new(

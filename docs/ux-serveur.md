@@ -210,3 +210,12 @@ ostal-server-app --demo --data-dir /tmp/essai --open connexion
 En démonstration : appareils et caméras simulés, écoute sur `127.0.0.1` (port libre), aucun
 LaunchAgent, jamais le vrai Tailscale, verrous et journal dans le dossier donné. `--demo-setup`
 passe par la première installation. `OSTAL_THEME=light` ou `dark` force le thème.
+
+## Refonte « Nuit et Lueur » (préversion)
+
+- Fenêtre fixe de 640 × 700 (barre de titre de 28 px comprise, onglets de 42 px, corps de 630 px), non redimensionnable.
+- Titre d'état : `protocol::status::headline`, en comptant une chose à regarder par catégorie (appareils, caméras, accès à distance). Le détail vient de `protocol::status::detail` ; le menu le met à la place de la ligne du sujet concerné. Un seul mot pour « ne répond pas » : « injoignable ».
+- Vue d'ensemble : cartes État, Mode (avec `HomeMode::effect()`) et « Que voulez-vous faire ? » (repliée quand une chose est à regarder). Serveur à l'arrêt : « Pourquoi, et quoi faire », commandes dans des blocs copiables, « Réessayer maintenant ».
+- Appareils : phrase « N appareils sur M sont joignables. », carte des injoignables avec « Réessayer » (`Hub::retry`), liste par pièce, ajout replié. Connexion : quatre cartes repliables, une ouverte à la fois.
+- Six gestes se confirment dans une alerte native (`confirm.rs`, Annuler par défaut) : supprimer le code secret, révoquer le jeton de lecture, révoquer un appareil abonné, renoncer à l'import, supprimer une caméra, retirer la clé d'API.
+- Les erreurs disent une cause et proposent « Réessayer » ; le détail va au journal. La version n'apparaît que dans Réglages.

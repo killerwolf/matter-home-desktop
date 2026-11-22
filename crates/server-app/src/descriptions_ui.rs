@@ -116,7 +116,12 @@ impl DescriptionsUi {
                     });
                     self.key.clear();
                 }
-                if has_key && ui.button("Retirer la clé").clicked() {
+                if has_key
+                    && theme::destructive_button(ui, "Retirer la clé…").clicked()
+                    && ostal_server_app::confirm::ask(
+                        &ostal_server_app::confirm::Confirmation::RemoveApiKey,
+                    )
+                {
                     self.notice = Some(match descriptions.set_api_key(None) {
                         Ok(()) => (true, "Clé retirée.".to_string()),
                         Err(e) => (false, format!("{e}")),

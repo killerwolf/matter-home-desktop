@@ -563,7 +563,7 @@ mod tests {
         assert!(f.needs_fetch(TimeWindow::Hour1, 400));
         f.invalidate();
         assert!(f.needs_fetch(TimeWindow::Hour1, 800));
-        f.data.error = Some("hors ligne".into());
+        f.data.error = Some("injoignable".into());
         assert!(
             !f.needs_fetch(TimeWindow::Hour1, 800),
             "pas de relecture en boucle"

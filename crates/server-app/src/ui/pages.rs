@@ -1,7 +1,7 @@
 //! Les pages de la fenêtre (voir `docs/ux-serveur.md`).
 //!
 //! - Première installation : trois étapes (la maison, le compte, « c'est prêt »).
-//! - Ensuite, cinq onglets : **Vue d'ensemble** (est-ce que tout va bien ?), **Appareils**,
+//! - Ensuite, cinq onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
 //!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis) et
 //!   **Réglages** (compte, démarrage, sauvegarde, dépannage).
 //!
@@ -11,8 +11,10 @@
 
 use super::widgets::{self, StepState};
 use super::*;
+use ostal_server_app::confirm::{self, Confirmation};
 use ostal_server_app::controller::Notice;
 use ostal_server_app::overview::Level;
+use ostal_server_app::startup::Blocker;
 use ostal_server_app::system::HelpPage;
 use ostal_server_app::{descriptions, version};
 use protocol::mode::HomeMode;
@@ -42,6 +44,25 @@ fn setup_header(ui: &mut egui::Ui, step: usize, title: &str) {
     ui.add_space(6.0);
 }
 
+/// Une ligne de la liste des appareils : le nom, puis « joignable » ou « injoignable ».
+fn device_line(ui: &mut egui::Ui, name: &str, reachable: bool) {
+    ui.horizontal(|ui| {
+        ui.set_width(272.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(168.0, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add(egui::Label::new(name).truncate());
+            },
+        );
+        if reachable {
+            theme::state_word(ui, theme::StateWord::Ok, "joignable");
+        } else {
+            theme::state_word(ui, theme::StateWord::Watch, "injoignable");
+        }
+    });
+}
+
 /// Ce que fait chaque mode, en une phrase.
 fn mode_hint(mode: HomeMode) -> &'static str {
     match mode {
@@ -64,17 +85,15 @@ impl App {
     }
 
     pub(super) fn tab_bar(&mut self, ui: &mut egui::Ui) {
-        let t = theme::tokens();
-        ui.add_space(t.space.sm);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.space.xs;
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = theme::tokens().space.xs;
+            ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
             for tab in Tab::ALL {
                 if theme::tab(ui, self.tab == tab, tab.label()).clicked() {
                     self.open_tab(tab);
                 }
             }
         });
-        ui.add_space(t.space.sm);
     }
 
     /// Un bouton « Copier » qui dit « Copié » deux secondes. `key` distingue les boutons ; la
@@ -103,7 +122,6 @@ impl App {
     }
 
     pub(super) fn content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, st: &State) {
-        ui.add_space(6.0);
         if let Some(busy) = &st.busy {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -129,9 +147,122 @@ impl App {
                 Tab::Settings => self.settings_page(ui, st),
             },
         }
-        if let Some(n) = &self.local_notice {
-            ui.add_space(8.0);
-            notice_label(ui, n);
+        self.show_local_notice(ui, st);
+    }
+
+    /// Une erreur : sa cause, « Réessayer » quand on peut reprendre, « ✕ » pour la fermer. Une
+    /// info (« Code supprimé ») reste une ligne. Le détail technique va au journal.
+    fn show_local_notice(&mut self, ui: &mut egui::Ui, st: &State) {
+        let Some(notice) = self.local_notice.clone() else {
+            return;
+        };
+        ui.add_space(8.0);
+        match notice {
+            Notice::Ok(_) => notice_label(ui, &notice),
+            Notice::Err(text) => {
+                let (again, close) = widgets::error_notice(ui, &text, self.local_retry.is_some());
+                if close {
+                    self.local_notice = None;
+                    self.local_retry = None;
+                } else if again {
+                    let retry = self.local_retry.take();
+                    self.local_notice = None;
+                    if let (Some(retry), Some(hub)) = (retry, st.hub.as_ref().map(|h| h.0.clone()))
+                    {
+                        self.run_retry(retry, &hub);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Signale un échec : la cause en une phrase (le détail est écrit au journal), et ce que
+    /// « Réessayer » refera.
+    fn fail(&mut self, what: &str, detail: impl std::fmt::Debug, retry: Option<Retry>) {
+        log::warn!("{what} : {detail:?}");
+        self.local_notice = Some(Notice::Err(format!(
+            "{what} : le serveur n'a pas pu enregistrer ce changement. Vérifiez l'espace libre sur le Mac, puis réessayez."
+        )));
+        self.local_retry = retry;
+    }
+
+    fn run_retry(&mut self, retry: Retry, hub: &Arc<ostal_server::hub::Hub>) {
+        match retry {
+            Retry::Device(id) => self.retry_device(id, hub),
+            Retry::PushEnabled(on) => self.set_push(on, hub),
+            Retry::RevokeSubscription(id) => self.revoke_subscription(&id, hub),
+            Retry::RevokeReadToken => self.revoke_read(hub),
+            Retry::DeleteModeToken => self.delete_mode_token(hub),
+            Retry::GenerateModeToken => self.generate_mode_token(hub),
+        }
+    }
+
+    fn retry_device(&mut self, id: u64, hub: &Arc<ostal_server::hub::Hub>) {
+        if let Err(e) = hub.retry(id) {
+            self.local_notice = Some(Notice::Err(
+                "L'appareil n'a pas répondu à cet essai. Vérifiez son alimentation, puis réessayez."
+                    .into(),
+            ));
+            log::warn!("nouvel essai d'un appareil : {:?}", e.code);
+            self.local_retry = Some(Retry::Device(id));
+        }
+    }
+
+    fn set_push(&mut self, on: bool, hub: &Arc<ostal_server::hub::Hub>) {
+        if let Err(e) = hub.push().set_enabled(on) {
+            self.fail(
+                "Le réglage n'a pas été enregistré",
+                e,
+                Some(Retry::PushEnabled(on)),
+            );
+        }
+    }
+
+    fn revoke_subscription(&mut self, id: &str, hub: &Arc<ostal_server::hub::Hub>) {
+        if let Err(e) = hub.push().remove(id) {
+            self.fail(
+                "L'appareil n'a pas été révoqué",
+                e,
+                Some(Retry::RevokeSubscription(id.to_string())),
+            );
+        }
+    }
+
+    fn revoke_read(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
+        match hub.revoke_read_token() {
+            Ok(()) => {
+                self.local_notice = Some(Notice::Ok(
+                    "Jeton de lecture révoqué : le widget ne lit plus rien.".into(),
+                ))
+            }
+            Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
+                self.local_retry = Some(Retry::RevokeReadToken);
+            }
+            Err(e) => self.fail(
+                "Le jeton n'a pas été révoqué",
+                e.code,
+                Some(Retry::RevokeReadToken),
+            ),
+        }
+    }
+
+    fn delete_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
+        match hub.revoke_mode_token() {
+            Ok(()) => {
+                self.local_notice = Some(Notice::Ok(
+                    "Code secret supprimé : Raccourcis ne peut plus changer le mode.".into(),
+                ))
+            }
+            Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
+                self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
+                self.local_retry = Some(Retry::DeleteModeToken);
+            }
+            Err(e) => self.fail(
+                "Le code n'a pas été supprimé",
+                e.code,
+                Some(Retry::DeleteModeToken),
+            ),
         }
     }
 
@@ -170,13 +301,16 @@ impl App {
                             ui.spinner();
                             ui.label("Lecture de la sauvegarde…");
                         });
-                    } else if ui.button("Reprendre une sauvegarde…").clicked() {
+                    } else if theme::secondary_button(ui, "Reprendre une sauvegarde…").clicked() {
                         pick = true;
                     }
                     if setup::import_in_progress(&st.data_dir) {
                         ui.add_space(6.0);
                         ui.label("Un import précédent n'est pas terminé.");
-                        if ui.button("Renoncer à l'import en attente").clicked() {
+                        if theme::destructive_button(ui, "Renoncer à l'import en attente…")
+                            .clicked()
+                            && confirm::ask(&Confirmation::AbandonImport)
+                        {
                             abandon = true;
                         }
                     }
@@ -414,14 +548,19 @@ impl App {
 
     fn overview_page(&mut self, ui: &mut egui::Ui, st: &State) {
         let o = self.overview.clone();
-        let detail = match (&st.phase, o.level) {
+        let detail: Option<String> = match (&st.phase, o.level) {
             (Phase::Running, Level::Ok) => Some(
-                "Le serveur tourne. Vous pouvez fermer cette fenêtre : il continue en arrière-plan.",
+                "Le serveur tourne. Vous pouvez fermer cette fenêtre : il continue en arrière-plan."
+                    .into(),
             ),
-            (Phase::Running, _) => Some("Le serveur tourne, mais quelque chose demande un coup d'œil."),
+            (Phase::Running, _) => {
+                Some("Le serveur tourne, mais quelque chose demande un coup d'œil.".into())
+            }
+            (Phase::Blocked(b), _) => Some(format!("{} Rien n'est démarré en attendant.", b.short())),
+            (Phase::Problem(_), _) => Some("Il s'est arrêté après une erreur.".into()),
             _ => None,
         };
-        widgets::headline(ui, o.level, &o.headline, detail);
+        widgets::headline(ui, o.level, &o.headline, detail.as_deref());
         match &st.phase {
             Phase::Starting | Phase::Stopping | Phase::NeedsSetup => {
                 ui.horizontal(|ui| {
@@ -429,61 +568,108 @@ impl App {
                     ui.label("Un instant…");
                 });
             }
-            Phase::Blocked(b) => {
+            Phase::Blocked(b) => self.blocked_card(ui, st, b),
+            Phase::Problem(_) => {
+                // Le détail technique ne va qu'au journal : la fenêtre dit la cause probable et
+                // propose de réessayer.
                 let mut retry = false;
                 widgets::section(ui, "Pourquoi, et quoi faire", |ui| {
-                    ui.label(b.explain());
+                    ui.label("Le serveur s'est arrêté après une erreur. Vérifiez l'espace disque du Mac, puis réessayez.");
                     ui.add_space(6.0);
-                    retry = theme::primary_button(ui, "Réessayer maintenant").clicked();
+                    retry = theme::primary_button(ui, "Réessayer").clicked();
                 });
                 if retry {
                     let _ = self.handle.tx.send(Cmd::Retry);
                 }
-            }
-            Phase::Problem(e) => {
-                let (mut retry, mut log) = (false, false);
-                widgets::section(ui, "Ce qui s'est passé", |ui| {
-                    ui.colored_label(theme::palette(ui).error, e);
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        retry = theme::primary_button(ui, "Réessayer").clicked();
-                        log = ui.button("Ouvrir le journal").clicked();
-                    });
-                    widgets::hint(ui, "Le journal est le fichier où le serveur note ce qu'il fait : il aide à comprendre une panne.");
-                });
-                if retry {
-                    let _ = self.handle.tx.send(Cmd::Retry);
-                }
-                if log {
-                    system::open_file(&st.log_path);
-                }
+                self.journal_link(ui, st);
             }
             Phase::Running => self.overview_running(ui, st, &o),
         }
     }
 
+    /// Le lien discret vers le journal, au pied de la page.
+    fn journal_link(&mut self, ui: &mut egui::Ui, st: &State) {
+        ui.add_space(4.0);
+        if ui
+            .add(egui::Link::new(
+                RichText::new("Détail technique dans le journal")
+                    .strong()
+                    .small(),
+            ))
+            .clicked()
+        {
+            system::open_file(&st.log_path);
+        }
+    }
+
+    /// « Pourquoi, et quoi faire » : la marche à suivre, les commandes à recopier, « Réessayer
+    /// maintenant ».
+    fn blocked_card(&mut self, ui: &mut egui::Ui, st: &State, b: &Blocker) {
+        let mut retry = false;
+        let commands = b.commands();
+        widgets::section(ui, "Pourquoi, et quoi faire", |ui| {
+            ui.add(egui::Label::new(b.advice()).wrap());
+            for (i, command) in commands.iter().enumerate() {
+                if i == 1 {
+                    ui.add_space(4.0);
+                    widgets::hint(
+                        ui,
+                        "Si le dossier de l'archive n'existe plus, ces commandes font la même chose :",
+                    );
+                }
+                let key: &'static str = ["cmd-0", "cmd-1", "cmd-2", "cmd-3", "cmd-4"]
+                    .get(i)
+                    .copied()
+                    .unwrap_or("cmd-n");
+                self.copy_field(ui, key, command);
+            }
+            ui.add_space(6.0);
+            retry = theme::primary_button(ui, "Réessayer maintenant").clicked();
+        });
+        if retry {
+            let _ = self.handle.tx.send(Cmd::Retry);
+        }
+        self.journal_link(ui, st);
+    }
+
     fn overview_running(&mut self, ui: &mut egui::Ui, st: &State, o: &Overview) {
         let mut go = None;
+        let health = &st.health;
         widgets::section(ui, "État", |ui| {
             for check in &o.checks {
                 // Sans problème, le bouton mène simplement à l'onglet du sujet.
                 let (label, tab) = match (&check.fix, check.title) {
-                    (Some(fix), _) => (
-                        Some(fix.label.trim_end_matches('…').to_string()),
-                        Some(fix.tab),
-                    ),
+                    (Some(fix), _) => (Some(fix.label.clone()), Some(fix.tab)),
                     (None, "Appareils") => (Some("Voir".to_string()), Some(Tab::Devices)),
                     (None, "Caméras") => (Some("Voir".to_string()), Some(Tab::Cameras)),
-                    (None, "Accès à distance") => {
-                        (Some("Configurer".to_string()), Some(Tab::Connect))
-                    }
+                    (None, "Accès à distance") => (
+                        Some(
+                            if check.level == Level::Ok {
+                                "Voir"
+                            } else {
+                                "Configurer"
+                            }
+                            .to_string(),
+                        ),
+                        Some(Tab::Connect),
+                    ),
                     _ => (None, None),
                 };
-                let mut text = check.text.clone();
-                if let Some(first) = text.get(..1) {
-                    text = first.to_uppercase() + &text[1..];
-                }
-                if widgets::status_row(ui, check.level, check.title, &text, label.as_deref()) {
+                let hint = (check.title == "Appareils" && !health.unreachable.is_empty()).then_some(
+                    if health.unreachable.len() > 1 {
+                        "Vérifiez leur alimentation : ils reviennent tout seuls dès qu'ils répondent."
+                    } else {
+                        "Vérifiez son alimentation : elle revient toute seule dès qu'elle répond."
+                    },
+                );
+                if widgets::status_line(
+                    ui,
+                    check.level,
+                    check.title,
+                    &check.text,
+                    label.as_deref(),
+                    hint,
+                ) {
                     go = tab;
                 }
             }
@@ -494,39 +680,51 @@ impl App {
             let mut chosen = None;
             widgets::section(ui, "Mode de la maison", |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = theme::tokens().space.xs;
+                    ui.spacing_mut().item_spacing.x = 8.0;
                     for mode in HomeMode::ALL {
-                        if theme::tab(ui, mode == current, mode.label()).clicked()
+                        if widgets::mode_button(
+                            ui,
+                            mode.label(),
+                            mode == current,
+                            mode == HomeMode::Present,
+                        )
+                        .clicked()
                             && mode != current
                         {
                             chosen = Some(mode);
                         }
                     }
                 });
-                widgets::hint(ui, &format!("{} Le mode décide ce que font les caméras (éteintes, visibles, en surveillance) et certains automatismes.", mode_hint(current)));
+                widgets::hint(ui, &format!("{} {}", mode_hint(current), current.effect()));
             });
             if let Some(mode) = chosen {
                 self.set_mode(st, mode);
             }
         }
 
-        widgets::section(ui, "Que voulez-vous faire ?", |ui| {
+        // Repliée quand une chose est à regarder : l'état passe avant les tâches.
+        let alert = o.level.needs_attention();
+        let id = ui.make_persistent_id(("tasks_open", alert));
+        let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(id, !alert));
+        let toggled = widgets::fold_card(ui, "Que voulez-vous faire ?", None, open, |ui| {
             let tasks = [
                 ("Connecter un ordinateur de la maison", Tab::Connect),
-                ("Utiliser l'iPhone, même hors de la maison", Tab::Connect),
+                ("Utiliser l'iPhone même hors de la maison", Tab::Connect),
                 ("Ajouter un appareil", Tab::Devices),
                 ("Ajouter ou régler une caméra", Tab::Cameras),
                 ("Changer mon mot de passe", Tab::Settings),
                 ("Comprendre une panne", Tab::Settings),
             ];
-            ui.horizontal_wrapped(|ui| {
-                for (label, tab) in tasks {
-                    if ui.button(label).clicked() {
-                        go = Some(tab);
-                    }
+            for (label, tab) in tasks {
+                if widgets::link_row(ui, label) {
+                    go = Some(tab);
                 }
-            });
+            }
         });
+        if toggled {
+            open = !open;
+            ui.data_mut(|d| d.insert_persisted(id, open));
+        }
         if let Some(tab) = go {
             self.open_tab(tab);
         }
@@ -548,33 +746,88 @@ impl App {
     // ---- appareils -----------------------------------------------------------------------------
 
     fn devices_page(&mut self, ui: &mut egui::Ui, st: &State) {
-        if st.phase != Phase::Running {
+        let (Phase::Running, Some(hub)) = (&st.phase, st.hub.as_ref().map(|h| h.0.clone())) else {
             return self.needs_server(ui);
-        }
-        let p = theme::palette(ui);
+        };
         let health = &st.health;
-        widgets::section(ui, "Vos appareils", |ui| {
-            if health.total == 0 {
-                ui.label("Aucun appareil pour l'instant : ajoutez le premier en suivant les étapes ci-dessous.");
-                return;
-            }
-            ui.label(overview::devices_sentence(health));
-            if !health.unreachable.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("Injoignables en ce moment").strong());
-                for name in &health.unreachable {
+        let t = theme::tokens();
+        if health.total == 0 {
+            widgets::headline(ui, Level::Info, "Aucun appareil pour l'instant", None);
+        } else {
+            ui.label(
+                RichText::new(overview::devices_sentence(health))
+                    .size(t.font.size.heading)
+                    .strong(),
+            );
+            ui.add_space(t.space.md);
+        }
+        if !health.unreachable_details.is_empty() {
+            let mut retry = None;
+            widgets::section(ui, "Injoignables en ce moment", |ui| {
+                for d in &health.unreachable_details {
                     ui.horizontal(|ui| {
-                        widgets::dot(ui, p.error, theme::tokens().size.dot);
-                        ui.label(name);
+                        widgets::state_icon(ui, Level::Warn, 14.0);
+                        let mut line = d.name.clone();
+                        if let Some(room) = &d.room {
+                            line.push_str(&format!(" · {room}"));
+                        }
+                        line.push_str(" · injoignable");
+                        if let Some(at) = d.last_seen.and_then(ostal_server_app::status::clock) {
+                            line.push_str(&format!(" depuis {at}"));
+                        }
+                        ui.add(egui::Label::new(RichText::new(line).strong()).wrap());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::secondary_button(ui, "Réessayer").clicked() {
+                                retry = Some(d.id);
+                            }
+                        });
                     });
                 }
-                ui.add_space(4.0);
-                widgets::hint(ui, "Le plus souvent : l'appareil est débranché, sa pile est vide, ou il est trop loin du Wi-Fi ou de son pont. Il revient tout seul dès qu'il répond de nouveau. Sinon, ouvrez-le dans Ostal et cliquez « Reconnecter ».");
+                widgets::hint(ui, "Vérifiez son alimentation : elle revient toute seule dès qu'elle répond. Un capteur sur pile se réveille par un appui sur son bouton.");
+            });
+            if let Some(id) = retry {
+                self.retry_device(id, &hub);
             }
-        });
-        widgets::section(ui, "Ajouter un appareil", |ui| {
-            ui.label("L'ajout ne se fait pas ici, mais dans l'application Ostal (sur votre ordinateur), avec l'app Maison d'Apple :");
-            ui.add_space(6.0);
+        }
+        if !health.listed.is_empty() {
+            widgets::section(ui, "Vos appareils", |ui| {
+                let any_room = health.listed.iter().any(|d| d.room.is_some());
+                if !any_room {
+                    // Pas de plan : une simple liste.
+                    for d in &health.listed {
+                        device_line(ui, &d.name, d.reachable);
+                    }
+                    return;
+                }
+                // Par pièce (la liste est déjà triée), deux colonnes de 280 px.
+                let mut start = 0;
+                while start < health.listed.len() {
+                    let room = health.listed[start].room.as_deref();
+                    let end = health.listed[start..]
+                        .iter()
+                        .position(|d| d.room.as_deref() != room)
+                        .map_or(health.listed.len(), |n| start + n);
+                    ui.add_space(t.space.xs);
+                    ui.label(RichText::new(room.unwrap_or("Sans pièce")).strong());
+                    egui::Grid::new(("room", start))
+                        .num_columns(2)
+                        .min_col_width(272.0)
+                        .show(ui, |ui| {
+                            for (i, d) in health.listed[start..end].iter().enumerate() {
+                                device_line(ui, &d.name, d.reachable);
+                                if i % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    start = end;
+                }
+            });
+        }
+        // Repliée : l'ajout ne se fait pas ici, mais dans Ostal.
+        let id = ui.make_persistent_id("add_device_open");
+        let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(id, false));
+        let toggled = widgets::fold_card(ui, "Ajouter un appareil", Some("3 étapes"), open, |ui| {
             widgets::step(ui, 1, StepState::Todo, |ui| {
                 ui.label("Dans l'app Maison (iPhone, iPad ou Mac) : appui long sur l'appareil, puis Réglages (la roue dentée).");
             });
@@ -586,15 +839,14 @@ impl App {
             });
             widgets::hint(ui, "L'appareil reste aussi dans Maison. Un capteur sur pile doit être réveillé (appui sur son bouton) juste avant l'étape 2.");
         });
-        let mut connect = false;
-        widgets::section(ui, "Voir et piloter vos appareils", |ui| {
-            ui.label("Ce Mac ne fait que tourner en arrière-plan. Pour voir les températures, allumer une lampe ou créer un automatisme, ouvrez Ostal sur votre ordinateur ou votre iPhone.");
-            ui.add_space(4.0);
-            connect = ui.button("Comment se connecter").clicked();
-        });
-        if connect {
-            self.open_tab(Tab::Connect);
+        if toggled {
+            open = !open;
+            ui.data_mut(|d| d.insert_persisted(id, open));
         }
+        widgets::hint(
+            ui,
+            "Pour voir et piloter vos appareils, utilisez Ostal sur l'ordinateur ou l'iPhone.",
+        );
     }
 
     // ---- caméras -------------------------------------------------------------------------------
@@ -681,26 +933,68 @@ impl App {
         let (Phase::Running, Some(hub)) = (&st.phase, st.hub.as_ref().map(|h| h.0.clone())) else {
             return self.needs_server(ui);
         };
-        widgets::section(ui, "Depuis un ordinateur de la maison", |ui| {
-            self.desktop_steps(ui, st);
-            widgets::hint(
-                ui,
-                "Mot de passe oublié ? Il se remplace dans l'onglet Réglages.",
-            );
-        });
-        widgets::section(ui, "Depuis l'iPhone, même hors de la maison", |ui| {
-            self.remote_steps(ui, st);
-        });
-        widgets::section(ui, "Notifications sur l'iPhone et l'iPad", |ui| {
-            self.push_section(ui, &hub);
-        });
-        widgets::section(
-            ui,
-            "Changer de mode automatiquement (Raccourcis de l'iPhone)",
-            |ui| {
-                self.shortcuts_steps(ui, &hub);
-            },
-        );
+        let summaries = [
+            None,
+            Some(match &self.web {
+                WebAccess::On { .. } => "Activé".to_string(),
+                WebAccess::Checking => "vérification…".to_string(),
+                _ => "pas activé".to_string(),
+            }),
+            Some({
+                let n = hub.push().status().subscriptions.len();
+                match n {
+                    0 => "aucun appareil abonné".to_string(),
+                    1 => "1 appareil abonné".to_string(),
+                    n => format!("{n} appareils abonnés"),
+                }
+            }),
+            Some(
+                if hub.has_mode_token() {
+                    "Code secret : en service"
+                } else {
+                    "pas encore de code secret"
+                }
+                .to_string(),
+            ),
+        ];
+        let titles = [
+            "Depuis un ordinateur de la maison",
+            "Depuis l'iPhone, même hors de la maison",
+            "Notifications sur l'iPhone et l'iPad",
+            "Changer de mode automatiquement",
+        ];
+        // Une seule carte ouverte à la fois : cliquer l'ouverte la replie.
+        let mut clicked = None;
+        for (i, title) in titles.iter().enumerate() {
+            let open = self.connect_open == i;
+            let toggled =
+                widgets::fold_card(ui, title, summaries[i].as_deref(), open, |ui| match i {
+                    0 => {
+                        self.desktop_steps(ui, st);
+                        widgets::hint(
+                            ui,
+                            "Mot de passe oublié ? Il se remplace dans l'onglet Réglages.",
+                        );
+                    }
+                    1 => self.remote_steps(ui, st),
+                    2 => self.push_section(ui, &hub),
+                    _ => self.shortcuts_steps(ui, &hub),
+                });
+            if toggled {
+                clicked = Some(i);
+            }
+        }
+        if let Some(i) = clicked {
+            // Le code secret n'est montré qu'une fois : il disparaît avec sa carte.
+            if self.connect_open == 3 {
+                self.mode_token_shown = None;
+            }
+            self.connect_open = if self.connect_open == i {
+                usize::MAX
+            } else {
+                i
+            };
+        }
     }
 
     /// L'accès à distance par Tailscale, pas à pas : chaque étape dit où on en est.
@@ -862,11 +1156,8 @@ impl App {
                 "Envoyer les notifications aux appareils abonnés",
             )
             .changed()
-            && push.set_enabled(enabled).is_err()
         {
-            self.local_notice = Some(Notice::Err(
-                "Le réglage n'a pas pu être enregistré (voir le journal, onglet Réglages).".into(),
-            ));
+            self.set_push(enabled, hub);
         }
         ui.add_space(4.0);
         ui.label(RichText::new("Appareils abonnés").strong());
@@ -879,11 +1170,12 @@ impl App {
                 if let Some(error) = &sub.last_error {
                     ui.colored_label(p.error, format!("dernier envoi : {error}"));
                 }
-                if ui.button("Révoquer").clicked() && push.remove(&sub.id).is_err() {
-                    self.local_notice = Some(Notice::Err(
-                        "L'abonnement n'a pas pu être révoqué (voir le journal, onglet Réglages)."
-                            .into(),
-                    ));
+                if theme::destructive_button(ui, "Révoquer…").clicked()
+                    && confirm::ask(&Confirmation::RevokeSubscription {
+                        label: sub.label.clone(),
+                    })
+                {
+                    self.revoke_subscription(&sub.id, hub);
                 }
             });
         }
@@ -904,19 +1196,11 @@ impl App {
             } else {
                 "Widget de l'iPhone : aucun jeton de lecture."
             });
-            if read && ui.button("Révoquer").clicked() {
-                self.local_notice = Some(match hub.revoke_read_token() {
-                    Ok(()) => {
-                        Notice::Ok("Jeton de lecture révoqué : le widget ne lit plus rien.".into())
-                    }
-                    Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
-                        Notice::Err(BUSY_NOTICE.into())
-                    }
-                    Err(_) => Notice::Err(
-                        "Le jeton n'a pas pu être révoqué (voir le journal, onglet Réglages)."
-                            .into(),
-                    ),
-                });
+            if read
+                && theme::destructive_button(ui, "Révoquer…").clicked()
+                && confirm::ask(&Confirmation::RevokeReadToken)
+            {
+                self.revoke_read(hub);
             }
         });
         ui.add_space(6.0);
@@ -981,15 +1265,26 @@ impl App {
                     if ui.button("Créer un nouveau code…").clicked() {
                         self.mode_token_confirm = true;
                     }
-                    if ui.button("Supprimer le code").clicked() {
-                        self.local_notice = Some(match hub.revoke_mode_token() {
-                            Ok(()) => Notice::Ok("Code secret supprimé : Raccourcis ne peut plus changer le mode.".into()),
-                            Err(e) if e.code == protocol::wire::ErrorCode::Busy => Notice::Err(BUSY_NOTICE.into()),
-                            Err(_) => Notice::Err("Le code n'a pas pu être supprimé (voir le journal, onglet Réglages).".into()),
-                        });
+                    if theme::destructive_button(ui, "Supprimer le code…").clicked()
+                        && confirm::ask(&Confirmation::DeleteModeToken)
+                    {
+                        self.delete_mode_token(hub);
                     }
-                } else if theme::primary_button(ui, "Créer le code secret").clicked() {
-                    self.generate_mode_token(hub);
+                } else {
+                    // Sans accès à distance, le code ne servirait à rien : la raison est écrite.
+                    let ready = matches!(self.web, WebAccess::On { .. });
+                    let button = egui::Button::new(
+                        RichText::new("Créer le code secret")
+                            .color(if ready { p.on_accent } else { p.text_secondary })
+                            .strong(),
+                    )
+                    .fill(if ready { p.accent } else { p.surface_alt });
+                    if ui.add_enabled(ready, button).clicked() {
+                        self.generate_mode_token(hub);
+                    }
+                    if !ready {
+                        widgets::hint(ui, "Activez d'abord l'accès à distance.");
+                    }
                 }
             });
         });
@@ -1035,12 +1330,13 @@ impl App {
             Ok(token) => self.mode_token_shown = Some(token),
             Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
                 self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));
+                self.local_retry = Some(Retry::GenerateModeToken);
             }
-            Err(_) => {
-                self.local_notice = Some(Notice::Err(
-                    "Le code n'a pas pu être créé (voir le journal, onglet Réglages).".into(),
-                ));
-            }
+            Err(e) => self.fail(
+                "Le code n'a pas été créé",
+                e.code,
+                Some(Retry::GenerateModeToken),
+            ),
         }
     }
 
