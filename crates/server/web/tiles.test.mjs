@@ -2,7 +2,7 @@
 // La phrase d'état : jumelle de protocol::status (crates/protocol/src/status.rs), mêmes cas, mêmes
 // textes, mot pour mot. L'unité de compte est la catégorie, jamais l'appareil.
 import assert from "node:assert/strict";
-import { allReachable, clockText, headline, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
+import { allReachable, clockText, headline, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
 
 const names = (...list) => list;
 const devices = (...p) => ({ kind: "devices", names: p });
@@ -119,3 +119,11 @@ assert.equal(clockText(new Date(2026, 10, 22, 8, 5).getTime()), "08:05");
 assert.equal(clockText(new Date(2026, 10, 22, 18, 42).getTime()), "18:42");
 
 console.log("tiles.test.mjs : ok");
+
+// « depuis HH:MM » : d'après last_seen (secondes) ; rien quand le serveur ne sait pas.
+{
+  const at = new Date(2026, 10, 22, 18, 2).getTime() / 1000;
+  assert.equal(unreachableSince({ last_seen: at }), "depuis 18:02");
+  assert.equal(unreachableSince({ last_seen: null }), null);
+  assert.equal(unreachableSince({}), null);
+}

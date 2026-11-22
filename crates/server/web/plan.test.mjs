@@ -34,16 +34,10 @@ for (const [w, h] of [[375, 640], [820, 1000], [1280, 700]]) {
   assert.ok(v.s <= 90);
 }
 
-// Ouverture : en portrait, plus serrée que l'ajustement (au plus 1,5 fois) et centrée ;
-// en paysage, ou si la hauteur est presque utilisée, identique à l'ajustement.
+// Ouverture : toujours le plan entier (l'ajustement complet), en portrait comme en paysage.
 {
   const b = boundsOf(floor);
-  const f = fitView(b, 375, 640);
-  const v = initialView(b, 375, 640);
-  assert.ok(v.s > f.s && v.s <= f.s * 1.5 + 1e-9);
-  near(v.tx + ((b.x0 + b.x1) / 2) * v.s, 375 / 2, 1e-6);
-  near(v.ty + ((b.y0 + b.y1) / 2) * v.s, 640 / 2, 1e-6);
-  assert.deepEqual(initialView(b, 1280, 700), fitView(b, 1280, 700));
+  for (const [w, h] of [[375, 640], [820, 1000], [1280, 700]]) assert.deepEqual(initialView(b, w, h), fitView(b, w, h));
   const tall = { x0: 0, y0: 0, x1: 4, y1: 10 };
   assert.deepEqual(initialView(tall, 375, 640), fitView(tall, 375, 640));
 }

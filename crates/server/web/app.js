@@ -3,7 +3,7 @@ import * as api from "./api.js";
 import { ICONS, eventIcon, modeIcon, mountIcons } from "./icons.js";
 import {
   CLICK_GUARD_MS, EXPECT_TTL_MS, batteryLow, clockText, formatTemperature, groups, isOn, isStale, position,
-  statusSummary, tempClass, temperature, tileOf, watts,
+  statusSummary, tempClass, temperature, tileOf, unreachableSince, watts,
 } from "./tiles.js";
 import { lineChart, rangeOf } from "./charts.js";
 import { mountTemps } from "./temps.js";
@@ -265,7 +265,9 @@ function patchTile(b, dev, bridgeCount) {
   // Injoignable : le mot prend la place de la valeur (orange, avec son icône), pas de seconde ligne.
   const unreachable = t.small?.kind === "err";
   const valueText = unreachable ? t.small.text : (t.value ?? "");
-  const small = unreachable ? null : t.small;
+  // Injoignable : « depuis 18:02 » dessous (d'après last_seen), rien si le serveur ne sait pas.
+  const since = unreachable && dev.status?.state === "unreachable" ? unreachableSince(dev) : null;
+  const small = unreachable ? (since ? { kind: "err", text: since } : null) : t.small;
   b.classList.toggle("lit", t.lit);
   b.classList.toggle("unreach", unreachable);
   b.classList.toggle("pending", Boolean(live) && !live.acked);
@@ -273,7 +275,9 @@ function patchTile(b, dev, bridgeCount) {
   const ico = b.querySelector(".icon");
   if (ico._html !== t.icon) { ico.innerHTML = t.icon; ico._html = t.icon; }
   ico.classList.toggle("warn", t.iconWarn);
-  b.querySelector(".name").textContent = dev.info.name;
+  const nameEl = b.querySelector(".name");
+  nameEl.textContent = dev.info.name;
+  b.title = dev.info.name; // le nom complet, quand la ligne le coupe
   b.querySelector(".vtext").textContent = valueText;
   const value = b.querySelector(".value");
   value.classList.toggle("warn", t.valueWarn);
@@ -573,13 +577,18 @@ function reconcileCams() {
   // Les vignettes à l'écran qui ne lisent pas de flux (pas de flux réduit, ou au-delà du plafond)
   // montrent l'image fixe du serveur, rafraîchie toutes les 20 s.
   const still = new Set(visible.filter((c) => !live.has(c)));
-  const showMsg = (c, st) => { c.msg.textContent = st.text; c.msg.hidden = st.kind === "live"; };
+  // Flux actif : le libellé « En direct » (ou « Image fixe · HH:MM ») sous le nom ; sinon le message au centre.
+  const showMsg = (c, st, stillImage) => {
+    c.msg.textContent = st.text;
+    c.msg.hidden = st.kind === "live";
+    c.state.textContent = st.kind !== "live" ? "" : stillImage ? `Image fixe · ${clockText(Date.now())} · Touchez pour ouvrir` : "En direct";
+  };
   for (const c of camCards) {
     if (live.has(c) && !c.player) {
       c.snap?.stop();
       players = players.filter((p) => p !== c.snap);
       c.snap = null;
-      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => showMsg(c, st));
+      c.player = createPlayer(c.cam.id, "sub", c.canvas, (st) => showMsg(c, st, false));
       players.push(c.player);
     } else if (!live.has(c) && c.player) {
       c.player.stop();
@@ -587,7 +596,7 @@ function reconcileCams() {
       c.player = null;
     }
     if (still.has(c) && !c.snap && !c.player) {
-      c.snap = createSnapshot(c.cam.id, c.canvas, (st) => showMsg(c, st));
+      c.snap = createSnapshot(c.cam.id, c.canvas, (st) => showMsg(c, st, true));
       players.push(c.snap);
     } else if (!still.has(c) && c.snap) {
       c.snap.stop();
@@ -595,6 +604,7 @@ function reconcileCams() {
       c.snap = null;
     }
     if (!c.player && !c.snap) {
+      c.state.textContent = "";
       c.msg.hidden = false;
       c.msg.textContent = c.thumb ? "En attente…" : "Touchez pour ouvrir";
     }
@@ -802,7 +812,11 @@ function renderCameras() {
     msg.className = "msg";
     const cap = document.createElement("div");
     cap.className = "cap";
-    cap.textContent = cam.name;
+    const capName = document.createElement("strong");
+    capName.textContent = cam.name;
+    const capState = document.createElement("span");
+    capState.className = "cap-state";
+    cap.append(capName, capState);
     el.append(canvas, msg, cap);
     grid.appendChild(el);
     // Éteinte dans le mode actuel : ni flux ni image fixe (le serveur les refuserait).
@@ -820,7 +834,7 @@ function renderCameras() {
     el.classList.add("ok");
     const thumb = Boolean(cam.has_sub_stream);
     msg.textContent = thumb ? "En attente…" : "Touchez pour ouvrir";
-    camCards.push({ el, cam, canvas, msg, fs, playable: true, thumb, player: null, snap: null, visible: false });
+    camCards.push({ el, cam, canvas, msg, state: capState, fs, playable: true, thumb, player: null, snap: null, visible: false });
   }
   view.appendChild(grid);
   view.appendChild(detections.box);
@@ -1456,7 +1470,8 @@ function renderWidgets(manualText = "") {
     p.append(icon("okCircle"), make("span", "", text));
     parent.appendChild(p);
   };
-  const tokenLine = (token, label) => (token?.exists ? `${label} actif ${sinceText(token.created)}`.trim() + "." : null);
+  // Comme la maquette : « Jeton actif depuis le 20/11/2026. » pour le mode, « Jeton de lecture actif. » pour le widget.
+  const tokenLine = (token, label, withDate) => (token?.exists ? `${label} actif${withDate ? ` ${sinceText(token.created)}` : ""}`.trim() + "." : null);
 
   note("Mettez l'état de la maison sur l'écran d'accueil et changez de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.", "ev-note");
   if (widgetsUi.error) note(widgetsUi.error, "error");
@@ -1470,7 +1485,7 @@ function renderWidgets(manualText = "") {
   const h3 = make("h3", "", "Raccourcis des modes");
   h3.id = "titre-raccourcis";
   modes.appendChild(h3);
-  const modeLine = tokenLine(widgetsUi.tokens?.mode, "Jeton");
+  const modeLine = tokenLine(widgetsUi.tokens?.mode, "Jeton", true);
   if (modeLine) status(modes, modeLine); else modes.appendChild(make("p", "w-note", "Pas encore de jeton de mode."));
   modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
   // Hors adresse .ts.net : les boutons sont grisés et la raison est dite juste à côté.
@@ -1508,7 +1523,7 @@ function renderWidgets(manualText = "") {
   const h3w = make("h3", "", "Widget Scriptable");
   h3w.id = "titre-widget";
   widget.appendChild(h3w);
-  const readLine = tokenLine(widgetsUi.tokens?.read, "Jeton de lecture");
+  const readLine = tokenLine(widgetsUi.tokens?.read, "Jeton de lecture", false);
   if (readLine) status(widget, readLine); else widget.appendChild(make("p", "w-note", "Pas encore de jeton de lecture."));
   const store = make("a", "link-button", "Installer Scriptable (App Store, gratuit)");
   store.href = SCRIPTABLE_URL;

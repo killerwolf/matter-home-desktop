@@ -208,6 +208,13 @@ pub struct MatterApp {
     add_open: bool,
     /// Option `--add` : ouvrir la fenêtre dès la première arrivée de l'état complet.
     add_on_arrival: bool,
+    /// Option `--import FICHIER` (essais, captures) : sauvegarde à lire dès l'arrivée de l'état,
+    /// sans le sélecteur de fichiers du système.
+    import_on_arrival: Option<std::path::PathBuf>,
+    /// Option `--import-preview` (essais, captures) : confirmation d'import fictive à l'arrivée.
+    import_preview_on_arrival: bool,
+    /// Option `--error-preview` (essais, captures) : une commande vouée à l'échec dès l'arrivée.
+    error_preview_on_arrival: bool,
     /// Option `--edit-plan` : passer en mode Modifier dès l'arrivée de l'état complet (le plan
     /// est remis à zéro à la connexion).
     edit_plan_on_arrival: bool,
@@ -258,6 +265,9 @@ pub struct MatterApp {
     data_dialog: Option<DataDialog>,
     /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
     server: Option<String>,
+    /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
+    /// même si le serveur n'a jamais répondu.
+    saved_address: Option<String>,
     /// Serveur auquel appartient un brouillon gardé pendant une coupure : s'il change, le
     /// brouillon est abandonné plutôt qu'envoyé ailleurs.
     draft_server: Option<String>,
@@ -292,7 +302,9 @@ struct SyncAlert {
 
 impl MatterApp {
     pub fn new(backend: Backend, events: mpsc::Receiver<Event>) -> Self {
+        let saved_address = backend.saved_url();
         Self {
+            saved_address,
             backend,
             events,
             link: Link::Connecting,
@@ -307,6 +319,9 @@ impl MatterApp {
             pairing: Pairing::Idle,
             add_open: false,
             add_on_arrival: false,
+            import_on_arrival: None,
+            import_preview_on_arrival: false,
+            error_preview_on_arrival: false,
             edit_plan_on_arrival: false,
             open_camera_on_arrival: None,
             window: TimeWindow::Min15,
@@ -365,6 +380,40 @@ impl MatterApp {
     /// Ouvre la fenêtre « Ajouter un appareil ».
     pub fn show_add(&mut self) {
         self.add_on_arrival = true;
+    }
+
+    /// Lit la sauvegarde `path` dès que la liaison est établie, comme si on l'avait choisie dans
+    /// Fichier → Importer (essais et captures : pas de sélecteur système).
+    pub fn import_file_on_arrival(&mut self, path: std::path::PathBuf) {
+        self.import_on_arrival = Some(path);
+    }
+
+    /// Essais et captures seulement : ouvre la confirmation d'import avec une sauvegarde d'une
+    /// autre maison, sans fichier. Elle ne peut rien envoyer (aucun serveur ne l'a vérifiée).
+    pub fn show_import_preview(&mut self) {
+        self.import_preview_on_arrival = true;
+    }
+
+    /// Essais et captures seulement : demande au serveur de reconnecter un appareil qui n'existe
+    /// pas. Le serveur refuse : le vrai bandeau d'erreur apparaît, avec « Réessayer ».
+    pub fn show_error_preview(&mut self) {
+        self.error_preview_on_arrival = true;
+    }
+
+    fn open_import_preview(&mut self) {
+        self.data_dialog = Some(DataDialog::ConfirmImport {
+            path: PathBuf::from("maison-2026-11-20.ostal"),
+            summary: "10 appareils · 5 pièces · 3 règles · 2 caméras · sauvegardée le 20/11/2026"
+                .into(),
+            bytes: Arc::new(Vec::new()),
+            server: None,
+            identity_warning: Some(
+                "Cette sauvegarde vient d'une autre maison. L'importer remplace l'identité du \
+                 serveur : les appareils actuels ne seront plus reconnus."
+                    .into(),
+            ),
+            replace_armed: false,
+        });
     }
 
     /// Ouvre l'onglet « Caméras ».
@@ -1264,6 +1313,15 @@ impl MatterApp {
         if std::mem::take(&mut self.add_on_arrival) {
             self.add_open = true;
         }
+        if std::mem::take(&mut self.error_preview_on_arrival) {
+            self.retry_device(0x00ff_ffff_ffff);
+        }
+        if std::mem::take(&mut self.import_preview_on_arrival) {
+            self.open_import_preview();
+        }
+        if let Some(path) = self.import_on_arrival.take() {
+            self.import_path(path);
+        }
         if std::mem::take(&mut self.edit_plan_on_arrival) {
             self.plan.start_editing();
         }
@@ -1588,6 +1646,11 @@ impl MatterApp {
         else {
             return;
         };
+        self.import_path(path);
+    }
+
+    /// Lit la sauvegarde `path` ; le serveur la valide avant toute confirmation.
+    fn import_path(&mut self, path: std::path::PathBuf) {
         if !self.connected() {
             self.push_log("Plus de connexion : commande non envoyée.".into());
             return;
@@ -1637,7 +1700,7 @@ impl MatterApp {
         let mut close = false;
         let mut confirmed = false;
         let mut replace_confirmed = false;
-        let mut arm_replace = false;
+        let mut set_armed: Option<bool> = None;
         let screen = ctx.content_rect();
         egui::Area::new(egui::Id::new("data_veil"))
             .order(egui::Order::Middle)
@@ -1708,24 +1771,33 @@ impl MatterApp {
                                     (None, _) => {
                                         (confirmed, close) = mac_confirm(ui, "Importer");
                                     }
-                                    (Some(warning), false) => {
+                                    (Some(warning), armed) => {
+                                        // Une seule étape : la case à cocher arme le bouton
+                                        // destructif (Bureau-Donnees).
                                         ui.colored_label(theme::palette(ui).error, warning);
+                                        let mut checked = armed;
+                                        ui.checkbox(
+                                            &mut checked,
+                                            "Remplacer l'identité du serveur",
+                                        );
+                                        if checked != armed {
+                                            set_armed = Some(checked);
+                                        }
+                                        if !armed {
+                                            ui.label(
+                                                RichText::new("Cochez la case pour continuer.")
+                                                    .small()
+                                                    .color(theme::palette(ui).text_secondary),
+                                            );
+                                        }
                                         ui.add_space(6.0);
-                                        (arm_replace, close) =
-                                            mac_confirm(ui, "Remplacer l'identité du serveur…");
-                                    }
-                                    (Some(_), true) => {
-                                        ui.colored_label(
-                                    theme::palette(ui).error,
-                                    "Dernière confirmation : l'identité Matter du serveur sera \
-                                     remplacée. Les appareils appairés avec l'ancienne ne seront \
-                                     plus reconnus et devront être réappairés.",
-                                );
-                                        ui.add_space(6.0);
-                                        (replace_confirmed, close) = mac_confirm(
+                                        let (yes, no) = mac_confirm_if(
                                             ui,
                                             "Oui, remplacer l'identité et importer",
+                                            armed,
                                         );
+                                        replace_confirmed = yes;
+                                        close = no;
                                     }
                                 }
                             }
@@ -1740,9 +1812,9 @@ impl MatterApp {
                         }
                     });
             });
-        if arm_replace {
+        if let Some(armed) = set_armed {
             if let Some(DataDialog::ConfirmImport { replace_armed, .. }) = &mut self.data_dialog {
-                *replace_armed = true;
+                *replace_armed = armed;
             }
         } else if confirmed {
             self.confirm_import(false);
@@ -2507,10 +2579,17 @@ impl MatterApp {
 /// Les boutons d'une confirmation sur Mac : `[Destructif] [Annuler]` à droite, Annuler plein et
 /// par défaut (kit §15). Rend (destructif cliqué, annulé).
 fn mac_confirm(ui: &mut egui::Ui, destructive: &str) -> (bool, bool) {
+    mac_confirm_if(ui, destructive, true)
+}
+
+/// Comme [`mac_confirm`], le bouton destructif étant grisé tant que `enabled` est faux.
+fn mac_confirm_if(ui: &mut egui::Ui, destructive: &str, enabled: bool) -> (bool, bool) {
     let (mut yes, mut cancel) = (false, false);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         cancel = theme::primary_button(ui, "Annuler").clicked();
-        yes = theme::destructive_button(ui, destructive).clicked();
+        ui.add_enabled_ui(enabled, |ui| {
+            yes = theme::destructive_button(ui, destructive).clicked();
+        });
     });
     (yes, cancel)
 }

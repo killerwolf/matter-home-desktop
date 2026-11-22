@@ -48,27 +48,27 @@ impl Confirmation {
             ),
             Confirmation::RevokeReadToken => (
                 "Révoquer le jeton de lecture ?".into(),
-                "Le widget de l'iPhone cessera de marcher : il ne lira plus l'état de la maison. Il faudra le préparer de nouveau depuis l'iPhone.".into(),
+                "Le widget de l'iPhone ne pourra plus lire l'état de la maison.".into(),
                 "Révoquer",
             ),
-            Confirmation::RevokeSubscription { label } => (
+            Confirmation::RevokeSubscription { .. } => (
                 "Révoquer cet appareil ?".into(),
-                format!("« {label} » ne recevra plus de notifications. Il pourra s'abonner de nouveau depuis Ostal sur l'appareil."),
+                "Il ne recevra plus de notifications de la maison.".into(),
                 "Révoquer",
             ),
             Confirmation::AbandonImport => (
-                "Renoncer à l'import ?".into(),
-                "L'import interrompu est abandonné : les données préparées sont mises de côté et celles de ce Mac restent en place. Vous pourrez reprendre une sauvegarde de nouveau.".into(),
+                "Renoncer à l'import en attente ?".into(),
+                "La sauvegarde en attente est retirée. Vos données ne changent pas.".into(),
                 "Renoncer",
             ),
             Confirmation::DeleteCamera { name } => (
-                format!("Supprimer la caméra « {name} » ?"),
-                "Elle disparaît d'Ostal sur tous vos appareils, avec ses réglages.".into(),
+                format!("Supprimer la caméra {name} ?"),
+                "Elle disparaît aussi des clients.".into(),
                 "Supprimer",
             ),
             Confirmation::RemoveApiKey => (
                 "Retirer la clé ?".into(),
-                "Les descriptions des événements par IA s'arrêtent tant qu'aucune clé n'est enregistrée. La clé n'est pas réaffichée : il faudra en coller une nouvelle pour reprendre.".into(),
+                "Les événements ne seront plus décrits.".into(),
                 "Retirer",
             ),
         };
@@ -175,7 +175,7 @@ mod tests {
             name: "Entrée".into(),
         }
         .dialog();
-        assert_eq!(d.title, "Supprimer la caméra « Entrée » ?");
+        assert_eq!(d.title, "Supprimer la caméra Entrée ?");
         for what in all() {
             let text = format!("{} {}", what.dialog().title, what.dialog().body);
             assert!(!text.contains("rtsp") && !text.contains("http"), "{text}");

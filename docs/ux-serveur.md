@@ -219,3 +219,6 @@ passe par la première installation. `OSTAL_THEME=light` ou `dark` force le thè
 - Appareils : phrase « N appareils sur M sont joignables. », carte des injoignables avec « Réessayer » (`Hub::retry`), liste par pièce, ajout replié. Connexion : quatre cartes repliables, une ouverte à la fois.
 - Six gestes se confirment dans une alerte native (`confirm.rs`, Annuler par défaut) : supprimer le code secret, révoquer le jeton de lecture, révoquer un appareil abonné, renoncer à l'import, supprimer une caméra, retirer la clé d'API.
 - Les erreurs disent une cause et proposent « Réessayer » ; le détail va au journal. La version n'apparaît que dans Réglages.
+- Menu : ⌘, (Réglages) et ⌘Q (Quitter) sont posés comme raccourcis des éléments (`muda`). Dans une icône de barre de menus ils ne répondent qu'une fois le menu ouvert. Le titre en gras n'est pas possible avec `tray-icon` : écart assumé.
+- Un bouton grisé dit toujours pourquoi, dès l'ouverture (création du compte, caméra, clé d'API des descriptions).
+- Captures : `OSTAL_DEMO_HEALTHY=1 ostal-server-app --demo` rend la caméra Garage joignable (« La maison va bien. »).

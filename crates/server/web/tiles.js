@@ -285,3 +285,9 @@ export function clockText(ms) {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
+
+/** « depuis 18:02 » : depuis quand un appareil est injoignable (d'après `last_seen`, en secondes) ;
+ *  `null` quand le serveur ne sait pas (jamais répondu) : on ne dit rien plutôt qu'une heure fausse. */
+export function unreachableSince(d) {
+  return d.last_seen ? `depuis ${clockText(d.last_seen * 1000)}` : null;
+}

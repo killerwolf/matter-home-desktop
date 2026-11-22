@@ -28,6 +28,20 @@ pub enum Tone {
     Neutral,
 }
 
+/// Le détail du serveur mis à la suite de « Injoignable : » : minuscule au début et sans le sigle
+/// « RTSP », qui ne dit rien à qui regarde sa maison.
+fn after_colon(detail: &str) -> String {
+    let plain = detail
+        .replace(", RTSP désactivé ou", " ou")
+        .replace(" RTSP", "")
+        .replace("RTSP ", "");
+    let mut letters = plain.chars();
+    letters
+        .next()
+        .map(|c| c.to_lowercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
 /// L'état d'une caméra, en une ligne.
 pub fn status_line(camera: &CameraAdmin) -> (Tone, String) {
     match &camera.status {
@@ -50,7 +64,7 @@ pub fn status_line(camera: &CameraAdmin) -> (Tone, String) {
         CameraStatus::Unreachable { detail, .. } => (
             Tone::Bad,
             match detail {
-                Some(d) => format!("Injoignable : {d}"),
+                Some(d) => format!("Injoignable : {}", after_colon(d)),
                 None => "Injoignable".into(),
             },
         ),
@@ -281,6 +295,16 @@ impl Form {
         !self.name.trim().is_empty() && !self.url.trim().is_empty()
     }
 
+    /// Pourquoi « Enregistrer » et « Tester » sont grisés (`None` : ils ne le sont pas).
+    pub fn missing_reason(&self) -> Option<&'static str> {
+        match (self.name.trim().is_empty(), self.url.trim().is_empty()) {
+            (true, true) => Some("Donnez un nom et l'adresse du flux principal pour continuer."),
+            (true, false) => Some("Donnez un nom à la caméra pour continuer."),
+            (false, true) => Some("Ajoutez l'adresse du flux principal pour continuer."),
+            (false, false) => None,
+        }
+    }
+
     /// Si l'adresse du flux principal ou du flux réduit vient d'être collée avec
     /// `identifiant:mot-de-passe@`, retire ces identifiants de l'adresse et les range dans leurs
     /// champs (ce qu'on voit à l'écran ne garde pas le mot de passe en clair dans l'adresse). Un
@@ -505,9 +529,28 @@ mod tests {
             status_line(&camera),
             (
                 Tone::Bad,
-                "Injoignable : La caméra refuse l'identifiant ou le mot de passe.".into()
+                "Injoignable : la caméra refuse l'identifiant ou le mot de passe.".into()
             )
         );
+        camera.status = CameraStatus::Unreachable {
+            problem: CameraProblem::Unreachable,
+            detail: Some(
+                "La caméra ne répond pas (éteinte, hors réseau, RTSP désactivé ou mauvais port)."
+                    .into(),
+            ),
+            since: None,
+        };
+        let line = status_line(&camera).1;
+        assert_eq!(
+            line,
+            "Injoignable : la caméra ne répond pas (éteinte, hors réseau ou mauvais port)."
+        );
+        assert!(!line.contains("RTSP"));
+        camera.status = CameraStatus::Unreachable {
+            problem: CameraProblem::Unauthorized,
+            detail: Some("La caméra refuse l'identifiant ou le mot de passe.".into()),
+            since: None,
+        };
         // Jamais d'adresse ni de mot de passe dans ces lignes.
         assert!(!status_line(&camera).1.contains("192.0.2.4"));
     }
@@ -565,6 +608,17 @@ mod tests {
         assert!(filled.absorb_credentials());
         assert_eq!(filled.username, "moi");
         assert_eq!(filled.url, "rtsp://192.0.2.4/m");
+    }
+
+    #[test]
+    fn a_greyed_save_always_says_why() {
+        let mut form = Form::new();
+        assert!(form.missing_reason().is_some() && !form.is_fillable());
+        form.name = "Salon".into();
+        assert!(form.missing_reason().unwrap().contains("adresse"));
+        form.url = "rtsp://192.0.2.1/x".into();
+        assert_eq!(form.missing_reason(), None);
+        assert!(form.is_fillable());
     }
 
     #[test]

@@ -169,9 +169,14 @@ button.primary:disabled { background: var(--color-surface-alt); border-color: va
 .why { margin: 0; font-size: var(--web-font-small); color: var(--color-text-secondary); } /* la raison d'un bouton grisé */
 
 /* ---- Pièces : des cartes sur deux colonnes, une ligne par appareil ---- */
-.rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--web-gap); align-items: start; }
+.rooms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--web-gap); align-items: start; }
 @media (max-width: 599px) {
   .rooms > .room:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+/* Plus large (iPad, ordinateur) : la grille remplit la largeur et les ponts ont une carte double. */
+@media (min-width: 600px) {
+  .rooms { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .rooms > .room.bridges { grid-column: span 2; }
 }
 .room {
   display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 12px;
@@ -189,20 +194,22 @@ button.primary:disabled { background: var(--color-surface-alt); border-color: va
 .pill.t16, .pill.t18, .pill.t20, .pill.t22, .pill.t24 { color: var(--color-text-secondary); }
 
 .tile {
-  position: relative; text-align: left; width: 100%; min-height: 28px; padding: 2px 0;
-  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; column-gap: 8px;
+  position: relative; text-align: left; width: 100%; min-height: 44px; padding: 4px 0;
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-content: center; column-gap: 8px;
   background: none; border: 0; border-radius: 6px; color: var(--color-text); font-size: var(--web-font);
   touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .tile:active { background: var(--color-state-hover); }
-.tile .icon { width: 18px; height: 18px; color: var(--color-text-secondary); }
+.tile .icon { grid-row: 1 / span 2; align-self: start; margin-top: 1px; width: 18px; height: 18px; color: var(--color-text-secondary); }
 .tile .icon svg { width: 100%; height: 100%; display: block; }
-.tile .name { min-width: 0; line-height: 1.25; overflow-wrap: anywhere; }
-.tile .value { font-weight: var(--font-weight-strong); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+/* Le nom sur une seule ligne (points de suspension), la valeur en dessous : jamais de nom coupé mot par mot. */
+.tile .name { grid-column: 2; min-width: 0; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .value { grid-column: 2; min-width: 0; font-weight: var(--font-weight-strong); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; line-height: 1.25; }
 .tile .value .ico { display: none; width: 14px; height: 14px; }
-.tile .small { grid-column: 2 / -1; font-size: var(--font-size-caption); color: var(--color-text-secondary); line-height: 1.2; }
+.tile .small { grid-column: 2; font-size: var(--font-size-caption); color: var(--color-text-secondary); line-height: 1.2; }
 .tile .small:empty { display: none; }
 .tile .small.warn { color: var(--color-warn); }
+.tile .small.err { color: var(--color-warn); }
 .tile.lit .icon, .tile.lit .value { color: var(--color-lueur-text); }
 .tile .icon.warn, .tile .value.warn { color: var(--color-warn); }
 .tile .value.off { color: var(--color-text-secondary); }
@@ -432,7 +439,9 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .cam.ok { cursor: pointer; }
 .cam canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
 /* Le nom en haut à gauche, sur un fond sombre ; l'état (Éteinte, Connexion…) au centre. */
-.cam .cap { position: absolute; left: 10px; top: 10px; max-width: calc(100% - 64px); padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, var(--color-video-bg) 72%, transparent); font-size: 15px; font-weight: var(--font-weight-strong); color: var(--color-on-accent); }
+.cam .cap { position: absolute; left: 10px; top: 10px; max-width: calc(100% - 64px); padding: 4px 8px; border-radius: 6px; display: flex; flex-direction: column; background: color-mix(in srgb, var(--color-video-bg) 72%, transparent); font-size: 15px; font-weight: var(--font-weight-strong); color: var(--color-on-accent); }
+.cam .cap-state { font-size: var(--font-size-caption); font-weight: var(--font-weight-normal); }
+.cam .cap-state:empty { display: none; }
 .cam .msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 40px var(--web-gap) var(--web-gap); font-size: var(--web-font-small); pointer-events: none; }
 /* Icône en surimpression : plein écran (⤢) sur la vignette, quitter (⤡) en plein écran. */
 .cam-fs {

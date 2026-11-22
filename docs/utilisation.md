@@ -124,6 +124,7 @@ Le nom et l'icône s'appliquent partout (liste, fiche, plan, automatisations).
 | `ostal --plan` | ouvre directement le plan de la maison |
 | `ostal --rules` | ouvre directement les automatisations |
 | `ostal --device X` | ouvre la fiche du premier appareil dont le nom contient X |
+| `ostal --import F`, `--import-preview`, `--error-preview` | essais et captures : ouvre la lecture d'une sauvegarde sans sélecteur, la confirmation d'import fictive, ou un bandeau d'erreur réel (commande refusée par le serveur) |
 | `RUST_LOG=debug ostal` | journaux détaillés |
 
 Les appareils simulés et le diagnostic mDNS sont des options du serveur :

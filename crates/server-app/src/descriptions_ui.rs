@@ -128,6 +128,9 @@ impl DescriptionsUi {
                     });
                 }
             });
+            if self.key.trim().is_empty() {
+                widgets::hint(ui, "Collez une clé pour pouvoir l'enregistrer.");
+            }
         });
 
         let settings_state = match (has_key, saved.enabled) {

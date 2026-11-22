@@ -32,6 +32,9 @@ Usage :
   ostal --camera X  ouvre en grand la première caméra dont le nom contient X
   ostal --add      ouvre directement la fenêtre « Ajouter un appareil »
   ostal --device X  ouvre la fiche du premier appareil dont le nom contient X
+  ostal --import F  ouvre la boîte « Importer des données » avec la sauvegarde F (essais)
+  ostal --import-preview  ouvre la confirmation d'import avec une sauvegarde fictive (essais)
+  ostal --error-preview  envoie une commande vouée à l'échec : bandeau d'erreur (essais)
   ostal --version   affiche la version
   ostal --help      affiche cette aide
 
@@ -59,6 +62,7 @@ fn main() -> eframe::Result {
     let mut device_filter = None;
     let mut camera_filter: Option<String> = None;
     let mut period: Option<TimeWindow> = None;
+    let mut import_file: Option<String> = None;
     let mut flags = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -69,6 +73,14 @@ fn main() -> eframe::Result {
                 Some("1w") => period = Some(TimeWindow::All),
                 _ => {
                     eprintln!("--period attend 1h, 24h ou 1w\n\n{HELP}");
+                    std::process::exit(2);
+                }
+            }
+        } else if a == "--import" {
+            match it.next() {
+                Some(v) => import_file = Some(v.clone()),
+                None => {
+                    eprintln!("--import attend le chemin d'une sauvegarde\n\n{HELP}");
                     std::process::exit(2);
                 }
             }
@@ -96,12 +108,21 @@ fn main() -> eframe::Result {
     if let Some(unknown) = args.iter().find(|a| {
         !matches!(
             a.as_str(),
-            "--plan" | "--rules" | "--temperatures" | "--add" | "--edit-plan" | "--cameras"
+            "--plan"
+                | "--import-preview"
+                | "--error-preview"
+                | "--rules"
+                | "--temperatures"
+                | "--add"
+                | "--edit-plan"
+                | "--cameras"
         )
     }) {
         eprintln!("Option inconnue : {unknown}\n\n{HELP}");
         std::process::exit(2);
     }
+    let open_import_preview = args.iter().any(|a| a == "--import-preview");
+    let open_error_preview = args.iter().any(|a| a == "--error-preview");
     let open_add = args.iter().any(|a| a == "--add");
     let open_edit_plan = args.iter().any(|a| a == "--edit-plan");
     let open_cameras = args.iter().any(|a| a == "--cameras");
@@ -167,6 +188,15 @@ fn main() -> eframe::Result {
             // l'appareil s'ouvre alors dans le panneau de cet onglet (plan ou appareils).
             if let Some(filter) = device_filter {
                 app.select_device_named(filter);
+            }
+            if let Some(file) = import_file {
+                app.import_file_on_arrival(file.into());
+            }
+            if open_error_preview {
+                app.show_error_preview();
+            }
+            if open_import_preview {
+                app.show_import_preview();
             }
             if open_add {
                 app.show_add();

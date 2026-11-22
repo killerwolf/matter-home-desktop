@@ -327,25 +327,26 @@ impl MatterApp {
                 let address = self
                     .server
                     .as_deref()
+                    .or(self.saved_address.as_deref())
                     .map(server_address)
                     .map(|a| shorten(&a, MAX_ADDRESS_CHARS))
                     .unwrap_or_default();
                 let lost = matches!(self.link, Link::Reconnecting { .. });
-                let (dot, word) = if lost {
+                let (color, word) = if lost {
                     (p.warn, "injoignable")
                 } else {
                     (p.text_secondary, "connexion…")
                 };
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(RichText::new(word).size(size).color(dot).strong());
-                    ui.label(
-                        RichText::new(format!("{address} ·"))
-                            .size(size)
-                            .color(p.text_secondary),
-                    );
-                    ui.label(RichText::new("●").size(size).color(dot));
-                });
+                // « ● adresse · injoignable » : le point en premier, comme la version connectée.
+                // Appelé dans une rangée de droite à gauche : on ajoute donc le dernier mot d'abord.
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(RichText::new(word).size(size).color(color).strong());
+                ui.label(
+                    RichText::new(format!("{address} ·"))
+                        .size(size)
+                        .color(p.text_secondary),
+                );
+                ui.label(RichText::new("●").size(size).color(color));
             }
             _ => {}
         }

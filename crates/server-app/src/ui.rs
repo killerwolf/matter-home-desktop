@@ -32,6 +32,7 @@ use ostal_server_app::status::{icon_kind, tooltip, IconKind, Phase};
 use ostal_server_app::tailscale::{self, WebAccess};
 use ostal_server_app::{agent, icon, system};
 use ostal_theme as theme;
+use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -222,6 +223,15 @@ enum Native {
     Sub(Submenu, Vec<Native>),
 }
 
+/// Le raccourci clavier d'une action du menu : ⌘, pour les Réglages, ⌘Q pour quitter.
+fn shortcut(action: &Action) -> Option<Accelerator> {
+    match action {
+        Action::Open(Tab::Settings) => Some(Accelerator::new(Modifiers::META, Code::Comma)),
+        Action::Quit => Some(Accelerator::new(Modifiers::META, Code::KeyQ)),
+        _ => None,
+    }
+}
+
 /// Ajoute une entrée à un menu ou à un sous-menu natif et rend l'élément gardé pour les mises à
 /// jour sur place.
 fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
@@ -241,7 +251,7 @@ fn append_entry(parent: &dyn Appendable, entry: &Entry) -> Native {
             enabled,
             checked: None,
         } => {
-            let item = MenuItem::with_id(action.id(), label, *enabled, None);
+            let item = MenuItem::with_id(action.id(), label, *enabled, shortcut(action));
             parent.append_item(&item);
             Native::Item(item)
         }
@@ -383,6 +393,10 @@ fn inspect_backup(data_dir: &std::path::Path, file: PathBuf) -> Result<Restore, 
 
 impl AccountForm {
     fn check(&self) -> Result<(), String> {
+        // Champs vides : une phrase simple plutôt que la règle complète du serveur.
+        if self.username.trim().is_empty() {
+            return Err("Choisissez un identifiant pour continuer.".into());
+        }
         setup::check_credentials(&self.username, &self.password)?;
         if self.password != self.confirm {
             return Err("Les deux mots de passe sont différents.".into());

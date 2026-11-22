@@ -291,6 +291,12 @@ impl CamerasUi {
                 ui.label("Connexion à la caméra…");
             }
         });
+        // La raison d'un bouton grisé, dite sans attendre.
+        if let Some(reason) = form.missing_reason() {
+            if !busy {
+                ui.label(RichText::new(reason).small().color(p.text_secondary));
+            }
+        }
         for (tone, line) in &self.test_general {
             ui.colored_label(tone_color(ui, *tone), line);
         }

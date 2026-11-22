@@ -45,17 +45,11 @@ export function fitView(bounds, w, h) {
 }
 
 /**
- * Vue d'ouverture. En portrait, un plan plus large que haut laisse beaucoup de hauteur vide et ses
- * objets se chevauchent : on s'approche (au plus 1,5 fois), centré, le reste se découvre en glissant.
- * Ailleurs (ou si la hauteur est presque utilisée), c'est l'ajustement complet.
+ * Vue d'ouverture : le plan entier, centré (l'ajustement complet), comme la maquette Web-Plan.
+ * Le zoom et le glissement viennent ensuite, au doigt ou aux boutons.
  */
 export function initialView(bounds, w, h) {
-  const fit = fitView(bounds, w, h);
-  if (h <= w) return fit;
-  const bh = Math.max(bounds.y1 - bounds.y0, 1);
-  const slack = (h - 2 * PAD) / (bh * fit.s); // combien de fois la hauteur utile contient le plan
-  if (slack < 1.3) return fit;
-  return zoomAt(fit, Math.min(1.5, slack), w / 2, h / 2);
+  return fitView(bounds, w, h);
 }
 
 export const limitsFor = (fit) => ({ min: fit.s * ZOOM_OUT, max: fit.s * ZOOM_IN });

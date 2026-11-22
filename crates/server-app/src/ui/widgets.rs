@@ -187,7 +187,7 @@ pub fn status_line(
 pub fn link_row(ui: &mut egui::Ui, text: &str) -> bool {
     let p = theme::palette(ui);
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
     if response.hovered() {
         ui.painter().rect_filled(rect, 6.0, p.surface_alt);
     }

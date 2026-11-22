@@ -47,7 +47,7 @@ fn setup_header(ui: &mut egui::Ui, step: usize, title: &str) {
 /// Une ligne de la liste des appareils : le nom, puis « joignable » ou « injoignable ».
 fn device_line(ui: &mut egui::Ui, name: &str, reachable: bool) {
     ui.horizontal(|ui| {
-        ui.set_width(272.0);
+        ui.set_width(280.0);
         ui.allocate_ui_with_layout(
             egui::vec2(168.0, 18.0),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -483,8 +483,12 @@ impl App {
         ui.label("Confirmez le mot de passe");
         ui.add(egui::TextEdit::singleline(&mut self.form.confirm).password(true));
         let check = self.form.check();
+        // La raison du bouton grisé se lit dès l'ouverture, champs vides compris : en rouge une
+        // fois qu'on a commencé à écrire, en gris avant.
         if let Err(e) = &check {
-            if !self.form.password.is_empty() || !self.form.username.is_empty() {
+            if self.form.password.is_empty() && self.form.username.is_empty() {
+                widgets::hint(ui, e);
+            } else {
                 ui.colored_label(theme::palette(ui).error, e);
             }
         }
@@ -715,6 +719,8 @@ impl App {
                 ("Changer mon mot de passe", Tab::Settings),
                 ("Comprendre une panne", Tab::Settings),
             ];
+            // Des lignes de 24 px, 2 px entre elles : la vue qui « va bien » tient sans défilement.
+            ui.spacing_mut().item_spacing.y = 2.0;
             for (label, tab) in tasks {
                 if widgets::link_row(ui, label) {
                     go = Some(tab);
@@ -811,7 +817,8 @@ impl App {
                     ui.label(RichText::new(room.unwrap_or("Sans pièce")).strong());
                     egui::Grid::new(("room", start))
                         .num_columns(2)
-                        .min_col_width(272.0)
+                        .spacing([0.0, 4.0])
+                        .min_col_width(280.0)
                         .show(ui, |ui| {
                             for (i, d) in health.listed[start..end].iter().enumerate() {
                                 device_line(ui, &d.name, d.reachable);

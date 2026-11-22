@@ -143,7 +143,9 @@ impl Blocker {
             Blocker::OtherApp => "Ostal Server est déjà ouvert.",
             Blocker::Service => "Le service installé utilise encore les données.",
             Blocker::OtherServer => "Un autre serveur utilise les données.",
-            Blocker::OldApp => "L'ancienne application utilise encore les données.",
+            Blocker::OldApp => {
+                "L'ancienne application tient encore les données. Rien n'est démarré en attendant."
+            }
             Blocker::Unknown => "Les données sont utilisées ailleurs.",
             Blocker::DesktopV02 => "L'ancienne application de bureau tourne.",
         }

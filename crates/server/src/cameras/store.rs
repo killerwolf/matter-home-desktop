@@ -680,6 +680,15 @@ impl CameraBook {
             CameraStatus::Online,
             Some(h264(2304, 1296)),
         );
+        // `OSTAL_DEMO_HEALTHY=1` (captures d'écran) : la caméra Garage répond, la maison « va bien ».
+        if std::env::var("OSTAL_DEMO_HEALTHY").as_deref() == Ok("1") {
+            book.set_health(
+                CAMERA_ID_MIN + 3,
+                CameraStatus::Online,
+                Some(h264(1280, 720)),
+            );
+            return book;
+        }
         book.set_health(
             CAMERA_ID_MIN + 3,
             CameraStatus::Unreachable {

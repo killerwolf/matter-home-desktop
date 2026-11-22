@@ -441,6 +441,12 @@ impl Backend {
         });
     }
 
+    /// L'adresse du serveur gardée dans le fichier de connexion (jamais le jeton), pour l'afficher
+    /// même si ce serveur n'a pas encore répondu.
+    pub fn saved_url(&self) -> Option<String> {
+        self.shared.store.load().ok().flatten().map(|s| s.url)
+    }
+
     /// Autres adresses du serveur gardées dans le fichier de connexion (à distance).
     pub fn alt_urls(&self) -> Vec<String> {
         self.shared.alts()

@@ -18,7 +18,7 @@
 - **Confirmations** : un dialogue `[Annuler][Révoquer]` dans la page (`askConfirm`) remplace
   `confirm()` pour supprimer un événement, révoquer un jeton ou un abonnement.
 - **Vocabulaire** : « injoignable » partout (jamais « hors ligne » ni « en ligne »), un seul nom : « Ostal ».
-- **Plan** : noms courts toujours visibles, légende, boutons de 44 px, feuille à demi ouverte.
+- **Plan** : s'ouvre sur le plan entier (ajustement complet), noms courts toujours visibles, légende, boutons de 44 px, feuille à demi ouverte.
 - Les couleurs viennent toutes de `var(--color-…)` ; aucun `style=`, aucune URL externe dans `index.html`.
 
 [← Retour au README](../README.md) · [Protocole](protocole.md) · [Design system](design-system.md)
@@ -38,8 +38,10 @@ pas de framework, pas de nouvelle dépendance Rust.
 - **Appareils** : des blocs par pièce (même règle que le client : `HomePlan::room_of`), puis un
   bloc « Ponts ». La pastille de température est **juste à côté du nom de la pièce**. Les blocs
   circulent avec CSS grid (`auto-fill` et `minmax`), de 320 à 2560 px, et chaque bloc range ses
-  tuiles dans sa propre grille. Une tuile = une icône, le nom, **une** valeur ; seuls
-  « injoignable » et « pile faible » sont signalés ; « Ouverte » / « Fermée » pour une porte ou
+  tuiles dans sa propre grille (2 colonnes sous 600 px ; au-delà, `minmax(240px, 1fr)` et les ponts
+  sur une carte double). Une tuile = une icône, le nom **sur une ligne** (points de suspension, jamais
+  coupé mot par mot) et **dessous** une valeur ; seuls « injoignable » (suivi de « depuis HH:MM »,
+  d'après `last_seen`) et « pile faible » sont signalés ; « Ouverte » / « Fermée » pour une porte ou
   une fenêtre. Mise à jour en direct par le WebSocket d'événements.
   - Tap sur une **lumière** : allume ou éteint. Tap sur un **volet** : ouvre, ferme, ou arrête
     s'il bouge. Mêmes routes que le client (`POST /api/devices/{id}/on-off` et `…/cover`).
