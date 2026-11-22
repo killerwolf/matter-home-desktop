@@ -2,6 +2,7 @@
    Régénérer : cargo run -p ostal --example tokens_css */
 :root {
   --color-accent: #0b6a94;
+  --color-accent-hover: #08506f;
   --color-accent-soft: #e2f0f6;
   --color-accent-text: #0b6a94;
   --color-banner-info: #dfeef5;
@@ -31,6 +32,7 @@
   --color-surface: #ffffff;
   --color-surface-alt: #e9eef0;
   --color-text: #10232d;
+  --color-text-faint: #9aa8ae;
   --color-text-secondary: #50626b;
   --color-video-bg: #141414;
   --color-video-text: #dcdcdc;
@@ -46,6 +48,7 @@
   --space-sm: 8px;
   --space-xl: 24px;
   --space-xs: 4px;
+  --radius-card: 10px;
   --radius-lg: 8px;
   --radius-md: 6px;
   --radius-sm: 4px;
@@ -62,6 +65,11 @@
   --size-row: 30px;
   --size-switch-h: 14px;
   --size-switch-w: 26px;
+  --size-window-desktop-h: 800px;
+  --size-window-desktop-w: 1280px;
+  --size-window-server-h: 700px;
+  --size-window-server-w: 640px;
+  --tile-desktop-width: 192px;
   --tile-height: 112px;
   --tile-icon: 28px;
   --tile-min-width: 170px;
@@ -83,6 +91,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --color-accent: #0b5f86;
+    --color-accent-hover: #0e729f;
     --color-accent-soft: #12303d;
     --color-accent-text: #5fb6de;
     --color-banner-info: #14374a;
@@ -112,6 +121,7 @@
     --color-surface: #12202a;
     --color-surface-alt: #192a35;
     --color-text: #e8eef1;
+    --color-text-faint: #6a8190;
     --color-text-secondary: #9aacb5;
     --color-video-bg: #141414;
     --color-video-text: #dcdcdc;

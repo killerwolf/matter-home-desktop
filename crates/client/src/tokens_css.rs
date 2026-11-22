@@ -176,6 +176,11 @@ mod tests {
             "--color-on-lueur:",
             "--color-lueur-text:",
             "--tile-on-tint-alpha: 0.16;",
+            "--tile-desktop-width: 192px;",
+            "--radius-card: 10px;",
+            "--size-window-server-w: 640px;",
+            "--color-text-faint:",
+            "--color-accent-hover:",
             "--color-state-hover: var(--color-surface-alt);",
         ] {
             assert!(css.contains(prefix), "{prefix} manque");

@@ -193,6 +193,36 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   faite avec cette version est **refusée par un serveur 1.1.0** (il ne connaît pas `mode.json`) : en
   retirer le fichier du `.ostal` n'est pas prévu, mettez le serveur à jour.
 
+## La phrase d'état
+
+`protocol::status` (fonctions pures, sans donnée ni horloge) écrit la phrase d'état de la maison, la
+**même** sur le Mac, le bureau, l'iPhone et le widget. Chaque surface a déjà ses appareils et ses
+caméras : elle en tire les noms des injoignables, et appelle `headline` et `detail`. Rien ne passe
+par l'API (ni champ dans `/api/state`, ni événement) : la phrase est calculée sur chaque surface, et sa
+jumelle en JavaScript (`tiles.js`, `ostal.js`) reprend les mêmes textes, mot pour mot.
+
+**Unité de compte : la catégorie**, pas l'appareil. Un `Point` est une catégorie qui demande
+attention : `Devices(noms)`, `Cameras(noms)` ou `Other(phrase)` (serveur seulement : accès à distance,
+ancienne application, détection suspendue par la chaleur). Deux lampes et trois prises injoignables
+font **un** point.
+
+| Situation | `headline(n)` | `detail(points)` |
+|---|---|---|
+| aucun point | « La maison va bien. » | `None` ; la surface écrit `all_reachable(n)` : « 10 appareils, tous joignables. » |
+| 1 point, 1 appareil | « Une chose à regarder » | « Lampe d'Adam est injoignable. » |
+| 1 point, 2 appareils | « Une chose à regarder » | « Lampe d'Adam et Prise TV sont injoignables. » |
+| 1 point, 3 appareils ou plus | « Une chose à regarder » | « Lampe d'Adam, Prise TV et 1 autre sont injoignables. » (« 2 autres »…) |
+| 1 point, caméras | « Une chose à regarder » | « La caméra Jardin est injoignable. » ; deux : « Les caméras Entrée et Jardin sont injoignables. » |
+| 2 points | « Deux choses à regarder » | la phrase des appareils |
+| 3 points ou plus | « 3 choses à regarder » (en chiffres) | la phrase du premier point |
+
+Le détail est la phrase du premier point, **les appareils passant d'abord**, puis les caméras, puis les
+autres points dans l'ordre reçu. Un point sans nom (liste vide, phrase vide) ne compte pas (`count`).
+Le nom est écrit tel qu'il est enregistré. Un seul mot pour « ne répond pas » : « injoignable ».
+« Hors ligne » et « en ligne » ne s'écrivent jamais, ni dans l'interface, ni dans les textes que le
+serveur envoie (notifications, erreurs de l'API). Le widget, qui n'a que le jeton de lecture, ne voit
+pas les caméras : il ne compte que les appareils.
+
 ## Caméras
 
 Ticket n° 4. Le serveur est le **seul** à parler aux caméras (RTSP). Le client ne reçoit que de

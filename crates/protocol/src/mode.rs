@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::wire::{CameraBehavior, CameraModes, CameraPlacement};
+
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -47,6 +49,29 @@ impl HomeMode {
             HomeMode::Absent => "absent",
             HomeMode::Nuit => "nuit",
             HomeMode::Vacances => "vacances",
+        }
+    }
+
+    /// Ce que le mode fait des caméras, en une ligne (« Caméras intérieures éteintes, extérieures
+    /// en diffusion. »). Calculée à partir de `CameraModes::for_placement` : elle ne peut pas
+    /// contredire le comportement réel. C'est la ligne par défaut : une caméra dont les réglages
+    /// ont été changés à la main s'écarte de cette phrase.
+    pub fn effect(self) -> String {
+        let indoor = CameraModes::for_placement(CameraPlacement::Interieure).get(self);
+        let outdoor = CameraModes::for_placement(CameraPlacement::Exterieure).get(self);
+        let state = |b: CameraBehavior| match b {
+            CameraBehavior::Eteinte => "éteintes",
+            CameraBehavior::Diffusion => "en diffusion",
+            CameraBehavior::Surveillance => "en surveillance",
+        };
+        if indoor == outdoor {
+            format!("Toutes les caméras {}.", state(indoor))
+        } else {
+            format!(
+                "Caméras intérieures {}, extérieures {}.",
+                state(indoor),
+                state(outdoor)
+            )
         }
     }
 
@@ -166,6 +191,26 @@ mod tests {
         assert_eq!(ModeSource::claimed(Some(Shortcut), false), Other);
         assert_eq!(ModeSource::claimed(Some(ServerApp), false), Other);
         assert_eq!(ModeSource::claimed(Some(rule()), false), Other);
+    }
+
+    #[test]
+    fn effect_says_what_the_cameras_do() {
+        assert_eq!(
+            HomeMode::Present.effect(),
+            "Caméras intérieures éteintes, extérieures en diffusion."
+        );
+        assert_eq!(
+            HomeMode::Absent.effect(),
+            "Toutes les caméras en surveillance."
+        );
+        assert_eq!(
+            HomeMode::Nuit.effect(),
+            "Caméras intérieures éteintes, extérieures en surveillance."
+        );
+        assert_eq!(
+            HomeMode::Vacances.effect(),
+            "Toutes les caméras en surveillance."
+        );
     }
 
     #[test]

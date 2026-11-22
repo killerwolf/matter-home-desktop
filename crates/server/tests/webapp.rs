@@ -492,7 +492,7 @@ fn token_after(text: &str, marker: &str) -> String {
     token
 }
 
-/// Page « Widgets et raccourcis » : en un geste, sous session, le serveur prépare les deux
+/// Page « Widgets et raccourcis » : en un geste, sous session, le serveur prépare les quatre
 /// raccourcis (nouveau jeton de mode, adresse en .ts.net écrite dedans, liens à toucher sans jeton)
 /// et le widget (nouveau jeton de lecture). Signature remplacée par le plist tel quel
 /// (`OSTAL_TEST_UNSIGNED_SHORTCUTS`) : les essais ne dépendent ni d'iCloud ni d'Apple.
@@ -568,7 +568,7 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         let tokens = client.get("/api/tokens", &session).await.json();
         assert_eq!(tokens["mode"]["exists"], false);
 
-        // Les raccourcis : deux liens sans accent, à toucher sans jeton.
+        // Les raccourcis : quatre liens sans accent, à toucher sans jeton.
         let prepared = client
             .send_json("POST", "/api/tokens/mode/shortcuts", &session, &origin)
             .await;
@@ -577,9 +577,12 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         assert_eq!(prepared["expires_in_s"], 300);
         let links = prepared["shortcuts"].as_array().unwrap().clone();
         let names: Vec<_> = links.iter().map(|l| l["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["Mode absent", "Mode present"]);
+        assert_eq!(
+            names,
+            ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"]
+        );
         let mut mode_token = String::new();
-        for (link, mode) in links.iter().zip(["absent", "present"]) {
+        for (link, mode) in links.iter().zip(["absent", "present", "nuit", "vacances"]) {
             let url = link["url"].as_str().unwrap();
             let file = format!("{}.shortcut", link["name"].as_str().unwrap());
             assert!(url.starts_with("/app/raccourcis/perso/"), "{url}");
@@ -612,7 +615,9 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             // Un autre nom sous le même identifiant, ou un identifiant inventé : 404.
             let other = url
                 .replace("Mode%20absent", "X")
-                .replace("Mode%20present", "X");
+                .replace("Mode%20present", "X")
+                .replace("Mode%20nuit", "X")
+                .replace("Mode%20vacances", "X");
             assert_eq!(client.request("GET", &other, None, None).await.status, 404);
         }
         secrets.push(mode_token.clone());
