@@ -10,6 +10,28 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+### Raccourcis et notifications par personne (multi-comptes, étape 3)
+
+- Raccourcis, widget et notifications deviennent personnels. Les jetons de mode et de lecture se
+  rangent dans `jetons.json` : un par téléphone, avec un libellé (« iPhone de Hamdi »), révocables un
+  par un sans toucher à ceux des autres. Réinstaller sur le même téléphone remplace son jeton ; un
+  compte désactivé perd les siens.
+- Migration sans casse : `jeton-mode.json` et `jeton-lecture.json` deviennent des jetons du premier
+  utilisateur (même empreinte) ; les raccourcis et le widget déjà installés continuent de marcher.
+  Les anciens fichiers restent en place, intacts. Les abonnements aux notifications sont rattachés
+  au premier utilisateur au démarrage (un champ s'ajoute dans `push.json`, rien d'autre ne change).
+- Notifications : chaque personne voit, règle et révoque ses appareils ; chacun reçoit selon ses
+  catégories. Un téléphone qui change de compte passe à la nouvelle personne.
+- App web, « Widgets et raccourcis » : « Installer mes raccourcis » (« Je pars », « Je rentre »,
+  Mode nuit, Mode vacances) et « Votre widget », au jeton de la personne ; « Je pars » et « Je rentre »
+  disent où elle est ; une note remplace les deux sections sur Android. Le widget propose
+  « Je pars » et « Je rentre ». « Mode absent » et « Mode présent », déjà installés, marchent encore.
+- Présence déclarée : `PUT /api/presence` (`{"state": "home" | "away"}`, jeton de mode ou session)
+  garde ce que chacun a dit dans `presence.json`. En attendant la présence automatique, « Je pars » et
+  « Je rentre » (jeton de mode) passent la maison en Absent et en Présent, comme les raccourcis
+  d'avant : les téléphones n'auront rien à réinstaller. Une session ne fait que déclarer.
+- Ostal Server : le code secret et le widget de la fenêtre sont ceux du premier compte.
+
 ### Connexions (multi-comptes, étape 2)
 
 - Chaque téléphone ou ordinateur où un compte est ouvert est une « connexion » : le login envoie

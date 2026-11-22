@@ -501,6 +501,8 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
 .step-n.done { background: var(--color-ok); color: var(--color-on-accent); }
 .step-body { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .step-body p { margin: 0; font-size: 15px; font-weight: var(--font-weight-strong); }
+.w-tokens { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.w-token { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: var(--web-font-small); }
 .callout { padding: 12px 14px; border-radius: var(--web-radius); background: var(--color-banner-info); display: flex; align-items: flex-start; gap: 12px; }
 .callout p { margin: 0; font-size: var(--web-font); }
 .widgets-link { display: flex; align-items: center; text-decoration: none; color: var(--color-text); }

@@ -1,9 +1,9 @@
 //! Ce que la page « Widgets et raccourcis » de l'app web installe sur l'iPhone, **déjà rempli** :
 //!
-//! - les quatre raccourcis de mode (« Mode absent », « Mode present », « Mode nuit »,
-//!   « Mode vacances »), avec l'adresse publique du serveur et le jeton de mode écrits dedans,
+//! - les quatre raccourcis de la personne (« Je pars », « Je rentre », « Mode nuit »,
+//!   « Mode vacances »), avec l'adresse publique du serveur et **son** jeton de mode écrits dedans,
 //!   puis signés par `/usr/bin/shortcuts sign` ;
-//! - le script du widget Scriptable, avec l'adresse et le jeton de lecture écrits dedans.
+//! - le script du widget Scriptable, avec l'adresse et **son** jeton de lecture écrits dedans.
 //!
 //! Rien à taper sur l'iPhone. Les noms des raccourcis sont **sans accent** : le nom importé vient du
 //! nom du fichier, qu'iOS enregistre en Unicode décomposé (« e » + accent) ; le widget, qui les
@@ -18,8 +18,8 @@ use protocol::wire::{ApiError, ErrorCode};
 use rand::RngCore;
 
 /// Noms des raccourcis : ceux des fichiers téléchargés, et ceux que le widget appelle.
-pub const ABSENT_NAME: &str = "Mode absent";
-pub const PRESENT_NAME: &str = "Mode present";
+pub const LEAVING_NAME: &str = "Je pars";
+pub const ARRIVING_NAME: &str = "Je rentre";
 pub const NUIT_NAME: &str = "Mode nuit";
 pub const VACANCES_NAME: &str = "Mode vacances";
 
@@ -37,60 +37,100 @@ const SIGN_TIMEOUT: Duration = Duration::from_secs(25);
 const SIGN_BUDGET: Duration = Duration::from_secs(55);
 const SHORTCUTS_BIN: &str = "/usr/bin/shortcuts";
 
-/// Le raccourci d'un mode.
+/// Un raccourci de la page « Widgets et raccourcis » : deux qui disent où est la personne (« Je
+/// pars », « Je rentre ») et deux qui changent le mode de toute la maison, à la main (Nuit,
+/// Vacances).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModeShortcut {
-    Absent,
-    Present,
+pub enum HomeShortcut {
+    Leaving,
+    Arriving,
     Nuit,
     Vacances,
 }
 
-impl ModeShortcut {
-    pub const ALL: [ModeShortcut; 4] = [
-        ModeShortcut::Absent,
-        ModeShortcut::Present,
-        ModeShortcut::Nuit,
-        ModeShortcut::Vacances,
+/// Ce que fait un raccourci : une requête `PUT` avec un corps JSON d'un seul champ.
+struct Request {
+    path: &'static str,
+    key: &'static str,
+    value: &'static str,
+}
+
+impl HomeShortcut {
+    pub const ALL: [HomeShortcut; 4] = [
+        HomeShortcut::Leaving,
+        HomeShortcut::Arriving,
+        HomeShortcut::Nuit,
+        HomeShortcut::Vacances,
     ];
 
     /// Nom du raccourci (et du fichier, sans `.shortcut`), en ASCII.
     pub fn name(self) -> &'static str {
         match self {
-            ModeShortcut::Absent => ABSENT_NAME,
-            ModeShortcut::Present => PRESENT_NAME,
-            ModeShortcut::Nuit => NUIT_NAME,
-            ModeShortcut::Vacances => VACANCES_NAME,
+            HomeShortcut::Leaving => LEAVING_NAME,
+            HomeShortcut::Arriving => ARRIVING_NAME,
+            HomeShortcut::Nuit => NUIT_NAME,
+            HomeShortcut::Vacances => VACANCES_NAME,
         }
     }
 
-    /// Valeur envoyée à `PUT /api/mode`.
-    fn mode(self) -> &'static str {
+    /// La requête envoyée : `PUT /api/presence {"state": …}` pour dire où l'on est (rien d'autre ne
+    /// change), `PUT /api/mode {"mode": …}` pour changer le mode de la maison.
+    fn request(self) -> Request {
         match self {
-            ModeShortcut::Absent => "absent",
-            ModeShortcut::Present => "present",
-            ModeShortcut::Nuit => "nuit",
-            ModeShortcut::Vacances => "vacances",
+            HomeShortcut::Leaving => Request {
+                path: "/api/presence",
+                key: "state",
+                value: "away",
+            },
+            HomeShortcut::Arriving => Request {
+                path: "/api/presence",
+                key: "state",
+                value: "home",
+            },
+            HomeShortcut::Nuit => Request {
+                path: "/api/mode",
+                key: "mode",
+                value: "nuit",
+            },
+            HomeShortcut::Vacances => Request {
+                path: "/api/mode",
+                key: "mode",
+                value: "vacances",
+            },
         }
     }
 
-    fn label(self) -> &'static str {
+    /// Ce que dit la notification quand le serveur a répondu.
+    fn done_text(self) -> &'static str {
         match self {
-            ModeShortcut::Absent => "Absent",
-            ModeShortcut::Present => "Présent",
-            ModeShortcut::Nuit => "Nuit",
-            ModeShortcut::Vacances => "Vacances",
+            HomeShortcut::Leaving => "C'est noté : vous êtes parti.",
+            HomeShortcut::Arriving => "C'est noté : vous êtes à la maison.",
+            HomeShortcut::Nuit => "Maison en mode Nuit.",
+            HomeShortcut::Vacances => "Maison en mode Vacances.",
         }
     }
 
-    /// Couleur et pictogramme de l'icône (ceux des raccourcis d'avant). Nuit et Vacances
-    /// reprennent ceux d'Absent : on n'invente ni couleur ni glyphe sans l'accord d'Hamdi.
+    /// Ce que dit la notification quand le serveur a refusé.
+    fn failed_text(self) -> &'static str {
+        match self {
+            HomeShortcut::Leaving | HomeShortcut::Arriving => {
+                "Rien n'a changé. Réponse du serveur : "
+            }
+            HomeShortcut::Nuit | HomeShortcut::Vacances => {
+                "Le mode n'a pas changé. Réponse du serveur : "
+            }
+        }
+    }
+
+    /// Couleur et pictogramme de l'icône (ceux des raccourcis d'avant : « Je pars » reprend celui
+    /// d'Absent, « Je rentre » celui de Présent). Nuit et Vacances reprennent celui d'Absent : on
+    /// n'invente ni couleur ni glyphe sans l'accord d'Hamdi.
     fn icon(self) -> (i64, i64) {
         match self {
-            ModeShortcut::Absent | ModeShortcut::Nuit | ModeShortcut::Vacances => {
+            HomeShortcut::Leaving | HomeShortcut::Nuit | HomeShortcut::Vacances => {
                 (4292093695, 59446)
             }
-            ModeShortcut::Present => (431817727, 59511),
+            HomeShortcut::Arriving => (431817727, 59511),
         }
     }
 
@@ -316,20 +356,22 @@ fn conditional(group: &str, mode: i64, input: Option<Plist>) -> Plist {
     action("is.workflow.actions.conditional", parameters)
 }
 
-/// Le raccourci d'un mode, en plist XML (non signé). `address` vient de `public_address`, `token`
-/// est le jeton de mode : tous deux écrits en dur, aucune question à l'import.
+/// Un raccourci, en plist XML (non signé). `address` vient de `public_address`, `token` est le jeton
+/// de mode **de la personne** : tous deux écrits en dur, aucune question à l'import.
 ///
-/// `PUT {address}/api/mode` avec `Authorization: Bearer <jeton>` et `{"mode": …}` ; notification
-/// « Maison en mode … » seulement si la réponse a une clé `mode`, sinon la réponse du serveur.
-pub fn mode_shortcut_plist(which: ModeShortcut, address: &str, token: &str) -> String {
+/// `PUT {address}/api/presence` ou `/api/mode` avec `Authorization: Bearer <jeton>` et un corps
+/// JSON d'un champ ; notification de réussite seulement si la réponse a la clé attendue (`state`
+/// ou `mode`), sinon la réponse du serveur.
+pub fn shortcut_plist(which: HomeShortcut, address: &str, token: &str) -> String {
     let (request, value, group) = (uuid(), uuid(), uuid());
+    let what = which.request();
     let reply = || output(&request, "Contenu de l'URL");
     let actions = vec![
         action(
             "is.workflow.actions.downloadurl",
             vec![
                 ("UUID", s(&request)),
-                ("WFURL", tok(&format!("{address}/api/mode"), vec![])),
+                ("WFURL", tok(&format!("{address}{}", what.path), vec![])),
                 ("WFHTTPMethod", s("PUT")),
                 ("ShowHeaders", Plist::Bool(true)),
                 (
@@ -337,7 +379,7 @@ pub fn mode_shortcut_plist(which: ModeShortcut, address: &str, token: &str) -> S
                     dict_field(&[("Authorization", &format!("Bearer {token}"))]),
                 ),
                 ("WFHTTPBodyType", s("JSON")),
-                ("WFJSONValues", dict_field(&[("mode", which.mode())])),
+                ("WFJSONValues", dict_field(&[(what.key, what.value)])),
             ],
         ),
         action(
@@ -345,17 +387,14 @@ pub fn mode_shortcut_plist(which: ModeShortcut, address: &str, token: &str) -> S
             vec![
                 ("UUID", s(&value)),
                 ("WFInput", attachment(reply())),
-                ("WFDictionaryKey", s("mode")),
+                ("WFDictionaryKey", s(what.key)),
                 ("WFGetDictionaryValueType", s("Value")),
             ],
         ),
         conditional(&group, 0, Some(output(&value, "Valeur du dictionnaire"))),
-        notify(s(&format!("Maison en mode {}.", which.label()))),
+        notify(s(which.done_text())),
         conditional(&group, 1, None),
-        notify(tok(
-            &format!("Le mode n'a pas changé. Réponse du serveur : {OBJ}"),
-            vec![reply()],
-        )),
+        notify(tok(&format!("{}{OBJ}", which.failed_text()), vec![reply()])),
         conditional(&group, 2, None),
     ];
     let (color, glyph) = which.icon();
@@ -455,15 +494,15 @@ impl Signer {
         }
     }
 
-    /// Les raccourcis de `ModeShortcut::ALL`, remplis puis signés l'un après l'autre : `(nom de
+    /// Les raccourcis de `HomeShortcut::ALL`, remplis puis signés l'un après l'autre : `(nom de
     /// fichier, contenu)`. Un échec, ou le délai total ([`SIGN_BUDGET`]), annule tout.
-    pub fn sign_mode_shortcuts(
+    pub fn sign_shortcuts(
         self,
         address: &str,
         token: &str,
     ) -> Result<Vec<(String, Vec<u8>)>, ApiError> {
         sign_all(SIGN_BUDGET, |which, timeout| {
-            self.sign_within(&mode_shortcut_plist(which, address, token), timeout)
+            self.sign_within(&shortcut_plist(which, address, token), timeout)
         })
     }
 }
@@ -471,11 +510,11 @@ impl Signer {
 /// Signe tous les raccourcis avec `sign(raccourci, délai restant)`, sans dépasser `budget` en tout.
 fn sign_all(
     budget: Duration,
-    mut sign: impl FnMut(ModeShortcut, Duration) -> Result<Vec<u8>, ApiError>,
+    mut sign: impl FnMut(HomeShortcut, Duration) -> Result<Vec<u8>, ApiError>,
 ) -> Result<Vec<(String, Vec<u8>)>, ApiError> {
     let deadline = Instant::now() + budget;
-    let mut files = Vec::with_capacity(ModeShortcut::ALL.len());
-    for which in ModeShortcut::ALL {
+    let mut files = Vec::with_capacity(HomeShortcut::ALL.len());
+    for which in HomeShortcut::ALL {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             log::error!(
@@ -561,14 +600,15 @@ fn sign_with(program: &Path, plist: &str, timeout: Duration) -> Result<Vec<u8>, 
 /// Durée de vie des liens de téléchargement.
 pub const LINK_TTL: Duration = Duration::from_secs(5 * 60);
 
-/// Les raccourcis préparés, en mémoire seulement. Le `Hub` ne les remplace ou ne les vide que
-/// sous le changement du jeton de mode : un lien ne porte jamais un jeton révoqué.
+/// Les raccourcis préparés, en mémoire seulement, chacun au nom de la personne qui les a demandés
+/// (ils portent son jeton de mode). Préparer les siens ne touche jamais aux liens des autres.
 #[derive(Default)]
 pub struct Downloads {
     files: std::sync::Mutex<std::collections::HashMap<String, Prepared>>,
 }
 
 struct Prepared {
+    owner: String,
     file_name: String,
     body: Vec<u8>,
     expires: Instant,
@@ -579,10 +619,11 @@ impl Downloads {
         self.files.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Remplace les liens d'avant par ceux-ci ; rend leurs identifiants (128 bits), dans l'ordre.
-    pub fn replace(&self, files: Vec<(String, Vec<u8>)>) -> Vec<String> {
+    /// Remplace les liens d'avant **de cette personne** par ceux-ci ; rend leurs identifiants
+    /// (128 bits), dans l'ordre.
+    pub fn replace(&self, owner: &str, files: Vec<(String, Vec<u8>)>) -> Vec<String> {
         let mut map = self.lock();
-        map.clear();
+        map.retain(|_, p| p.owner != owner);
         let expires = Instant::now() + LINK_TTL;
         files
             .into_iter()
@@ -593,6 +634,7 @@ impl Downloads {
                 map.insert(
                     id.clone(),
                     Prepared {
+                        owner: owner.to_string(),
                         file_name,
                         body,
                         expires,
@@ -603,9 +645,9 @@ impl Downloads {
             .collect()
     }
 
-    /// Oublie tous les liens.
-    pub fn clear(&self) {
-        self.lock().clear();
+    /// Oublie les liens de cette personne.
+    pub fn clear(&self, owner: &str) {
+        self.lock().retain(|_, p| p.owner != owner);
     }
 
     /// Un fichier encore valable, sous son identifiant **et** son nom.
@@ -714,19 +756,15 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_shortcut_carries_address_token_and_no_import_question() {
-        let xml = mode_shortcut_plist(
-            ModeShortcut::Present,
-            "https://mac.tailnet-12ab.ts.net",
-            TOKEN,
-        );
+    fn the_shortcut_carries_address_token_and_no_import_question() {
+        let xml = shortcut_plist(HomeShortcut::Nuit, "https://mac.tailnet-12ab.ts.net", TOKEN);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
         assert!(xml.contains("<string>https://mac.tailnet-12ab.ts.net/api/mode</string>"));
         assert!(xml.contains(&format!("<string>Bearer {TOKEN}</string>")));
         assert!(xml.contains("<key>WFHTTPMethod</key><string>PUT</string>"));
         assert!(xml.contains("<key>WFHTTPBodyType</key><string>JSON</string>"));
-        assert!(xml.contains("<string>present</string>"));
-        assert!(xml.contains("<string>Maison en mode Présent.</string>"));
+        assert!(xml.contains("<string>nuit</string>"));
+        assert!(xml.contains("<string>Maison en mode Nuit.</string>"));
         assert!(xml.contains("<key>WFWorkflowImportQuestions</key><array></array>"));
         assert!(!xml.contains("is.workflow.actions.gettext"));
         // La notification d'échec cite la réponse : la marque est en position UTF-16 (« é » compte 1).
@@ -739,42 +777,56 @@ mod tests {
         )));
         // Les textes sans variable ont un dictionnaire vide.
         assert!(xml.contains("<key>attachmentsByRange</key><dict></dict>"));
-        let absent = mode_shortcut_plist(ModeShortcut::Absent, "https://m.ts.net", TOKEN);
-        assert!(
-            absent.contains("<string>absent</string>") && absent.contains("Maison en mode Absent.")
-        );
     }
 
-    /// Chaque raccourci envoie une clé de mode que le serveur connaît, et dit le bon mode.
+    /// « Je pars » et « Je rentre » disent où l'on est : ils appellent `/api/presence`, jamais
+    /// `/api/mode` (c'est le serveur qui, provisoirement, en tire le mode).
     #[test]
-    fn every_shortcut_sends_a_known_mode_and_says_it() {
+    fn leaving_and_arriving_only_declare_where_the_person_is() {
+        let leaving = shortcut_plist(HomeShortcut::Leaving, "https://m.ts.net", TOKEN);
+        assert!(leaving.contains("<string>https://m.ts.net/api/presence</string>"));
+        assert!(!leaving.contains("/api/mode"));
+        assert!(leaving.contains("<string>away</string>"));
+        assert!(leaving.contains("<key>WFDictionaryKey</key><string>state</string>"));
+        assert!(leaving.contains("C'est noté : vous êtes parti."));
+        assert!(leaving.contains(&format!("<string>Bearer {TOKEN}</string>")));
+        let arriving = shortcut_plist(HomeShortcut::Arriving, "https://m.ts.net", TOKEN);
+        assert!(arriving.contains("<string>home</string>"));
+        assert!(arriving.contains("C'est noté : vous êtes à la maison."));
+        assert!(!arriving.contains("/api/mode"));
+    }
+
+    /// Nuit et Vacances envoient une clé de mode que le serveur connaît, et disent le bon mode.
+    #[test]
+    fn the_mode_shortcuts_send_a_known_mode_and_say_it() {
         use protocol::mode::HomeMode;
-        assert_eq!(ModeShortcut::ALL.len(), HomeMode::ALL.len());
-        for which in ModeShortcut::ALL {
-            let mode = HomeMode::from_key(which.mode()).expect("clé de mode connue");
-            assert_eq!(which.label(), mode.label());
-            let xml = mode_shortcut_plist(which, "https://m.ts.net", TOKEN);
+        for which in [HomeShortcut::Nuit, HomeShortcut::Vacances] {
+            let request = which.request();
+            assert_eq!((request.path, request.key), ("/api/mode", "mode"));
+            let mode = HomeMode::from_key(request.value).expect("clé de mode connue");
+            let xml = shortcut_plist(which, "https://m.ts.net", TOKEN);
             assert!(xml.contains(&format!("<string>{}</string>", mode.key())));
             assert!(xml.contains(&format!("Maison en mode {}.", mode.label())));
             assert_eq!(which.file_name(), format!("{}.shortcut", which.name()));
         }
-        // Nuit et Vacances reprennent l'icône d'Absent.
-        assert_eq!(ModeShortcut::Nuit.icon(), ModeShortcut::Absent.icon());
-        assert_eq!(ModeShortcut::Vacances.icon(), ModeShortcut::Absent.icon());
+        // Nuit et Vacances reprennent l'icône d'Absent, que « Je pars » reprend aussi.
+        assert_eq!(HomeShortcut::Nuit.icon(), HomeShortcut::Leaving.icon());
+        assert_eq!(HomeShortcut::Vacances.icon(), HomeShortcut::Leaving.icon());
+        assert_ne!(HomeShortcut::Arriving.icon(), HomeShortcut::Leaving.icon());
     }
 
     #[test]
     fn four_shortcuts_are_prepared_and_signed_within_the_total_budget() {
         // Sans signature (essais) : quatre fichiers, dans l'ordre, chacun avec son mode.
         let files = Signer::Unsigned
-            .sign_mode_shortcuts("https://m.ts.net", TOKEN)
+            .sign_shortcuts("https://m.ts.net", TOKEN)
             .unwrap();
         let names: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             names,
             [
-                "Mode absent.shortcut",
-                "Mode present.shortcut",
+                "Je pars.shortcut",
+                "Je rentre.shortcut",
                 "Mode nuit.shortcut",
                 "Mode vacances.shortcut"
             ]
@@ -826,9 +878,9 @@ mod tests {
             return;
         }
         let dir = PrivateDir::create().unwrap();
-        for which in ModeShortcut::ALL {
+        for which in HomeShortcut::ALL {
             let file = dir.0.join(which.file_name());
-            let xml = mode_shortcut_plist(which, "https://m.ts.net", TOKEN);
+            let xml = shortcut_plist(which, "https://m.ts.net", TOKEN);
             write_private(&file, xml.as_bytes()).unwrap();
             let out = Command::new(plutil)
                 .arg("-lint")
@@ -845,20 +897,19 @@ mod tests {
 
     #[test]
     fn names_are_ascii_and_match_the_web_page_and_the_widget() {
-        for which in ModeShortcut::ALL {
+        for which in HomeShortcut::ALL {
             assert!(which.name().is_ascii());
         }
         let page = include_str!("../web/widgets.js");
-        for which in ModeShortcut::ALL {
+        for which in HomeShortcut::ALL {
             assert!(page.contains(&format!("\"{}\"", which.name())), "{which:?}");
         }
         assert_eq!(
-            ModeShortcut::ALL.map(ModeShortcut::name),
-            ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"]
+            HomeShortcut::ALL.map(HomeShortcut::name),
+            ["Je pars", "Je rentre", "Mode nuit", "Mode vacances"]
         );
-        assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_ABSENT = \"{ABSENT_NAME}\";")));
-        assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_PRESENT = \"{PRESENT_NAME}\";")));
-        assert!(!WIDGET_TEMPLATE.contains("Mode présent"));
+        assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_PART = \"{LEAVING_NAME}\";")));
+        assert!(WIDGET_TEMPLATE.contains(&format!("const RACCOURCI_RENTRE = \"{ARRIVING_NAME}\";")));
     }
 
     #[test]
@@ -882,27 +933,32 @@ mod tests {
     #[test]
     fn links_are_unguessable_replaced_checked_by_name_and_expire() {
         let downloads = Downloads::default();
-        let first = downloads.replace(vec![("Mode absent.shortcut".into(), b"a".to_vec())]);
+        let first = downloads.replace("lea", vec![("Je pars.shortcut".into(), b"a".to_vec())]);
         assert_eq!(first[0].len(), 32);
         // Réutilisable pendant sa durée de vie, mais seulement sous son nom.
-        assert_eq!(
-            downloads.get(&first[0], "Mode absent.shortcut").unwrap(),
-            b"a"
+        assert_eq!(downloads.get(&first[0], "Je pars.shortcut").unwrap(), b"a");
+        assert!(downloads.get(&first[0], "Je pars.shortcut").is_some());
+        assert!(downloads.get(&first[0], "Je rentre.shortcut").is_none());
+        let second = downloads.replace(
+            "lea",
+            vec![
+                ("Je pars.shortcut".into(), b"b".to_vec()),
+                ("Je rentre.shortcut".into(), b"c".to_vec()),
+            ],
         );
-        assert!(downloads.get(&first[0], "Mode absent.shortcut").is_some());
-        assert!(downloads.get(&first[0], "Mode present.shortcut").is_none());
-        let second = downloads.replace(vec![
-            ("Mode absent.shortcut".into(), b"b".to_vec()),
-            ("Mode present.shortcut".into(), b"c".to_vec()),
-        ]);
-        assert!(downloads.get(&first[0], "Mode absent.shortcut").is_none());
+        assert!(downloads.get(&first[0], "Je pars.shortcut").is_none());
         assert_eq!(
-            downloads.get(&second[1], "Mode present.shortcut").unwrap(),
+            downloads.get(&second[1], "Je rentre.shortcut").unwrap(),
             b"c"
         );
-        downloads.lock().get_mut(&second[1]).unwrap().expires = Instant::now();
-        assert!(downloads.get(&second[1], "Mode present.shortcut").is_none());
-        downloads.clear();
+        // Préparer les siens ne touche pas à ceux des autres.
+        let adam = downloads.replace("adam", vec![("Je pars.shortcut".into(), b"d".to_vec())]);
+        assert!(downloads.get(&second[1], "Je rentre.shortcut").is_some());
+        downloads.clear("lea");
+        assert!(downloads.get(&second[1], "Je rentre.shortcut").is_none());
+        assert!(downloads.get(&adam[0], "Je pars.shortcut").is_some());
+        downloads.lock().get_mut(&adam[0]).unwrap().expires = Instant::now();
+        assert!(downloads.get(&adam[0], "Je pars.shortcut").is_none());
         assert!(downloads.lock().is_empty());
     }
 
@@ -1010,8 +1066,8 @@ mod tests {
     fn real_apple_signature() {
         let mut fake = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut fake);
-        let xml = mode_shortcut_plist(
-            ModeShortcut::Present,
+        let xml = shortcut_plist(
+            HomeShortcut::Arriving,
             "https://exemple.invalid",
             &hex::encode(fake),
         );

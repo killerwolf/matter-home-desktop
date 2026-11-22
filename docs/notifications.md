@@ -107,6 +107,17 @@ Dans `serveur/` (dossier 0700, fichiers 0600), **jamais exportés** dans une sau
 - Le client de bureau (macOS) ne reçoit pas ces notifications : il affiche celles des règles quand il
   est ouvert, comme avant.
 
+## Par personne
+
+Chaque appareil abonné appartient à la personne qui l'a abonné : elle ne voit, ne règle, n'essaie et ne
+révoque que les siens (`404` pour celui d'un autre), et il reçoit selon **ses** catégories. Les messages
+de la maison (règles, détections, piles, injoignables) partent vers les appareils de **toutes** les
+personnes actives ; ceux d'une personne désactivée ne reçoivent plus rien. Un téléphone qui s'abonne
+depuis un autre compte passe à la nouvelle personne (avec les choix par défaut). Au démarrage, les
+abonnements d'avant les comptes nominatifs sont rattachés au premier utilisateur (le champ `user_id`
+s'ajoute dans `push.json`, rien d'autre ne change). La fenêtre du serveur voit tous les appareils. Le
+réglage général « activé » reste commun à la maison.
+
 ## Routes
 
 Sous le jeton de session (voir [Protocole](protocole.md#notifications-web-push)) : `GET` et `PUT

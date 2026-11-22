@@ -207,6 +207,14 @@ pub fn start(
         signer: config.shortcut_signer,
         listen: addr,
     };
+    // Les appareils d'une personne désactivée ne reçoivent plus de notifications.
+    {
+        let auth = state.auth.clone();
+        state
+            .hub
+            .push()
+            .set_owner_filter(Arc::new(move |user| auth.accounts.is_active(user)));
+    }
     // Les dossiers de signature d'un arrêt brutal portent un jeton en clair.
     crate::shortcuts::remove_leftovers();
     let router = routes::router(state);

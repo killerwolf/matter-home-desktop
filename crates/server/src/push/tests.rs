@@ -386,6 +386,144 @@ fn subscriptions_are_stored_0600_listed_updated_and_revoked() {
     assert!(Push::new(&dir, false).status().subscriptions.is_empty());
 }
 
+const GOOGLE: &str = "https://fcm.googleapis.com/fcm/send/abc123";
+
+#[test]
+fn each_person_sees_and_changes_only_their_own_devices() {
+    let (push, _fake, _dir) = rig("owners");
+    let lea = push.subscribe_for("lea", request(APPLE), "").unwrap();
+    let adam = push.subscribe_for("adam", request(GOOGLE), "").unwrap();
+    assert_eq!(push.status_for("lea").subscriptions.len(), 1);
+    assert_eq!(push.status_for("lea").subscriptions[0].id, lea.id);
+    assert_eq!(push.status_for("adam").subscriptions[0].id, adam.id);
+    assert!(push.status_for("sam").subscriptions.is_empty());
+    // La fenêtre du serveur voit tout.
+    assert_eq!(push.status().subscriptions.len(), 2);
+    // Ni régler, ni essayer, ni révoquer l'appareil d'un autre : « inconnu ».
+    let change = PushUpdateRequest {
+        categories: Some(PushCategories {
+            rules: false,
+            ..PushCategories::default()
+        }),
+        label: None,
+    };
+    assert_eq!(
+        push.update_for("adam", &lea.id, change.clone()),
+        Err(PushError::NotFound)
+    );
+    assert_eq!(
+        push.send_test_for("adam", &lea.id),
+        Err(PushError::NotFound)
+    );
+    assert_eq!(push.remove_for("adam", &lea.id), Err(PushError::NotFound));
+    assert!(push.update_for("lea", &lea.id, change).is_ok());
+    assert_eq!(push.remove_for("adam", &adam.id), Ok(()));
+    assert_eq!(push.status().subscriptions.len(), 1);
+}
+
+#[test]
+fn a_phone_that_changes_account_belongs_to_the_new_person_with_default_choices() {
+    let (push, _fake, _dir) = rig("owner-change");
+    let first = push
+        .subscribe_for(
+            "lea",
+            PushSubscribeRequest {
+                categories: Some(PushCategories {
+                    detections: false,
+                    ..PushCategories::default()
+                }),
+                ..request(APPLE)
+            },
+            "",
+        )
+        .unwrap();
+    assert!(!first.categories.detections);
+    let again = push.subscribe_for("adam", request(APPLE), "").unwrap();
+    assert_eq!(again.id, first.id, "même appareil");
+    assert!(
+        again.categories.detections,
+        "les choix de Léa ne le suivent pas"
+    );
+    assert!(push.status_for("lea").subscriptions.is_empty());
+    assert_eq!(push.status_for("adam").subscriptions.len(), 1);
+}
+
+#[test]
+fn messages_go_to_every_active_person_with_their_own_categories() {
+    let (push, fake, _dir) = rig("owner-send");
+    let lea = push.subscribe_for("lea", request(APPLE), "").unwrap();
+    push.subscribe_for("adam", request(GOOGLE), "").unwrap();
+    push.update_for(
+        "lea",
+        &lea.id,
+        PushUpdateRequest {
+            categories: Some(PushCategories {
+                rules: false,
+                ..PushCategories::default()
+            }),
+            label: None,
+        },
+    )
+    .unwrap();
+    push.notify(Category::Rules, rule_message());
+    push.run_pending();
+    assert_eq!(fake.count(), 1, "Léa a décoché les règles, Adam non");
+    push.notify(Category::Battery, rule_message());
+    push.run_pending();
+    assert_eq!(fake.count(), 3);
+    // Une personne désactivée ne reçoit plus rien.
+    push.set_owner_filter(Arc::new(|user| user != "adam"));
+    push.notify(Category::Battery, rule_message());
+    push.run_pending();
+    assert_eq!(fake.count(), 4);
+}
+
+#[test]
+fn old_subscriptions_go_to_the_first_user_once_and_nothing_else_changes() {
+    let (push, _fake, dir) = rig("adopt");
+    let v = push.subscribe(request(APPLE), "").unwrap();
+    let server = dir.join(crate::persistence::SERVER_DIR);
+    // Sans compte : rien à rattacher, l'abonnement reste libre.
+    assert!(Push::new(&dir, false)
+        .status_for("premier")
+        .subscriptions
+        .is_empty());
+    // Un compte de la 2.0.0 : l'abonnement lui revient au démarrage, tel quel.
+    std::fs::write(
+        server.join("compte.json"),
+        r#"{"version":1,"id":"premier","username":"hamdi","password_hash":"x","created":1.0}"#,
+    )
+    .unwrap();
+    let before: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(server.join(store::FILE)).unwrap()).unwrap();
+    assert!(before["subscriptions"][0].get("user_id").is_none());
+    let reloaded = Push::new(&dir, false);
+    let mine = reloaded.status_for("premier");
+    assert_eq!(mine.subscriptions.len(), 1);
+    assert_eq!(mine.subscriptions[0].id, v.id);
+    assert_eq!(mine.subscriptions[0].categories, v.categories);
+    let after: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(server.join(store::FILE)).unwrap()).unwrap();
+    assert_eq!(after["subscriptions"][0]["user_id"], "premier");
+    assert_eq!(
+        after["subscriptions"][0]["endpoint"],
+        before["subscriptions"][0]["endpoint"]
+    );
+    assert_eq!(
+        after["subscriptions"][0]["auth"],
+        before["subscriptions"][0]["auth"]
+    );
+    // Idempotent : une deuxième fois, rien n'est réécrit.
+    assert_eq!(reloaded.adopt_unowned("autre"), Ok(0));
+    assert_eq!(
+        Push::new(&dir, false)
+            .status_for("premier")
+            .subscriptions
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn bad_subscriptions_are_refused() {
     let (push, _fake, _dir) = rig("bad");

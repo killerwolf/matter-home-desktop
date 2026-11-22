@@ -36,7 +36,7 @@ use crate::history_store::{HistorySink, HistoryStore};
 use crate::home_mode;
 use crate::persistence;
 use crate::scrub::Scrubber;
-use crate::security::token_store::{self, Change, TokenStore};
+use crate::security::user_tokens::{Change, InstallError, Kind, TokenInfo, UserTokens};
 use crate::validate;
 
 /// Pourquoi le serveur doit s'arrêter de lui-même.
@@ -139,11 +139,14 @@ pub struct Subscription {
 
 pub struct Hub {
     state: Mutex<HubState>,
-    /// Jeton qui ne sert qu'à changer le mode (`PUT /api/mode`) : voir `security/token_store.rs`.
-    mode_token: TokenStore,
-    /// Jeton qui ne sert qu'à lire l'état et les événements (widget Scriptable).
-    read_token: TokenStore,
-    /// Les raccourcis préparés pour l'iPhone (ils portent le jeton de mode), en mémoire.
+    /// Les jetons de chaque personne (mode : raccourcis ; lecture : widget) : voir
+    /// `security/user_tokens.rs`.
+    tokens: UserTokens,
+    /// Où chacun a dit être (raccourcis « Je pars » / « Je rentre ») : voir `presence.rs`. Rien n'en
+    /// est déduit pour l'instant.
+    presence: crate::presence::Presence,
+    /// Les raccourcis préparés pour l'iPhone (ils portent le jeton de mode de la personne), en
+    /// mémoire.
     shortcut_downloads: crate::shortcuts::Downloads,
     tx: broadcast::Sender<Arc<str>>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
@@ -176,15 +179,25 @@ pub struct Hub {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-/// Le droit de changer un jeton, sans attendre : une préparation en cours (signature des
+/// Le droit de changer les jetons, sans attendre : une préparation en cours (signature des
 /// raccourcis, quelques secondes) répond « occupé » au lieu de faire la queue.
-fn try_change(store: &TokenStore) -> ApiResult<Change<'_>> {
+fn try_change(store: &UserTokens) -> ApiResult<Change<'_>> {
     store.try_change().ok_or_else(|| {
         ApiError::with_detail(
             ErrorCode::Busy,
             "Une préparation (raccourcis ou widget) est déjà en cours : réessaie dans un instant.",
         )
     })
+}
+
+fn install_error(error: InstallError) -> ApiError {
+    match error {
+        InstallError::TooMany => ApiError::with_detail(
+            ErrorCode::BadRequest,
+            "Trop de raccourcis et de widgets sur ce compte : révoquez-en un d'abord.",
+        ),
+        InstallError::Storage => ApiError::new(ErrorCode::Internal),
+    }
 }
 
 /// La requête qui a demandé la préparation est partie (délai, client fermé) : personne ne
@@ -220,23 +233,23 @@ impl Hub {
                 home_mode::load(&config.data_dir),
             )
         };
-        // Les jetons de mode et de lecture vivent dans `serveur/` (jamais exporté). Un dossier
-        // inutilisable ne doit pas empêcher de démarrer : le jeton ne vivra alors qu'en mémoire.
+        // Les jetons et la présence vivent dans `serveur/` (jamais exporté). Un dossier inutilisable
+        // ne doit pas empêcher de démarrer : ils ne vivront alors qu'en mémoire.
         let server_dir = crate::security::server_dir(&config.data_dir);
-        let open_token = |file: &str, label: &'static str| {
-            server_dir
-                .as_ref()
-                .map_err(|e| anyhow::anyhow!("{e:#}"))
-                .and_then(|dir| TokenStore::open(dir, file, label))
-                .unwrap_or_else(|e| {
-                    log::error!(
-                        "dossier du {label} inutilisable, jeton en mémoire seulement : {e:#}"
-                    );
-                    TokenStore::in_memory(label)
-                })
+        let tokens = match &server_dir {
+            Ok(dir) => UserTokens::open(dir).unwrap_or_else(|e| {
+                log::error!("jetons inutilisables, en mémoire seulement : {e:#}");
+                UserTokens::in_memory()
+            }),
+            Err(e) => {
+                log::error!("dossier des jetons inutilisable, en mémoire seulement : {e:#}");
+                UserTokens::in_memory()
+            }
         };
-        let mode_token = open_token(token_store::MODE_FILE, "jeton de mode");
-        let read_token = open_token(token_store::READ_FILE, "jeton de lecture");
+        let presence = match &server_dir {
+            Ok(dir) => crate::presence::Presence::open(dir),
+            Err(_) => crate::presence::Presence::in_memory(),
+        };
         Self {
             state: Mutex::new(HubState {
                 seq: 0,
@@ -248,8 +261,8 @@ impl Hub {
                 pairing_busy: false,
                 mode,
             }),
-            mode_token,
-            read_token,
+            tokens,
+            presence,
             shortcut_downloads: Default::default(),
             tx,
             commands: Mutex::new(Some(config.commands)),
@@ -587,47 +600,76 @@ impl Hub {
         Ok(true)
     }
 
-    /// Un nouveau jeton de mode (l'ancien est révoqué), en clair : à montrer une seule fois. Les
-    /// liens des raccourcis préparés avant (qui portent l'ancien) disparaissent. Ne fait jamais la
-    /// queue : `busy` si une préparation est en cours (la fenêtre du serveur ne se fige pas).
-    pub fn generate_mode_token(&self) -> ApiResult<String> {
-        let change = try_change(&self.mode_token)?;
+    /// Un nouveau jeton pour cette personne (celui de même type et de même libellé est remplacé,
+    /// les autres restent), en clair : à montrer une seule fois. Ne fait jamais la queue : `busy` si
+    /// une préparation est en cours (la fenêtre du serveur ne se fige pas).
+    fn issue_token(&self, user_id: &str, kind: Kind, label: &str) -> ApiResult<String> {
+        let change = try_change(&self.tokens)?;
         let token = Change::draw();
         change
-            .install(&token)
-            .map_err(|e| internal("jeton de mode", &e))?;
-        self.shortcut_downloads.clear();
+            .install(user_id, kind, label, &token)
+            .map_err(install_error)?;
+        if kind == Kind::Mode {
+            self.shortcut_downloads.clear(user_id);
+        }
         Ok(token)
     }
 
-    /// Supprime le jeton de mode (plus aucun accès par jeton) et les liens des raccourcis.
-    pub fn revoke_mode_token(&self) -> ApiResult<()> {
-        let change = try_change(&self.mode_token)?;
-        change.revoke().map_err(|e| internal("jeton de mode", &e))?;
-        self.shortcut_downloads.clear();
-        Ok(())
+    /// Un nouveau jeton de mode pour cette personne (voir [`Hub::issue_token`]). Les liens des
+    /// raccourcis qu'elle avait préparés avant disparaissent.
+    pub fn generate_mode_token(&self, user_id: &str, label: &str) -> ApiResult<String> {
+        self.issue_token(user_id, Kind::Mode, label)
+    }
+
+    /// Un nouveau jeton de lecture pour cette personne (voir [`Hub::issue_token`]).
+    pub fn generate_read_token(&self, user_id: &str, label: &str) -> ApiResult<String> {
+        self.issue_token(user_id, Kind::Read, label)
     }
 
     /// Un nouveau jeton de mode et les raccourcis qui le portent, en un seul changement :
     /// `build` fabrique les fichiers (signés) avec le jeton tiré ; puis, **seulement si**
-    /// `still_wanted()` (la requête n'a pas été abandonnée) et que tout a réussi, le jeton
-    /// remplace l'ancien et les fichiers remplacent les liens d'avant. Sinon rien ne change.
+    /// `still_wanted()` (la requête n'a pas été abandonnée) et que tout a réussi, le jeton est
+    /// enregistré (au nom de cette personne, pour ce libellé : celui du même téléphone est remplacé,
+    /// jamais ceux des autres) et les fichiers remplacent ses liens d'avant. Sinon rien ne change.
     /// Rend les identifiants des liens, dans l'ordre des fichiers.
     pub fn prepare_mode_shortcuts(
         &self,
+        user_id: &str,
+        label: &str,
         build: impl FnOnce(&str) -> Result<Vec<(String, Vec<u8>)>, ApiError>,
         still_wanted: impl Fn() -> bool,
     ) -> ApiResult<Vec<String>> {
-        let change = try_change(&self.mode_token)?;
+        let change = try_change(&self.tokens)?;
         let token = Change::draw();
         let files = build(&token)?;
         if !still_wanted() {
             return Err(abandoned());
         }
         change
-            .install(&token)
-            .map_err(|e| internal("jeton de mode", &e))?;
-        Ok(self.shortcut_downloads.replace(files))
+            .install(user_id, Kind::Mode, label, &token)
+            .map_err(install_error)?;
+        Ok(self.shortcut_downloads.replace(user_id, files))
+    }
+
+    /// Un nouveau jeton de lecture et ce qui le porte (le script du widget), comme
+    /// `prepare_mode_shortcuts` : rien ne change si `build` échoue ou si la requête est abandonnée.
+    pub fn prepare_widget<T>(
+        &self,
+        user_id: &str,
+        label: &str,
+        build: impl FnOnce(&str) -> Result<T, ApiError>,
+        still_wanted: impl Fn() -> bool,
+    ) -> ApiResult<T> {
+        let change = try_change(&self.tokens)?;
+        let token = Change::draw();
+        let built = build(&token)?;
+        if !still_wanted() {
+            return Err(abandoned());
+        }
+        change
+            .install(user_id, Kind::Read, label, &token)
+            .map_err(install_error)?;
+        Ok(built)
     }
 
     /// Un raccourci préparé (lien encore valable), par identifiant et nom de fichier.
@@ -635,67 +677,150 @@ impl Hub {
         self.shortcut_downloads.get(id, file_name)
     }
 
-    pub fn has_mode_token(&self) -> bool {
-        self.mode_token.exists()
+    /// Révoque un jeton de cette personne (`NotFound` : elle n'en a pas sous cet identifiant, y
+    /// compris un jeton d'une autre personne). Les liens de raccourcis préparés sont oubliés.
+    pub fn revoke_token(&self, user_id: &str, id: &str) -> ApiResult<()> {
+        let change = try_change(&self.tokens)?;
+        if !change.revoke(user_id, id).map_err(install_error)? {
+            return Err(ApiError::with_detail(ErrorCode::NotFound, "jeton inconnu"));
+        }
+        self.shortcut_downloads.clear(user_id);
+        Ok(())
     }
 
-    pub fn mode_token_created(&self) -> Option<f64> {
-        self.mode_token.created()
+    /// Révoque tous les jetons de mode (raccourcis) ou tous ceux de lecture (widgets) de cette
+    /// personne ; rend leur nombre.
+    pub fn revoke_tokens_of(&self, user_id: &str, kind: Kind) -> ApiResult<usize> {
+        let change = try_change(&self.tokens)?;
+        let n = change.revoke_kind(user_id, kind).map_err(install_error)?;
+        if kind == Kind::Mode {
+            self.shortcut_downloads.clear(user_id);
+        }
+        Ok(n)
     }
 
-    /// Un nouveau jeton de lecture (l'ancien est révoqué), en clair : à montrer une seule fois.
-    pub fn generate_read_token(&self) -> ApiResult<String> {
-        let change = try_change(&self.read_token)?;
+    /// Les jetons de cette personne (jamais ceux des autres), le plus récent d'abord.
+    pub fn tokens_of(&self, user_id: &str) -> Vec<TokenInfo> {
+        self.tokens.list(user_id)
+    }
+
+    /// Existe-t-il un jeton de lecture (de n'importe qui) ? Sans widget installé, un refus n'est
+    /// pas retardé.
+    pub fn any_read_token(&self) -> bool {
+        self.tokens.any(Kind::Read)
+    }
+
+    // -----------------------------------------------------------------------
+    // La fenêtre du serveur (Ostal Server) : le code secret et le widget du premier compte, celui
+    // de la personne qui a installé le Mac. Les autres comptes gèrent les leurs depuis l'app web.
+    // -----------------------------------------------------------------------
+
+    /// Le libellé du code secret créé depuis la fenêtre du serveur.
+    const WINDOW_LABEL: &'static str = "Code secret (fenêtre du serveur)";
+
+    fn first_user(&self) -> Option<String> {
+        crate::security::account::first_user_id(&self.data_dir.join(crate::persistence::SERVER_DIR))
+    }
+
+    /// Les jetons de mode du premier compte qui sont « le code secret » de la fenêtre : celui
+    /// qu'elle a créé, ou le jeton de mode repris de la 2.0.0 (qui pouvait venir d'elle).
+    fn window_mode_tokens(&self) -> Vec<TokenInfo> {
+        let Some(first) = self.first_user() else {
+            return Vec::new();
+        };
+        self.tokens
+            .list(&first)
+            .into_iter()
+            .filter(|t| {
+                t.kind == Kind::Mode
+                    && (t.label == Self::WINDOW_LABEL
+                        || t.label == crate::security::user_tokens::LEGACY_MODE_LABEL)
+            })
+            .collect()
+    }
+
+    /// La fenêtre du serveur a-t-elle un code secret ?
+    pub fn window_has_mode_token(&self) -> bool {
+        !self.window_mode_tokens().is_empty()
+    }
+
+    /// Un nouveau code secret pour le premier compte, en clair : à montrer une seule fois. Le
+    /// précédent (celui de la fenêtre, ou repris de la 2.0.0) est révoqué.
+    pub fn window_generate_mode_token(&self) -> ApiResult<String> {
+        let Some(first) = self.first_user() else {
+            return Err(ApiError::with_detail(
+                ErrorCode::Unavailable,
+                "Aucun compte : créez-en un d'abord.",
+            ));
+        };
+        let old = self.window_mode_tokens();
+        let change = try_change(&self.tokens)?;
         let token = Change::draw();
         change
-            .install(&token)
-            .map_err(|e| internal("jeton de lecture", &e))?;
+            .install(&first, Kind::Mode, Self::WINDOW_LABEL, &token)
+            .map_err(install_error)?;
+        for t in old.iter().filter(|t| t.label != Self::WINDOW_LABEL) {
+            change.revoke(&first, &t.id).map_err(install_error)?;
+        }
+        self.shortcut_downloads.clear(&first);
         Ok(token)
     }
 
-    /// Un nouveau jeton de lecture et ce qui le porte (le script du widget), comme
-    /// `prepare_mode_shortcuts` : rien ne change si `build` échoue ou si la requête est abandonnée.
-    pub fn prepare_widget<T>(
-        &self,
-        build: impl FnOnce(&str) -> Result<T, ApiError>,
-        still_wanted: impl Fn() -> bool,
-    ) -> ApiResult<T> {
-        let change = try_change(&self.read_token)?;
-        let token = Change::draw();
-        let built = build(&token)?;
-        if !still_wanted() {
-            return Err(abandoned());
+    /// Supprime le code secret de la fenêtre (plus aucun accès par ce code).
+    pub fn window_revoke_mode_token(&self) -> ApiResult<()> {
+        let old = self.window_mode_tokens();
+        let change = try_change(&self.tokens)?;
+        for t in old {
+            change.revoke(&t.user_id, &t.id).map_err(install_error)?;
+            self.shortcut_downloads.clear(&t.user_id);
         }
-        change
-            .install(&token)
-            .map_err(|e| internal("jeton de lecture", &e))?;
-        Ok(built)
+        Ok(())
     }
 
-    /// Supprime le jeton de lecture : le widget ne lit plus rien.
-    pub fn revoke_read_token(&self) -> ApiResult<()> {
-        let change = try_change(&self.read_token)?;
-        change
-            .revoke()
-            .map_err(|e| internal("jeton de lecture", &e))
+    /// Le premier compte a-t-il un widget (jeton de lecture) ?
+    pub fn window_has_read_token(&self) -> bool {
+        self.first_user().is_some_and(|first| {
+            self.tokens
+                .list(&first)
+                .iter()
+                .any(|t| t.kind == Kind::Read)
+        })
     }
 
-    pub fn has_read_token(&self) -> bool {
-        self.read_token.exists()
+    /// Révoque les widgets du premier compte (ceux des autres comptes ne bougent pas).
+    pub fn window_revoke_read_tokens(&self) -> ApiResult<()> {
+        if let Some(first) = self.first_user() {
+            self.revoke_tokens_of(&first, Kind::Read)?;
+        }
+        Ok(())
     }
 
-    pub fn read_token_created(&self) -> Option<f64> {
-        self.read_token.created()
+    /// À qui est ce jeton de lecture ? `None` : inconnu ou révoqué.
+    pub fn verify_read_token(&self, token: &str) -> Option<TokenInfo> {
+        self.tokens.verify(Kind::Read, token)
     }
 
-    /// Le jeton présenté est-il le jeton de lecture ?
-    pub fn verify_read_token(&self, token: &str) -> bool {
-        self.read_token.verify(token)
+    /// À qui est ce jeton de mode ? `None` : inconnu ou révoqué.
+    pub fn verify_mode_token(&self, token: &str) -> Option<TokenInfo> {
+        self.tokens.verify(Kind::Mode, token)
     }
 
-    /// Le jeton présenté est-il le jeton de mode ?
-    pub fn verify_mode_token(&self, token: &str) -> bool {
-        self.mode_token.verify(token)
+    /// Enregistre où cette personne dit être. `true` : cela change son état. Le mode de la maison
+    /// n'en change pas : le serveur garde seulement ce que chacun a déclaré.
+    pub fn declare_presence(
+        &self,
+        user_id: &str,
+        state: crate::presence::Whereabouts,
+        source: crate::presence::Source,
+    ) -> ApiResult<bool> {
+        self.presence
+            .declare(user_id, state, source)
+            .map_err(|e| internal("présence", &e))
+    }
+
+    /// Ce que chacun a déclaré en dernier.
+    pub fn declared_presence(&self) -> Vec<crate::presence::Declared> {
+        self.presence.all()
     }
 
     pub fn receiver_count(&self) -> usize {
@@ -1544,39 +1669,64 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_mode_token_is_generated_replaced_and_revoked() {
+    fn mode_tokens_are_personal_replaced_per_phone_and_revoked_one_by_one() {
         let dir = temp("mode-token");
         let (hub, _commands) = hub_with(&dir, 16);
-        assert!(!hub.has_mode_token());
-        assert!(!hub.verify_mode_token("rien"));
-        let first = hub.generate_mode_token().unwrap();
-        assert!(hub.has_mode_token() && hub.verify_mode_token(&first));
-        let second = hub.generate_mode_token().unwrap();
-        assert!(!hub.verify_mode_token(&first) && hub.verify_mode_token(&second));
-        // Le jeton survit au redémarrage (son empreinte est dans `serveur/`).
+        assert!(hub.verify_mode_token("rien").is_none());
+        let first = hub.generate_mode_token("lea", "iPhone").unwrap();
+        assert_eq!(hub.verify_mode_token(&first).unwrap().user_id, "lea");
+        // Le même téléphone qui réinstalle remplace son jeton ; un autre téléphone, une autre
+        // personne : rien ne bouge.
+        let ipad = hub.generate_mode_token("lea", "iPad").unwrap();
+        let adam = hub.generate_mode_token("adam", "iPhone").unwrap();
+        let second = hub.generate_mode_token("lea", "iPhone").unwrap();
+        assert!(hub.verify_mode_token(&first).is_none());
+        assert!(hub.verify_mode_token(&second).is_some());
+        assert!(hub.verify_mode_token(&ipad).is_some() && hub.verify_mode_token(&adam).is_some());
+        // Les jetons survivent au redémarrage (leur empreinte est dans `serveur/`).
         drop(hub);
         let (again, _commands) = hub_with(&dir, 16);
-        assert!(again.verify_mode_token(&second));
-        again.revoke_mode_token().unwrap();
-        assert!(!again.has_mode_token());
+        assert!(again.verify_mode_token(&second).is_some());
+        // Révoquer un jeton ne touche ni les autres de la personne ni ceux des autres ; on ne
+        // révoque pas celui de quelqu'un d'autre.
+        let id = again.verify_mode_token(&second).unwrap().id;
+        assert_eq!(
+            again.revoke_token("adam", &id).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        again.revoke_token("lea", &id).unwrap();
+        assert!(again.verify_mode_token(&second).is_none());
+        assert!(
+            again.verify_mode_token(&ipad).is_some() && again.verify_mode_token(&adam).is_some()
+        );
+        assert_eq!(again.revoke_tokens_of("lea", Kind::Mode).unwrap(), 1);
+        assert!(
+            again.verify_mode_token(&ipad).is_none() && again.verify_mode_token(&adam).is_some()
+        );
         // Le jeton de lecture vit à part : aucun ne vaut pour l'autre.
-        let read = again.generate_read_token().unwrap();
-        let mode = again.generate_mode_token().unwrap();
-        assert!(again.verify_read_token(&read) && !again.verify_mode_token(&read));
-        assert!(!again.verify_read_token(&mode));
+        let read = again.generate_read_token("lea", "iPhone").unwrap();
+        let mode = again.generate_mode_token("lea", "iPhone").unwrap();
+        assert!(
+            again.verify_read_token(&read).is_some() && again.verify_mode_token(&read).is_none()
+        );
+        assert!(again.verify_read_token(&mode).is_none());
         // Une préparation refusée (signature) ou abandonnée (requête partie) garde l'ancien jeton
         // et ne laisse aucun lien.
         let refused = again
             .prepare_mode_shortcuts(
+                "lea",
+                "iPhone",
                 |_| Err(ApiError::with_detail(ErrorCode::Unavailable, "signature")),
                 || true,
             )
             .unwrap_err();
         assert_eq!(refused.code, ErrorCode::Unavailable);
-        assert!(again.verify_mode_token(&mode));
+        assert!(again.verify_mode_token(&mode).is_some());
         let mut drawn = String::new();
         let gone = again
             .prepare_mode_shortcuts(
+                "lea",
+                "iPhone",
                 |token| {
                     drawn = token.to_string();
                     Ok(vec![("x".into(), token.as_bytes().to_vec())])
@@ -1585,22 +1735,37 @@ pub(crate) mod tests {
             )
             .unwrap_err();
         assert!(gone.detail.unwrap().contains("abandonnée"));
-        assert!(again.verify_mode_token(&mode) && !again.verify_mode_token(&drawn));
-        // Réussie : le jeton change, le lien porte le nouveau ; un nouveau jeton ou une
-        // révocation (fenêtre du serveur) fait disparaître le lien.
+        assert!(
+            again.verify_mode_token(&mode).is_some() && again.verify_mode_token(&drawn).is_none()
+        );
+        // Réussie : le jeton de ce téléphone change, le lien porte le nouveau ; un nouveau jeton
+        // ou une révocation fait disparaître les liens de cette personne, pas ceux des autres.
         let ids = again
-            .prepare_mode_shortcuts(|t| Ok(vec![("x".into(), t.as_bytes().to_vec())]), || true)
+            .prepare_mode_shortcuts(
+                "lea",
+                "iPhone",
+                |t| Ok(vec![("x".into(), t.as_bytes().to_vec())]),
+                || true,
+            )
             .unwrap();
-        let body = again.shortcut_download(&ids[0], "x").unwrap();
-        let carried = String::from_utf8(body).unwrap();
-        assert!(again.verify_mode_token(&carried) && !again.verify_mode_token(&mode));
-        again.generate_mode_token().unwrap();
-        assert!(again.shortcut_download(&ids[0], "x").is_none());
-        let ids = again
-            .prepare_mode_shortcuts(|t| Ok(vec![("x".into(), t.as_bytes().to_vec())]), || true)
+        let others = again
+            .prepare_mode_shortcuts(
+                "adam",
+                "iPhone",
+                |t| Ok(vec![("y".into(), t.as_bytes().to_vec())]),
+                || true,
+            )
             .unwrap();
-        again.revoke_mode_token().unwrap();
+        assert!(
+            again.shortcut_download(&ids[0], "x").is_some(),
+            "ceux de Léa restent"
+        );
+        let carried = String::from_utf8(again.shortcut_download(&ids[0], "x").unwrap()).unwrap();
+        assert_eq!(again.verify_mode_token(&carried).unwrap().user_id, "lea");
+        assert!(again.verify_mode_token(&mode).is_none());
+        again.generate_mode_token("lea", "iPad").unwrap();
         assert!(again.shortcut_download(&ids[0], "x").is_none());
+        assert!(again.shortcut_download(&others[0], "y").is_some());
         // Pendant une préparation, tout autre changement répond « occupé » tout de suite (la
         // fenêtre du serveur ne se fige pas), la vérification continue.
         let again = std::sync::Arc::new(again);
@@ -1610,6 +1775,8 @@ pub(crate) mod tests {
             let hub = again.clone();
             std::thread::spawn(move || {
                 hub.prepare_mode_shortcuts(
+                    "lea",
+                    "iPhone",
                     |_| {
                         entered_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
@@ -1620,30 +1787,120 @@ pub(crate) mod tests {
             })
         };
         entered_rx.recv().unwrap();
+        let some_id = again.tokens_of("adam")[0].id.clone();
         for busy in [
-            again.generate_mode_token().map(|_| ()),
-            again.revoke_mode_token(),
+            again.generate_mode_token("adam", "x").map(|_| ()),
+            again.revoke_token("adam", &some_id),
             again
-                .prepare_mode_shortcuts(|_| Ok(vec![]), || true)
+                .prepare_mode_shortcuts("adam", "x", |_| Ok(vec![]), || true)
                 .map(|_| ()),
         ] {
             assert_eq!(busy.unwrap_err().code, ErrorCode::Busy);
         }
-        // Le jeton de lecture est indépendant.
-        let read = again.generate_read_token().unwrap();
+        assert!(
+            again.verify_read_token(&read).is_some(),
+            "la vérification n'attend pas"
+        );
         release_tx.send(()).unwrap();
         assert!(worker.join().unwrap().is_ok());
         let again = std::sync::Arc::try_unwrap(again).ok().unwrap();
         let script = again
-            .prepare_widget(|t| Ok(format!("TOKEN={t}")), || true)
+            .prepare_widget("lea", "iPhone", |t| Ok(format!("TOKEN={t}")), || true)
             .unwrap();
-        assert!(!again.verify_read_token(&read));
-        assert!(again.verify_read_token(script.trim_start_matches("TOKEN=")));
-        assert!(again.prepare_widget(|_| Ok(()), || false).is_err());
-        assert!(again.verify_read_token(script.trim_start_matches("TOKEN=")));
+        // Le même téléphone : l'ancien jeton de lecture est remplacé.
+        assert!(again.verify_read_token(&read).is_none());
+        assert!(again
+            .verify_read_token(script.trim_start_matches("TOKEN="))
+            .is_some());
+        assert!(again
+            .prepare_widget("lea", "iPhone", |_| Ok(()), || false)
+            .is_err());
+        assert!(again
+            .verify_read_token(script.trim_start_matches("TOKEN="))
+            .is_some());
         let read = script.trim_start_matches("TOKEN=").to_string();
-        again.revoke_read_token().unwrap();
-        assert!(!again.has_read_token() && !again.verify_read_token(&read));
+        assert_eq!(again.revoke_tokens_of("lea", Kind::Read).unwrap(), 1);
+        assert!(!again.any_read_token() && again.verify_read_token(&read).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_window_manages_the_first_accounts_secret_code_and_widget_only() {
+        use sha2::Digest;
+        let dir = temp("window-token");
+        let server = dir.join(crate::persistence::SERVER_DIR);
+        std::fs::create_dir_all(&server).unwrap();
+        // Sans compte : pas de code à créer.
+        let (hub, _commands) = hub_with(&dir, 16);
+        assert_eq!(
+            hub.window_generate_mode_token().unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        drop(hub);
+        // Un compte de la 2.0.0 et son jeton de mode : c'est le code secret de la fenêtre.
+        std::fs::write(
+            server.join("compte.json"),
+            r#"{"version":1,"id":"premier","username":"hamdi","password_hash":"x","created":1.0}"#,
+        )
+        .unwrap();
+        let old = "dd44".repeat(16);
+        std::fs::write(
+            server.join("jeton-mode.json"),
+            format!(
+                r#"{{"hash":"{}","created":5.0}}"#,
+                hex::encode(sha2::Sha256::digest(old.as_bytes()))
+            ),
+        )
+        .unwrap();
+        let (hub, _commands) = hub_with(&dir, 16);
+        assert!(hub.window_has_mode_token());
+        assert!(!hub.window_has_read_token());
+        let other = hub.generate_mode_token("autre", "iPhone").unwrap();
+        // Un nouveau code remplace l'ancien (repris de la 2.0.0), sans toucher aux autres comptes.
+        let new = hub.window_generate_mode_token().unwrap();
+        assert!(hub.verify_mode_token(&old).is_none());
+        assert_eq!(hub.verify_mode_token(&new).unwrap().user_id, "premier");
+        assert!(hub.verify_mode_token(&other).is_some());
+        // Un raccourci du premier compte (autre libellé) n'est pas « le code secret ».
+        let phone = hub.generate_mode_token("premier", "iPhone").unwrap();
+        hub.window_revoke_mode_token().unwrap();
+        assert!(!hub.window_has_mode_token());
+        assert!(hub.verify_mode_token(&new).is_none());
+        assert!(hub.verify_mode_token(&phone).is_some() && hub.verify_mode_token(&other).is_some());
+        // Le widget : seuls ceux du premier compte.
+        hub.generate_read_token("premier", "iPhone").unwrap();
+        let theirs = hub.generate_read_token("autre", "iPhone").unwrap();
+        assert!(hub.window_has_read_token());
+        hub.window_revoke_read_tokens().unwrap();
+        assert!(!hub.window_has_read_token());
+        assert!(hub.verify_read_token(&theirs).is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn declared_presence_is_kept_per_person_without_touching_the_mode() {
+        use crate::presence::{Source, Whereabouts};
+        let dir = temp("presence");
+        let (hub, mut commands) = hub_with(&dir, 16);
+        assert!(hub.declared_presence().is_empty());
+        assert!(hub
+            .declare_presence("lea", Whereabouts::Away, Source::Shortcut)
+            .unwrap());
+        assert!(!hub
+            .declare_presence("lea", Whereabouts::Away, Source::Shortcut)
+            .unwrap());
+        assert!(hub
+            .declare_presence("adam", Whereabouts::Home, Source::Shortcut)
+            .unwrap());
+        // Même quand tout le monde est parti, le mode ne bouge pas (c'est l'étape suivante).
+        assert!(hub
+            .declare_presence("adam", Whereabouts::Away, Source::Shortcut)
+            .unwrap());
+        assert_eq!(hub.mode(), HomeMode::Present);
+        assert!(commands.try_recv().is_err());
+        drop(hub);
+        let (again, _commands) = hub_with(&dir, 16);
+        assert_eq!(again.declared_presence().len(), 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -6,7 +6,7 @@ pub mod account;
 pub mod limiter;
 pub mod sessions;
 pub mod tls;
-pub mod token_store;
+pub mod user_tokens;
 
 use std::path::{Path, PathBuf};
 

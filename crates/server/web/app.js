@@ -13,7 +13,7 @@ import { classesText, createThumbCache, deleteEvent, descriptionText, loadEvents
 import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeLabel, offText } from "./mode.js";
 import * as push from "./push.js";
 import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
-import { SHORTCUT_NAMES, copyLater, originInfo, prepareShortcuts, prepareWidget, sinceText } from "./widgets.js";
+import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -32,7 +32,7 @@ const state = {
   updatedAt: null, // l'heure du dernier état ou événement reçu (« À jour à 18:42 »)
   lostAt: null, // la liaison perdue après avoir été établie : le bandeau « La maison ne répond pas »
   notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
-  tokens: null, // GET /api/tokens : { mode: { exists, created }, read: { … } } (carte « Installer »)
+  tokens: null, // GET /api/tokens : mes jetons { mode: { exists, created }, read: { … }, items: [{ id, kind, label, created }], label } (carte « Installer »)
 };
 const expects = new Map(); // id -> { on, motion, at, acked, req, timer }
 let tab = "devices";
@@ -333,8 +333,8 @@ function installSteps() {
   if (!state.tokens) return null;
   const support = push.pushSupport(pushEnv());
   return [
-    { done: Boolean(state.tokens.mode?.exists), parts: ["Ajouter les raccourcis de mode : ", ["Absent", "Présent", "Nuit", "Vacances"], "."], open: openWidgets },
-    { done: Boolean(state.tokens.read?.exists), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
+    { done: Boolean(tokenHere(state.tokens, "mode")), parts: ["Ajouter vos raccourcis : ", ["Je pars", "Je rentre", "Nuit", "Vacances"], "."], open: openWidgets },
+    { done: Boolean(tokenHere(state.tokens, "read")), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
     // Un navigateur qui ne sait pas recevoir de notifications (ordinateur, Android sans push) n'a rien à y faire.
     { done: Boolean(pushUi.mine) || support.reason === "unsupported", parts: ["Activer les ", ["notifications"], " sur cet iPhone."], open: openNotifications },
   ];
@@ -1431,8 +1431,9 @@ function renderPush() {
 }
 
 // ---------------------------------------------------------------------------
-// Widgets et raccourcis : les deux raccourcis de mode et le widget Scriptable, préparés par le
-// serveur avec l'adresse et un jeton à part (rien à taper sur l'iPhone)
+// Widgets et raccourcis : les raccourcis de la personne (« Je pars », « Je rentre », Nuit, Vacances)
+// et son widget Scriptable, préparés par le serveur avec l'adresse et un jeton à elle (rien à taper
+// sur l'iPhone). Chacun ne voit, n'installe et ne révoque que les siens.
 // ---------------------------------------------------------------------------
 const widgetsUi = { tokens: null, links: null, busy: "", message: "", error: "" };
 
@@ -1476,9 +1477,9 @@ const clipboardDeps = () => ({
 });
 
 async function installShortcuts() {
-  if (widgetsUi.tokens?.mode?.exists && !await askConfirm({
-    title: "Remplacer le jeton de mode ?",
-    text: "Les raccourcis et les automatisations installés avec l'ancien cesseront de marcher.",
+  if (tokenHere(widgetsUi.tokens, "mode") && !await askConfirm({
+    title: "Réinstaller vos raccourcis ?",
+    text: "Vos raccourcis déjà installés sur ce téléphone cesseront de marcher : il faut ajouter les nouveaux. Ceux des autres personnes ne changent pas.",
     action: "Continuer",
     plain: true,
   })) return;
@@ -1520,16 +1521,19 @@ async function installWidget() {
   if (manual) renderWidgets(manual);
 }
 
-async function revokeToken(kind) {
-  const ok = await askConfirm(kind === "mode"
-    ? { title: "Révoquer le jeton de mode ?", text: "Les raccourcis et automatisations qui l'utilisent ne marcheront plus.", action: "Révoquer" }
-    : { title: "Révoquer le jeton de lecture ?", text: "Le widget affichera « Jeton révoqué » jusqu'à ce qu'il soit recopié.", action: "Révoquer" });
+/** Révoque un de mes jetons (`/api/tokens/{id}`) : les autres, les miens comme ceux des autres
+ *  personnes, ne bougent pas. */
+async function revokeToken(token) {
+  const shortcuts = token.kind === "mode";
+  const ok = await askConfirm(shortcuts
+    ? { title: "Révoquer ces raccourcis ?", text: "Les raccourcis et les automatisations de ce téléphone qui l'utilisent ne marcheront plus.", action: "Révoquer" }
+    : { title: "Révoquer ce widget ?", text: "Le widget affichera « Jeton révoqué » jusqu'à ce qu'il soit recopié.", action: "Révoquer" });
   if (!ok) return;
   try {
-    await api.request("DELETE", `/api/tokens/${kind}`);
-    if (kind === "mode") widgetsUi.links = null;
+    await api.request("DELETE", `/api/tokens/${encodeURIComponent(token.id)}`);
+    if (shortcuts) widgetsUi.links = null;
     widgetsUi.error = "";
-    widgetsUi.message = kind === "mode" ? "Jeton de mode révoqué." : "Jeton de lecture révoqué.";
+    widgetsUi.message = shortcuts ? "Raccourcis révoqués." : "Widget révoqué.";
   } catch (error) {
     widgetsUi.error = error?.message || "Révocation impossible.";
   }
@@ -1566,77 +1570,96 @@ function renderWidgets(manualText = "") {
     p.append(icon("okCircle"), make("span", "", text));
     parent.appendChild(p);
   };
-  // Comme la maquette : « Jeton actif depuis le 20/11/2026. » pour le mode, « Jeton de lecture actif. » pour le widget.
-  const tokenLine = (token, label, withDate) => (token?.exists ? `${label} actif${withDate ? ` ${sinceText(token.created)}` : ""}`.trim() + "." : null);
 
-  note("Mettez l'état de la maison sur l'écran d'accueil et changez de mode en un geste, sans rien taper : le serveur prépare tout avec son adresse et un jeton à part.", "ev-note");
   if (widgetsUi.error) note(widgetsUi.error, "error");
   if (widgetsUi.message) note(widgetsUi.message, "ev-note");
+  // Android : ni Raccourcis ni Scriptable ; la présence par le Wi-Fi les remplace.
+  if (isAndroid(navigator.userAgent)) {
+    note(ANDROID_NOTE, "ev-note");
+    return;
+  }
   const info = originInfo(location);
   const busy = widgetsUi.busy !== "";
 
-  // 1. Les raccourcis de mode : Absent, Présent, Nuit et Vacances.
+  // Les révocations : un seul jeton, un seul bouton ; plusieurs téléphones, une ligne chacun.
+  const revokes = (parent, kind, one) => {
+    const mine = myTokens(widgetsUi.tokens, kind);
+    if (mine.length === 1) {
+      parent.appendChild(act(one, "btn danger-btn", () => revokeToken(mine[0]), busy));
+    } else if (mine.length > 1) {
+      const list = make("ul", "w-tokens");
+      for (const token of mine) {
+        const here = token === tokenHere(widgetsUi.tokens, kind);
+        const li = make("li", "w-token");
+        li.appendChild(make("span", "", `${token.label}${here ? " (ce téléphone)" : ""} ${sinceText(token.created)}`.trim()));
+        const b = act("Révoquer", "btn danger-btn", () => revokeToken(token), busy);
+        b.setAttribute("aria-label", `Révoquer ${token.label}`);
+        li.appendChild(b);
+        list.appendChild(li);
+      }
+      parent.appendChild(list);
+    }
+  };
+
+  // 1. Vos raccourcis : « Je pars » et « Je rentre » disent où vous êtes ; Nuit et Vacances, à la main.
   const modes = make("section", "w-section");
   modes.setAttribute("aria-labelledby", "titre-raccourcis");
-  const h3 = make("h3", "", "Raccourcis des modes");
+  const h3 = make("h3", "", "Vos raccourcis");
   h3.id = "titre-raccourcis";
   modes.appendChild(h3);
-  const modeLine = tokenLine(widgetsUi.tokens?.mode, "Jeton", true);
-  if (modeLine) status(modes, modeLine); else modes.appendChild(make("p", "w-note", "Pas encore de jeton de mode."));
-  modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer les raccourcis", "primary", installShortcuts, busy || !info.usable));
-  // Hors adresse .ts.net : les boutons sont grisés et la raison est dite juste à côté.
-  if (!info.usable) modes.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
-  modes.appendChild(make("p", "w-note", "Installer crée un nouveau jeton de mode : les raccourcis et automatisations installés avec l'ancien cessent de marcher."));
-  // À part et en tête : supprimer les anciens raccourcis (sinon iOS crée « Mode absent 1 »).
-  const callout = make("div", "callout");
-  const calloutBadge = make("span", "step-n now", "1");
-  calloutBadge.setAttribute("aria-hidden", "true");
-  callout.append(calloutBadge, make("p", "", "Dans l'app Raccourcis, supprimez les anciens « Mode absent », « Mode present » et « Mode présent » (sinon iOS crée « Mode absent 1 »)."));
-  modes.appendChild(callout);
+  modes.appendChild(make("p", "w-note", "Installés sur cet iPhone, pour vous seul."));
+  modes.appendChild(make("p", "w-note", "« Je pars » et « Je rentre » disent seulement où vous êtes. La maison passe en Absent quand le dernier est parti, et repasse en Présent dès que quelqu'un rentre."));
+  const here = tokenHere(widgetsUi.tokens, "mode");
+  if (here) status(modes, `Installés ${sinceText(here.created)}`.trim() + ".");
+  modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer mes raccourcis", "primary", installShortcuts, busy || !info.usable));
+  // Hors adresse .ts.net : le bouton est grisé et la raison est dite juste à côté.
+  if (!info.usable) modes.appendChild(make("p", "w-note", info.warning));
+  modes.appendChild(make("p", "w-note", "Réinstaller ne touche que vos raccourcis, jamais ceux des autres."));
   const list = make("ol", "steps");
-  SHORTCUT_NAMES.forEach((name, i) => {
-    const link = widgetsUi.links?.shortcuts.find((x) => x.name === name);
-    const content = [make("p", "", i === 0 ? `Touchez « ${name} », puis « Ajouter le raccourci ».` : `Même chose pour « ${name} ».`)];
-    if (link) {
-      const a = make("a", "widgets-link", name);
-      a.href = link.url;
-      content.push(a);
-    }
-    list.appendChild(step(i + 2, link ? "now" : "", content));
-  });
-  list.appendChild(step(SHORTCUT_NAMES.length + 2, "", [make("p", "", "Revenez ici et vérifiez le mode.")]));
+  const link = (name) => {
+    const found = widgetsUi.links?.shortcuts.find((x) => x.name === name);
+    if (!found) return null;
+    const a = make("a", "widgets-link", name);
+    a.href = found.url;
+    return a;
+  };
+  const [leaving, arriving, ...manual] = SHORTCUT_NAMES;
+  list.appendChild(step(1, widgetsUi.links ? "now" : "", [make("p", "", `Touchez « ${leaving} », puis « Ajouter le raccourci ».`), link(leaving)].filter(Boolean)));
+  list.appendChild(step(2, widgetsUi.links ? "now" : "", [make("p", "", `Même chose pour « ${arriving} ».`), link(arriving)].filter(Boolean)));
+  list.appendChild(step(3, widgetsUi.links ? "now" : "", [
+    make("p", "", "Pour la maison entière, à la main :"),
+    ...manual.map(link).filter(Boolean),
+    make("p", "w-note", "Ces deux-là changent le mode de toute la maison."),
+  ]));
   modes.appendChild(list);
+  modes.appendChild(make("p", "w-note", "« Mode absent » et « Mode présent » marchent encore. Vous pouvez les retirer."));
   if (widgetsUi.links) {
     modes.appendChild(make("p", "w-note", `Liens valables ${Math.round(widgetsUi.links.expiresInS / 60)} minutes. Si rien ne se passe, ouvrez cette page dans Safari : le téléchargement peut échouer dans l'app installée sur l'écran d'accueil.`));
   }
-  if (widgetsUi.tokens?.mode?.exists) modes.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("mode"), busy));
+  revokes(modes, "mode", "Révoquer mes raccourcis");
   body.appendChild(modes);
   body.appendChild(document.createElement("hr"));
 
-  // 2. Le widget Scriptable.
+  // 2. Votre widget Scriptable.
   const widget = make("section", "w-section");
   widget.setAttribute("aria-labelledby", "titre-widget");
-  const h3w = make("h3", "", "Widget Scriptable");
+  const h3w = make("h3", "", "Votre widget");
   h3w.id = "titre-widget";
   widget.appendChild(h3w);
-  const readLine = tokenLine(widgetsUi.tokens?.read, "Jeton de lecture", false);
-  if (readLine) status(widget, readLine); else widget.appendChild(make("p", "w-note", "Pas encore de jeton de lecture."));
+  widget.appendChild(make("p", "w-note", "Relié à votre compte."));
   const store = make("a", "link-button", "Installer Scriptable (App Store, gratuit)");
   store.href = SCRIPTABLE_URL;
   store.target = "_blank";
   store.rel = "noopener noreferrer";
   widget.appendChild(store);
   widget.appendChild(act(widgetsUi.busy === "widget" ? "Préparation…" : "Installer le widget", "primary", installWidget, busy || !info.usable));
-  if (!info.usable) widget.appendChild(make("p", "w-note", "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci."));
+  if (!info.usable) widget.appendChild(make("p", "w-note", info.warning));
   const wlist = make("ol", "steps");
   ["Dans Scriptable, touchez « + ».", "Collez le script copié.", "Nommez le script « Ostal ».", "Ajoutez le widget Scriptable à l'écran d'accueil et choisissez le script Ostal."]
     .forEach((text, i) => wlist.appendChild(step(i + 1, i === 0 ? "now" : "", [make("p", "", text)])));
   widget.appendChild(wlist);
-  widget.appendChild(make("p", "w-status", "Le widget ne propose que Absent et Présent."));
-  if (widgetsUi.tokens?.read?.exists) {
-    widget.appendChild(make("p", "w-note", "Un nouveau jeton de lecture remplace l'ancien : un widget déjà installé (sur cet iPhone ou un autre) affichera « Jeton révoqué » tant qu'il n'est pas recopié."));
-    widget.appendChild(act("Révoquer", "btn danger-btn", () => revokeToken("read"), busy));
-  }
+  widget.appendChild(make("p", "w-note", "Le widget montre le mode de la maison. Absent et Présent changent tout seuls."));
+  revokes(widget, "read", "Révoquer le widget");
   body.appendChild(widget);
   if (manualText) {
     const area = make("textarea", "widgets-script");

@@ -68,7 +68,8 @@ les données restent sur le Mac qui le fait tourner, dans :
 | `maison.json` | plan de la maison |
 | `regles.json` | automatisations |
 | `mode.json` | mode global de la maison (`present`, `absent`, `nuit` ou `vacances`) ; inclus dans la sauvegarde `.ostal` |
-| `serveur/jeton-mode.json` | **empreinte** (SHA-256, jamais le jeton) du jeton de mode des Raccourcis de l'iPhone, droits 0600 ; propre à ce Mac, jamais exportée (comme le reste de `serveur/`) |
+| `serveur/jetons.json` | jetons de mode et de lecture **de chaque personne** (un par téléphone, avec son libellé) : **empreintes** SHA-256, jamais les jetons, droits 0600 ; propre à ce Mac, jamais exporté (comme le reste de `serveur/`). Écrit à côté de `jeton-mode.json` et `jeton-lecture.json` (2.0.0), qui restent en place, intacts, et ne sont plus lus ensuite |
+| `serveur/presence.json` | ce que chaque personne a déclaré (« à la maison » ou « partie », date du dernier changement), droits 0600 ; jamais exporté |
 | `cameras.json` | caméras RTSP : nom, adresses, identifiant, emplacement et comportement par mode, et **mot de passe en clair** (droits 0600) ; inclus dans la sauvegarde `.ostal` |
 | `history/<appareil>.jsonl` | historique des mesures, une ligne par mesure ou changement d'état |
 | `events/<id>.json`, `.jpg`, `.mp4` | événements de détection (ticket n° 18) : fiche, capture, clip ; 7 jours et 2 Go au plus ; **pas** dans la sauvegarde `.ostal` (voir [Détection](detection.md)) |

@@ -5,13 +5,14 @@
 // ─────────────────────────────────────────────────────────────
 //  Ostal — widget Scriptable (petit et moyen)
 //  Montre : le mode de la maison, une phrase d'état, les lumières
-//  allumées, et deux boutons (Absent, Présent). Rien à modifier :
+//  allumées, et deux boutons (Je pars, Je rentre). Rien à modifier :
 //  l'adresse du serveur et
 //  le jeton de lecture sont écrits ci-dessous par l'app web
 //  (« Widgets et raccourcis » › « Installer le widget »).
 //  Le jeton de lecture ne permet que de lire l'état : ni appareils,
 //  ni caméras, ni changement de mode. Pour en changer, recopie le
-//  widget depuis l'app web (l'ancien jeton cesse de marcher).
+//  widget depuis l'app web (le jeton de ce téléphone est remplacé, ceux
+//  des autres personnes et des autres téléphones ne bougent pas).
 // ─────────────────────────────────────────────────────────────
 
 const SERVEUR = "__SERVEUR__";
@@ -19,10 +20,11 @@ const TOKEN = "__JETON_DE_LECTURE__";
 
 // Noms exacts des raccourcis installés par l'app web (sans accent : iOS
 // enregistre les accents d'un nom de fichier d'une façon que le lien
-// shortcuts:// ne retrouve pas). Le widget n'a que deux boutons : Nuit et
-// Vacances sont des raccourcis à lancer depuis l'app Raccourcis ou l'app web.
-const RACCOURCI_ABSENT = "Mode absent";
-const RACCOURCI_PRESENT = "Mode present";
+// shortcuts:// ne retrouve pas). Le widget n'a que deux boutons, « Je pars » et
+// « Je rentre » : ils disent où vous êtes. Nuit et Vacances sont des raccourcis
+// à lancer depuis l'app Raccourcis ou l'app web.
+const RACCOURCI_PART = "Je pars";
+const RACCOURCI_RENTRE = "Je rentre";
 
 const NOM_SCRIPT = Script.name(); // « Ostal »
 const CACHE = "ostal-cache.json";
@@ -237,7 +239,7 @@ function corpsEtat(parent, s) {
   }
 }
 
-// Bouton de mode : celui du mode actuel est plein (Présent en Lueur, Absent en accent doux).
+// Bouton : celui qui correspond au mode actuel est plein (Je rentre en Lueur, Je pars en accent doux).
 function bouton(parent, label, mode, actuel, url) {
   const choisi = actuel === mode;
   const b = parent.addStack();
@@ -285,12 +287,12 @@ function construireWidget(family, s, note, perime) {
   w.addSpacer(8);
   corpsEtat(w, s);
   if (family === "medium" || family === "large") {
-    // Deux boutons seulement : Absent et Présent (Nuit et Vacances : raccourcis).
+    // Deux boutons seulement : « Je pars » et « Je rentre » (Nuit et Vacances : raccourcis).
     w.addSpacer(8);
     const row = w.addStack();
-    bouton(row, "Absent", "absent", s.mode, shortcutUrl(RACCOURCI_ABSENT));
+    bouton(row, "Je pars", "absent", s.mode, shortcutUrl(RACCOURCI_PART));
     row.addSpacer();
-    bouton(row, "Présent", "present", s.mode, shortcutUrl(RACCOURCI_PRESENT));
+    bouton(row, "Je rentre", "present", s.mode, shortcutUrl(RACCOURCI_RENTRE));
   }
   w.addSpacer();
   // 11 pt : jamais sous 10.

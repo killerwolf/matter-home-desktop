@@ -86,6 +86,11 @@ pub fn router(state: AppState) -> Router {
             "/api/mode",
             put(put_mode).layer(DefaultBodyLimit::max(LOGIN_LIMIT)),
         )
+        // Pareil : « Je pars » / « Je rentre » portent le jeton de mode de la personne.
+        .route(
+            "/api/presence",
+            put(put_presence).layer(DefaultBodyLimit::max(LOGIN_LIMIT)),
+        )
         .merge(protected)
         .fallback(|| async { ApiErr(ApiError::new(ErrorCode::NotFound)) })
         .layer(DefaultBodyLimit::max(JSON_LIMIT))
@@ -537,14 +542,19 @@ async fn require_session(
     // gestionnaires ne lisent pas la session : aucune extension n'est posée.
     if is_read_route(request.method(), request.uri().path()) {
         if let Some(token) = bearer(request.headers()) {
-            if state.hub.verify_read_token(token) {
+            // Le jeton d'une personne désactivée ne vaut plus rien.
+            if state
+                .hub
+                .verify_read_token(token)
+                .is_some_and(|t| state.auth.accounts.is_active(&t.user_id))
+            {
                 return next.run(request).await;
             }
             // Ni session ni jeton de lecture. Rien ne distingue une session expirée d'un essai :
             // la pause (250 ms, jamais de blocage par adresse : derrière `tailscale serve` tout
             // vient de 127.0.0.1) n'existe donc que s'il y a un jeton de lecture à protéger ;
             // sans widget installé, une session expirée est refusée comme avant, sans attendre.
-            if state.hub.has_read_token() {
+            if state.hub.any_read_token() {
                 let ip = request
                     .extensions()
                     .get::<ConnectInfo<SocketAddr>>()
@@ -565,28 +575,61 @@ fn is_read_route(method: &axum::http::Method, path: &str) -> bool {
     method == axum::http::Method::GET && (path == "/api/state" || path == wire::EVENTS_PATH)
 }
 
+/// Qui fait une requête acceptée par un jeton de session **ou** par un jeton de mode.
+struct Actor {
+    user_id: String,
+    /// `true` : le jeton de mode d'un raccourci ; `false` : une session.
+    by_mode_token: bool,
+}
+
+/// Reconnaît l'auteur d'une requête `PUT /api/mode` ou `PUT /api/presence`. Le jeton est lu dans
+/// `Authorization` seulement, jamais dans l'URL, et n'est jamais journalisé. Il est vérifié
+/// **d'abord** : un bon jeton n'est jamais refusé, même derrière `tailscale serve` où toutes les
+/// connexions viennent de 127.0.0.1 et où un compteur d'échecs par adresse serait partagé par tout
+/// le monde. Un échec n'est que compté au journal et retardé de 250 ms (le jeton fait 256 bits :
+/// l'essai en force est sans espoir). Le jeton d'une personne désactivée est refusé.
+async fn authenticate_mode_request(
+    state: &AppState,
+    ip: std::net::IpAddr,
+    what: &str,
+    headers: &HeaderMap,
+) -> ApiResult<Actor> {
+    let Some(token) = bearer(headers).map(str::to_owned) else {
+        return Err(ApiError::new(ErrorCode::Unauthorized).into());
+    };
+    if let Some(session) = state.auth.authenticate(&token) {
+        return Ok(Actor {
+            user_id: session.user_id,
+            by_mode_token: false,
+        });
+    }
+    if let Some(owner) = state
+        .hub
+        .verify_mode_token(&token)
+        .filter(|t| state.auth.accounts.is_active(&t.user_id))
+    {
+        return Ok(Actor {
+            user_id: owner.user_id,
+            by_mode_token: true,
+        });
+    }
+    log::warn!("{what} refusé pour {ip} : jeton invalide");
+    tokio::time::sleep(FAILURE_PAUSE).await;
+    Err(ApiError::new(ErrorCode::Unauthorized).into())
+}
+
 /// `PUT /api/mode` : change le mode de la maison. Accepte un jeton de session (clients) **ou** le
-/// jeton de mode (Raccourcis de l'iPhone), qui ne vaut que pour cette route. L'authentification
-/// passe avant la lecture du corps. Le jeton de mode est lu dans `Authorization` seulement, jamais
-/// dans l'URL ; il n'est jamais journalisé. Le jeton est vérifié **d'abord** : un bon jeton n'est
-/// jamais refusé, même derrière `tailscale serve` où toutes les connexions viennent de 127.0.0.1 et
-/// où un compteur d'échecs par adresse serait partagé par tout le monde. Un échec n'est que compté
-/// au journal et retardé de 250 ms (le jeton fait 256 bits : l'essai en force est sans espoir).
+/// jeton de mode d'une personne (Raccourcis de l'iPhone), qui ne vaut que pour cette route et
+/// `PUT /api/presence`. L'authentification passe avant la lecture du corps. Le mode reste commun à
+/// toute la maison ; le journal technique dit quelle personne l'a demandé.
 async fn put_mode(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
 ) -> ApiResult<Json<ModeResponse>> {
     let ip = peer.ip();
-    let Some(token) = bearer(request.headers()).map(str::to_owned) else {
-        return Err(ApiError::new(ErrorCode::Unauthorized).into());
-    };
-    let is_session = state.auth.authenticate(&token).is_some();
-    if !is_session && !state.hub.verify_mode_token(&token) {
-        log::warn!("changement de mode refusé pour {ip} : jeton invalide");
-        tokio::time::sleep(FAILURE_PAUSE).await;
-        return Err(ApiError::new(ErrorCode::Unauthorized).into());
-    }
+    let actor =
+        authenticate_mode_request(&state, ip, "changement de mode", request.headers()).await?;
     let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
     let ModeRequest { mode, source } = serde_json::from_slice(&bytes).map_err(|_| {
         ApiErr(ApiError::with_detail(
@@ -596,20 +639,93 @@ async fn put_mode(
     })?;
     // La source annoncée n'est retenue que si le jeton la permet (un raccourci ne peut pas se
     // dire « automatisation », une session pas « raccourci ») ; un ancien client n'en dit rien.
-    let source = ModeSource::claimed(source, !is_session);
+    let source = ModeSource::claimed(source, actor.by_mode_token);
     let hub = state.hub.clone();
     let label = source.label();
     let changed = blocking(move || hub.set_mode(mode, source)).await?;
+    let who = state
+        .auth
+        .accounts
+        .display_name(&actor.user_id)
+        .unwrap_or_else(|| "?".into());
     log::info!(
-        "mode demandé par {ip} ({}, {label}) : {}",
-        if is_session {
-            "session"
-        } else {
+        "mode demandé par {who} depuis {ip} ({}, {label}) : {}",
+        if actor.by_mode_token {
             "jeton de mode"
+        } else {
+            "session"
         },
         mode.label()
     );
     Ok(Json(ModeResponse { mode, changed }))
+}
+
+/// `PUT /api/presence` `{"state": "home" | "away"}` : la personne dit où elle est (raccourcis « Je
+/// rentre » et « Je pars »). Mêmes jetons que `PUT /api/mode`. Le serveur retient seulement ce
+/// que chacun a déclaré : le mode de la maison ne change pas pour autant.
+async fn put_presence(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> ApiResult<Json<PresenceResponse>> {
+    let ip = peer.ip();
+    let actor = authenticate_mode_request(&state, ip, "présence", request.headers()).await?;
+    let ApiBytes(bytes) = ApiBytes::from_request(request, &()).await?;
+    let PresenceRequest { state: wanted } = serde_json::from_slice(&bytes).map_err(|_| {
+        ApiErr(ApiError::with_detail(
+            ErrorCode::BadRequest,
+            "état attendu : home ou away",
+        ))
+    })?;
+    let source = if actor.by_mode_token {
+        crate::presence::Source::Shortcut
+    } else {
+        crate::presence::Source::Session
+    };
+    let hub = state.hub.clone();
+    let user_id = actor.user_id.clone();
+    let changed = blocking(move || hub.declare_presence(&user_id, wanted, source)).await?;
+    // PROVISOIRE, jusqu'à la présence automatique (étape suivante) : un raccourci « Je pars » ou « Je
+    // rentre » fait ce que faisaient les raccourcis Absent et Présent, pour que les téléphones n'aient
+    // rien à réinstaller. L'étape suivante remplace ce bloc par la règle « Absent quand le dernier est
+    // parti, Présent dès que quelqu'un rentre » ; une session, elle, ne fait que déclarer.
+    if actor.by_mode_token {
+        let mode = match wanted {
+            crate::presence::Whereabouts::Away => protocol::mode::HomeMode::Absent,
+            crate::presence::Whereabouts::Home => protocol::mode::HomeMode::Present,
+        };
+        let hub = state.hub.clone();
+        blocking(move || hub.set_mode(mode, ModeSource::Shortcut)).await?;
+    }
+    let who = state
+        .auth
+        .accounts
+        .display_name(&actor.user_id)
+        .unwrap_or_else(|| "?".into());
+    log::info!(
+        "présence déclarée par {who} depuis {ip} : {}",
+        match wanted {
+            crate::presence::Whereabouts::Home => "à la maison",
+            crate::presence::Whereabouts::Away => "partie",
+        }
+    );
+    Ok(Json(PresenceResponse {
+        state: wanted,
+        changed,
+    }))
+}
+
+/// Corps de `PUT /api/presence`.
+#[derive(serde::Deserialize)]
+struct PresenceRequest {
+    state: crate::presence::Whereabouts,
+}
+
+/// Réponse de `PUT /api/presence` (200). `changed` est faux si la personne l'avait déjà dit.
+#[derive(serde::Serialize)]
+struct PresenceResponse {
+    state: crate::presence::Whereabouts,
+    changed: bool,
 }
 
 async fn logout(

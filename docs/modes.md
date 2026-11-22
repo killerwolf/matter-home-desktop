@@ -71,55 +71,80 @@ Choisir l'emplacement **pré-remplit** le tableau, qui reste modifiable ligne pa
 
 ## Les jetons de l'iPhone
 
-Pour que l'iPhone change le mode ou affiche l'état **sans** connaître le mot de passe du compte, le
-serveur tient deux **jetons à part**, chacun pour une seule porte :
+Pour que l'iPhone change le mode, dise où l'on est ou affiche l'état **sans** connaître le mot de passe
+du compte, le serveur tient des **jetons à part**, chacun pour une seule porte, et **personnels** : un
+jeton appartient à une personne et à un téléphone (son libellé, « iPhone de Hamdi »).
 
-| Jeton | Fichier | Ouvre seulement | Sert à |
-|---|---|---|---|
-| **jeton de mode** | `serveur/jeton-mode.json` | `PUT /api/mode` | les quatre raccourcis « Mode absent », « Mode present », « Mode nuit », « Mode vacances », les automatisations Raccourcis |
-| **jeton de lecture** | `serveur/jeton-lecture.json` | `GET /api/state`, `GET /api/events` | le widget Scriptable |
+| Jeton | Ouvre seulement | Sert à |
+|---|---|---|
+| **jeton de mode** | `PUT /api/mode`, `PUT /api/presence` | les raccourcis « Je pars », « Je rentre », « Mode nuit », « Mode vacances », les automatisations Raccourcis |
+| **jeton de lecture** | `GET /api/state`, `GET /api/events` | le widget Scriptable |
 
-Toute autre route répond 401 : ni appareils, ni WebSocket (ni par l'en-tête, ni par le sous-protocole
-du navigateur), ni caméras, ni clips, ni export ou import, ni les routes des jetons ; le jeton de
-lecture ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essaient route par route.
+Ils vivent dans `serveur/jetons.json` (le serveur n'en garde que l'**empreinte** SHA-256, droits 0600,
+jamais exportée ni importée avec les sauvegardes ; un jeton n'est jamais écrit dans le journal). Toute
+autre route répond 401 : ni appareils, ni WebSocket (ni par l'en-tête, ni par le sous-protocole du
+navigateur), ni caméras, ni clips, ni export ou import, ni les routes des jetons ; le jeton de lecture
+ne change pas le mode et le jeton de mode ne lit rien. Des tests l'essaient route par route.
 
-- **Le plus simple** : l'app web, Appareils › **Widgets et raccourcis** › « Installer les
+- **Le plus simple** : l'app web, Appareils › **Widgets et raccourcis** › « Installer mes
   raccourcis » ou « Installer le widget » (voir [App web](web-app.md#widgets-et-raccourcis)). Le
-  serveur crée le jeton et l'écrit, avec l'adresse, dans les fichiers à installer : rien à taper.
-- Le jeton de mode se crée aussi dans la fenêtre du serveur (onglet Connexion, « Changer de mode
-  automatiquement ») : « Créer le code secret » ; il s'affiche **une seule fois** (bouton « Copier »),
-  pour les automatisations faites à la main (plus bas).
-- **Un nouveau jeton révoque l'ancien.** Réinstaller les raccourcis depuis l'app web crée un nouveau
-  jeton de mode : les raccourcis d'avant **et les automatisations où l'ancien jeton a été collé à la
-  main** cessent de marcher (à corriger avec le nouveau, ou à refaire). De même, réinstaller le widget
-  révoque le widget installé avant (sur cet iPhone ou un autre), qui affiche « Jeton révoqué ».
-- **Révoquer** : l'app web (bouton « Révoquer » de chaque jeton) ou la fenêtre du serveur
-  (« Supprimer le code » pour le jeton de mode, « Révoquer » pour le jeton de lecture). Pendant une
-  préparation lancée depuis l'iPhone (quelques secondes de signature), la fenêtre ne l'attend pas :
-  elle répond « préparation en cours, réessayez ».
-- Le serveur n'en garde que l'**empreinte** (SHA-256, droits 0600, jamais exportée ni importée avec
-  les sauvegardes). Un jeton n'est jamais écrit dans le journal.
+  serveur crée le jeton de la personne et l'écrit, avec l'adresse, dans les fichiers à installer :
+  rien à taper.
+- **Chacun a les siens.** Chaque personne ne voit, n'installe et ne révoque que ses jetons (jamais ceux
+  des autres). Réinstaller depuis le même téléphone remplace le jeton de ce téléphone, jamais ceux de
+  ses autres téléphones ni des autres personnes. 16 jetons au plus par personne.
+- **Révoquer** : l'app web (`DELETE /api/tokens/{id}`, un jeton à la fois) ; la fenêtre du serveur
+  gère le code secret et le widget du **premier compte** (« Supprimer le code » pour le code secret,
+  « Révoquer » pour le widget). Un compte **désactivé** perd ses raccourcis et son widget (ils
+  reviennent s'il est réactivé). Pendant une préparation (quelques secondes de signature), tout autre
+  changement répond « préparation en cours, réessayez ».
+- **Le code secret de la fenêtre du serveur** (onglet Connexion, « Changer de mode automatiquement ») se
+  crée aussi : « Créer le code secret » ; il s'affiche **une seule fois** (bouton « Copier »), pour les
+  automatisations faites à la main (plus bas). C'est un jeton de mode du premier compte.
+- **Migration depuis la 2.0.0** (un seul jeton de mode et un seul de lecture pour toute la maison) :
+  `jeton-mode.json` et `jeton-lecture.json` deviennent deux jetons du **premier utilisateur**, avec la
+  même empreinte : les raccourcis, automatisations et widgets déjà installés continuent de marcher. Les
+  anciens fichiers ne sont ni modifiés ni supprimés (ils ne sont plus lus une fois `jetons.json`
+  écrit : la migration est idempotente, et un jeton révoqué ne revient pas).
 - Il se place dans l'en-tête `Authorization: Bearer <jeton>` (jamais dans l'URL). Le jeton est
   vérifié **d'abord** : un bon jeton n'est jamais refusé. Un mauvais jeton reçoit 401 après 250 ms et
   une ligne au journal (pour le jeton de lecture : seulement s'il en existe un ; sans widget installé,
   une session expirée sur `GET /api/state` est refusée comme avant, sans attente), **sans blocage par adresse** : derrière `tailscale serve`, toutes les
   connexions viennent de 127.0.0.1 (voir [Accès à distance](acces-distant.md)), un compteur partagé
   aurait pu bloquer le bon Raccourci. Un jeton fait 256 bits : l'essai en force est sans espoir.
-- Si l'un des fichiers est illisible, le serveur le met de côté (`….json.illisible`) et repart sans
-  ce jeton : il suffit d'en générer un nouveau.
+- Si `jetons.json` est illisible, le serveur le met de côté (`jetons.json.illisible`) et repart sans
+  jeton : il suffit d'en générer de nouveaux.
+- Le mode reste **commun à toute la maison** ; le journal technique dit quelle personne l'a demandé
+  (« mode demandé par Sam … »).
+
+### Où est chaque personne : « Je pars » et « Je rentre »
+
+`PUT /api/presence` `{"state": "home" | "away"}` (jeton de mode ou session) : la personne dit où elle
+est. Réponse `200 {"state", "changed"}` (`changed` est faux si elle l'avait déjà dit). Le serveur garde
+la dernière déclaration de chacun dans `serveur/presence.json` (0600, jamais exportée) avec la date du
+dernier changement : c'est le terrain de la présence automatique (Absent quand le dernier est parti,
+Présent dès que quelqu'un rentre), prévue à l'étape suivante.
+
+**En attendant, rien ne change pour l'iPhone** : une requête portant un **jeton de mode** (les
+raccourcis « Je pars » et « Je rentre ») change aussi le mode, comme le faisaient « Mode absent » et
+« Mode present » : « Je pars » passe la maison en Absent, « Je rentre » en Présent (source « raccourci
+iPhone »), même s'il reste du monde à la maison. Une **session** (app) ne fait que déclarer. Ce bloc,
+marqué « PROVISOIRE » dans `net/routes.rs`, disparaît avec la présence automatique.
 
 ## Changer de mode automatiquement avec Raccourcis sur iPhone
 
-Les quatre raccourcis « Mode absent », « Mode present », « Mode nuit » et « Mode vacances »
-installés depuis l'app web font déjà le travail de l'étape 4 ci-dessous : une automatisation peut
-simplement **lancer l'un d'eux** (action « Exécuter le raccourci »). La recette à la main ne sert plus
-que pour un réglage que ces raccourcis ne couvrent pas.
+Les raccourcis installés depuis l'app web (« Je pars », « Je rentre », « Mode nuit », « Mode
+vacances ») font déjà le travail de l'étape 4 ci-dessous : une automatisation peut simplement
+**lancer l'un d'eux** (action « Exécuter le raccourci »). « Je pars » et « Je rentre » disent
+où l'on est (`PUT /api/presence`, qui change aussi le mode en attendant, voir plus haut) ; « Mode absent » et « Mode present », installés avant, marchent
+encore (`PUT /api/mode`). La recette à la main ne sert plus que pour un réglage que ces raccourcis ne
+couvrent pas.
 
-Les noms sont en ASCII, sans accent (« Mode present », pas « Mode présent ») : iOS enregistre un nom de
-fichier accentué en Unicode décomposé, que le lien `shortcuts://run-shortcut?name=…` ne retrouve pas.
-Nuit et Vacances reprennent la couleur et le pictogramme d'Absent (aucune valeur inventée : à
-choisir avec Hamdi). Le **widget** Scriptable n'a que deux boutons, Absent et Présent ; Nuit et
-Vacances se lancent depuis l'app Raccourcis ou l'app web.
+Les noms sont en ASCII, sans accent : iOS enregistre un nom de fichier accentué en Unicode décomposé,
+que le lien `shortcuts://run-shortcut?name=…` ne retrouve pas. « Je pars », Nuit et Vacances reprennent
+la couleur et le pictogramme d'Absent, « Je rentre » ceux de Présent (aucune valeur inventée : à
+choisir avec Hamdi). Le **widget** Scriptable n'a que deux boutons, « Je pars » et « Je rentre » ; Nuit
+et Vacances se lancent depuis l'app Raccourcis ou l'app web.
 
 **Signature des quatre raccourcis** : le serveur les signe l'un après l'autre
 (`/usr/bin/shortcuts sign`, qui passe par les serveurs d'Apple), au plus 25 s chacun et **55 s en tout**,

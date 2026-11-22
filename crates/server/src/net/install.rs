@@ -1,24 +1,28 @@
-//! Installation sur l'iPhone depuis l'app web (page « Widgets et raccourcis »), sans rien taper :
+//! Installation sur l'iPhone depuis l'app web (page « Widgets et raccourcis »), sans rien taper.
+//! Tout est **personnel** : chaque personne ne voit, ne crée et ne révoque que ses propres jetons.
 //!
 //! | route | effet |
 //! |---|---|
-//! | `GET /api/tokens` | l'état des jetons de mode et de lecture (existe, date de création) |
-//! | `POST /api/tokens/mode/shortcuts` `{"origin"}` | nouveau jeton de mode, quatre raccourcis signés à télécharger |
-//! | `POST /api/tokens/read/widget` `{"origin"}` | nouveau jeton de lecture, script du widget prérempli |
-//! | `DELETE /api/tokens/mode`, `DELETE /api/tokens/read` | révoque le jeton (`204`) |
+//! | `GET /api/tokens` | mes jetons (raccourcis et widgets : libellé, date) et l'état de chaque type |
+//! | `POST /api/tokens/mode/shortcuts` `{"origin", "label"?}` | mon jeton de mode pour ce téléphone, quatre raccourcis signés à télécharger |
+//! | `POST /api/tokens/read/widget` `{"origin", "label"?}` | mon jeton de lecture pour ce téléphone, script du widget prérempli |
+//! | `DELETE /api/tokens/{id}` | révoque un de mes jetons (`204`, `404` si ce n'est pas le mien) |
+//! | `DELETE /api/tokens/mode`, `DELETE /api/tokens/read` | révoque tous mes jetons de ce type (`204`) |
 //! | `GET /app/raccourcis/perso/{id}/{fichier}` | un raccourci préparé, **sans jeton** (lien à toucher) |
 //!
 //! Toutes les routes `/api/tokens…` exigent une session (jamais un jeton de mode ou de lecture).
-//! Une préparation à la fois par jeton : une autre pendant ce temps répond `409 busy` tout de suite,
-//! sans faire la queue.
+//! Le libellé (« iPhone de Hamdi ») est celui de la connexion qui demande, sauf si la page en
+//! envoie un : réinstaller sur le même téléphone remplace son jeton, jamais ceux des autres
+//! téléphones ni des autres personnes. Une préparation à la fois : une autre pendant ce temps
+//! répond `409 busy` tout de suite, sans faire la queue.
 //!
 //! Les raccourcis portent le jeton de mode : un lien de Safari ne peut pas poser d'en-tête
 //! `Authorization`, ils sont donc servis par une adresse **imprévisible** (128 bits), gardée en
-//! mémoire seulement (dans le `Hub`), valable 5 minutes, et remplacée par la préparation suivante.
-//! Elle n'est pas à usage unique : l'app installée sur l'écran d'accueil peut confier le
-//! téléchargement à Safari, qui redemande le fichier ; un lien mort à ce moment-là obligerait à
-//! tout recommencer (et à changer encore de jeton). Le jeton ne sert qu'à changer le mode, et
-//! l'adresse expire vite.
+//! mémoire seulement (dans le `Hub`), valable 5 minutes, et remplacée par la préparation suivante
+//! **de la même personne**. Elle n'est pas à usage unique : l'app installée sur l'écran d'accueil
+//! peut confier le téléchargement à Safari, qui redemande le fichier ; un lien mort à ce
+//! moment-là obligerait à tout recommencer (et à changer encore de jeton). Le jeton ne sert qu'à
+//! changer le mode et à dire où l'on est, et l'adresse expire vite.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,6 +31,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
+use axum::Extension;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +39,9 @@ use protocol::wire::{ApiError, ErrorCode};
 
 use super::routes::{ApiErr, ApiJson};
 use super::AppState;
-use crate::shortcuts::{self, ModeShortcut, LINK_TTL};
+use crate::security::sessions::SessionInfo;
+use crate::security::user_tokens::{clean_label, Kind, TokenInfo};
+use crate::shortcuts::{self, HomeShortcut, LINK_TTL};
 
 /// Préfixe des liens (le service worker n'intercepte rien sous `/app/raccourcis/`).
 pub const LINK_PREFIX: &str = "/app/raccourcis/perso/";
@@ -45,6 +52,7 @@ pub fn protected() -> Router<AppState> {
         .route("/api/tokens", get(status))
         .route("/api/tokens/mode", delete(revoke_mode))
         .route("/api/tokens/read", delete(revoke_read))
+        .route("/api/tokens/{id}", delete(revoke_one))
         .route("/api/tokens/mode/shortcuts", post(mode_shortcuts))
         .route("/api/tokens/read/widget", post(widget))
 }
@@ -57,41 +65,137 @@ pub fn public() -> Router<AppState> {
 #[derive(Serialize)]
 struct TokenState {
     exists: bool,
-    /// Secondes Unix.
+    /// Secondes Unix : le plus récent de mes jetons de ce type.
     created: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct TokenView {
+    id: String,
+    /// `mode` (raccourcis) ou `read` (widget).
+    kind: &'static str,
+    label: String,
+    /// Secondes Unix.
+    created: f64,
 }
 
 #[derive(Serialize)]
 struct TokensResponse {
     mode: TokenState,
     read: TokenState,
+    /// Tous mes jetons, le plus récent d'abord.
+    items: Vec<TokenView>,
+    /// Le libellé que prendra un nouveau jeton demandé depuis cette connexion.
+    label: String,
 }
 
-async fn status(State(state): State<AppState>) -> Json<TokensResponse> {
-    let hub = &state.hub;
+fn kind_word(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Mode => "mode",
+        Kind::Read => "read",
+    }
+}
+
+fn state_of(mine: &[TokenInfo], kind: Kind) -> TokenState {
+    let created = mine
+        .iter()
+        .filter(|t| t.kind == kind)
+        .map(|t| t.created)
+        .reduce(f64::max);
+    TokenState {
+        exists: created.is_some(),
+        created,
+    }
+}
+
+/// Le libellé d'un nouveau jeton : celui que la page envoie, sinon le nom de la connexion qui
+/// demande (« iPhone de Hamdi »).
+fn label_for(state: &AppState, session: &SessionInfo, asked: Option<&str>) -> String {
+    let own = state
+        .auth
+        .sessions
+        .connections()
+        .into_iter()
+        .find(|c| c.session_id == session.id)
+        .map(|c| c.name)
+        .unwrap_or_default();
+    clean_label(
+        asked.filter(|a| !a.trim().is_empty()).unwrap_or(&own),
+        "Mon téléphone",
+    )
+}
+
+async fn status(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<TokensResponse> {
+    let mine = state.hub.tokens_of(&session.user_id);
     Json(TokensResponse {
-        mode: TokenState {
-            exists: hub.has_mode_token(),
-            created: hub.mode_token_created(),
-        },
-        read: TokenState {
-            exists: hub.has_read_token(),
-            created: hub.read_token_created(),
-        },
+        mode: state_of(&mine, Kind::Mode),
+        read: state_of(&mine, Kind::Read),
+        items: mine
+            .iter()
+            .map(|t| TokenView {
+                id: t.id.clone(),
+                kind: kind_word(t.kind),
+                label: t.label.clone(),
+                created: t.created,
+            })
+            .collect(),
+        label: label_for(&state, &session, None),
     })
 }
 
-async fn revoke_mode(State(state): State<AppState>) -> Result<StatusCode, ApiErr> {
+async fn revoke_kind(
+    state: AppState,
+    session: SessionInfo,
+    kind: Kind,
+) -> Result<StatusCode, ApiErr> {
     let hub = state.hub.clone();
-    blocking(move || hub.revoke_mode_token()).await?;
-    log::info!("jeton de mode révoqué depuis l'app web");
+    let user_id = session.user_id.clone();
+    let n = blocking(move || hub.revoke_tokens_of(&user_id, kind)).await?;
+    log::info!(
+        "{n} jeton(s) de {} révoqué(s) depuis l'app web par {}",
+        kind.word(),
+        state
+            .auth
+            .accounts
+            .display_name(&session.user_id)
+            .unwrap_or_default()
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn revoke_read(State(state): State<AppState>) -> Result<StatusCode, ApiErr> {
+async fn revoke_mode(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Result<StatusCode, ApiErr> {
+    revoke_kind(state, session, Kind::Mode).await
+}
+
+async fn revoke_read(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Result<StatusCode, ApiErr> {
+    revoke_kind(state, session, Kind::Read).await
+}
+
+async fn revoke_one(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiErr> {
     let hub = state.hub.clone();
-    blocking(move || hub.revoke_read_token()).await?;
-    log::info!("jeton de lecture révoqué depuis l'app web");
+    let user_id = session.user_id.clone();
+    blocking(move || hub.revoke_token(&user_id, &id)).await?;
+    log::info!(
+        "un jeton révoqué depuis l'app web par {}",
+        state
+            .auth
+            .accounts
+            .display_name(&session.user_id)
+            .unwrap_or_default()
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -99,6 +203,9 @@ async fn revoke_read(State(state): State<AppState>) -> Result<StatusCode, ApiErr
 #[derive(Deserialize)]
 struct OriginRequest {
     origin: String,
+    /// Le nom du téléphone (facultatif : sinon celui de la connexion qui demande).
+    #[serde(default)]
+    label: Option<String>,
 }
 
 /// L'adresse publique à écrire dans les fichiers : celle de la page (`origin`), en .ts.net
@@ -174,28 +281,41 @@ struct ShortcutsResponse {
     expires_in_s: u64,
 }
 
-/// Nouveau jeton de mode et les quatre raccourcis qui le portent, signés. Le jeton ne remplace
-/// l'ancien qu'une fois les quatre signatures réussies, et si la requête attend toujours : un échec
-/// ou un abandon ne casse rien de ce qui marche.
+/// Mon jeton de mode pour ce téléphone et les quatre raccourcis qui le portent, signés. Le jeton ne
+/// remplace celui du même téléphone qu'une fois les quatre signatures réussies, et si la requête
+/// attend toujours : un échec ou un abandon ne casse rien de ce qui marche. Les raccourcis des
+/// autres personnes (et mes autres téléphones) ne sont jamais touchés.
 async fn mode_shortcuts(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<OriginRequest>,
 ) -> Result<Json<ShortcutsResponse>, ApiErr> {
     let address = this_mac(&headers, &request.origin)?;
     let (hub, signer) = (state.hub.clone(), state.signer);
+    let label = label_for(&state, &session, request.label.as_deref());
+    let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
     let still_wanted = wanted.probe();
     let ids = blocking(move || {
         hub.prepare_mode_shortcuts(
-            |token| signer.sign_mode_shortcuts(&address, token),
+            &user_id,
+            &label,
+            |token| signer.sign_shortcuts(&address, token),
             still_wanted,
         )
     })
     .await?;
     drop(wanted);
-    log::info!("nouveau jeton de mode et raccourcis préparés depuis l'app web");
-    let shortcuts = ModeShortcut::ALL
+    log::info!(
+        "nouveau jeton de mode et raccourcis préparés depuis l'app web pour {}",
+        state
+            .auth
+            .accounts
+            .display_name(&session.user_id)
+            .unwrap_or_default()
+    );
+    let shortcuts = HomeShortcut::ALL
         .iter()
         .zip(ids)
         .map(|(which, id)| ShortcutLink {
@@ -217,25 +337,38 @@ struct WidgetResponse {
     script: String,
 }
 
-/// Nouveau jeton de lecture et le script du widget qui le porte (à copier dans Scriptable).
+/// Mon jeton de lecture pour ce téléphone et le script du widget qui le porte (à copier dans
+/// Scriptable).
 async fn widget(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<OriginRequest>,
 ) -> Result<Json<WidgetResponse>, ApiErr> {
     let address = this_mac(&headers, &request.origin)?;
     let hub = state.hub.clone();
+    let label = label_for(&state, &session, request.label.as_deref());
+    let user_id = session.user_id.clone();
     let wanted = StillWanted::new();
     let still_wanted = wanted.probe();
     let script = blocking(move || {
         hub.prepare_widget(
+            &user_id,
+            &label,
             |token| Ok(shortcuts::widget_script(&address, token)),
             still_wanted,
         )
     })
     .await?;
     drop(wanted);
-    log::info!("nouveau jeton de lecture et script du widget préparés depuis l'app web");
+    log::info!(
+        "nouveau jeton de lecture et script du widget préparés depuis l'app web pour {}",
+        state
+            .auth
+            .accounts
+            .display_name(&session.user_id)
+            .unwrap_or_default()
+    );
     Ok(Json(WidgetResponse { script }))
 }
 
@@ -261,7 +394,7 @@ async fn download(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
-    // Le nom est l'un des noms de `ModeShortcut::ALL`, en ASCII (voir `shortcuts`).
+    // Le nom est l'un des noms de `HomeShortcut::ALL`, en ASCII (voir `shortcuts`).
     if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{file}\"")) {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }

@@ -19,6 +19,7 @@ pub mod logfile;
 pub mod matter;
 pub mod net;
 pub mod persistence;
+pub mod presence;
 pub mod push;
 pub mod scrub;
 pub mod security;

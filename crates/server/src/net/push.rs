@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 
 use protocol::wire::{
     self, ApiError, ErrorCode, PushSettingsRequest, PushStatus, PushSubscribeRequest,
@@ -16,6 +16,7 @@ use protocol::wire::{
 use super::routes::{ApiErr, ApiJson};
 use super::AppState;
 use crate::push::PushError;
+use crate::security::sessions::SessionInfo;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -62,21 +63,27 @@ async fn blocking<T: Send + 'static>(
     }
 }
 
-async fn status(State(state): State<AppState>) -> Json<PushStatus> {
-    Json(state.hub.push().status())
+/// Chaque personne ne voit, n'abonne, ne règle et ne révoque que ses propres appareils.
+async fn status(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<PushStatus> {
+    Json(state.hub.push().status_for(&session.user_id))
 }
 
 async fn settings(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     ApiJson(request): ApiJson<PushSettingsRequest>,
 ) -> Result<Json<PushStatus>, ApiErr> {
     let push = state.hub.push().clone();
     blocking(move || push.set_enabled(request.enabled)).await?;
-    Ok(Json(state.hub.push().status()))
+    Ok(Json(state.hub.push().status_for(&session.user_id)))
 }
 
 async fn subscribe(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<PushSubscribeRequest>,
 ) -> Result<Json<PushSubscriptionView>, ApiErr> {
@@ -87,24 +94,31 @@ async fn subscribe(
         .to_string();
     let push = state.hub.push().clone();
     Ok(Json(
-        blocking(move || push.subscribe(request, &user_agent)).await?,
+        blocking(move || push.subscribe_for(&session.user_id, request, &user_agent)).await?,
     ))
 }
 
 async fn update(
     State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
     Path(id): Path<String>,
     ApiJson(request): ApiJson<PushUpdateRequest>,
 ) -> Result<Json<PushSubscriptionView>, ApiErr> {
     let id = checked(&id)?.to_string();
     let push = state.hub.push().clone();
-    Ok(Json(blocking(move || push.update(&id, request)).await?))
+    Ok(Json(
+        blocking(move || push.update_for(&session.user_id, &id, request)).await?,
+    ))
 }
 
-async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response, ApiErr> {
+async fn remove(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiErr> {
     let id = checked(&id)?.to_string();
     let push = state.hub.push().clone();
-    blocking(move || push.remove(&id)).await?;
+    blocking(move || push.remove_for(&session.user_id, &id)).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(wire::Accepted { accepted: true }),
@@ -112,9 +126,17 @@ async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Result
         .into_response())
 }
 
-async fn test(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response, ApiErr> {
+async fn test(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiErr> {
     let id = checked(&id)?.to_string();
-    state.hub.push().send_test(&id).map_err(error)?;
+    state
+        .hub
+        .push()
+        .send_test_for(&session.user_id, &id)
+        .map_err(error)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(wire::Accepted { accepted: true }),

@@ -155,7 +155,13 @@ pub struct Push {
     outages: Mutex<BTreeMap<u64, Outage>>,
     /// Attente avant le nouvel essai quand la réponse ne dit pas `retry-after`.
     retry_default: Mutex<Duration>,
+    /// Le compte de cette personne est-il actif ? Les appareils d'une personne désactivée ne
+    /// reçoivent plus rien (sans filtre : tout le monde reçoit).
+    owner_active: Mutex<Option<OwnerFilter>>,
 }
+
+/// Voir `Push::set_owner_filter`.
+pub type OwnerFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl Push {
     /// Lit `serveur/push-vapid.json` et `serveur/push.json` (créés au besoin). En démonstration,
@@ -191,6 +197,26 @@ impl Push {
                 log::warn!("notifications : {e:#}");
             }
         }
+        // Les abonnements d'avant les comptes nominatifs reviennent au premier utilisateur.
+        if let Some(dir) = &server_dir {
+            if stored.subscriptions.iter().any(|s| s.user_id.is_none()) {
+                if let Some(first) = crate::security::account::first_user_id(dir) {
+                    for sub in stored
+                        .subscriptions
+                        .iter_mut()
+                        .filter(|s| s.user_id.is_none())
+                    {
+                        sub.user_id = Some(first.clone());
+                    }
+                    match files.save(&stored) {
+                        Ok(()) => log::info!(
+                            "notifications : abonnements existants rattachés au premier utilisateur"
+                        ),
+                        Err(e) => log::warn!("notifications : {e:#}"),
+                    }
+                }
+            }
+        }
         let transport: Arc<dyn Transport> = if demo || cfg!(test) {
             Arc::new(transport::NullTransport)
         } else {
@@ -209,7 +235,28 @@ impl Push {
             detections: Mutex::new(Detections::default()),
             outages: Mutex::new(BTreeMap::new()),
             retry_default: Mutex::new(Duration::from_secs(2)),
+            owner_active: Mutex::new(None),
         }
+    }
+
+    /// Rattache à `user_id` les abonnements d'avant les comptes nominatifs (sans propriétaire).
+    /// Idempotent : sans abonnement orphelin, rien n'est écrit. Les abonnements, leurs clés et
+    /// leurs catégories restent tels quels.
+    pub fn adopt_unowned(&self, user_id: &str) -> Result<usize, PushError> {
+        self.update_stored(|s| {
+            let mut n = 0;
+            for sub in s.subscriptions.iter_mut().filter(|x| x.user_id.is_none()) {
+                sub.user_id = Some(user_id.to_string());
+                n += 1;
+            }
+            n
+        })
+    }
+
+    /// Dit si le compte d'une personne est actif : les appareils des personnes désactivées ne
+    /// reçoivent plus de notifications.
+    pub fn set_owner_filter(&self, filter: OwnerFilter) {
+        *lock(&self.owner_active) = Some(filter);
     }
 
     /// Remplace l'envoi (tests d'intégration : un faux service local, jamais le réseau).
@@ -243,12 +290,27 @@ impl Push {
         self.vapid.public_key_b64()
     }
 
+    /// Tous les abonnements (fenêtre du serveur).
     pub fn status(&self) -> PushStatus {
+        self.status_of(None)
+    }
+
+    /// Les abonnements de cette personne seulement, jamais ceux des autres (app web).
+    pub fn status_for(&self, owner: &str) -> PushStatus {
+        self.status_of(Some(owner))
+    }
+
+    fn status_of(&self, owner: Option<&str>) -> PushStatus {
         let stored = lock(&self.stored);
         PushStatus {
             enabled: stored.enabled,
             public_key: self.public_key(),
-            subscriptions: stored.subscriptions.iter().map(view).collect(),
+            subscriptions: stored
+                .subscriptions
+                .iter()
+                .filter(|s| owner.is_none_or(|o| s.user_id.as_deref() == Some(o)))
+                .map(view)
+                .collect(),
         }
     }
 
@@ -280,9 +342,29 @@ impl Push {
         Ok(())
     }
 
-    /// Enregistre un abonnement (ou met à jour celui de la même adresse).
+    /// Enregistre un abonnement sans propriétaire (ou met à jour celui de la même adresse).
     pub fn subscribe(
         &self,
+        request: PushSubscribeRequest,
+        user_agent: &str,
+    ) -> Result<PushSubscriptionView, PushError> {
+        self.subscribe_inner(None, request, user_agent)
+    }
+
+    /// Enregistre l'abonnement d'un appareil au nom de cette personne (ou met à jour celui de la
+    /// même adresse, qui lui revient : le téléphone a changé de compte).
+    pub fn subscribe_for(
+        &self,
+        owner: &str,
+        request: PushSubscribeRequest,
+        user_agent: &str,
+    ) -> Result<PushSubscriptionView, PushError> {
+        self.subscribe_inner(Some(owner), request, user_agent)
+    }
+
+    fn subscribe_inner(
+        &self,
+        owner: Option<&str>,
         request: PushSubscribeRequest,
         user_agent: &str,
     ) -> Result<PushSubscriptionView, PushError> {
@@ -327,6 +409,14 @@ impl Push {
                 if let Some(c) = request.categories {
                     existing.categories = c;
                 }
+                // Le téléphone passe d'un compte à un autre : il reçoit désormais pour le nouveau,
+                // avec ses catégories à lui (celles de l'ancienne personne ne le suivent pas).
+                if let Some(owner) = owner {
+                    if existing.user_id.as_deref().is_some_and(|o| o != owner) {
+                        existing.categories = request.categories.unwrap_or_default();
+                    }
+                    existing.user_id = Some(owner.to_string());
+                }
                 return Ok(view(existing));
             }
             if s.subscriptions.len() >= PUSH_MAX_SUBSCRIPTIONS {
@@ -343,6 +433,7 @@ impl Push {
                 last_sent_at: None,
                 last_error: None,
                 categories: request.categories.unwrap_or_default(),
+                user_id: owner.map(str::to_string),
             };
             let v = view(&sub);
             s.subscriptions.push(sub);
@@ -356,11 +447,30 @@ impl Push {
         id: &str,
         request: PushUpdateRequest,
     ) -> Result<PushSubscriptionView, PushError> {
+        self.update_inner(None, id, request)
+    }
+
+    /// Comme [`Push::update`], pour un appareil de cette personne seulement (`NotFound` sinon).
+    pub fn update_for(
+        &self,
+        owner: &str,
+        id: &str,
+        request: PushUpdateRequest,
+    ) -> Result<PushSubscriptionView, PushError> {
+        self.update_inner(Some(owner), id, request)
+    }
+
+    fn update_inner(
+        &self,
+        owner: Option<&str>,
+        id: &str,
+        request: PushUpdateRequest,
+    ) -> Result<PushSubscriptionView, PushError> {
         self.update_stored(|s| {
             let sub = s
                 .subscriptions
                 .iter_mut()
-                .find(|x| x.id == id)
+                .find(|x| x.id == id && owns(owner, x))
                 .ok_or(PushError::NotFound)?;
             if let Some(c) = request.categories {
                 sub.categories = c;
@@ -374,9 +484,18 @@ impl Push {
 
     /// Révoque un abonnement (l'appareil ne reçoit plus rien).
     pub fn remove(&self, id: &str) -> Result<(), PushError> {
+        self.remove_inner(None, id)
+    }
+
+    /// Comme [`Push::remove`], pour un appareil de cette personne seulement (`NotFound` sinon).
+    pub fn remove_for(&self, owner: &str, id: &str) -> Result<(), PushError> {
+        self.remove_inner(Some(owner), id)
+    }
+
+    fn remove_inner(&self, owner: Option<&str>, id: &str) -> Result<(), PushError> {
         self.update_stored(|s| {
             let before = s.subscriptions.len();
-            s.subscriptions.retain(|x| x.id != id);
+            s.subscriptions.retain(|x| !(x.id == id && owns(owner, x)));
             if s.subscriptions.len() == before {
                 Err(PushError::NotFound)
             } else {
@@ -389,10 +508,23 @@ impl Push {
 
     /// Une notification d'essai vers un seul appareil.
     pub fn send_test(self: &Arc<Self>, id: &str) -> Result<(), PushError> {
+        self.send_test_inner(None, id)
+    }
+
+    /// Comme [`Push::send_test`], vers un appareil de cette personne seulement.
+    pub fn send_test_for(self: &Arc<Self>, owner: &str, id: &str) -> Result<(), PushError> {
+        self.send_test_inner(Some(owner), id)
+    }
+
+    fn send_test_inner(self: &Arc<Self>, owner: Option<&str>, id: &str) -> Result<(), PushError> {
         if !self.enabled() {
             return Err(PushError::Disabled);
         }
-        if !lock(&self.stored).subscriptions.iter().any(|x| x.id == id) {
+        if !lock(&self.stored)
+            .subscriptions
+            .iter()
+            .any(|x| x.id == id && owns(owner, x))
+        {
             return Err(PushError::NotFound);
         }
         self.enqueue(Job {
@@ -661,6 +793,7 @@ impl Push {
     }
 
     fn process(&self, job: &Job) {
+        let active = lock(&self.owner_active).clone();
         let targets: Vec<Subscription> = {
             let stored = lock(&self.stored);
             if !stored.enabled {
@@ -669,6 +802,12 @@ impl Push {
             stored
                 .subscriptions
                 .iter()
+                // Une personne désactivée ne reçoit plus rien ; un appareil sans propriétaire
+                // (aucun compte à l'époque) reçoit comme avant.
+                .filter(|s| match (&active, &s.user_id) {
+                    (Some(active), Some(owner)) => active(owner),
+                    _ => true,
+                })
                 .filter(|s| match (&job.target, job.category) {
                     (Some(id), _) => &s.id == id,
                     (None, Some(c)) => c.wanted_by(&s.categories),
@@ -794,6 +933,11 @@ fn remember(det: &mut Detections, id: &str) {
     while det.sent.len() > SENT_KEPT {
         det.sent.pop_front();
     }
+}
+
+/// `owner` : la personne qui demande (`None` : la fenêtre du serveur, qui voit tout).
+fn owns(owner: Option<&str>, sub: &Subscription) -> bool {
+    owner.is_none_or(|o| sub.user_id.as_deref() == Some(o))
 }
 
 fn view(s: &Subscription) -> PushSubscriptionView {

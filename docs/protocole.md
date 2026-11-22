@@ -187,14 +187,25 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   permet : avec le jeton de mode, `shortcut` (ou `widget` s'il le dit) ; avec une session, `web` ou
   `desktop`, sinon `other` (un ancien client n'envoie rien). Une valeur inconnue se lit `other` ; un
   ancien client ignore le champ.
-- **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode**, un secret
-  à part que le serveur crée à la demande (fenêtre du serveur), qui ne vaut que pour cette route :
+- **Deux jetons** : `PUT /api/mode` accepte un jeton de session, ou le **jeton de mode** d'une
+  personne, un secret à part que le serveur crée à la demande (app web, fenêtre du serveur), qui ne
+  vaut que pour cette route et `PUT /api/presence` :
   `GET /api/state`, le WebSocket, le plan, les règles, l'export… répondent 401 avec lui. Il se
   présente dans `Authorization: Bearer …` (jamais dans l'URL), le serveur n'en garde que l'empreinte
-  SHA-256 (`serveur/jeton-mode.json`, 0600), et il n'est jamais journalisé. Un jeton absent ou faux : 401
+  SHA-256 (`serveur/jetons.json`, 0600), et il n'est jamais journalisé. Un compte désactivé perd ses jetons. Un jeton absent ou faux : 401
   (`unauthorized`, après 250 ms). Le jeton est vérifié **d'abord** et un bon jeton n'est jamais refusé :
   pas de blocage par adresse (derrière `tailscale serve`, toutes les connexions viennent de 127.0.0.1 et
   un compteur partagé aurait bloqué le bon Raccourci), seulement une ligne au journal par échec.
+- **Où est la personne** (ajouté après la 2.0, sans changer la version du protocole) :
+  `PUT /api/presence` `{"state": "home" | "away"}`, avec une session ou le jeton de mode de la personne
+  (mêmes règles que `PUT /api/mode`), répond `200 {"state", "changed"}`. Le serveur retient la dernière
+  déclaration de chacun (`serveur/presence.json`). Provisoirement, avec un jeton de mode (raccourci),
+  « away » passe aussi la maison en Absent et « home » en Présent, comme les raccourcis d'avant ; une
+  session ne fait que déclarer.
+- **Jetons personnels** : `GET /api/tokens` rend **mes** jetons (`items` : `id`, `kind` `mode` ou
+  `read`, `label`, `created`), `DELETE /api/tokens/{id}` en révoque un (404 s'il n'est pas à moi),
+  `POST /api/tokens/mode/shortcuts` et `POST /api/tokens/read/widget` (`{"origin", "label"?}`) créent
+  celui de ce téléphone. Voir [App web](web-app.md#widgets-et-raccourcis).
 - **Caméras** : `CameraView` porte `emplacement` (`interieure` \| `exterieure`) et `modes`
   (`present`, `absent`, `nuit`, `vacances` → `eteinte` \| `diffusion` \| `surveillance`), tous deux
   optionnels (absents d'un serveur plus ancien : extérieure, jamais éteinte). Pour une caméra
@@ -454,7 +465,7 @@ un abonnement inconnu ; `unavailable` pour l'essai quand les notifications sont 
 
 | route | corps | réponse |
 |---|---|---|
-| `GET /api/push` | | `{"enabled", "public_key", "subscriptions": […]}` ; `public_key` : clé VAPID (base64url) pour `pushManager.subscribe` |
+| `GET /api/push` | | `{"enabled", "public_key", "subscriptions": […]}` (**les appareils de la personne connectée** seulement) ; `public_key` : clé VAPID (base64url) pour `pushManager.subscribe` |
 | `PUT /api/push` | `{"enabled": bool}` | comme `GET` |
 | `POST /api/push/subscriptions` | `PushSubscription.toJSON()` (`endpoint`, `keys.p256dh`, `keys.auth`) plus `label` et, facultatif, `categories` | l'abonnement ; la même adresse garde le même `id` |
 | `PUT /api/push/subscriptions/{id}` | `{"categories"?, "label"?}` | l'abonnement |

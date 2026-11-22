@@ -306,6 +306,20 @@ pub fn list(dir: &Path) -> Result<Vec<User>> {
     Ok(read_users(dir)?.users.iter().map(User::from).collect())
 }
 
+/// L'identifiant du premier utilisateur (le plus ancien : celui de l'ancien `compte.json` après
+/// migration), **en lecture seule** : rien n'est migré ni écrit. Les jetons et abonnements d'avant
+/// les comptes nominatifs lui reviennent.
+pub fn first_user_id(dir: &Path) -> Option<String> {
+    if let Ok(text) = std::fs::read_to_string(users_path(dir)) {
+        let file: UsersFile = serde_json::from_str(&text).ok()?;
+        return file.users.first().map(|u| u.id.clone());
+    }
+    let text = std::fs::read_to_string(legacy_path(dir)).ok()?;
+    serde_json::from_str::<LegacyAccountFile>(&text)
+        .ok()
+        .map(|old| old.id)
+}
+
 /// Un compte existe-t-il (comptes nominatifs ou ancien compte) ? Lecture seule.
 pub fn any_account_file(dir: &Path) -> bool {
     users_path(dir).is_file() || legacy_path(dir).is_file()
@@ -467,6 +481,22 @@ impl AccountStore {
     /// Les utilisateurs, mots de passe exclus.
     pub fn users(&self) -> Vec<User> {
         self.with_users(|users| users.iter().map(User::from).collect())
+    }
+
+    /// Ce compte existe-t-il et est-il actif ? (Les jetons de raccourci d'un compte désactivé
+    /// cessent de marcher.)
+    pub fn is_active(&self, user_id: &str) -> bool {
+        self.with_users(|users| users.iter().any(|u| u.id == user_id && u.active))
+    }
+
+    /// Le nom affiché d'un compte (pour le journal technique).
+    pub fn display_name(&self, user_id: &str) -> Option<String> {
+        self.with_users(|users| {
+            users
+                .iter()
+                .find(|u| u.id == user_id)
+                .map(|u| User::from(u).display_name)
+        })
     }
 
     /// Cette session (utilisateur et époque) vaut-elle encore : compte existant, actif, et

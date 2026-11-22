@@ -234,7 +234,7 @@ impl App {
     }
 
     fn revoke_read(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
-        match hub.revoke_read_token() {
+        match hub.window_revoke_read_tokens() {
             Ok(()) => {
                 self.local_notice = Some(Notice::Ok(
                     "Jeton de lecture révoqué : le widget ne lit plus rien.".into(),
@@ -253,7 +253,7 @@ impl App {
     }
 
     fn delete_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
-        match hub.revoke_mode_token() {
+        match hub.window_revoke_mode_token() {
             Ok(()) => {
                 self.local_notice = Some(Notice::Ok(
                     "Code secret supprimé : Raccourcis ne peut plus changer le mode.".into(),
@@ -952,7 +952,7 @@ impl App {
                 }
             }),
             Some(
-                if hub.has_mode_token() {
+                if hub.window_has_mode_token() {
                     "Code secret : en service"
                 } else {
                     "pas encore de code secret"
@@ -1191,8 +1191,8 @@ impl App {
     fn shortcuts_steps(&mut self, ui: &mut egui::Ui, hub: &Arc<ostal_server::hub::Hub>) {
         let p = theme::palette(ui);
         ui.label("L'iPhone peut passer la maison en « Absent » quand vous partez et en « Présent » quand vous rentrez, tout seul, avec l'app Raccourcis. Il lui faut un code secret (le « jeton de mode »), qui ne permet rien d'autre que changer le mode.");
-        widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer les raccourcis » crée un nouveau code et les deux raccourcis tout prêts, sans rien taper.");
-        let read = hub.has_read_token();
+        widgets::hint(ui, "Plus simple : sur l'iPhone, app web › Widgets et raccourcis › « Installer mes raccourcis » : chacun a les siens, tout prêts, sans rien taper. Le code secret d'ici est celui du premier compte, pour les automatisations faites à la main.");
+        let read = hub.window_has_read_token();
         ui.horizontal(|ui| {
             ui.label(if read {
                 "Widget de l'iPhone : jeton de lecture actif (il ne permet que de lire l'état)."
@@ -1208,7 +1208,7 @@ impl App {
         });
         ui.add_space(6.0);
         let remote = matches!(self.web, WebAccess::On { .. });
-        let has = hub.has_mode_token();
+        let has = hub.window_has_mode_token();
         widgets::step(
             ui,
             1,
@@ -1329,7 +1329,7 @@ impl App {
 
     fn generate_mode_token(&mut self, hub: &Arc<ostal_server::hub::Hub>) {
         self.mode_token_confirm = false;
-        match hub.generate_mode_token() {
+        match hub.window_generate_mode_token() {
             Ok(token) => self.mode_token_shown = Some(token),
             Err(e) if e.code == protocol::wire::ErrorCode::Busy => {
                 self.local_notice = Some(Notice::Err(BUSY_NOTICE.into()));

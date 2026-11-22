@@ -584,10 +584,15 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         let names: Vec<_> = links.iter().map(|l| l["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
-            ["Mode absent", "Mode present", "Mode nuit", "Mode vacances"]
+            ["Je pars", "Je rentre", "Mode nuit", "Mode vacances"]
         );
         let mut mode_token = String::new();
-        for (link, mode) in links.iter().zip(["absent", "present", "nuit", "vacances"]) {
+        for (link, (path, value)) in links.iter().zip([
+            ("presence", "away"),
+            ("presence", "home"),
+            ("mode", "nuit"),
+            ("mode", "vacances"),
+        ]) {
             let url = link["url"].as_str().unwrap();
             let file = format!("{}.shortcut", link["name"].as_str().unwrap());
             assert!(url.starts_with("/app/raccourcis/perso/"), "{url}");
@@ -604,8 +609,10 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             assert_eq!(r.headers["x-content-type-options"], "nosniff");
             assert!(r.headers["content-security-policy"].contains("default-src 'self'"));
             let plist = r.text();
-            assert!(plist.contains("<string>https://maison.tailnet-test.ts.net/api/mode</string>"));
-            assert!(plist.contains(&format!("<string>{mode}</string>")));
+            assert!(plist.contains(&format!(
+                "<string>https://maison.tailnet-test.ts.net/api/{path}</string>"
+            )));
+            assert!(plist.contains(&format!("<string>{value}</string>")));
             assert!(plist.contains("<key>WFWorkflowImportQuestions</key><array></array>"));
             let token = token_after(&plist, "<string>Bearer ");
             if !mode_token.is_empty() {
@@ -619,20 +626,31 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             assert!(head.body.is_empty());
             // Un autre nom sous le même identifiant, ou un identifiant inventé : 404.
             let other = url
-                .replace("Mode%20absent", "X")
-                .replace("Mode%20present", "X")
+                .replace("Je%20pars", "X")
+                .replace("Je%20rentre", "X")
                 .replace("Mode%20nuit", "X")
                 .replace("Mode%20vacances", "X");
             assert_eq!(client.request("GET", &other, None, None).await.status, 404);
         }
         secrets.push(mode_token.clone());
-        // Le raccourci marche de bout en bout.
+        // Le raccourci marche de bout en bout : « Je pars » dit où l'on est sans toucher au mode,
+        // « Mode nuit » change le mode de toute la maison.
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/presence",
+                &mode_token,
+                &json!({"state": "away"}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json(), json!({"state": "away", "changed": true}));
         let r = client
             .send_json("PUT", "/api/mode", &mode_token, &json!({"mode": "absent"}))
             .await;
         assert_eq!(r.status, 200, "{}", r.text());
         for gone in [
-            "/app/raccourcis/perso/00000000000000000000000000000000/Mode%20absent.shortcut",
+            "/app/raccourcis/perso/00000000000000000000000000000000/Je%20pars.shortcut",
             "/app/raccourcis/mode-absent.shortcut",
             "/app/raccourcis/mode-present.shortcut",
             "/app/raccourcis/ostal.js",
@@ -645,7 +663,8 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
             );
         }
 
-        // Recommencer : nouveau jeton, les anciens liens et l'ancien jeton ne marchent plus.
+        // Recommencer depuis la même connexion (même téléphone) : nouveau jeton, les anciens liens et
+        // l'ancien jeton ne marchent plus.
         let again = client
             .send_json("POST", "/api/tokens/mode/shortcuts", &session, &origin)
             .await
@@ -680,7 +699,7 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
         assert_eq!(widget.status, 200, "{}", widget.text());
         let script = widget.json()["script"].as_str().unwrap().to_string();
         assert!(script.contains("const SERVEUR = \"https://maison.tailnet-test.ts.net\";"));
-        assert!(script.contains("const RACCOURCI_PRESENT = \"Mode present\";"));
+        assert!(script.contains("const RACCOURCI_RENTRE = \"Je rentre\";"));
         let read_token = token_after(&script, "const TOKEN = \"");
         secrets.push(read_token.clone());
         assert_eq!(client.get("/api/state", &read_token).await.status, 200);
@@ -733,7 +752,7 @@ fn one_tap_install_prepares_personal_shortcuts_and_widget() {
     });
     // Aucun jeton ni identifiant de lien dans le journal, ni en clair sur le disque.
     let log = server.log();
-    let on_disk: String = ["jeton-mode.json", "jeton-lecture.json"]
+    let on_disk: String = ["jetons.json", "jeton-mode.json", "jeton-lecture.json"]
         .iter()
         .filter_map(|f| std::fs::read_to_string(dir.join("serveur").join(f)).ok())
         .collect();
@@ -760,8 +779,12 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         assert!(app.contains(r#"widgets.id = "widgets""#));
         assert!(app.contains("Widgets et raccourcis"));
         assert!(app.contains("originInfo(location)"));
-        assert!(app.contains("Installer les raccourcis") && app.contains("Installer le widget"));
-        assert!(app.contains("/api/tokens/${kind}") && app.contains("Révoquer"));
+        assert!(app.contains("Installer mes raccourcis") && app.contains("Installer le widget"));
+        assert!(app.contains("Je pars") || app.contains("SHORTCUT_NAMES"));
+        assert!(app.contains("ANDROID_NOTE") && app.contains("isAndroid(navigator.userAgent)"));
+        assert!(
+            app.contains("/api/tokens/${encodeURIComponent(token.id)}") && app.contains("Révoquer")
+        );
         // Plus de jeton à créer sur le Mac ni d'adresse à coller.
         assert!(!app.contains("Créer le code secret") && !app.contains("Copier l'adresse"));
         assert!(!app.contains("Tout éteindre"));
