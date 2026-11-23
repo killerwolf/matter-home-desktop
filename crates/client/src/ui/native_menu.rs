@@ -73,6 +73,11 @@ impl FileMenuState {
     }
 }
 
+/// La ligne du menu Fichier qui dit qui est connecté : « Compte : famille ».
+pub fn account_title(account: &str) -> String {
+    format!("Compte : {}", account.trim())
+}
+
 /// Événements egui qui reproduisent une commande d'Édition. `clipboard` est le texte du
 /// presse-papiers, lu au moment du clic (utile pour Coller seulement).
 pub fn edit_events(command: EditCommand, clipboard: Option<String>) -> Vec<egui::Event> {
@@ -109,6 +114,7 @@ pub struct NativeMenu {
     #[cfg(target_os = "macos")]
     appkit: appkit::Handles,
     last_state: Option<FileMenuState>,
+    last_account: Option<Option<String>>,
 }
 
 impl NativeMenu {
@@ -123,6 +129,7 @@ impl NativeMenu {
                 rx,
                 appkit,
                 last_state: None,
+                last_account: None,
             })
         }
         #[cfg(not(target_os = "macos"))]
@@ -145,6 +152,17 @@ impl NativeMenu {
         self.last_state = Some(state);
         #[cfg(target_os = "macos")]
         self.appkit.apply(state);
+    }
+
+    /// Le compte ouvert, en tête du menu Fichier (la ligne disparaît quand il est inconnu).
+    pub fn set_account(&mut self, account: Option<&str>) {
+        let account = account.map(str::to_owned);
+        if self.last_account.as_ref() == Some(&account) {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        self.appkit.set_account(account.as_deref());
+        self.last_account = Some(account);
     }
 
     /// Texte du presse-papiers du système (Coller).
@@ -287,9 +305,20 @@ mod appkit {
         import: Retained<NSMenuItem>,
         connections: Retained<NSMenuItem>,
         logout: Retained<NSMenuItem>,
+        account: Retained<NSMenuItem>,
+        account_separator: Retained<NSMenuItem>,
     }
 
     impl Handles {
+        pub fn set_account(&self, account: Option<&str>) {
+            if let Some(name) = account {
+                self.account
+                    .setTitle(&NSString::from_str(&super::account_title(name)));
+            }
+            self.account.setHidden(account.is_none());
+            self.account_separator.setHidden(account.is_none());
+        }
+
         pub fn apply(&self, state: FileMenuState) {
             self.export.setEnabled(state.export);
             self.import.setEnabled(state.import);
@@ -387,10 +416,18 @@ mod appkit {
         let import = item_to(mtm, t, "Importer des données…", sel!(importData:), "");
         let connections = item_to(mtm, t, "Mes connexions…", sel!(showConnections:), "");
         let logout = item_to(mtm, t, "Se déconnecter", sel!(logOut:), "");
+        // Qui est connecté : ligne grisée en tête, cachée tant que le compte est inconnu.
+        let account = item(mtm, "Compte", None, "");
+        account.setEnabled(false);
+        account.setHidden(true);
+        let account_separator = NSMenuItem::separatorItem(mtm);
+        account_separator.setHidden(true);
         let file = submenu(
             mtm,
             "Fichier",
             &[
+                &account,
+                &account_separator,
                 &export,
                 &import,
                 &NSMenuItem::separatorItem(mtm),
@@ -440,6 +477,8 @@ mod appkit {
             import,
             connections,
             logout,
+            account,
+            account_separator,
         };
         handles.apply(FileMenuState::new(false, false));
         Some(handles)
@@ -456,6 +495,12 @@ mod appkit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_line_names_who_is_connected() {
+        assert_eq!(account_title("famille"), "Compte : famille");
+        assert_eq!(account_title("  hamdi "), "Compte : hamdi");
+    }
 
     #[test]
     fn file_items_follow_the_connection() {

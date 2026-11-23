@@ -10,7 +10,22 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+- Ostal Server : quand tous les appareils (ou 80 % au moins, et trois au minimum) sont injoignables en même temps, la phrase d'état dit « Tous les appareils ont décroché en même temps » et renvoie au Wi-Fi du Mac, pas à l'alimentation ; la logique commune est dans `protocol::status::devices_point`, reprise par l'app Mac et l'app web.
+- Ostal Server : Réglages › Dépannage donne trois cas (tout injoignable, un seul injoignable, « La maison ne répond pas »), le journal technique en dernier.
+- Ostal Server : les étapes de connexion citent la découverte automatique d'abord, l'adresse en secours, et ne parlent plus de Windows ni de Linux.
+- Ostal Server : la vue d'ensemble montre la box de la maison (reliée, injoignable, mot de passe refusé, présence figée) avec un renvoi vers Réglages › Présence, qui dit où trouver le mot de passe de la Bbox.
+- Ostal Server : l'onglet « Journal » devient « Activité » ; textes périmés corrigés (« d'Ostal Server », sauvegarde faite depuis l'app Mac).
+- App Mac et web : plus d'erreur brute pour un appareil injoignable. Le serveur ne laisse passer que « pas d'adresse sur le réseau », « ne répond pas » ou « occupé » (`protocol::status::unreachable_reason`) ; le texte détaillé reste dans le journal technique.
+- App Mac : « Changer de serveur » sur « Plus de connexion à la maison » revient à l'écran de connexion sans révoquer la session (le jeton reste dans le fichier de connexion) ; seule « Se déconnecter » la ferme.
+- App Mac : la phrase d'état dit « Tous les appareils ont décroché en même temps » (Wi-Fi du Mac) quand presque tous sont injoignables ; l'état vide des caméras renvoie à l'onglet « Caméras » d'Ostal Server, sans « menu Caméras… » ni « flux RTSP » ; le menu Fichier montre « Compte : … » (le compte ouvert).
+- App web : la phrase d'état dit aussi « Tous les appareils ont décroché en même temps » (jumelle de `protocol::status`, mêmes seuils).
+- App web : la carte « Installer sur l'iPhone » ne s'affiche plus que sur iPhone et iPad, a un bouton « Plus tard » (une semaine) et ne rend plus les notifications obligatoires.
+- App web : « La maison ne répond pas » est annoncé comme une alerte, avec deux pistes : Mac éteint, en veille ou hors du Wi-Fi à la maison, Tailscale de loin.
+- App web : « Mode nuit » et « Mode vacances » dans la carte d'installation, l'état vide dit où ajouter un appareil, et « Mes connexions » montre le compte ouvert.
 - Présence : un téléphone absent du Wi-Fi peut être relié à son compte à distance ; la liste montre d'abord ceux qui sont sur le Wi-Fi, puis les autres appareils connus de la box.
+- App Mac : après « Changer de serveur », l'écran de connexion dit que la session de l'ancien serveur n'est pas fermée et propose « Revenir à ce serveur ».
+- Appareil injoignable : la raison « le pont ne le voit plus » s'ajoute aux trois autres quand le pont le déclare injoignable.
+- App web : l'état vide dit d'ajouter un appareil depuis l'app Ostal sur le Mac ; « Plus tard » sur l'étape facultative des notifications (la seule restante) masque la carte d'installation pour de bon.
 
 ### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)
 

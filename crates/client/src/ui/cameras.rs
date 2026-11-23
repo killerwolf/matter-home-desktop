@@ -266,8 +266,8 @@ fn empty_state(ui: &mut egui::Ui) {
         ui.label(RichText::new("Aucune caméra").heading());
         ui.add_space(6.0);
         ui.label(
-            "Les caméras s'ajoutent depuis l'application Ostal Server : \
-             menu « Caméras… » (adresse du flux RTSP, identifiant et mot de passe).",
+            "Les caméras s'ajoutent depuis Ostal Server, dans l'onglet « Caméras » : \
+             adresse de la caméra, identifiant et mot de passe.",
         );
         ui.label("Elles apparaîtront ici dès qu'elles seront enregistrées.");
     });

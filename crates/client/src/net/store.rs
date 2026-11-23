@@ -175,6 +175,35 @@ impl Store {
         Ok(())
     }
 
+    /// Le fichier du nom du compte ouvert, à côté du fichier de connexion. Le nom n'est pas un
+    /// secret (le jeton, lui, reste dans `connexion.json`).
+    fn account_path(&self) -> PathBuf {
+        self.path.with_file_name("compte.txt")
+    }
+
+    /// Garde le nom du compte avec lequel on s'est connecté (pour le menu Fichier). Un échec
+    /// d'écriture n'empêche rien : le nom ne s'affichera simplement pas au prochain lancement.
+    pub fn save_account(&self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            self.clear_account();
+        } else {
+            let _ = std::fs::write(self.account_path(), name);
+        }
+    }
+
+    /// Le nom du compte ouvert, s'il est connu (absent des connexions faites avant cette version).
+    pub fn account(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.account_path()).ok()?;
+        let name = text.trim();
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    /// Oublie le nom du compte (déconnexion, empreinte oubliée).
+    pub fn clear_account(&self) {
+        let _ = std::fs::remove_file(self.account_path());
+    }
+
     /// Supprime le fichier (déconnexion). Absent : rien à faire.
     pub fn delete(&self) -> Result<(), NetError> {
         match std::fs::remove_file(&self.path) {
@@ -401,5 +430,24 @@ mod tests {
             let path = store.path().to_string_lossy().to_string();
             assert!(path.contains("dev.ostal.OstalClient"), "{path}");
         }
+    }
+
+    #[test]
+    fn the_account_name_is_kept_beside_the_connection_file_and_can_be_forgotten() {
+        let dir = temp("account");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("connexion.json");
+        let store = Store::at(path.clone());
+        assert_eq!(store.account(), None);
+        store.save_account("  famille ");
+        assert_eq!(store.account().as_deref(), Some("famille"));
+        // Le jeton reste dans son fichier : le nom n'y est pas.
+        assert!(!path.exists());
+        store.save_account("");
+        assert_eq!(store.account(), None);
+        store.save_account("famille");
+        store.clear_account();
+        assert_eq!(store.account(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -42,6 +42,42 @@ export function iosVersion(ua, touch = false) {
   return null;
 }
 
+const INSTALL_LATER_KEY = "ostal.install.later";
+const NOTIFICATIONS_DISMISSED_KEY = "ostal.install.notifications-dismissed";
+/** « Plus tard » sur la carte d'installation : elle revient au bout d'une semaine. */
+export const INSTALL_LATER_MS = 7 * 24 * 3600 * 1000;
+
+/** La carte « Installer sur l'iPhone » n'a de sens que sur un iPhone ou un iPad (raccourcis et widget
+ *  n'existent pas ailleurs) : pas sur Android, pas sur un ordinateur. */
+export const isApplePhone = (ua, touch = false) => iosVersion(ua, touch) !== null;
+
+/** Faut-il montrer la carte ? Sur iPhone ou iPad, et pas si « Plus tard » date de moins d'une semaine. */
+export function showInstallCard(ua, touch, laterAt, now = Date.now()) {
+  if (!isApplePhone(ua, touch)) return false;
+  return !(laterAt && now - laterAt < INSTALL_LATER_MS);
+}
+
+export function readInstallLater(storage = globalThis.localStorage) {
+  try {
+    const n = Number(storage?.getItem(INSTALL_LATER_KEY));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch { return 0; }
+}
+
+export function writeInstallLater(now = Date.now(), storage = globalThis.localStorage) {
+  try { storage?.setItem(INSTALL_LATER_KEY, String(now)); } catch { /* pas gardé : la carte reviendra */ }
+}
+
+/** L'étape facultative des notifications a été écartée avec « Plus tard » : définitif, la carte ne
+ *  revient pas chaque semaine pour une seule étape facultative. */
+export function readNotificationsDismissed(storage = globalThis.localStorage) {
+  try { return storage?.getItem(NOTIFICATIONS_DISMISSED_KEY) === "1"; } catch { return false; }
+}
+
+export function writeNotificationsDismissed(storage = globalThis.localStorage) {
+  try { storage?.setItem(NOTIFICATIONS_DISMISSED_KEY, "1"); } catch { /* pas gardé : la carte reviendra */ }
+}
+
 /** Un nom pour l'appareil (modifiable sur le serveur). */
 export function deviceLabel(ua, touch = false) {
   if (/iPhone/.test(ua)) return "iPhone";

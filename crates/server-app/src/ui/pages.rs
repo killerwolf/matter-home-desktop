@@ -3,7 +3,7 @@
 //! - Première installation : trois étapes (la maison, le compte, « c'est prêt »).
 //! - Ensuite, six onglets : **Vue d'ensemble** (la maison va bien ?), **Appareils**,
 //!   **Caméras**, **Connexion** (Mac ou PC de la maison, iPhone à distance, Raccourcis),
-//!   **Journal** (qui a fait quoi) et **Réglages** (compte, démarrage, sauvegarde, dépannage).
+//!   **Activité** (qui a fait quoi) et **Réglages** (compte, démarrage, sauvegarde, dépannage).
 //!
 //! Les mots sont ceux de l'utilisateur ; le terme technique, quand il aide à se repérer dans la
 //! documentation, suit entre parenthèses. Aucun secret n'est affiché, sauf le jeton de mode à sa
@@ -77,6 +77,22 @@ fn mode_hint(mode: HomeMode) -> &'static str {
 /// secondes : la fenêtre ne l'attend pas, elle le dit.
 const BUSY_NOTICE: &str =
     "Une préparation est en cours depuis l'iPhone (raccourcis ou widget) : réessayez dans un instant.";
+
+/// Les trois pannes courantes, avec ce qu'il faut faire (voir aussi `docs/depannage.md`).
+const TROUBLESHOOTING: [(&str, &str); 3] = [
+    (
+        "Tous les appareils sont injoignables en même temps",
+        "Le Mac n'est sans doute plus sur le réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac : les appareils reviennent tout seuls dès qu'il est de nouveau sur le réseau.",
+    ),
+    (
+        "Un seul appareil est injoignable",
+        "Vérifiez son alimentation, puis « Réessayer » dans l'onglet Appareils. Un capteur sur pile se réveille par un appui sur son bouton.",
+    ),
+    (
+        "L'iPhone ou l'ordinateur dit « La maison ne répond pas »",
+        "Le Mac est éteint, en veille, ou n'est plus sur le Wi-Fi de la maison. Réveillez-le ; hors de la maison, vérifiez aussi que Tailscale est connecté sur le Mac et sur l'iPhone.",
+    ),
+];
 
 impl App {
     /// Les onglets ne s'affichent qu'une fois la première installation finie.
@@ -634,6 +650,7 @@ impl App {
 
     fn overview_running(&mut self, ui: &mut egui::Ui, st: &State, o: &Overview) {
         let mut go = None;
+        let mut go_presence = false;
         let health = &st.health;
         widgets::section(ui, "État", |ui| {
             for check in &o.checks {
@@ -642,6 +659,7 @@ impl App {
                     (Some(fix), _) => (Some(fix.label.clone()), Some(fix.tab)),
                     (None, "Appareils") => (Some("Voir".to_string()), Some(Tab::Devices)),
                     (None, "Caméras") => (Some("Voir".to_string()), Some(Tab::Cameras)),
+                    (None, "Présence") => (Some("Voir".to_string()), Some(Tab::Settings)),
                     (None, "Accès à distance") => (
                         Some(
                             if check.level == Level::Ok {
@@ -655,13 +673,10 @@ impl App {
                     ),
                     _ => (None, None),
                 };
-                let hint = (check.title == "Appareils" && !health.unreachable.is_empty()).then_some(
-                    if health.unreachable.len() > 1 {
-                        "Vérifiez leur alimentation : ils reviennent tout seuls dès qu'ils répondent."
-                    } else {
-                        "Vérifiez son alimentation : elle revient toute seule dès qu'elle répond."
-                    },
-                );
+                let hint =
+                    (check.title == "Appareils" && !health.unreachable.is_empty()).then(|| {
+                        protocol::status::unreachable_advice(health.unreachable.len(), health.total)
+                    });
                 if widgets::status_line(
                     ui,
                     check.level,
@@ -671,6 +686,7 @@ impl App {
                     hint,
                 ) {
                     go = tab;
+                    go_presence = check.title == "Présence";
                 }
             }
         });
@@ -729,6 +745,9 @@ impl App {
         }
         if let Some(tab) = go {
             self.open_tab(tab);
+            if go_presence {
+                self.presence.open();
+            }
         }
     }
 
@@ -785,7 +804,18 @@ impl App {
                         });
                     });
                 }
-                widgets::hint(ui, "Vérifiez son alimentation : elle revient toute seule dès qu'elle répond. Un capteur sur pile se réveille par un appui sur son bouton.");
+                let (down, total) = (health.unreachable_details.len(), health.total);
+                let advice = protocol::status::unreachable_advice(down, total);
+                if protocol::status::dropped_together(down, total) {
+                    widgets::hint(ui, advice);
+                } else {
+                    widgets::hint(
+                        ui,
+                        &format!(
+                            "{advice} Un capteur sur pile se réveille par un appui sur son bouton."
+                        ),
+                    );
+                }
             });
             if let Some(id) = retry {
                 self.retry_device(id, &hub);
@@ -914,10 +944,11 @@ impl App {
     /// compte. (Aussi sur l'écran de fin de la première installation.)
     fn desktop_steps(&mut self, ui: &mut egui::Ui, st: &State) {
         widgets::step(ui, 1, StepState::Todo, |ui| {
-            ui.label("Installez et ouvrez l'application Ostal sur votre ordinateur (Mac, Windows ou Linux), branché sur le même réseau que ce Mac.");
+            ui.label("Installez et ouvrez l'application Ostal sur votre Mac, branché sur le même réseau que ce Mac.");
         });
         widgets::step(ui, 2, StepState::Todo, |ui| {
-            ui.label("Dans son écran de connexion, saisissez cette adresse :");
+            ui.label("Elle trouve ce Mac toute seule sur le réseau de la maison : choisissez-le dans la liste.");
+            ui.label("Si elle ne le trouve pas, choisissez « Saisir une adresse à la main » et tapez celle-ci :");
             if let Some(url) = &st.url {
                 self.copy_field(ui, "url", url);
             }
@@ -1415,11 +1446,20 @@ impl App {
             widgets::hint(ui, SLEEP_NOTE);
         });
         widgets::section(ui, "Sauvegarde", |ui| {
-            ui.label("La sauvegarde se fait depuis Ostal : menu Fichier → « Exporter mes données… ». Elle produit un fichier « .ostal » à garder comme un secret (il contient les clés de la maison et les mots de passe des caméras).");
+            ui.label("La sauvegarde se fait depuis l'app Mac Ostal (pas depuis cette fenêtre) : menu Fichier → « Exporter mes données… ». Elle produit un fichier « .ostal » à garder comme un secret (il contient les clés de la maison et les mots de passe des caméras).");
             widgets::hint(ui, "Pour la reprendre sur un nouveau Mac : installez Ostal Server, et choisissez « Reprendre une sauvegarde » au premier lancement.");
         });
         widgets::section(ui, "Dépannage", |ui| {
-            ui.label("Le journal est le fichier où le serveur note ce qu'il fait. En cas de panne, c'est lui qu'on vous demandera.");
+            ui.label("Trois pannes courantes.");
+            ui.add_space(4.0);
+            for (title, text) in TROUBLESHOOTING {
+                ui.label(RichText::new(title).strong());
+                widgets::hint(ui, text);
+                ui.add_space(4.0);
+            }
+            ui.label(RichText::new("Dans tous les cas").strong());
+            widgets::hint(ui, "Le journal technique est le fichier où le serveur note ce qu'il fait. Si rien de ce qui précède ne suffit, c'est lui qu'on vous demandera.");
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Ouvrir le journal").clicked() {
                     system::open_file(&st.log_path);

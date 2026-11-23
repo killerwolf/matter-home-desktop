@@ -11,6 +11,7 @@ use protocol::wire::{CameraStatus, DetectionStatusView};
 
 use crate::status::{clock, Health, Phase};
 use crate::tailscale::WebAccess;
+use ostal_server::wifi::{Link, Status as WifiStatus};
 
 /// Les onglets de la fenêtre.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,7 +41,7 @@ impl Tab {
             Tab::Devices => "Appareils",
             Tab::Cameras => "Caméras",
             Tab::Connect => "Connexion",
-            Tab::Journal => "Journal",
+            Tab::Journal => "Activité",
             Tab::Settings => "Réglages",
         }
     }
@@ -161,7 +162,13 @@ pub fn is_thermal_pause(reason: &str) -> bool {
 pub fn devices_sentence(health: &Health) -> String {
     let n = health.online;
     if n == 0 && health.total > 0 {
-        return format!("Aucun appareil sur {} n'est joignable.", health.total);
+        let mut text = format!("Aucun appareil sur {} n'est joignable.", health.total);
+        if status::dropped_together(health.unreachable.len(), health.total) {
+            text.push_str(
+                " Le Mac n'est sans doute plus sur le réseau de la maison : vérifiez son Wi-Fi.",
+            );
+        }
+        return text;
     }
     let mut text = format!(
         "{n} appareil{} sur {} {}.",
@@ -281,7 +288,17 @@ fn devices_check(health: &Health) -> Check {
         };
         (Level::Ok, text, None)
     } else {
-        let mut phrase = clause(Point::Devices(health.unreachable.clone()).phrase());
+        let together = status::dropped_together(missing, health.total);
+        let mut phrase = if together {
+            // La phrase complète (cause et conseil) est dans le détail du résumé et sous la ligne.
+            if missing == health.total {
+                "tous ont décroché en même temps".to_string()
+            } else {
+                "la plupart ont décroché en même temps".to_string()
+            }
+        } else {
+            clause(Point::Devices(health.unreachable.clone()).phrase())
+        };
         // « depuis 18:02 » : seulement pour un appareil, et si le hub sait quand il a répondu.
         if let [only] = health.unreachable_details.as_slice() {
             if let Some(at) = only.last_seen.and_then(clock) {
@@ -436,6 +453,47 @@ fn web_check(web: &WebAccess) -> Check {
     }
 }
 
+/// La ligne « Présence » : la box de la maison (Bbox) qui dit qui est là. Rien d'alarmant tant
+/// qu'elle n'est pas reliée (la présence marche aussi avec les seuls raccourcis) ; un souci de
+/// liaison fige la présence, et le dit.
+pub fn presence_check(wifi: &WifiStatus) -> Check {
+    let (level, text, action) = match (wifi.linked, wifi.link) {
+        (false, _) | (_, Link::None) => (
+            Level::Info,
+            "la box n'est pas reliée (facultatif)".to_string(),
+            fix("Relier la box…", Tab::Settings),
+        ),
+        (true, Link::Ok) => (
+            Level::Ok,
+            match wifi.active_hosts {
+                0 => "box reliée · aucun appareil vu sur le Wi-Fi".to_string(),
+                1 => "box reliée · 1 appareil vu sur le Wi-Fi".to_string(),
+                n => format!("box reliée · {n} appareils vus sur le Wi-Fi"),
+            },
+            None,
+        ),
+        (true, Link::Unreachable) => (
+            Level::Warn,
+            "la box ne répond pas : la présence est figée, le mode de la maison ne change pas"
+                .to_string(),
+            fix("Voir la présence…", Tab::Settings),
+        ),
+        (true, Link::Refused) => (
+            Level::Warn,
+            "la box a refusé le mot de passe : la présence est figée, le mode de la maison ne change pas"
+                .to_string(),
+            fix("Donner le nouveau mot de passe…", Tab::Settings),
+        ),
+    };
+    Check {
+        title: "Présence",
+        level,
+        menu_text: text.clone(),
+        text,
+        fix: action,
+    }
+}
+
 /// Le résumé pour un état donné. `cameras` : `None` tant que le serveur ne tourne pas.
 pub fn build(
     phase: &Phase,
@@ -443,6 +501,19 @@ pub fn build(
     cameras: Option<&CameraSummary>,
     web: &WebAccess,
     desktop_doubt: bool,
+) -> Overview {
+    build_with_presence(phase, health, cameras, web, desktop_doubt, None)
+}
+
+/// Comme [`build`], avec la liaison à la box de la maison (`None` : la ligne « Présence »
+/// n'apparaît pas).
+pub fn build_with_presence(
+    phase: &Phase,
+    health: &Health,
+    cameras: Option<&CameraSummary>,
+    web: &WebAccess,
+    desktop_doubt: bool,
+    presence: Option<&WifiStatus>,
 ) -> Overview {
     let stopped = |headline: &str,
                    level: Level,
@@ -502,6 +573,9 @@ pub fn build(
                 checks.push(cameras_check(cameras));
             }
             checks.push(web_check(web));
+            if let Some(wifi) = presence {
+                checks.push(presence_check(wifi));
+            }
             if desktop_doubt {
                 let text = "un programme « ostal » tourne : si c'est l'ancienne application de bureau, fermez-la";
                 checks.push(Check {
@@ -519,7 +593,7 @@ pub fn build(
                 .map(|c| {
                     let point = match c.title {
                         "Appareils" if !health.unreachable.is_empty() => {
-                            Point::Devices(health.unreachable.clone())
+                            status::devices_point(health.unreachable.clone(), health.total)
                         }
                         "Caméras" => match cameras {
                             Some(cam) if !cam.unreachable.is_empty() => {
@@ -670,7 +744,7 @@ mod tests {
         c.detection.paused = Some("le Mac est trop chaud".into());
         c.detection.thermal = true;
         let o = running(
-            &health(5, &["A", "B", "C", "D"]),
+            &health(6, &["A", "B", "C", "D"]),
             &c,
             &WebAccess::NeedsAuth {
                 url: "https://login.tailscale.com/f/serve".into(),
@@ -679,7 +753,7 @@ mod tests {
         assert_eq!(o.headline, "3 choses à regarder");
         assert_eq!(
             o.checks[0].text,
-            "1 sur 5 joignables · « A », « B » et 2 autres sont injoignables"
+            "2 sur 6 joignables · « A », « B » et 2 autres sont injoignables"
         );
         assert_eq!(
             o.checks[1].text,
@@ -889,5 +963,102 @@ mod tests {
             assert_eq!(Tab::from_key(tab.key()), Some(tab));
         }
         assert_eq!(Tab::from_key("autre"), None);
+    }
+
+    #[test]
+    fn the_journal_tab_is_called_activity() {
+        assert_eq!(Tab::Journal.label(), "Activité");
+        // Le mot de la ligne de commande ne change pas.
+        assert_eq!(Tab::Journal.key(), "journal");
+    }
+
+    #[test]
+    fn everything_dropped_at_once_points_at_the_wifi_not_the_power() {
+        let h = health(5, &["A", "B", "C", "D", "E"]);
+        let o = running(&h, &cameras(0, &[]), &WebAccess::Checking);
+        assert_eq!(o.headline, "Une chose à regarder");
+        assert!(o
+            .detail
+            .as_deref()
+            .unwrap()
+            .starts_with("Tous les appareils ont décroché en même temps"));
+        assert_eq!(
+            o.checks[0].text,
+            "0 sur 5 joignables · tous ont décroché en même temps"
+        );
+        assert_eq!(
+            devices_sentence(&h),
+            "Aucun appareil sur 5 n'est joignable. Le Mac n'est sans doute plus sur le réseau de la maison : vérifiez son Wi-Fi."
+        );
+    }
+
+    #[test]
+    fn one_or_two_devices_down_keep_their_names() {
+        let h = health(5, &["A", "B"]);
+        let o = running(&h, &cameras(0, &[]), &WebAccess::Checking);
+        assert_eq!(
+            o.detail.as_deref(),
+            Some("« A » et « B » sont injoignables.")
+        );
+        // Deux appareils sur deux : trop peu pour accuser le réseau.
+        assert_eq!(
+            devices_sentence(&health(2, &["A", "B"])),
+            "Aucun appareil sur 2 n'est joignable."
+        );
+    }
+
+    fn wifi(linked: bool, link: Link, active: usize) -> WifiStatus {
+        WifiStatus {
+            linked,
+            link,
+            auto_mode: true,
+            active_hosts: active,
+            last_ok: None,
+            away_delay_min: 10,
+        }
+    }
+
+    fn with_presence(w: &WifiStatus) -> Overview {
+        build_with_presence(
+            &Phase::Running,
+            &health(3, &[]),
+            Some(&cameras(0, &[])),
+            &WebAccess::Off { dns: None },
+            false,
+            Some(w),
+        )
+    }
+
+    #[test]
+    fn the_box_shows_in_the_overview() {
+        // Sans box : une ligne d'information, la maison « va bien ».
+        let o = with_presence(&wifi(false, Link::None, 0));
+        let line = o.checks.iter().find(|c| c.title == "Présence").unwrap();
+        assert_eq!(line.level, Level::Info);
+        assert_eq!(o.headline, "La maison va bien.");
+        // Reliée.
+        let o = with_presence(&wifi(true, Link::Ok, 4));
+        let line = o.checks.iter().find(|c| c.title == "Présence").unwrap();
+        assert_eq!(line.text, "box reliée · 4 appareils vus sur le Wi-Fi");
+        assert_eq!(o.headline, "La maison va bien.");
+        // Injoignable : à regarder, mode figé, renvoi vers Réglages.
+        let o = with_presence(&wifi(true, Link::Unreachable, 0));
+        assert_eq!(o.headline, "Une chose à regarder");
+        assert_eq!(
+            o.detail.as_deref(),
+            Some(
+                "La box ne répond pas : la présence est figée, le mode de la maison ne change pas."
+            )
+        );
+        assert_eq!(o.fix.as_ref().map(|f| f.tab), Some(Tab::Settings));
+        // Mot de passe refusé.
+        let o = with_presence(&wifi(true, Link::Refused, 0));
+        assert!(o.detail.unwrap().contains("refusé le mot de passe"));
+    }
+
+    #[test]
+    fn without_a_wifi_status_there_is_no_presence_line() {
+        let o = running(&health(3, &[]), &cameras(0, &[]), &WebAccess::Checking);
+        assert!(o.checks.iter().all(|c| c.title != "Présence"));
     }
 }

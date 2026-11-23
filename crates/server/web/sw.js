@@ -1,7 +1,7 @@
 // Service worker minimal : garde la coquille (HTML, CSS, JS, icônes) pour que l'app s'ouvre
 // instantanément, même sans réseau. Il ne touche jamais à l'API : /api/ passe toujours par le réseau
 // (jeton, état, flux), rien de la maison n'est mis en cache.
-const CACHE = "ostal-shell-v16";
+const CACHE = "ostal-shell-v17";
 const SHELL = [
   "./", "index.html", "app.css", "tokens.css", "logotype-clair.svg", "logotype-sombre.svg", "app.js", "api.js", "tiles.js", "icons.js",
   "charts.js", "temps.js", "cameras.js", "events.js", "plan.js", "mode.js", "push.js", "widgets.js", "connections.js", "presence.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon.png",

@@ -91,8 +91,18 @@ impl MatterApp {
             .filter(|c| matches!(c.status, CameraStatus::Unreachable { .. }))
             .map(|c| c.name.clone())
             .collect();
+        // Les appareils comptés sont les mêmes que ci-dessus (un pont sans appareil exposé n'en est pas un).
+        let total = self
+            .model
+            .devices
+            .values()
+            .filter(|d| d.info.bridge.is_none() || d.info.caps.any())
+            .count();
         let points = [
-            Point::Devices(unreachable.iter().map(|d| d.info.name.clone()).collect()),
+            status::devices_point(
+                unreachable.iter().map(|d| d.info.name.clone()).collect(),
+                total,
+            ),
             Point::Cameras(cameras.clone()),
         ];
         let n = status::count(&points);
@@ -138,6 +148,13 @@ impl MatterApp {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("Fichier", |ui| {
                         let connected = self.connected();
+                        if let Some(account) = &self.account {
+                            ui.add_enabled(
+                                false,
+                                egui::Button::new(super::native_menu::account_title(account)),
+                            );
+                            ui.separator();
+                        }
                         if ui
                             .add_enabled(connected, egui::Button::new("Exporter mes données…"))
                             .on_disabled_hover_text("Indisponible : plus de connexion au serveur")
@@ -709,7 +726,9 @@ impl MatterApp {
             });
         });
         if change {
-            self.backend.logout();
+            // Sans révoquer le jeton : la session reste ouverte, seul l'écran de connexion revient.
+            self.connect.arm_resume();
+            self.backend.leave_server();
         }
         if again {
             self.backend.reconnect();
