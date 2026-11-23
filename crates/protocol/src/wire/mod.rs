@@ -198,7 +198,7 @@ mod tests {
             Event::Status {
                 node_id: BRIDGED,
                 status: NodeStatus::Unreachable {
-                    error: "pas de réponse".into(),
+                    error: "ne répond pas".into(),
                     retry_in_s: 20,
                 },
             },

@@ -727,6 +727,7 @@ impl MatterApp {
         });
         if change {
             // Sans révoquer le jeton : la session reste ouverte, seul l'écran de connexion revient.
+            self.connect.arm_resume();
             self.backend.leave_server();
         }
         if again {

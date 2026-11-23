@@ -560,7 +560,7 @@ impl Backend {
         self.shared.link(Link::LoggedOut {
             pinned: url.is_some(),
             reason: url.as_ref().map(|_| {
-                "Votre session reste ouverte sur l'ancien serveur : l'application la reprend au prochain démarrage, tant que vous ne vous déconnectez pas.".to_string()
+                "Votre session sur l'ancien serveur n'est pas fermée : l'application la reprend au prochain démarrage, sauf si vous vous connectez à un autre serveur.".to_string()
             }),
             url,
         });
@@ -1129,7 +1129,7 @@ mod tests {
             } => {
                 assert_eq!(url.as_deref(), Some("https://127.0.0.1:1"));
                 assert!(pinned);
-                assert!(reason.unwrap().contains("reste ouverte"));
+                assert!(reason.unwrap().contains("n'est pas fermée"));
             }
             other => panic!("{other:?}"),
         }

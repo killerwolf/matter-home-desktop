@@ -663,7 +663,16 @@ fn logout_revokes_the_token_and_keeps_only_the_address_and_the_fingerprint() {
     // Le jeton ne vaut plus rien côté serveur.
     let check = direct(&server, &token, &Request::get("/api/state"));
     assert_eq!(check.status, 401);
-    // Plus aucun événement de données après la déconnexion, et plus de commande possible.
+    // Un `Live` déjà parti du fil de lecture au moment de la déconnexion peut encore arriver
+    // juste après `LoggedOut` : on le laisse passer pendant 500 ms, puis plus rien ne doit venir
+    // (la lecture est bien arrêtée), et aucune commande n'est possible.
+    let settle = std::time::Instant::now() + Duration::from_millis(500);
+    while let Some(left) = settle.checked_duration_since(std::time::Instant::now()) {
+        match client.events.recv_timeout(left) {
+            Ok(Event::Live(_)) | Err(_) => {}
+            Ok(other) => panic!("après la déconnexion : événement inattendu {other:?}"),
+        }
+    }
     client.expect_quiet(Duration::from_secs(2), "après la déconnexion");
     let err = client.call(Request::get("/api/state")).unwrap_err();
     assert!(matches!(err, NetError::Unreachable(_)));

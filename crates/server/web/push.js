@@ -43,6 +43,7 @@ export function iosVersion(ua, touch = false) {
 }
 
 const INSTALL_LATER_KEY = "ostal.install.later";
+const NOTIFICATIONS_DISMISSED_KEY = "ostal.install.notifications-dismissed";
 /** « Plus tard » sur la carte d'installation : elle revient au bout d'une semaine. */
 export const INSTALL_LATER_MS = 7 * 24 * 3600 * 1000;
 
@@ -65,6 +66,16 @@ export function readInstallLater(storage = globalThis.localStorage) {
 
 export function writeInstallLater(now = Date.now(), storage = globalThis.localStorage) {
   try { storage?.setItem(INSTALL_LATER_KEY, String(now)); } catch { /* pas gardé : la carte reviendra */ }
+}
+
+/** L'étape facultative des notifications a été écartée avec « Plus tard » : définitif, la carte ne
+ *  revient pas chaque semaine pour une seule étape facultative. */
+export function readNotificationsDismissed(storage = globalThis.localStorage) {
+  try { return storage?.getItem(NOTIFICATIONS_DISMISSED_KEY) === "1"; } catch { return false; }
+}
+
+export function writeNotificationsDismissed(storage = globalThis.localStorage) {
+  try { storage?.setItem(NOTIFICATIONS_DISMISSED_KEY, "1"); } catch { /* pas gardé : la carte reviendra */ }
 }
 
 /** Un nom pour l'appareil (modifiable sur le serveur). */

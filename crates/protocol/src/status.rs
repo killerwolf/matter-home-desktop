@@ -72,7 +72,7 @@ pub fn devices_point(unreachable: Vec<String>, total: usize) -> Point {
 }
 
 /// La raison d'un appareil injoignable en une phrase simple : « pas d'adresse sur le réseau »,
-/// « occupé » ou « ne répond pas ». `raw` est l'erreur interne du nœud (adresses essayées, étape
+/// « occupé », « le pont ne le voit plus » ou « ne répond pas ». `raw` est l'erreur interne du nœud (adresses essayées, étape
 /// CASE…) : elle reste dans le journal technique du serveur et ne passe jamais sur le fil.
 pub fn unreachable_reason(raw: &str) -> &'static str {
     let lower = raw.to_lowercase();
@@ -80,6 +80,8 @@ pub fn unreachable_reason(raw: &str) -> &'static str {
         "pas d'adresse sur le réseau"
     } else if lower.contains("busy") || lower.contains("occupé") {
         "occupé"
+    } else if lower.contains("déclaré injoignable par le pont") {
+        "le pont ne le voit plus"
     } else {
         "ne répond pas"
     }
@@ -295,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_reason_is_one_of_three_simple_phrases() {
+    fn unreachable_reason_is_one_of_four_simple_phrases() {
         assert_eq!(
             unreachable_reason("aucune adresse joignable"),
             "pas d'adresse sur le réseau"
@@ -305,6 +307,10 @@ mod tests {
             "ne répond pas"
         );
         assert_eq!(unreachable_reason("appareil occupé (BUSY)"), "occupé");
+        assert_eq!(
+            unreachable_reason("déclaré injoignable par le pont"),
+            "le pont ne le voit plus"
+        );
         assert_eq!(unreachable_reason("n'importe quoi"), "ne répond pas");
         for raw in [
             "aucune adresse joignable",

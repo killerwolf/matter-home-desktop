@@ -56,6 +56,11 @@ pub struct ConnectScreen {
     manual: bool,
     /// Lequel des serveurs trouvés est choisi (s'il y en a plusieurs).
     found_choice: usize,
+    /// Le prochain retour à l'écran de connexion vient de « Changer de serveur » : la session
+    /// est restée ouverte, on peut y revenir.
+    resume_armed: bool,
+    /// « Revenir à ce serveur » est proposé (annule un « Changer de serveur » fait par erreur).
+    resume: bool,
 }
 
 /// Sous quel champ s'affiche un message d'erreur.
@@ -131,7 +136,20 @@ impl ConnectScreen {
             finder: None,
             manual: false,
             found_choice: 0,
+            resume_armed: false,
+            resume: false,
         }
+    }
+
+    /// « Changer de serveur » vient d'être demandé : l'écran de connexion qui suit propose de
+    /// revenir au serveur quitté.
+    pub fn arm_resume(&mut self) {
+        self.resume_armed = true;
+    }
+
+    #[cfg(test)]
+    pub fn can_resume(&self) -> bool {
+        self.resume
     }
 
     /// Retour à l'écran de connexion (démarrage, déconnexion, jeton expiré).
@@ -146,6 +164,7 @@ impl ConnectScreen {
         self.message = reason.map(|r| (false, r));
         self.message_field = Field::General;
         self.confirm_reset = false;
+        self.resume = std::mem::take(&mut self.resume_armed) && self.pinned_url.is_some();
     }
 
     /// Un message à montrer sur les écrans qui ne passent pas par `logged_out` (certificat
@@ -183,6 +202,8 @@ impl ConnectScreen {
         self.expected.clear();
         self.stage = Stage::Form;
         self.message = None;
+        self.resume = false;
+        self.resume_armed = false;
     }
 
     pub fn probed(&mut self, url: String, fingerprint: String) {
@@ -466,6 +487,10 @@ impl ConnectScreen {
         }
         if go {
             self.submit(backend);
+        }
+        if self.resume && !busy && theme::secondary_button(ui, "Revenir à ce serveur").clicked() {
+            self.resume = false;
+            backend.reconnect();
         }
         ui.add_space(theme::tokens().space.md);
         if self.pinned_url.is_some() && !self.url_is_pinned() {

@@ -2567,3 +2567,28 @@ fn the_tabs_follow_the_mockup_order() {
         ]
     );
 }
+
+/// Après « Changer de serveur », l'écran de connexion propose de revenir au serveur quitté ;
+/// une session expirée ou un premier démarrage ne le proposent pas.
+#[test]
+fn changing_server_offers_to_go_back_to_it() {
+    let mut f = Fixture::new();
+    f.connect(snapshot(1, vec![]));
+    f.app.connect.arm_resume();
+    f.send(Event::Link(Link::LoggedOut {
+        url: Some("https://127.0.0.1:8443".into()),
+        pinned: true,
+        reason: None,
+    }));
+    f.app.pump_network();
+    assert!(f.app.connect.can_resume());
+
+    // Un autre retour à l'écran de connexion (session expirée) : plus rien à reprendre.
+    f.send(Event::Link(Link::LoggedOut {
+        url: Some("https://127.0.0.1:8443".into()),
+        pinned: true,
+        reason: Some("Votre session a expiré.".into()),
+    }));
+    f.app.pump_network();
+    assert!(!f.app.connect.can_resume());
+}

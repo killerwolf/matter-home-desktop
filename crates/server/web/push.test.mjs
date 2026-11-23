@@ -177,3 +177,14 @@ test("le toucher d'une notification n'ouvre que l'app", () => {
   assert.equal(readInstallLater(storage), now);
   assert.equal(readInstallLater({ getItem() { throw new Error("refusé"); } }), 0);
 }
+
+// « Plus tard » sur la seule étape facultative (notifications) la masque pour de bon.
+{
+  const { readNotificationsDismissed, writeNotificationsDismissed } = await import("./push.js");
+  const mem = new Map();
+  const storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+  assert.equal(readNotificationsDismissed(storage), false);
+  writeNotificationsDismissed(storage);
+  assert.equal(readNotificationsDismissed(storage), true);
+  assert.equal(readNotificationsDismissed({ getItem() { throw new Error("refusé"); } }), false);
+}

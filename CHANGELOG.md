@@ -23,6 +23,9 @@ Les téléchargements de chaque version sont sur la
 - App web : « La maison ne répond pas » est annoncé comme une alerte, avec deux pistes : Mac éteint, en veille ou hors du Wi-Fi à la maison, Tailscale de loin.
 - App web : « Mode nuit » et « Mode vacances » dans la carte d'installation, l'état vide dit où ajouter un appareil, et « Mes connexions » montre le compte ouvert.
 - Présence : un téléphone absent du Wi-Fi peut être relié à son compte à distance ; la liste montre d'abord ceux qui sont sur le Wi-Fi, puis les autres appareils connus de la box.
+- App Mac : après « Changer de serveur », l'écran de connexion dit que la session de l'ancien serveur n'est pas fermée et propose « Revenir à ce serveur ».
+- Appareil injoignable : la raison « le pont ne le voit plus » s'ajoute aux trois autres quand le pont le déclare injoignable.
+- App web : l'état vide dit d'ajouter un appareil depuis l'app Ostal sur le Mac ; « Plus tard » sur l'étape facultative des notifications (la seule restante) masque la carte d'installation pour de bon.
 
 ### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)
 

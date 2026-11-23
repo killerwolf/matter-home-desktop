@@ -542,9 +542,9 @@ function installSteps() {
     { done: readDone, parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
   ];
   // Les notifications sont facultatives : la dernière étape n'apparaît qu'une fois les deux autres
-  // faites, et « Plus tard » la ferme. Un navigateur qui ne sait pas en recevoir n'a rien à y faire.
+  // faites, et « Plus tard » la ferme pour de bon (c'est la seule étape qui reste). Un navigateur qui ne sait pas en recevoir n'a rien à y faire.
   const support = push.pushSupport(pushEnv());
-  if (modeDone && readDone && !pushUi.mine && support.reason !== "unsupported") {
+  if (modeDone && readDone && !pushUi.mine && !push.readNotificationsDismissed() && support.reason !== "unsupported") {
     steps.push({ done: false, optional: true, parts: ["Activer les ", ["notifications"], " sur cet iPhone (facultatif)."], open: openNotifications });
   }
   return steps;
@@ -582,7 +582,7 @@ function patchInstall() {
   go.addEventListener("click", () => steps[current].open());
   const later = make("button", "link-button", "Plus tard");
   later.type = "button";
-  later.addEventListener("click", () => { push.writeInstallLater(); slot._key = null; slot.hidden = true; slot.replaceChildren(); });
+  later.addEventListener("click", () => { if (steps[current].optional) push.writeNotificationsDismissed(); else push.writeInstallLater(); slot._key = null; slot.hidden = true; slot.replaceChildren(); });
   const actions = make("div", "install-actions");
   actions.append(go, later);
   card.append(head, bar, text, actions);
@@ -622,7 +622,7 @@ function renderDevices() {
     note.id = "rooms-note";
     note.hidden = true;
     view.append(status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
-    if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur. Ajoutez-en dans Ostal Server, sur le Mac, onglet Appareils." : "Chargement…"));
+    if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur. Ajoutez-en depuis l'app Ostal sur le Mac (« + Ajouter ») ; l'onglet Appareils d'Ostal Server explique comment." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
     view.appendChild(rooms);
