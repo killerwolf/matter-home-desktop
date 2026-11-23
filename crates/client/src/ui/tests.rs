@@ -2451,6 +2451,47 @@ fn the_status_phrase_follows_the_devices_and_the_link() {
     assert_eq!(lost.lead, "Plus de connexion à la maison");
 }
 
+/// Tous les appareils injoignables en même temps : la phrase d'état nomme le réseau du Mac, pas
+/// l'alimentation. Avec un seul appareil injoignable sur trois, la liste des noms reste.
+#[test]
+fn the_status_phrase_names_the_network_when_everything_drops_together() {
+    let mut f = Fixture::new();
+    let caps = Capabilities {
+        on_off: true,
+        ..Default::default()
+    };
+    let lamps: Vec<DeviceView> = (1..=3)
+        .map(|i| view(node(i, &format!("Lampe {i}"), caps), vec![]))
+        .collect();
+    f.connect(snapshot(1, lamps));
+    let down = |node_id| WireEvent::Status {
+        node_id,
+        status: WireStatus::Unreachable {
+            code: ErrorCode::DeviceUnreachable,
+            detail: Some("ne répond pas".into()),
+            retry_in_s: 0,
+        },
+    };
+    f.live(down(1));
+    assert!(f
+        .app
+        .status_phrase()
+        .detail
+        .starts_with("« Lampe 1 » est injoignable"));
+    f.live(down(2));
+    f.live(down(3));
+    let together = f.app.status_phrase();
+    assert_eq!(together.lead, "Une chose à regarder :");
+    assert!(
+        together
+            .detail
+            .starts_with("Tous les appareils ont décroché en même temps"),
+        "{}",
+        together.detail
+    );
+    assert!(together.detail.contains("Wi-Fi du Mac"));
+}
+
 /// Jamais joint : la carte ne parle pas de « liaison perdue » mais d'une adresse sans réponse.
 #[test]
 fn a_never_reached_server_has_its_own_lost_text() {

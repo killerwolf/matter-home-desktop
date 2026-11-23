@@ -15,6 +15,9 @@ Les téléchargements de chaque version sont sur la
 - Ostal Server : les étapes de connexion citent la découverte automatique d'abord, l'adresse en secours, et ne parlent plus de Windows ni de Linux.
 - Ostal Server : la vue d'ensemble montre la box de la maison (reliée, injoignable, mot de passe refusé, présence figée) avec un renvoi vers Réglages › Présence, qui dit où trouver le mot de passe de la Bbox.
 - Ostal Server : l'onglet « Journal » devient « Activité » ; textes périmés corrigés (« d'Ostal Server », sauvegarde faite depuis l'app Mac).
+- App Mac et web : plus d'erreur brute pour un appareil injoignable. Le serveur ne laisse passer que « pas d'adresse sur le réseau », « ne répond pas » ou « occupé » (`protocol::status::unreachable_reason`) ; le texte détaillé reste dans le journal technique.
+- App Mac : « Changer de serveur » sur « Plus de connexion à la maison » revient à l'écran de connexion sans révoquer la session (le jeton reste dans le fichier de connexion) ; seule « Se déconnecter » la ferme.
+- App Mac : la phrase d'état dit « Tous les appareils ont décroché en même temps » (Wi-Fi du Mac) quand presque tous sont injoignables ; l'état vide des caméras renvoie à l'onglet « Caméras » d'Ostal Server, sans « menu Caméras… » ni « flux RTSP » ; le menu Fichier montre « Compte : … » (le compte ouvert).
 - Présence : un téléphone absent du Wi-Fi peut être relié à son compte à distance ; la liste montre d'abord ceux qui sont sur le Wi-Fi, puis les autres appareils connus de la box.
 
 ### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)

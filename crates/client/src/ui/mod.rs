@@ -287,6 +287,8 @@ pub struct MatterApp {
     people_unsupported: bool,
     /// Quel serveur est joint (adresse et empreinte), connu à `Link::Connected`.
     server: Option<String>,
+    /// Le compte ouvert (identifiant), lu à `Link::Connected` : montré dans le menu Fichier.
+    account: Option<String>,
     /// Adresse configurée (fichier de connexion), lue au lancement : la barre du haut l'affiche
     /// même si le serveur n'a jamais répondu.
     saved_address: Option<String>,
@@ -382,6 +384,7 @@ impl MatterApp {
             people_pending: false,
             people_unsupported: false,
             server: None,
+            account: None,
             draft_server: None,
             test_after_save: None,
             notifier: notify::system_notifier(),
@@ -486,6 +489,7 @@ impl MatterApp {
             return;
         };
         menu.set_state(state);
+        menu.set_account(self.account.as_deref());
         let mut commands = Vec::new();
         while let Some(command) = menu.try_recv() {
             commands.push(command);
@@ -1280,6 +1284,7 @@ impl MatterApp {
                     self.push_log(format!("Connecté au serveur (version {server_version})."));
                 }
                 self.server = Some(server.clone());
+                self.account = self.backend.account();
                 self.ever_connected = true;
                 self.draft_server = None;
                 self.connect.connected();
@@ -1301,6 +1306,7 @@ impl MatterApp {
                 let lost = self.lost_drafts_text();
                 self.clear_data(false, true);
                 self.server = None;
+                self.account = None;
                 let reason = match (reason.clone(), lost) {
                     (Some(r), Some(l)) => Some(format!("{r} {l}")),
                     (r, l) => r.or(l),

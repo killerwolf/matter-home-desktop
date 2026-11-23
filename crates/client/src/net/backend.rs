@@ -533,6 +533,7 @@ impl Backend {
     pub fn logout(&self) {
         let creds = self.shared.creds();
         self.shared.stop_session();
+        self.shared.store.clear_account();
         let (url, problem) = self.shared.forget_token(creds.as_ref());
         self.shared.link(Link::LoggedOut {
             pinned: url.is_some(),
@@ -544,10 +545,32 @@ impl Backend {
         }
     }
 
+    /// Le nom du compte ouvert (identifiant saisi à la connexion), s'il est connu.
+    pub fn account(&self) -> Option<String> {
+        self.shared.store.account()
+    }
+
+    /// « Changer de serveur » : revient à l'écran de connexion **sans** révoquer le jeton ni
+    /// l'effacer du fichier de connexion. La session reste ouverte côté serveur (« Mes
+    /// connexions ») et reprend au prochain démarrage ; seule une déconnexion
+    /// ([`Backend::logout`]) la ferme.
+    pub fn leave_server(&self) {
+        self.shared.stop_session();
+        let url = self.shared.store.load().ok().flatten().map(|s| s.url);
+        self.shared.link(Link::LoggedOut {
+            pinned: url.is_some(),
+            reason: url.as_ref().map(|_| {
+                "Votre session reste ouverte sur l'ancien serveur : l'application la reprend au prochain démarrage, tant que vous ne vous déconnectez pas.".to_string()
+            }),
+            url,
+        });
+    }
+
     /// Oublie l'empreinte épinglée (et le jeton) : la prochaine connexion repasse par la
     /// confirmation de l'empreinte. Geste explicite, jamais automatique.
     pub fn reset_pinned_certificate(&self, url: Option<String>) {
         self.shared.stop_session();
+        self.shared.store.clear_account();
         self.shared
             .alt_urls
             .lock()
@@ -781,6 +804,7 @@ fn login(shared: &Arc<Shared>, url: &str, fingerprint: &str, username: &str, pas
                     e.message()
                 )));
             }
+            shared.store.save_account(username);
             log::info!("connexion acceptée par {}", creds.addr.url());
             shared.start_session(creds);
         }
@@ -1080,6 +1104,38 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn leaving_the_server_keeps_the_token_and_revokes_nothing() {
+        let store = temp_store("leave");
+        let fingerprint = tls::fingerprint_of(b"un certificat");
+        store
+            .save(&Saved {
+                url: "https://127.0.0.1:1".into(),
+                fingerprint,
+                token: Some("jeton-garde".into()),
+                alt_urls: Vec::new(),
+            })
+            .unwrap();
+        let (backend, rx) = Backend::start(store.clone(), Arc::new(|| {}));
+        backend.leave_server();
+        let link = wait_link(&rx, |l| matches!(l, Link::LoggedOut { .. }));
+        match link {
+            Link::LoggedOut {
+                url,
+                pinned,
+                reason,
+            } => {
+                assert_eq!(url.as_deref(), Some("https://127.0.0.1:1"));
+                assert!(pinned);
+                assert!(reason.unwrap().contains("reste ouverte"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Le jeton est toujours dans le fichier : rien n'a été révoqué ni effacé.
+        let saved = store.load().unwrap().unwrap();
+        assert_eq!(saved.token.as_deref(), Some("jeton-garde"));
     }
 
     #[test]

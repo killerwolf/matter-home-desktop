@@ -77,7 +77,9 @@ impl WireStatus {
             NodeStatus::Online => WireStatus::Online,
             NodeStatus::Unreachable { error, retry_in_s } => WireStatus::Unreachable {
                 code: ErrorCode::DeviceUnreachable,
-                detail: Some(clean(error)).filter(|s| !s.is_empty()),
+                // Le texte brut de l'erreur reste dans le journal technique du serveur.
+                detail: Some(clean(crate::status::unreachable_reason(error)))
+                    .filter(|s| !s.is_empty()),
                 retry_in_s: *retry_in_s,
             },
         }

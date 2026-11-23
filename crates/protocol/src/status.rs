@@ -71,6 +71,20 @@ pub fn devices_point(unreachable: Vec<String>, total: usize) -> Point {
     }
 }
 
+/// La raison d'un appareil injoignable en une phrase simple : « pas d'adresse sur le réseau »,
+/// « occupé » ou « ne répond pas ». `raw` est l'erreur interne du nœud (adresses essayées, étape
+/// CASE…) : elle reste dans le journal technique du serveur et ne passe jamais sur le fil.
+pub fn unreachable_reason(raw: &str) -> &'static str {
+    let lower = raw.to_lowercase();
+    if lower.contains("aucune adresse") {
+        "pas d'adresse sur le réseau"
+    } else if lower.contains("busy") || lower.contains("occupé") {
+        "occupé"
+    } else {
+        "ne répond pas"
+    }
+}
+
 /// Le conseil sous les appareils injoignables : le Wi-Fi du Mac pour une panne d'ensemble,
 /// l'alimentation pour un ou deux appareils. Vide quand aucun n'est injoignable.
 pub fn unreachable_advice(unreachable: usize, total: usize) -> &'static str {
@@ -278,6 +292,27 @@ mod tests {
         assert_eq!(count(&points), 0);
         assert_eq!(detail(&points), None);
         assert_eq!(headline(count(&points)), "La maison va bien.");
+    }
+
+    #[test]
+    fn unreachable_reason_is_one_of_three_simple_phrases() {
+        assert_eq!(
+            unreachable_reason("aucune adresse joignable"),
+            "pas d'adresse sur le réseau"
+        );
+        assert_eq!(
+            unreachable_reason("pas de réponse à l'ouverture de session (CASE) sur [fe80::1]:5540"),
+            "ne répond pas"
+        );
+        assert_eq!(unreachable_reason("appareil occupé (BUSY)"), "occupé");
+        assert_eq!(unreachable_reason("n'importe quoi"), "ne répond pas");
+        for raw in [
+            "aucune adresse joignable",
+            "pas de réponse à l'ouverture de session (CASE) sur x",
+        ] {
+            let text = unreachable_reason(raw);
+            assert!(!text.contains("CASE") && !text.contains(':'), "{text}");
+        }
     }
 
     #[test]
