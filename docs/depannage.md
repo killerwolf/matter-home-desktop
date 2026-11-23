@@ -49,6 +49,18 @@ avant de finalement s'appairer.
 
 Le code est expiré ou déjà utilisé : générez-en un nouveau.
 
+## Ostal Server : trois pannes courantes
+
+Réglages › Dépannage d'Ostal Server reprend ces trois cas.
+
+- **Tous les appareils sont injoignables en même temps** : le Mac n'est sans doute plus sur le
+  réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac ; les appareils reviennent tout seuls.
+  Ostal Server l'écrit dès que 80 % des appareils au moins, et trois au minimum, décrochent ensemble.
+- **Un seul appareil est injoignable** : vérifiez son alimentation, puis « Réessayer ». Un capteur
+  sur pile se réveille par un appui sur son bouton.
+- **« La maison ne répond pas »** : le Mac est éteint, en veille, ou n'est plus sur le Wi-Fi de la
+  maison ; hors de la maison, vérifiez aussi Tailscale.
+
 ## Appareil « Injoignable »
 
 L'application réessaie seule, avec un délai croissant de 5 s à 2 min ; « Reconnecter »

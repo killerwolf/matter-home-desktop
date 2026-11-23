@@ -1,4 +1,4 @@
-//! Le dessin de l'onglet « Journal » (maquette Serveur-Journal) : deux filtres (Personne,
+//! Le dessin de l'onglet « Activité » (maquette Serveur-Journal) : deux filtres (Personne,
 //! Période) et la liste chronologique en quatre colonnes (Heure, Qui, Depuis, Quoi), par jour. La
 //! logique est dans `ostal_server_app::journal`. Le journal se relit toutes les deux secondes tant
 //! que l'onglet est ouvert : une action faite sur un téléphone apparaît toute seule.

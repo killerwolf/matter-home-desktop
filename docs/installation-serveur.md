@@ -79,7 +79,7 @@ s'arrêtent tant que l'application n'est pas rouverte.
 
 Six onglets : **Vue d'ensemble** (l'état, le mode, les tâches courantes), **Appareils**
 (injoignables, comment en ajouter un), **Caméras** (liste, détection, descriptions par IA),
-**Connexion** (connecter un ordinateur, l'iPhone à distance, les Raccourcis), **Journal** (qui a
+**Connexion** (connecter un ordinateur, l'iPhone à distance, les Raccourcis), **Activité** (qui a
 fait quoi ; `ostal-server audit` le lit aussi dans le Terminal) et **Réglages**
 (compte, lancement à l'ouverture de session, sauvegarde, journal). Le détail et les raisons sont
 dans [Expérience utilisateur du serveur](ux-serveur.md).

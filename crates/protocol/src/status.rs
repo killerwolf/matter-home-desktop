@@ -13,6 +13,10 @@ pub enum Point {
     Devices(Vec<String>),
     /// Au moins une caméra injoignable : leurs noms.
     Cameras(Vec<String>),
+    /// Tous les appareils (ou presque) ont décroché en même temps : voir [`devices_point`]. Le
+    /// booléen vaut `true` quand ils sont tous injoignables. Passe avant les caméras comme
+    /// [`Point::Devices`].
+    DevicesTogether(bool),
     /// Autre point (serveur seulement : accès à distance, ancienne application, chaleur…) :
     /// sa phrase, déjà écrite.
     Other(String),
@@ -23,6 +27,7 @@ impl Point {
     pub fn is_empty(&self) -> bool {
         match self {
             Point::Devices(names) | Point::Cameras(names) => names.is_empty(),
+            Point::DevicesTogether(_) => false,
             Point::Other(text) => text.trim().is_empty(),
         }
     }
@@ -32,8 +37,50 @@ impl Point {
         match self {
             Point::Devices(names) => unreachable_phrase(names, false),
             Point::Cameras(names) => unreachable_phrase(names, true),
+            Point::DevicesTogether(all) => dropped_together_phrase(*all),
             Point::Other(text) => text.trim().to_owned(),
         }
+    }
+}
+
+/// Le seuil d'une panne d'ensemble : au moins 3 appareils, dont 80 % ou plus injoignables au même
+/// moment. Avec moins de 3 appareils, deux injoignables ne disent rien sur le réseau du Mac.
+pub fn dropped_together(unreachable: usize, total: usize) -> bool {
+    total >= 3 && unreachable <= total && unreachable * 10 >= total * 8
+}
+
+/// La cause probable d'une panne d'ensemble (sans le début de phrase).
+const NETWORK_CAUSE: &str =
+    "le Mac n'est sans doute plus sur le réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac.";
+
+/// « Tous les appareils ont décroché en même temps : … » (ou « La plupart des appareils … »).
+pub fn dropped_together_phrase(all: bool) -> String {
+    let lead = if all { "Tous les" } else { "La plupart des" };
+    format!("{lead} appareils ont décroché en même temps : {NETWORK_CAUSE}")
+}
+
+/// Le point des appareils injoignables : [`Point::DevicesTogether`] quand ils ont presque tous
+/// décroché ([`dropped_together`], `total` = tous les appareils du serveur), sinon la liste de
+/// leurs noms. Vide quand aucun n'est injoignable. Les surfaces (Ostal Server, app Mac) l'appellent
+/// à la place de `Point::Devices`.
+pub fn devices_point(unreachable: Vec<String>, total: usize) -> Point {
+    if dropped_together(unreachable.len(), total) {
+        Point::DevicesTogether(unreachable.len() == total)
+    } else {
+        Point::Devices(unreachable)
+    }
+}
+
+/// Le conseil sous les appareils injoignables : le Wi-Fi du Mac pour une panne d'ensemble,
+/// l'alimentation pour un ou deux appareils. Vide quand aucun n'est injoignable.
+pub fn unreachable_advice(unreachable: usize, total: usize) -> &'static str {
+    match unreachable {
+        0 => "",
+        _ if dropped_together(unreachable, total) => {
+            "Vérifiez le Wi-Fi du Mac : les appareils reviennent tout seuls dès qu'il est de nouveau sur le réseau de la maison."
+        }
+        1 => "Vérifiez son alimentation : elle revient toute seule dès qu'elle répond.",
+        _ => "Vérifiez leur alimentation : ils reviennent tout seuls dès qu'ils répondent.",
     }
 }
 
@@ -74,7 +121,7 @@ pub fn headline(n: usize) -> String {
 /// [`all_reachable`] si elle connaît le nombre d'appareils).
 pub fn detail(points: &[Point]) -> Option<String> {
     let rank = |p: &Point| match p {
-        Point::Devices(_) => 0,
+        Point::Devices(_) | Point::DevicesTogether(_) => 0,
         Point::Cameras(_) => 1,
         Point::Other(_) => 2,
     };
@@ -231,5 +278,60 @@ mod tests {
         assert_eq!(count(&points), 0);
         assert_eq!(detail(&points), None);
         assert_eq!(headline(count(&points)), "La maison va bien.");
+    }
+
+    #[test]
+    fn dropped_together_threshold() {
+        assert!(!dropped_together(2, 2)); // moins de 3 appareils
+        assert!(dropped_together(3, 3));
+        assert!(!dropped_together(2, 3));
+        assert!(dropped_together(4, 5)); // 80 %
+        assert!(!dropped_together(3, 5));
+        assert!(dropped_together(8, 10));
+        assert!(!dropped_together(7, 10));
+        assert!(!dropped_together(0, 0));
+    }
+
+    #[test]
+    fn everything_dropped_names_the_network_not_the_power() {
+        let point = devices_point(names(&["A", "B", "C"]), 3);
+        assert_eq!(point, Point::DevicesTogether(true));
+        assert_eq!(
+            point.phrase(),
+            "Tous les appareils ont décroché en même temps : le Mac n'est sans doute plus sur le réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac."
+        );
+        assert_eq!(headline(count(&[point])), "Une chose à regarder");
+        let most = devices_point(names(&["A", "B", "C", "D"]), 5);
+        assert!(most
+            .phrase()
+            .starts_with("La plupart des appareils ont décroché"));
+        assert!(unreachable_advice(3, 3).contains("Wi-Fi du Mac"));
+    }
+
+    #[test]
+    fn one_or_two_devices_keep_the_names_and_the_power_advice() {
+        assert_eq!(
+            devices_point(names(&["A"]), 10),
+            Point::Devices(names(&["A"]))
+        );
+        // Deux appareils sur deux : trop peu pour parler du réseau.
+        assert_eq!(
+            devices_point(names(&["A", "B"]), 2),
+            Point::Devices(names(&["A", "B"]))
+        );
+        assert_eq!(devices_point(vec![], 10), Point::Devices(vec![]));
+        assert!(devices_point(vec![], 10).is_empty());
+        assert!(unreachable_advice(1, 10).contains("alimentation"));
+        assert!(unreachable_advice(2, 10).contains("leur alimentation"));
+        assert_eq!(unreachable_advice(0, 10), "");
+    }
+
+    #[test]
+    fn together_comes_before_cameras_in_the_detail() {
+        let points = [
+            Point::Cameras(names(&["Jardin"])),
+            devices_point(names(&["A", "B", "C"]), 3),
+        ];
+        assert!(detail(&points).unwrap().starts_with("Tous les appareils"));
     }
 }

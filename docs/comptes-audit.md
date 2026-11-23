@@ -1,6 +1,6 @@
 # Journal d'audit
 
-Qui a fait quoi, depuis quel téléphone ou ordinateur. Il se lit dans l'onglet **Journal** d'Ostal
+Qui a fait quoi, depuis quel téléphone ou ordinateur. Il se lit dans l'onglet **Activité** d'Ostal
 Server et avec `ostal-server audit`. Il n'est lisible nulle part ailleurs (ni app web, ni app Mac)
 dans cette version.
 

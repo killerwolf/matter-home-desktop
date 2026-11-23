@@ -121,7 +121,7 @@ fn confirm_quit() -> bool {
         .set_level(MessageLevel::Warning)
         .set_title("Quitter Ostal Server ?")
         .set_description(
-            "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture de Ostal Server.",
+            "Si vous quittez, les automatismes (règles) ne s'exécutent plus, les capteurs ne sont plus relevés et le client ne peut plus se connecter, jusqu'à la prochaine ouverture d'Ostal Server.",
         )
         .set_buttons(MessageButtons::OkCancelCustom(quit.clone(), "Annuler".into()))
         .show();
@@ -840,12 +840,14 @@ impl App {
             .hub
             .as_ref()
             .map(|hub| CameraSummary::new(&hub.0.camera_admin_list(), &hub.0.detection().status()));
-        self.overview = overview::build(
+        let wifi = st.hub.as_ref().map(|hub| hub.0.wifi().status());
+        self.overview = overview::build_with_presence(
             &st.phase,
             &st.health,
             cameras.as_ref(),
             &self.web,
             st.desktop_doubt,
+            wifi.as_ref(),
         );
     }
 

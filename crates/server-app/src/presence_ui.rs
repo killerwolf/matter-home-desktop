@@ -384,6 +384,10 @@ impl PresenceUi {
                     egui::TextEdit::singleline(&mut self.url),
                 );
                 ui.label("Mot de passe d'administration de la box");
+                widgets::hint(
+                    ui,
+                    "Pour la Bbox : celui de sa page d'administration (mabbox.bytel.fr), pas celui du Wi-Fi.",
+                );
                 ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
                 ui.horizontal(|ui| {
                     if snap.status.linked {

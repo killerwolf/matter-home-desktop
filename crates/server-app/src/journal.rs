@@ -1,4 +1,4 @@
-//! L'onglet « Journal » d'Ostal Server (maquette Serveur-Journal) : qui a fait quoi, depuis quel
+//! L'onglet « Activité » d'Ostal Server (maquette Serveur-Journal) : qui a fait quoi, depuis quel
 //! téléphone ou ordinateur. Ici, tout ce qui se décide sans interface : les périodes, le groupement
 //! par jour (« Aujourd'hui · samedi 22 novembre »), les lignes. Les phrases viennent de
 //! `ostal_server::audit::describe`, les mêmes que celles de `ostal-server audit`. Le dessin est
@@ -185,7 +185,7 @@ pub fn empty_text(period: Period, person: bool) -> String {
     }
 }
 
-pub const FOOTER: &str = "Gardé 6 mois. Ce journal ne se lit que dans Ostal Server.";
+pub const FOOTER: &str = "Gardé 6 mois. Cette activité ne se lit que dans Ostal Server.";
 
 #[cfg(test)]
 mod tests {
