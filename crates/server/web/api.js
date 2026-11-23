@@ -25,14 +25,24 @@ export function adoptLegacyKey(key, legacyKey) {
 adoptLegacyKey(KEY, "matter-home.session");
 
 let token = null;
-try { token = JSON.parse(localStorage.getItem(KEY) || "null")?.token ?? null; } catch { token = null; }
+let accountName = "";
+try {
+  const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+  token = saved?.token ?? null;
+  accountName = token && typeof saved?.account === "string" ? saved.account : "";
+} catch { token = null; }
 
 export const hasToken = () => token !== null;
 
-function save(value) {
+/** L'identifiant du compte ouvert sur cet appareil (celui tapé à la connexion), « » s'il n'est pas
+ *  connu (session ouverte avant cette version). Le serveur ne le renvoie pas : il reste ici. */
+export const account = () => accountName;
+
+function save(value, account = "") {
   token = value;
+  accountName = value ? account : "";
   try {
-    if (value) localStorage.setItem(KEY, JSON.stringify({ token: value }));
+    if (value) localStorage.setItem(KEY, JSON.stringify({ token: value, account }));
     else localStorage.removeItem(KEY);
   } catch { /* stockage refusé : la session ne survivra pas à la fermeture */ }
 }
@@ -41,6 +51,16 @@ function save(value) {
  *  texte sert à l'erreur réseau, à l'écran de connexion et au bandeau « La maison ne répond pas ». */
 export const HOUSE_SILENT = "La maison ne répond pas.";
 export const HOUSE_HINT = "Le Mac est peut-être en veille : vérifiez qu'il est allumé et que Tailscale est actif.";
+export const HOUSE_HINT_LOCAL = "Le Mac serveur est éteint, en veille, ou n'est plus sur le Wi-Fi de la maison.";
+
+/** Joint-on la maison de loin ? Oui par une adresse Tailscale (`.ts.net` ou 100.64.0.0/10) : la piste
+ *  est Tailscale. Sinon (adresse du réseau local, `.local`), c'est le Mac et le Wi-Fi de la maison. */
+export function houseHint(hostname = globalThis.location?.hostname ?? "") {
+  const host = String(hostname).toLowerCase();
+  const m = /^100\.(\d+)\.\d+\.\d+$/.exec(host);
+  const remote = host.endsWith(".ts.net") || (m !== null && Number(m[1]) >= 64 && Number(m[1]) <= 127);
+  return remote ? HOUSE_HINT : HOUSE_HINT_LOCAL;
+}
 
 export class ApiError extends Error {
   constructor(status, code, detail, retryAfter, hint) {
@@ -68,7 +88,7 @@ export async function request(method, path, body) {
   try {
     response = await fetch(path, { method, headers, body: payload, cache: "no-store", credentials: "omit" });
   } catch {
-    throw new ApiError(0, "network", HOUSE_SILENT, undefined, HOUSE_HINT);
+    throw new ApiError(0, "network", HOUSE_SILENT, undefined, houseHint());
   }
   if (response.ok) {
     return response.status === 204 ? null : response.json().catch(() => null);
@@ -93,7 +113,7 @@ export async function requestBlob(path) {
   try {
     response = await fetch(path, { method: "GET", headers, cache: "no-store", credentials: "omit" });
   } catch {
-    throw new ApiError(0, "network", HOUSE_SILENT, undefined, HOUSE_HINT);
+    throw new ApiError(0, "network", HOUSE_SILENT, undefined, houseHint());
   }
   if (response.ok) return response.blob();
   const data = await response.json().catch(() => ({}));
@@ -109,7 +129,7 @@ export async function login(username, password) {
   const result = await request("POST", "/api/login", {
     username, password, protocol_version: PROTOCOL_VERSION, installation: describeInstallation(),
   });
-  save(result.token);
+  save(result.token, String(username).trim());
 }
 
 export async function logout() {

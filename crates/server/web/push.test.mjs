@@ -154,3 +154,26 @@ test("le toucher d'une notification n'ouvre que l'app", () => {
   assert.equal(eventFromHash("#evenement=../x"), null);
   assert.equal(eventFromHash(""), null);
 });
+
+// La carte « Installer sur l'iPhone » : iPhone et iPad seulement, « Plus tard » une semaine.
+{
+  const { showInstallCard, readInstallLater, writeInstallLater, INSTALL_LATER_MS } = await import("./push.js");
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 Version/17.2 Mobile/15E148 Safari/604.1";
+  const android = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36";
+  const windows = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36";
+  const ipadAsMac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15";
+  assert.equal(showInstallCard(iphone, true, 0), true);
+  assert.equal(showInstallCard(ipadAsMac, true, 0), true, "un iPad qui se présente comme un Mac");
+  assert.equal(showInstallCard(ipadAsMac, false, 0), false, "un vrai Mac");
+  assert.equal(showInstallCard(android, true, 0), false);
+  assert.equal(showInstallCard(windows, false, 0), false);
+  const now = 1_000_000_000_000;
+  assert.equal(showInstallCard(iphone, true, now - 1000, now), false, "« Plus tard » depuis une seconde");
+  assert.equal(showInstallCard(iphone, true, now - INSTALL_LATER_MS - 1, now), true, "une semaine plus tard");
+  const mem = new Map();
+  const storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+  assert.equal(readInstallLater(storage), 0);
+  writeInstallLater(now, storage);
+  assert.equal(readInstallLater(storage), now);
+  assert.equal(readInstallLater({ getItem() { throw new Error("refusé"); } }), 0);
+}

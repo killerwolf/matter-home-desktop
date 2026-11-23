@@ -2,7 +2,7 @@
 // La phrase d'état : jumelle de protocol::status (crates/protocol/src/status.rs), mêmes cas, mêmes
 // textes, mot pour mot. L'unité de compte est la catégorie, jamais l'appareil.
 import assert from "node:assert/strict";
-import { allReachable, clockText, headline, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
+import { droppedTogether, allReachable, clockText, headline, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
 
 const names = (...list) => list;
 const devices = (...p) => ({ kind: "devices", names: p });
@@ -112,6 +112,27 @@ assert.equal(unreachablePhrase([]), "");
   assert.equal(two.detail, "« Lampe d'Adam » est injoignable.");
   assert.equal(statusSummary(new Map(), [{ name: "Jardin", status: { state: "unreachable" } }]).detail, "La caméra « Jardin » est injoignable.");
   assert.equal(statusSummary(new Map(), undefined).detail, "Aucun appareil.");
+}
+
+// Panne d'ensemble : tous (ou ≥ 80 % et au moins 3) injoignables en même temps.
+{
+  const device = (id, name, state, extra = {}) => [id, { id, info: { name, caps: {}, device_types: [], ...extra }, status: { state }, latest: {} }];
+  const all = statusSummary(new Map([device("1", "A", "unreachable"), device("2", "B", "unreachable"), device("3", "C", "unreachable")]), []);
+  assert.equal(all.title, "Une chose à regarder");
+  assert.equal(all.detail, "Tous les appareils ont décroché en même temps : le Mac n'est sans doute plus sur le réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac.");
+  assert.equal(all.count, 1);
+  const most = new Map(["1", "2", "3", "4"].map((i) => device(i, `L${i}`, "unreachable")));
+  most.set("5", device("5", "L5", "online")[1]);
+  assert.match(statusSummary(most, []).detail, /^La plupart des appareils ont décroché en même temps/);
+  // Deux appareils sur deux : trop peu pour parler du réseau du Mac.
+  assert.equal(statusSummary(new Map([device("1", "A", "unreachable"), device("2", "B", "unreachable")]), []).detail, "« A » et « B » sont injoignables.");
+  // 3 sur 5 : sous le seuil, les noms.
+  const some = new Map([device("1", "A", "unreachable"), device("2", "B", "unreachable"), device("3", "C", "unreachable"), device("4", "D", "online"), device("5", "E", "online")]);
+  assert.equal(statusSummary(some, []).detail, "« A », « B » et 1 autre sont injoignables.");
+  assert.equal(droppedTogether(4, 5), true);
+  assert.equal(droppedTogether(3, 5), false);
+  assert.equal(droppedTogether(2, 2), false);
+  assert.equal(summarize([{ kind: "together", all: true }, cameras("Jardin")], 3).count, 2);
 }
 
 // L'heure, sur deux chiffres.

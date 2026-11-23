@@ -18,6 +18,10 @@ Les téléchargements de chaque version sont sur la
 - App Mac et web : plus d'erreur brute pour un appareil injoignable. Le serveur ne laisse passer que « pas d'adresse sur le réseau », « ne répond pas » ou « occupé » (`protocol::status::unreachable_reason`) ; le texte détaillé reste dans le journal technique.
 - App Mac : « Changer de serveur » sur « Plus de connexion à la maison » revient à l'écran de connexion sans révoquer la session (le jeton reste dans le fichier de connexion) ; seule « Se déconnecter » la ferme.
 - App Mac : la phrase d'état dit « Tous les appareils ont décroché en même temps » (Wi-Fi du Mac) quand presque tous sont injoignables ; l'état vide des caméras renvoie à l'onglet « Caméras » d'Ostal Server, sans « menu Caméras… » ni « flux RTSP » ; le menu Fichier montre « Compte : … » (le compte ouvert).
+- App web : la phrase d'état dit aussi « Tous les appareils ont décroché en même temps » (jumelle de `protocol::status`, mêmes seuils).
+- App web : la carte « Installer sur l'iPhone » ne s'affiche plus que sur iPhone et iPad, a un bouton « Plus tard » (une semaine) et ne rend plus les notifications obligatoires.
+- App web : « La maison ne répond pas » est annoncé comme une alerte, avec deux pistes : Mac éteint, en veille ou hors du Wi-Fi à la maison, Tailscale de loin.
+- App web : « Mode nuit » et « Mode vacances » dans la carte d'installation, l'état vide dit où ajouter un appareil, et « Mes connexions » montre le compte ouvert.
 - Présence : un téléphone absent du Wi-Fi peut être relié à son compte à distance ; la liste montre d'abord ceux qui sont sur le Wi-Fi, puis les autres appareils connus de la box.
 
 ### Présence par le Wi-Fi de la box et mode automatique (multi-comptes, étape 6)

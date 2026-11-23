@@ -11,10 +11,10 @@
   `protocol::status`, essayée par `tiles.test.mjs`) avec « À jour à HH:MM » ; carte « Installer sur
   l'iPhone » (étapes : raccourcis, widget, notifications, d'après `GET /api/tokens` et l'abonnement
   push) qui disparaît quand tout est fait ; pièces en cartes sur deux colonnes, une ligne par appareil.
-- **La maison ne répond pas** : bandeau « La maison ne répond pas. » avec la piste (Mac en veille,
-  Tailscale) et « Réessayer » ; les cartes restent à 0,55 d'opacité avec « Dernières valeurs
+- **La maison ne répond pas** : bandeau « La maison ne répond pas. » (`role="alert"`) avec la piste : à la maison, Mac éteint, en veille ou hors du Wi-Fi ; par
+  Tailscale (`.ts.net`, 100.64.0.0/10), Mac en veille ou Tailscale inactif et « Réessayer » ; les cartes restent à 0,55 d'opacité avec « Dernières valeurs
   connues. Lu à HH:MM. » ; la pastille de mode passe en gris. Le texte vient de `api.js`
-  (`HOUSE_SILENT`, `HOUSE_HINT`), repris par l'écran de connexion.
+  (`HOUSE_SILENT`, `houseHint()`), repris par l'écran de connexion.
 - **Confirmations** : un dialogue `[Annuler][Révoquer]` dans la page (`askConfirm`) remplace
   `confirm()` pour supprimer un événement, révoquer un jeton ou un abonnement.
 - **Vocabulaire** : « injoignable » partout (jamais « hors ligne » ni « en ligne »), un seul nom : « Ostal ».

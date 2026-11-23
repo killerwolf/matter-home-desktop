@@ -535,19 +535,27 @@ async function confirmPhonePick() {
  *  l'abonnement de cet appareil aux notifications. `null` tant que les jetons ne sont pas connus. */
 function installSteps() {
   if (!state.tokens) return null;
-  const support = push.pushSupport(pushEnv());
-  return [
-    { done: Boolean(tokenHere(state.tokens, "mode")), parts: ["Ajouter vos raccourcis : ", ["Je pars", "Je rentre", "Nuit", "Vacances"], "."], open: openWidgets },
-    { done: Boolean(tokenHere(state.tokens, "read")), parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
-    // Un navigateur qui ne sait pas recevoir de notifications (ordinateur, Android sans push) n'a rien à y faire.
-    { done: Boolean(pushUi.mine) || support.reason === "unsupported", parts: ["Activer les ", ["notifications"], " sur cet iPhone."], open: openNotifications },
+  const modeDone = Boolean(tokenHere(state.tokens, "mode"));
+  const readDone = Boolean(tokenHere(state.tokens, "read"));
+  const steps = [
+    { done: modeDone, parts: ["Ajouter vos raccourcis : ", ["Je pars", "Je rentre", "Mode nuit", "Mode vacances"], "."], open: openWidgets },
+    { done: readDone, parts: ["Ajouter le ", ["widget"], " à l'écran d'accueil."], open: openWidgets },
   ];
+  // Les notifications sont facultatives : la dernière étape n'apparaît qu'une fois les deux autres
+  // faites, et « Plus tard » la ferme. Un navigateur qui ne sait pas en recevoir n'a rien à y faire.
+  const support = push.pushSupport(pushEnv());
+  if (modeDone && readDone && !pushUi.mine && support.reason !== "unsupported") {
+    steps.push({ done: false, optional: true, parts: ["Activer les ", ["notifications"], " sur cet iPhone (facultatif)."], open: openNotifications });
+  }
+  return steps;
 }
 
 function patchInstall() {
   const slot = $("#install-slot");
   if (!slot) return;
-  const steps = state.loaded && !state.lostAt ? installSteps() : null;
+  const env = pushEnv();
+  const wanted = push.showInstallCard(env.ua, env.touch, push.readInstallLater());
+  const steps = wanted && state.loaded && !state.lostAt ? installSteps() : null;
   const current = steps?.findIndex((x) => !x.done) ?? -1;
   slot.hidden = current < 0; // tout est fait : la carte disparaît
   if (slot.hidden) { slot._key = null; return; }
@@ -572,7 +580,12 @@ function patchInstall() {
   const go = make("button", "link-button", "Continuer l'installation");
   go.type = "button";
   go.addEventListener("click", () => steps[current].open());
-  card.append(head, bar, text, go);
+  const later = make("button", "link-button", "Plus tard");
+  later.type = "button";
+  later.addEventListener("click", () => { push.writeInstallLater(); slot._key = null; slot.hidden = true; slot.replaceChildren(); });
+  const actions = make("div", "install-actions");
+  actions.append(go, later);
+  card.append(head, bar, text, actions);
   slot.replaceChildren(card);
 }
 
@@ -609,7 +622,7 @@ function renderDevices() {
     note.id = "rooms-note";
     note.hidden = true;
     view.append(status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
-    if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur." : "Chargement…"));
+    if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur. Ajoutez-en dans Ostal Server, sur le Mac, onglet Appareils." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
     view.appendChild(rooms);
@@ -1459,6 +1472,8 @@ function renderConnections() {
   const body = $("#sheet-body");
   body.dataset.id = "connections";
   body.replaceChildren();
+  const account = api.account();
+  if (account) body.appendChild(make("p", "conn-account", `Compte : ${account}`));
   body.appendChild(make("p", "ev-note", "Les téléphones et ordinateurs où votre compte est ouvert. Couper une connexion la ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher : ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe."));
   if (connUi.error) body.appendChild(make("p", "error", connUi.error));
   if (!connUi.list) { if (!connUi.error) body.appendChild(make("p", "w-note", "Chargement…")); return; }
@@ -2134,7 +2149,7 @@ function loginMessage(error) {
     case "invalid_credentials": return "Identifiant ou mot de passe incorrect.";
     case "too_many_attempts": return `Trop d'essais. Réessayez dans ${error.retryAfter ?? 30} s.`;
     case "version_incompatible": return "Le serveur et l'app ne parlent pas la même version. Mettez le serveur à jour.";
-    case "network": return `${api.HOUSE_SILENT} ${api.HOUSE_HINT}`;
+    case "network": return `${api.HOUSE_SILENT} ${api.houseHint()}`;
     default: return "Connexion impossible.";
   }
 }
@@ -2173,7 +2188,7 @@ $("#tabs").addEventListener("click", (event) => {
   if (b) selectTab(b.dataset.tab);
 });
 $("#lost-title-text").textContent = api.HOUSE_SILENT;
-$("#lost-hint").textContent = api.HOUSE_HINT;
+$("#lost-hint").textContent = api.houseHint();
 $("#retry").addEventListener("click", () => { state.connection = "connecting"; renderLost(); events?.restart(); });
 $("#sheet-close").addEventListener("click", closeSheet);
 $("#pick-confirm").addEventListener("click", confirmPhonePick);

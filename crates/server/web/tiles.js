@@ -228,6 +228,18 @@ export function unreachablePhrase(names, cameras = false) {
   return `${many}« ${names[0]} », « ${names[1]} » et ${others} ${others > 1 ? "autres" : "autre"} sont injoignables.`;
 }
 
+/** Le seuil d'une panne d'ensemble (jumelle de `protocol::status::dropped_together`) : au moins 3
+ *  appareils, dont 80 % ou plus injoignables au même moment. */
+export function droppedTogether(unreachable, total) {
+  return total >= 3 && unreachable <= total && unreachable * 10 >= total * 8;
+}
+
+/** « Tous les appareils ont décroché en même temps : … » (ou « La plupart des appareils … »). */
+export function droppedTogetherPhrase(all) {
+  const lead = all ? "Tous les" : "La plupart des";
+  return `${lead} appareils ont décroché en même temps : le Mac n'est sans doute plus sur le réseau de la maison (Wi-Fi, IPv6). Vérifiez le Wi-Fi du Mac.`;
+}
+
 /** Le titre pour `n` points (catégories) à regarder. */
 export function headline(n) {
   if (n === 0) return "La maison va bien.";
@@ -245,12 +257,16 @@ export function allReachable(devices) {
 
 /**
  * Les points à regarder : une catégorie qui demande attention, jamais un appareil. `points` :
- * [{ kind: "devices" | "cameras" | "other", names?: [], text?: "" }]. Le détail est la phrase du
+ * [{ kind: "devices" | "together" | "cameras" | "other", names?: [], all?: bool, text?: "" }]. Le détail est la phrase du
  * premier point non vide, les appareils passant d'abord, puis les caméras, puis les autres.
  */
 export function summarize(points, deviceCount) {
-  const rank = { devices: 0, cameras: 1, other: 2 };
-  const phrase = (p) => (p.kind === "other" ? String(p.text ?? "").trim() : unreachablePhrase(p.names ?? [], p.kind === "cameras"));
+  const rank = { devices: 0, together: 0, cameras: 1, other: 2 };
+  const phrase = (p) => {
+    if (p.kind === "other") return String(p.text ?? "").trim();
+    if (p.kind === "together") return droppedTogetherPhrase(Boolean(p.all));
+    return unreachablePhrase(p.names ?? [], p.kind === "cameras");
+  };
   const real = points.filter((p) => phrase(p) !== "");
   const first = real.reduce((best, p) => (best === null || rank[p.kind] < rank[best.kind] ? p : best), null);
   return {
@@ -273,8 +289,11 @@ export function statusSummary(devices, cameras = []) {
   const bridges = bridgeIds(devices);
   const shown = [...devices.values()].filter((d) => !bridges.has(d.id));
   const byName = (a, b) => a.localeCompare(b, "fr");
+  const down = shown.filter(isUnreachable).map((d) => d.info.name).sort(byName);
   const points = [
-    { kind: "devices", names: shown.filter(isUnreachable).map((d) => d.info.name).sort(byName) },
+    droppedTogether(down.length, shown.length)
+      ? { kind: "together", all: down.length === shown.length }
+      : { kind: "devices", names: down },
     { kind: "cameras", names: (cameras ?? []).filter((c) => c.status?.state === "unreachable").map((c) => c.name).sort(byName) },
   ];
   const s = summarize(points, shown.length);
