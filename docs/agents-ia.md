@@ -1,16 +1,17 @@
-# Agents d'IA : le serveur MCP intégré (étapes E1a, E1b et E2)
+# Agents d'IA : le serveur MCP intégré (étapes E1a, E1b, E2 et E3)
 
 Ostal Server peut recevoir un agent d'IA (Claude Code, Cursor…) qui lit l'état de la maison par le
 protocole MCP. **C'est éteint tant que vous ne l'allumez pas.** Les appareils, les pièces,
 l'historique, les automatisations et les caméras se lisent avec le droit de lecture ; **la présence
-et le mode** demandent un droit à part, « occupation », éteint par défaut. Depuis l'étape E2, un
-troisième droit, « commandes », permet d'**allumer ou d'éteindre des prises et des lampes** que vous
-avez nommées, et rien d'autre : aucun volet, aucun changement de mode (voir
-[Les commandes](#les-commandes-e2)).
+et le mode** demandent un droit à part, « occupation », éteint par défaut. Un troisième droit,
+« commandes », permet d'**allumer ou d'éteindre des prises et des lampes** et de **commander des
+volets**, un par un ou **par pièce**, parmi les appareils que vous avez nommés. Un quatrième, « mode »,
+permet de **changer le mode de la maison** (il suppose « occupation »). **Ce qui est sensible n'est
+jamais exécuté sur la seule parole de l'agent** : une personne doit l'autoriser dans l'app web (voir
+[Les confirmations](#les-confirmations-e3)).
 
-Les étapes suivantes (confirmations par une personne ; volets et pièces entières ; mode ; écrans pour
-créer un agent et lui donner des droits) sont décrites dans les spécifications du projet, pas encore
-livrées. Tant que les confirmations n'existent pas, **tout ce qui en demanderait une est refusé**.
+Reste à venir (étape E4) : les écrans pour créer un agent et lui donner ses droits. En attendant, les
+droits et les listes se règlent à la main dans `agents.json`.
 
 ## Ce que ça ouvre, et ce que ça n'ouvre pas
 
@@ -151,6 +152,7 @@ serveur arrêté ou non : il est relu dès qu'il change.
   "version": 1,
   "enabled": true,
   "never": ["13828100"],
+  "sensitive": ["13828103"],
   "agents": [
     {
       "id": "…", "user_id": "…", "label": "Claude Code sur le portable",
@@ -162,8 +164,8 @@ serveur arrêté ou non : il est relu dès qu'il change.
 }
 ```
 
-- `scopes` : ajouter `"control"`.
-- `devices` : les appareils que **ce jeton** peut commander, en identifiants décimaux (ceux de
+- `scopes` : ajouter `"control"` (prises, lampes et volets) et/ou `"mode"` (changer le mode ; il suppose `"occupation"`).
+- `devices` : les appareils (prises, lampes et volets) que **ce jeton** peut commander, en identifiants décimaux (ceux de
   `ostal_list_devices`). **Vide ou absent : aucun.** 20 au plus : avec 21 entrées, ou une seule
   entrée illisible, le jeton ne commande **rien** (on ne coupe pas une liste au hasard).
 - `never` : la liste « jamais par un agent », pour **tous** les agents : congélateur, box, **prise du
@@ -201,11 +203,12 @@ serveur arrêté ou non : il est relu dès qu'il change.
    commande refusée compte aussi.
 7. `Hub::set_on_off`, puis la ligne du journal.
 
-Limite connue, dite en clair : deux sortes de déclencheurs ne sont pas suivies. Une règle « quand
+Limite connue, dite en clair : trois sortes de déclencheurs ne sont pas suivies. Une règle « quand
 la prise X reste injoignable » (`Unreachable`) : couper la prise d'un autre appareil peut en
 déclencher une. Un seuil (`Threshold`) posé sur **un autre appareil** dont la mesure dépend de la
 prise commandée (un thermomètre près d'un radiateur, par exemple) : le serveur ne sait pas que
-l'un influe sur l'autre.
+l'un influe sur l'autre. Et le capteur de contact d'une porte de garage est un autre appareil que
+son moteur : « quand la porte s'ouvre » ne se déduit pas de la commande du moteur.
 
 ### Dans le journal
 
@@ -216,6 +219,106 @@ l'un influe sur l'autre.
   motif, avec un mot fermé : `device` (hors de `devices` ou dans `never`), `rule` (une automatisation
   réservée aux personnes), `control_rights` (le compte n'a plus le droit de commander), `scope`,
   `rate`. Jamais l'identifiant ni le nom de l'appareil visé.
+
+## Les confirmations (E3)
+
+Quand une action est sensible, le serveur **ne l'exécute pas**. Il met une demande en attente, prévient
+la personne à qui appartient l'agent et répond à l'agent :
+
+```json
+{"status": "confirmation_required", "confirmation_id": "…32 chiffres hexadécimaux…", "state": "pending",
+ "expires_at": 1795525023.9, "message": "En attente de l'accord de Hamdi dans l'app Ostal (5 minutes)…"}
+```
+
+1. **La personne** voit la carte « Demandes à valider » en tête de l'accueil de l'app web (et reçoit une
+   notification, si elle en a activé la catégorie « Demandes d'un agent d'IA à valider ») : le nom de
+   l'agent, **une phrase fabriquée par Ostal** (« Mettre la maison en mode Vacances (elle est en
+   Absent). »), **pourquoi** une personne doit valider, les **automatisations qui partiraient** (leurs
+   noms, jamais une adresse), un compte à rebours, **Autoriser** et **Refuser**. Rien de ce texte ne
+   vient de l'agent.
+2. **L'agent** rappelle le **même outil** avec les **mêmes arguments** et `confirmation_id`, ou lit
+   `ostal_confirmation_status`. Le serveur exécute seulement si la demande est autorisée, qu'elle est
+   **de ce jeton**, qu'elle porte la **même empreinte**, qu'elle a moins de 5 minutes et qu'elle n'a pas
+   déjà servi. Elle passe à « utilisée » **avant** l'exécution : une commande qui échoue ne rend pas
+   l'autorisation.
+3. Toute autre issue : `isError` avec le code `confirmation_invalid` (refusée, expirée, déjà utilisée,
+   inconnue, ou « les arguments ou la situation ne sont plus ceux de la demande »). Un `confirmation_id`
+   donné est **toujours vérifié**, jamais ignoré.
+
+| Garantie | Comment |
+|---|---|
+| Seule **la personne propriétaire de l'agent** autorise ou refuse | pour toute autre, ou un identifiant inconnu, la demande n'existe pas (404). Un agent révoqué ou expiré n'a plus de demande visible |
+| **L'agent ne s'autorise pas lui-même** | les routes sont `GET /api/agent-requests`, `POST /api/agent-requests/{id}/approve` et `…/refuse`, **sous une session** : un jeton d'agent, de mode ou de lecture y reçoit 401 |
+| Autoriser demande de **pouvoir faire la chose soi-même** | le compte doit avoir le droit de commander (appareils) ou de changer le mode ; refuser est toujours possible |
+| **5 minutes, une seule fois** | en mémoire seulement : un redémarrage annule toutes les demandes |
+| **Même empreinte** | l'outil, ses arguments, **ce que le serveur en a déduit** (appareils visés, mode de départ, règles qui partiraient, motifs). Si la situation change entre la demande et l'exécution, l'autorisation ne vaut plus et n'est pas brûlée |
+| Bornes | 3 demandes vivantes et 10 nouvelles par heure et par jeton, 128 en tout : au-delà, `rate_limited`. Rappeler la même demande rend la même (pas de nouvelle place) |
+| Contrôles **refaits** à chaque appel | une autorisation ne contourne ni le droit du jeton, ni `devices`, ni `never`, ni le droit du compte |
+
+**La notification** part vers les appareils de **cette personne seulement** (`Push::notify_user`), avec
+un texte **générique** (« « Claude Code » attend votre accord dans l'app Ostal ») : il s'affiche sur
+l'écran verrouillé, où le mode demandé (« Vacances » dit que la maison est vide) n'a pas sa place. Un
+appareil abonné avant les comptes (sans propriétaire) ne reçoit rien. Sans abonnement, la carte de
+l'app web reste le seul signal.
+
+### Ce qui demande l'accord d'une personne
+
+| Outil | Confirmation |
+|---|---|
+| `ostal_set_on_off`, `ostal_set_cover`, `ostal_set_room` | **non**, sauf si un appareil visé est **sensible** (liste `sensitive`), ou si la commande fait partir, de proche en proche, une automatisation qui change le mode, appelle une adresse web, commande un appareil sensible, « jamais » ou hors des appareils permis du jeton, ou est inconnue |
+| `ostal_set_mode` | **décidée par l'effet réel**, voir plus bas |
+
+### Les outils de l'étape E3
+
+| Outil | Droit | Paramètres | Rend |
+|---|---|---|---|
+| `ostal_set_cover` | « commandes » | `id`, puis **soit** `command` (`Open`, `Close`, `Stop`) **soit** `position` (0 à 100, 100 = tout ouvert) | comme `ostal_set_on_off` : `{id, name, command, sent: true, note}` |
+| `ostal_set_room` | « commandes » | `room_id` (l'identifiant de `ostal_list_rooms`, **jamais un nom**), `kind` (`on_off` ou `cover`), `command` ou `position` | `{room, kind, sent: [{id, name}], failed: [{id, name, code}], skipped: [{id, name, reason: "not_permitted"}], note}` |
+| `ostal_set_mode` | « mode » | `mode` (`present`, `absent`, `nuit`, `vacances`) | `{mode, changed, cameras: [{id, behavior_now}], rules_triggered}`, ou `confirmation_required` avec `reasons` et `rules` |
+| `ostal_confirmation_status` | « commandes » ou « mode » | `confirmation_id` | `{confirmation_id, state, tool, expires_at}` ; `state` : `pending`, `approved`, `refused`, `expired`, `used`. **Seulement les demandes de ce jeton** : celle d'un autre est « inconnue » |
+
+Tous les outils d'écriture portent `_meta["anthropic/requiresUserInteraction"]: true` (un second filet
+côté Claude Code, **sans valeur de sécurité** : le serveur exige l'accord de toute façon) ; seul
+`ostal_set_on_off` est `idempotentHint` (viser un état rejoue sans effet). `ostal_set_room` compte pour
+**son nombre d'appareils** dans les 20 commandes par minute (tout ou rien) et écrit **une ligne
+`device_command` par appareil**.
+
+**`ostal_set_room`** : les appareils de la pièce du bon type, **20 au plus** (la liste d'un jeton n'en
+permet pas plus). Ceux que ce jeton ne peut pas commander (hors de `devices`, ou dans `never`) sont
+**sautés et listés avec un seul motif, `not_permitted`** : l'agent ne distingue pas la liste « jamais ».
+Si aucun n'est permis, c'est le même refus qu'une commande seule. Une pièce ne se désigne que par son
+identifiant, jamais un nom (deux étages peuvent avoir une pièce du même nom).
+
+### Le mode, décidé par l'effet
+
+Le serveur calcule le passage du mode actuel au mode demandé **avec le tableau réel de chaque caméra**
+(pas seulement l'emplacement), et demande l'accord si :
+
+1. une caméra qui **surveille** cesserait de surveiller (elle passerait à `off` ou `live`) : on se désarme ;
+2. une caméra **intérieure** se mettrait à surveiller ou à diffuser alors que **quelqu'un est à la
+   maison, ou que la présence est inconnue** (box injoignable, ou une personne active sans état
+   déclaré : dans le doute, quelqu'un est là) ;
+3. le mode demandé est **`vacances`**, toujours ;
+4. le changement fait partir des règles « quand le mode devient… » qui appellent une adresse web,
+   changent le mode, sont inconnues, ou commandent un appareil sensible ou « jamais ».
+
+Avec les réglages d'origine : Présent → Nuit passe tout de suite (on s'arme) ; **Nuit → Présent en
+demande une** (les caméras extérieures quittent la surveillance : c'est le prix de la règle par
+l'effet, accepté pour chaque matin) ; Présent → Absent en demande une tant que quelqu'un est (ou
+peut être) à la maison, pas quand tout le monde est parti ; Absent ou Vacances → Nuit éteint les
+caméras intérieures, donc une confirmation. **Le même mode que l'actuel** : rien ne change, rien n'est
+demandé. Le changement se fait **sous le verrou du mode** : si le mode a bougé depuis le calcul, rien
+n'est changé et la demande ne vaut plus.
+
+La réponse et la carte **listent les automatisations qui se déclenchent** (noms nettoyés). Un
+changement de mode écrit une ligne `mode_changed` d'origine `agent` avec le libellé de l'agent.
+
+### La liste « sensible »
+
+Comme `never`, elle s'écrit à la main dans `agents.json` (`"sensitive": ["13828101"]`), vaut pour tous
+les agents, survit à la ligne de commande, et se **durcit** : une entrée illisible (faute de frappe,
+zéro initial) rend **tout** appareil sensible. Mettez-y la porte de garage et la baie vitrée. `never`
+l'emporte toujours (un appareil « jamais » n'est commandé par aucun agent, sensible ou non).
 
 ## Le journal d'audit des agents
 
@@ -228,10 +331,11 @@ Activité d'Ostal Server et `ostal-server audit` les lisent déjà (`audit::desc
 |---|---|
 | `agent_read` | **les lectures ordinaires, regroupées** : une ligne par agent et par tranche de 10 minutes, écrite à l'échéance (un balayeur la passe chaque minute, et à l'arrêt du serveur). `detail` : `N:outil,outil` (le nombre de lectures et les outils lus, sans `ostal_`). Jamais une valeur lue ni un argument |
 | `agent_occupation` | **une ligne par lecture** du droit « occupation » : `ostal_get_mode`, `ostal_get_presence`, et `ostal_home_summary`, `ostal_list_cameras`, `ostal_list_automation_runs` quand le jeton a le droit (leur réponse en dépend). Jamais regroupée. Écrite avant la réponse |
-| `agent_denied` | un appel refusé, `result: refused`, `detail` : `unknown` (outil inconnu), `scope` (droit du jeton manquant), `rights` (le compte n'a plus le droit de lire la maison), `control_rights` (ni de commander), `device` ou `rule` (une commande refusée, voir [Les commandes](#les-commandes-e2)) ou `rate` (débit dépassé). Au plus **une ligne par minute, par agent et par motif**. Le nom d'un outil inconnu n'y entre jamais |
+| `agent_denied` | un appel refusé, `result: refused`, `detail` : `unknown` (outil inconnu), `scope` (droit du jeton manquant), `rights` (le compte n'a plus le droit de lire la maison), `control_rights` (ni de commander), `mode_rights` (ni de changer le mode), `device` (appareil hors de `devices` ou dans `never`, y compris des appareils sautés dans une pièce) ou `rate` (débit dépassé). Au plus **une ligne par minute, par agent et par motif**. Le nom d'un outil inconnu n'y entre jamais. (`rule`, d'avant l'étape E3, ne s'écrit plus : une commande qui ferait partir une règle sensible attend une personne) |
+| `confirmation_requested`, `confirmation_approved`, `confirmation_refused`, `confirmation_expired` | la vie d'une demande. `target` : le libellé de l'agent ; `detail` : l'outil (`set_on_off`, `set_cover`, `set_room`, `set_mode`), mot fermé. **Autorisée ou refusée : la ligne porte la personne** et sa session, pas l'agent. Jamais l'identifiant de la demande, l'appareil visé ni le mode |
 
-Un changement de mode fait par un agent (étape E3) s'écrira `source: "agent"` ; un ancien lecteur du
-journal qui ne connaît pas cette origine la lit « autre ».
+Un changement de mode fait par un agent (étape E3) s'écrit `source: "agent"` (le libellé de l'agent
+en `detail`) ; un ancien lecteur du journal qui ne connaît pas cette origine la lit « autre ».
 
 ## Choix de cette implémentation
 
@@ -259,7 +363,7 @@ Hors des spécifications ou à confirmer :
   des automatisations déclenchées (elles ne partiraient pas). Pour l'appareil commandé, le sens
   compte (« s'allume » ou « s'éteint ») ; pour les appareils commandés ensuite par des règles, on
   suppose les deux sens. Le texte de refus ne nomme jamais la règle, le mode ni l'adresse.
-  Un appel à `ostal_set_on_off` par un jeton sans le droit est un refus `scope` (comme pour
+  Un appel à `ostal_set_on_off` (ou à un autre outil d'écriture) par un jeton sans le droit est un refus `scope` (comme pour
   `ostal_get_mode`), pas un outil inconnu.
 - **Jetons refusés** : un échec d'authentification n'est ni compté ni écrit au journal d'audit
   (les spécifications techniques disaient « compté »). Il est retardé de 250 ms et une ligne du
@@ -267,3 +371,23 @@ Hors des spécifications ou à confirmer :
 - Les noms d'appareils rendus à l'agent perdent aussi les caractères invisibles ou bidi (largeur
   nulle, U+202A à U+202E, U+2066 à U+2069, séparateurs de ligne, étiquettes), pas seulement les
   caractères de contrôle.
+- **E3 : durées et bornes** : 5 minutes fixes (les spécifications parlent d'un réglage de 1 à 15 minutes,
+  qui viendra avec l'écran de l'étape E4), 3 demandes vivantes et 10 nouvelles par heure par jeton,
+  128 en tout, relues toutes les 5 s par l'app web tant qu'une attend. Les demandes expirées sont
+  écrites au journal à la minute suivante (balayeur) ; une demande terminée reste lisible un quart
+  d'heure pour `ostal_confirmation_status`.
+- **E3 : autorisation et exécution séparées** : l'autorisation ne fait rien toute seule. C'est l'agent
+  qui rappelle l'outil (comme le disent les spécifications), et tous les contrôles sont refaits.
+- **E3 : « jamais » et confirmation** : une **règle** déclenchée qui commande un appareil de la liste
+  `never` ou hors des appareils du jeton **attend une personne** (elle ne bloque plus), comme le
+  disent les spécifications ; l'appareil visé directement, lui, reste refusé s'il est dans `never` ou
+  hors de la liste du jeton.
+- **E3 : `ostal_set_mode` et les appareils permis** : les règles de mode ne sont jugées que sur
+  « sensible » et « jamais », pas sur les appareils permis du jeton (changer le mode allume
+  normalement des lampes que l'agent n'a pas le droit de commander seul).
+- **E3 : la liste « sensible »** est écrite à la main, pour tous les agents ; les propositions par
+  défaut à l'activation (porte de garage et baie vitrée, congélateur, box, prise du Mac serveur) sont
+  celles de l'assistant de l'étape E4.
+- **E3 : le texte de la notification** est le même pour toutes les demandes et ne dit pas ce qui est
+  demandé.
+- **E3 : `Unreachable` et les capteurs de porte** ne sont pas suivis (voir plus haut).

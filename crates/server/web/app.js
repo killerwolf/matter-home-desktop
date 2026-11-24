@@ -14,6 +14,7 @@ import { DEFAULT_MODE, MODES, cameraOff, effect, isMode, modeChangeNotice, modeL
 import * as push from "./push.js";
 import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
 import * as presence from "./presence.js";
+import * as agents from "./agents.js";
 import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -35,6 +36,7 @@ const state = {
   notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
   presence: null, // GET /api/presence/people : { people, auto_mode, box_link, updated_at } ; null : rien à montrer (pas de box, serveur plus ancien)
   phones: null, // GET /api/wifi/phones : { linked, box_link, mine, free } (noms seulement)
+  requests: [], // GET /api/agent-requests : les demandes d'agents d'IA qui attendent mon accord (cartes de agents.js)
   tokens: null, // GET /api/tokens : mes jetons { mode: { exists, created }, read: { … }, items: [{ id, kind, label, created }], label } (carte « Installer »)
 };
 const expects = new Map(); // id -> { on, motion, at, acked, req, timer }
@@ -391,6 +393,129 @@ function stopPresence() {
   closePhonePick();
 }
 
+// ---- « Demandes à valider » : l'accord d'une personne pour un agent d'IA ----------------------------
+
+const requestUi = { busy: new Set(), error: new Map(), timer: null, tick: null };
+
+/** La carte « Demandes à valider » : une section par demande, tout en texte brut (`textContent`). Elle
+ *  passe avant l'état de la maison : une demande expire au bout de 5 minutes. */
+function patchRequests() {
+  const slot = $("#requests-slot");
+  if (!slot) return;
+  const cards = state.loaded && !state.lostAt ? state.requests : [];
+  slot.hidden = cards.length === 0;
+  if (!cards.length) { slot._key = ""; return; }
+  const key = JSON.stringify([cards, [...requestUi.busy], [...requestUi.error]]);
+  if (slot._key === key) return;
+  slot._key = key;
+  const title = make("h2", "requests-title", cards.length > 1 ? "Demandes à valider" : "Demande à valider");
+  const list = make("div", "requests");
+  for (const c of cards) {
+    const section = make("section", "card request");
+    section.setAttribute("aria-label", agents.titleOf(c));
+    const head = make("div", "request-head");
+    head.append(make("strong", "", agents.titleOf(c)), make("span", "request-left", agents.remainingText(c.expires)));
+    head.lastChild.dataset.expires = String(c.expires);
+    section.append(head, make("p", "request-text", c.text));
+    if (c.details.length) {
+      const why = make("ul", "request-why");
+      for (const d of c.details) why.appendChild(make("li", "", d));
+      section.appendChild(why);
+    }
+    const rules = agents.rulesText(c.rules);
+    if (rules) section.appendChild(make("p", "request-rules", rules));
+    const error = requestUi.error.get(c.id);
+    if (error) {
+      const p = make("p", "request-error", error);
+      p.setAttribute("role", "alert");
+      section.appendChild(p);
+    }
+    const busy = requestUi.busy.has(c.id);
+    const row = make("div", "request-actions");
+    const approve = make("button", "primary", "Autoriser");
+    approve.type = "button";
+    approve.disabled = busy;
+    approve.setAttribute("aria-label", `Autoriser la demande de ${c.agent}`);
+    approve.addEventListener("click", () => decideRequest(c.id, "approve"));
+    const refuse = make("button", "btn", "Refuser");
+    refuse.type = "button";
+    refuse.disabled = busy;
+    refuse.setAttribute("aria-label", `Refuser la demande de ${c.agent}`);
+    refuse.addEventListener("click", () => decideRequest(c.id, "refuse"));
+    row.append(approve, refuse);
+    section.appendChild(row);
+    list.appendChild(section);
+  }
+  slot.replaceChildren(title, list);
+}
+
+async function decideRequest(id, verb) {
+  requestUi.busy.add(id);
+  requestUi.error.delete(id);
+  scheduleRender(false);
+  try {
+    await api.request("POST", `/api/agent-requests/${id}/${verb}`);
+    state.requests = state.requests.filter((c) => c.id !== id);
+  } catch (error) {
+    requestUi.error.set(id, agents.decisionError(error));
+  }
+  requestUi.busy.delete(id);
+  scheduleRender(false);
+  loadRequests();
+}
+
+/** Les demandes en attente : à l'ouverture, au retour de l'app, et toutes les 5 s tant qu'il y en a
+ *  une (20 s sinon). Un serveur plus ancien n'a pas la route : rien à montrer, sans erreur. */
+async function loadRequests() {
+  if (!api.hasToken()) return;
+  clearTimeout(requestUi.timer);
+  // Page cachée : on ne relit pas (le retour de l'app le fait), on repasse plus tard.
+  if (document.hidden) {
+    requestUi.timer = setTimeout(loadRequests, agents.refreshDelay(state.requests));
+    return;
+  }
+  try {
+    state.requests = agents.requestCards(await api.request("GET", "/api/agent-requests"));
+  } catch (error) {
+    if (agents.isMissingRoute(error)) state.requests = [];
+    // Autre échec (réseau coupé) : on garde ce qu'on savait.
+  }
+  for (const id of [...requestUi.error.keys()]) if (!state.requests.some((c) => c.id === id)) requestUi.error.delete(id);
+  scheduleRender(false);
+  clearTimeout(requestUi.timer);
+  requestUi.timer = setTimeout(loadRequests, agents.refreshDelay(state.requests));
+}
+
+/** Le compte à rebours : chaque seconde, seulement le texte ; une demande expirée disparaît. */
+function tickRequests() {
+  if (!state.requests.length) return;
+  const now = Date.now() / 1000;
+  if (state.requests.some((c) => c.expires <= now)) {
+    state.requests = state.requests.filter((c) => c.expires > now);
+    scheduleRender(false);
+    return;
+  }
+  for (const el of document.querySelectorAll("#requests-slot [data-expires]")) {
+    el.textContent = agents.remainingText(Number(el.dataset.expires), now);
+  }
+}
+
+function startRequests() {
+  clearTimeout(requestUi.timer);
+  clearInterval(requestUi.tick);
+  loadRequests();
+  requestUi.tick = setInterval(tickRequests, 1000);
+}
+
+function stopRequests() {
+  clearTimeout(requestUi.timer);
+  clearInterval(requestUi.tick);
+  requestUi.timer = requestUi.tick = null;
+  requestUi.busy.clear();
+  requestUi.error.clear();
+  state.requests = [];
+}
+
 // ---- « Lequel est votre téléphone ? » (première connexion, ou « Mon téléphone ») ----------------------
 
 const pick = { open: false, first: false, choice: "", phones: null, busy: false, error: "", asked: false };
@@ -610,6 +735,9 @@ function renderDevices() {
     view._signature = signature;
     view._tab = "devices";
     view.replaceChildren();
+    const requestsSlot = make("div");
+    requestsSlot.id = "requests-slot";
+    requestsSlot.hidden = true;
     const status = make("div");
     status.id = "status-slot";
     const presenceSlot = make("div");
@@ -621,7 +749,7 @@ function renderDevices() {
     const note = make("p", "view-note");
     note.id = "rooms-note";
     note.hidden = true;
-    view.append(status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
+    view.append(requestsSlot, status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
     if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur. Ajoutez-en depuis l'app Ostal sur le Mac (« + Ajouter ») ; l'onglet Appareils d'Ostal Server explique comment." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
@@ -684,6 +812,7 @@ function renderDevices() {
     note.hidden = !lost;
     if (lost) note.textContent = `Dernières valeurs connues. Lu à ${clockText(state.updatedAt ?? state.lostAt)}.`;
   }
+  patchRequests();
   patchStatus();
   patchPresence();
   patchInstall();
@@ -2103,6 +2232,7 @@ function showLogin(message, info = false) {
   state.tokens = null;
   state.notice = "";
   stopPresence();
+  stopRequests();
   pick.asked = false;
   pushUi.mine = null;
   $("#lost").hidden = true;
@@ -2129,6 +2259,7 @@ function start() {
   });
   loadTokens();
   startPresence();
+  startRequests();
   maybeAskPhone();
   // Ouverte depuis une notification (`/app/#evenement=…`) : la fiche de l'événement.
   if (location.hash) openFromUrl(location.href);
@@ -2264,6 +2395,7 @@ function wake() {
   if (!api.hasToken()) return;
   events?.restart();
   loadPresence();
+  loadRequests();
   if (tab === "cameras") renderCameras();
 }
 document.addEventListener("visibilitychange", () => {
@@ -2277,6 +2409,7 @@ document.addEventListener("visibilitychange", () => {
     if (away > 15_000) wake();
     else {
       events?.reconnectNow();
+      loadRequests();
       if (tab === "cameras") renderCameras();
     }
   }

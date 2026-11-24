@@ -61,11 +61,12 @@ pub enum Scope {
     /// « Vacances » dit que la maison est vide. Éteint par défaut ; jamais donné par la ligne de
     /// commande. Le droit `Mode` le suppose.
     Occupation,
-    /// Commander des prises et des lampes (étape E2), parmi les appareils permis du jeton
+    /// Commander des prises, des lampes et des volets (étapes E2 et E3), parmi les appareils permis du jeton
     /// (`devices`) et hors de la liste « jamais par un agent » (`never`). Jamais donné par la ligne
     /// de commande : on l'écrit à la main dans `agents.json`.
     Control,
-    /// Changer le mode. Étape E3.
+    /// Changer le mode (`ostal_set_mode`, étape E3) : le mode demandé passe par une confirmation quand
+    /// son effet l'exige. Suppose « occupation » ; jamais donné par la ligne de commande.
     Mode,
     #[serde(other)]
     Unknown,

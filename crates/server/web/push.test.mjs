@@ -188,3 +188,9 @@ test("le toucher d'une notification n'ouvre que l'app", () => {
   assert.equal(readNotificationsDismissed(storage), true);
   assert.equal(readNotificationsDismissed({ getItem() { throw new Error("refusé"); } }), false);
 }
+
+test("les catégories : une case pour les demandes d'un agent d'IA, avec le mot du serveur", async () => {
+  const { CATEGORIES } = await import("./push.js");
+  assert.deepEqual(CATEGORIES.map((c) => c.id), ["rules", "detections", "battery", "unreachable", "agent_requests"]);
+  assert.match(CATEGORIES.at(-1).label, /agent d'IA/);
+});

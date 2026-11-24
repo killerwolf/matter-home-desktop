@@ -19,6 +19,7 @@ dans cette version.
 | `export`, `import` | sauvegarde (un `import` n'est écrit que s'il est vraiment lancé, pas pour sa vérification) |
 | `presence` | « Je pars » et « Je rentre » |
 | `agent_created`, `agent_revoked`, `agent_switch` | un agent d'IA créé (`target` : son libellé, `detail` : la personne) ou révoqué ; l'interrupteur de l'accès des agents allumé ou éteint (`detail: on` ou `off`), depuis la ligne de commande. Jamais le jeton. Voir [Agents d'IA](agents-ia.md) |
+| `confirmation_requested`, `confirmation_approved`, `confirmation_refused`, `confirmation_expired` | une action sensible d'un agent d'IA qui attend l'accord d'une personne : demandée par l'agent, autorisée ou refusée par la personne (la ligne porte **cette personne** et sa session), expirée sans réponse (5 minutes). `target` : le libellé de l'agent ; `detail` : l'outil, mot fermé. Voir [Agents d'IA](agents-ia.md#les-confirmations-e3) |
 | `agent_read`, `agent_occupation`, `agent_denied` | ce que fait un agent d'IA : ses lectures **regroupées** (une ligne par 10 minutes), ses lectures de la présence et du mode **une par une**, ses appels refusés. Jamais une valeur lue. Voir [Agents d'IA](agents-ia.md#le-journal-daudit-des-agents) |
 
 La source d'un changement de mode : `person` (une personne, dans une app), `shortcut` (un

@@ -156,6 +156,18 @@ const EXEMPT: &[(&str, &str)] = &[
         "/mcp",
         "jeton d'agent, pas une session : can(View) et can(ControlDevices) sont vérifiés outil par outil dans net/mcp/tools.rs::call, prouvé par the_account_right_to_control_is_checked_and_journaled et every_tool_is_refused_when_the_account_loses_the_right_to_read",
     ),
+    (
+        "/api/agent-requests",
+        "lecture de ses propres demandes d'agent (jamais celles d'une autre personne)",
+    ),
+    (
+        "/api/agent-requests/{id}/approve",
+        "sa propre demande d'agent : le droit demandé dépend de l'action (commander ou changer le mode), vérifié par confirmations.rs avec can() de la capacité de la demande, prouvé par the_account_right_to_change_the_mode_is_checked_at_the_call_and_at_the_approval",
+    ),
+    (
+        "/api/agent-requests/{id}/refuse",
+        "refuser sa propre demande d'agent ne change rien dans la maison",
+    ),
     ("/api/login", "ouvre une session"),
     ("/api/logout", "ferme sa propre session"),
     ("/api/me/installations", "lecture de ses connexions"),

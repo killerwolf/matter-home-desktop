@@ -137,6 +137,21 @@ a { color: var(--color-accent-text); }
 }
 .notice .ico { flex: none; width: 20px; height: 20px; color: var(--color-accent-text); }
 
+/* « Demande à valider » : un agent d'IA attend l'accord d'une personne (5 minutes). */
+#requests-slot { display: flex; flex-direction: column; gap: var(--web-gap); }
+.requests-title { margin: 0; font-size: var(--font-size-title); font-weight: var(--font-weight-strong); }
+.requests { display: flex; flex-direction: column; gap: var(--web-gap); }
+.request { display: flex; flex-direction: column; gap: 8px; border-color: var(--color-warn); }
+.request-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.request-left { font-size: var(--web-font-small); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.request p, .request ul { margin: 0; font-size: var(--web-font); overflow-wrap: anywhere; }
+.request-text { font-weight: var(--font-weight-strong); }
+.request-why { padding-left: 18px; color: var(--color-text-secondary); }
+.request-rules { color: var(--color-text-secondary); }
+.request-error { color: var(--color-error); }
+.request-actions { display: flex; gap: 8px; }
+.request-actions button { flex: 1; width: auto; }
+
 /* « Installer sur l'iPhone » : trois étapes, la carte disparaît quand tout est fait. */
 .install { padding: 12px 14px; border-radius: var(--web-radius); background: var(--color-accent-soft); display: flex; flex-direction: column; gap: 8px; }
 .install-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }

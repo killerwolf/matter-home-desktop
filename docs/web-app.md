@@ -11,6 +11,12 @@
   `protocol::status`, essayée par `tiles.test.mjs`) avec « À jour à HH:MM » ; carte « Installer sur
   l'iPhone » (étapes : raccourcis, widget, notifications, d'après `GET /api/tokens` et l'abonnement
   push) qui disparaît quand tout est fait ; pièces en cartes sur deux colonnes, une ligne par appareil.
+- **Demandes à valider** : en tête de l'accueil, une carte par demande d'un agent d'IA qui attend
+  **votre** accord (`GET /api/agent-requests`, relue toutes les 5 s tant qu'il y en a une, 20 s sinon) :
+  « Claude Code demande », la phrase fabriquée par Ostal, pourquoi une personne doit valider, les
+  automatisations qui partiraient, un compte à rebours (5 minutes) et **Autoriser** / **Refuser**.
+  Tout est écrit avec `textContent` (la logique pure est dans `agents.js`, essayée par
+  `agents.test.mjs`). Voir [Agents d'IA](agents-ia.md#les-confirmations-e3).
 - **La maison ne répond pas** : bandeau « La maison ne répond pas. » (`role="alert"`) avec la piste : à la maison, Mac éteint, en veille ou hors du Wi-Fi ; par
   Tailscale (`.ts.net`, 100.64.0.0/10), Mac en veille ou Tailscale inactif et « Réessayer » ; les cartes restent à 0,55 d'opacité avec « Dernières valeurs
   connues. Lu à HH:MM. » ; la pastille de mode passe en gris. Le texte vient de `api.js`

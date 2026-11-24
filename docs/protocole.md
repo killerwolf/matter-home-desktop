@@ -94,6 +94,7 @@ première connexion (`protocol::discovery`, `ostal_server::announce`, `ostal_cli
 | `GET /api/me/installations` | les connexions ouvertes sur le compte de la personne : `{connections: [{id, name, kind, device, last_seen, via, current, unknown}]}` |
 | `DELETE /api/me/installations/{id}` | coupe une connexion de la personne (204, ou 404) : son jeton cesse de marcher, ses flux se ferment |
 | `POST /mcp` | serveur MCP des agents d'IA (JSON-RPC, jeton d'agent `ostal_agent_…` en `Authorization: Bearer`, **404 tant que l'interrupteur est éteint**, 403 si `Origin`, 405 pour GET et DELETE) : voir [Agents d'IA](agents-ia.md). Hors de ce protocole `/api/` : ni session, ni jeton de mode ou de lecture n'y valent |
+| `GET /api/agent-requests`, `POST /api/agent-requests/{id}/approve`, `POST /api/agent-requests/{id}/refuse` | les demandes d'un agent d'IA qui attendent **l'accord de cette personne** (`{requests: [{id, agent, text, details, rules, created, expires}]}`), puis l'autoriser ou la refuser (`202`). **Sous une session seulement** (jamais un jeton d'agent, de mode ou de lecture) ; `404` pour toute demande qui n'est pas la sienne ; `400` si elle n'est plus à valider ; `403` si le compte n'a pas le droit de faire la chose lui-même. Les textes sont fabriqués par le serveur. Voir [Agents d'IA](agents-ia.md#les-confirmations-e3) |
 | `POST /api/logout` | révoque le jeton (204) ; le WebSocket de cette session se ferme |
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
 | `GET /api/ws?protocol=2` | temps réel (WebSocket) |
@@ -479,7 +480,7 @@ un abonnement inconnu ; `unavailable` pour l'essai quand les notifications sont 
 
 Un abonnement vu par les clients : `id` (16 caractères hexadécimaux), `label`, `user_agent`,
 `service` (`Apple`, `Google`, `Mozilla`, `Microsoft`), `created_at`, `last_sent_at`, `last_error`,
-`categories` (`rules`, `detections`, `battery`, `unreachable`, booléens). L'adresse d'abonnement et
+`categories` (`rules`, `detections`, `battery`, `unreachable`, `agent_requests`, booléens ; un champ absent vaut « coché »). L'adresse d'abonnement et
 les clés ne sont jamais renvoyées. Le message reçu par le service worker (chiffré `aes128gcm`) :
 `{"title", "body", "url", "tag"?}`, `url` sous `/app/` (`/app/#evenement=<id>` pour un passage).
 
