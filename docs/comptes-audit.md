@@ -18,6 +18,7 @@ dans cette version.
 | `device_paired`, `device_removed` | appairage (le code n'est jamais écrit) et suppression d'un équipement |
 | `export`, `import` | sauvegarde (un `import` n'est écrit que s'il est vraiment lancé, pas pour sa vérification) |
 | `presence` | « Je pars » et « Je rentre » |
+| `agent_created`, `agent_revoked`, `agent_switch` | un agent d'IA créé (`target` : son libellé, `detail` : la personne) ou révoqué ; l'interrupteur de l'accès des agents allumé ou éteint (`detail: on` ou `off`), depuis la ligne de commande. Jamais le jeton. Voir [Agents d'IA](agents-ia.md) |
 
 La source d'un changement de mode : `person` (une personne, dans une app), `shortcut` (un
 raccourci de l'iPhone), `automation` (une automatisation, son nom est dans `detail`) ou `automatic`

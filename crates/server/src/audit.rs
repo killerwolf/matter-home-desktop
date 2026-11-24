@@ -66,6 +66,13 @@ pub enum Action {
     /// Un réglage de la box : reliée, déliée, mot de passe changé (jamais le mot de passe),
     /// mode automatique activé ou désactivé.
     BoxSetting,
+    /// Un agent d'IA créé (cible : son libellé, détail : la personne à qui il appartient). Jamais
+    /// le jeton.
+    AgentCreated,
+    /// Un agent d'IA révoqué (cible : son libellé).
+    AgentRevoked,
+    /// L'interrupteur général de l'accès des agents d'IA : détail `on` ou `off`.
+    AgentSwitch,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -761,6 +768,11 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             "delay" => format!("Délai avant de compter un départ réglé sur {target} min"),
             _ => "Réglage de la box".to_string(),
         },
+        Action::AgentRevoked => format!("Agent d'IA « {target} » révoqué"),
+        Action::AgentCreated if detail.is_empty() => format!("Agent d'IA « {target} » créé"),
+        Action::AgentCreated => format!("Agent d'IA « {target} » créé pour {detail}"),
+        Action::AgentSwitch if detail == "on" => "Accès des agents d'IA activé".to_string(),
+        Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
         Action::Other => "Action inconnue".to_string(),
     };
     if failed && entry.action != Action::Login {
@@ -1188,5 +1200,29 @@ mod tests {
         let away = Entry::new(Action::Presence, &web).target("away");
         assert_eq!(describe(&away).1, "Hamdi : « Je pars »");
         assert_eq!(clock_label(at).len(), 5);
+    }
+
+    #[test]
+    fn agent_lines_are_readable_and_an_older_reader_skips_what_it_does_not_know() {
+        let cli = Who::command_line();
+        let created = Entry::new(Action::AgentCreated, &cli)
+            .target("Claude Code")
+            .detail("Hamdi");
+        assert_eq!(
+            describe(&created).1,
+            "Agent d'IA « Claude Code » créé pour Hamdi"
+        );
+        let revoked = Entry::new(Action::AgentRevoked, &cli).target("Claude Code");
+        assert_eq!(describe(&revoked).1, "Agent d'IA « Claude Code » révoqué");
+        let on = Entry::new(Action::AgentSwitch, &cli).detail("on");
+        assert_eq!(describe(&on).1, "Accès des agents d'IA activé");
+        let off = Entry::new(Action::AgentSwitch, &cli).detail("off");
+        assert_eq!(describe(&off).1, "Accès des agents d'IA désactivé");
+        // Un lecteur d'une version plus ancienne lit une action qu'il ne connaît pas comme `Other`.
+        let line = serde_json::to_string(&created)
+            .unwrap()
+            .replace("\"agent_created\"", "\"action_du_futur\"");
+        let read: Entry = serde_json::from_str(&line).unwrap();
+        assert_eq!(read.action, Action::Other);
     }
 }

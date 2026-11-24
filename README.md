@@ -284,6 +284,7 @@ des mesures y est gardé **7 jours**.
 | [Notifications](docs/notifications.md) | alertes sur l'iPhone ou l'iPad même app fermée (web push) : activer, ce qui sort du serveur, révoquer, limites |
 | [Descriptions des événements](docs/descriptions.md) | une phrase et un niveau de menace par événement, avec l'API Anthropic (clé de l'utilisateur, désactivé par défaut) ; ce qui est envoyé, coûts, limite de dépense |
 | [Données et confidentialité](docs/donnees.md) | fichiers, historique, rétention, changer de Mac, remise à zéro |
+| [Agents d'IA](docs/agents-ia.md) | serveur MCP intégré, **éteint par défaut**, lecture seule (Claude Code, Cursor) : jetons, interrupteur, ce qui est lu, ce qui ne l'est jamais |
 | [Accès à distance](docs/acces-distant.md) | Tailscale, adresses multiples, certificats, flux caméra |
 | [Dépannage](docs/depannage.md) | problèmes connus, diagnostic réseau |
 | [Architecture](docs/architecture.md) | choix techniques, fonctionnement interne |

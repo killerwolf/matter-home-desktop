@@ -8,6 +8,7 @@ mod camera_snapshot;
 mod camera_stream;
 mod events;
 mod install;
+mod mcp;
 mod push;
 mod routes;
 mod webapp;
@@ -78,6 +79,8 @@ pub struct Auth {
     pub accounts: AccountStore,
     pub sessions: SessionStore,
     pub limiter: LoginLimiter,
+    /// Les agents d'IA du serveur MCP (`/mcp`) : `agents.json`, relu à chaque changement.
+    pub agents: crate::security::agent_tokens::AgentStore,
     /// Vérifications de mot de passe simultanées : une seule (argon2 consomme du temps et de la
     /// mémoire ; c'est aussi le débit maximal d'une attaque répartie).
     pub hash_slots: Semaphore,
@@ -91,10 +94,12 @@ impl Auth {
         if cut > 0 {
             log::info!("{cut} session(s) coupée(s) depuis le dernier démarrage retirée(s)");
         }
+        let agents = crate::security::agent_tokens::AgentStore::open(accounts.dir());
         Self {
             accounts,
             sessions,
             limiter: LoginLimiter::new(),
+            agents,
             hash_slots: Semaphore::new(1),
         }
     }

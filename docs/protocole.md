@@ -93,6 +93,7 @@ première connexion (`protocol::discovery`, `ostal_server::announce`, `ostal_cli
 | `POST /api/login` | `{username, password, protocol_version, installation?}` → `{token, expires_at, …, tailnet_urls?}` (sans jeton) |
 | `GET /api/me/installations` | les connexions ouvertes sur le compte de la personne : `{connections: [{id, name, kind, device, last_seen, via, current, unknown}]}` |
 | `DELETE /api/me/installations/{id}` | coupe une connexion de la personne (204, ou 404) : son jeton cesse de marcher, ses flux se ferment |
+| `POST /mcp` | serveur MCP des agents d'IA (JSON-RPC, jeton d'agent `ostal_agent_…` en `Authorization: Bearer`, **404 tant que l'interrupteur est éteint**, 403 si `Origin`, 405 pour GET et DELETE) : voir [Agents d'IA](agents-ia.md). Hors de ce protocole `/api/` : ni session, ni jeton de mode ou de lecture n'y valent |
 | `POST /api/logout` | révoque le jeton (204) ; le WebSocket de cette session se ferme |
 | `GET /api/state` | état complet (même contenu que le premier message du WebSocket) |
 | `GET /api/ws?protocol=2` | temps réel (WebSocket) |

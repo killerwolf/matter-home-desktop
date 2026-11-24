@@ -152,6 +152,10 @@ fn gated() -> Vec<Gated> {
 /// la personne elle-même (sa session, ses connexions, ses jetons, ses abonnements).
 const EXEMPT: &[(&str, &str)] = &[
     ("/api/version", "lecture, publique"),
+    (
+        "/mcp",
+        "E1a : trois outils de lecture seule, jeton d'agent ; dès qu'un outil commande, il passera par can() et sortira de cette liste",
+    ),
     ("/api/login", "ouvre une session"),
     ("/api/logout", "ferme sa propre session"),
     ("/api/me/installations", "lecture de ses connexions"),
@@ -232,8 +236,20 @@ fn gated_routes_in_source_form() -> BTreeSet<String> {
 fn routes_in_source() -> BTreeSet<String> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net");
     let mut found = BTreeSet::new();
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let text = std::fs::read_to_string(entry.path()).unwrap();
+    // Les sous-dossiers aussi (`net/mcp/`).
+    let mut files = Vec::new();
+    let mut folders = vec![dir];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap().flatten() {
+            if entry.path().is_dir() {
+                folders.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    for file in files {
+        let text = std::fs::read_to_string(file).unwrap();
         let code = text.split("#[cfg(test)]").next().unwrap();
         for part in code.split(".route(").skip(1) {
             let expr = part.split(',').next().unwrap().trim();
