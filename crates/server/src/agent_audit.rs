@@ -242,6 +242,7 @@ mod tests {
             user_id: "u1".into(),
             label: "Claude Code".into(),
             scopes: vec![],
+            devices: vec![],
             created: 0.0,
             expires: f64::MAX,
         };

@@ -13,7 +13,7 @@ dans cette version.
 | `connection_cut` | connexion coupée (par son propriétaire, par Ostal Server) ou déconnexion (`detail: logout`) |
 | `password_changed`, `user_created`, `user_disabled`, `user_enabled` | comptes, depuis la ligne de commande ou Ostal Server |
 | `mode_changed` | seulement quand le mode change vraiment ; `target` est le mode, `source` dit d'où il vient |
-| `device_command` | marche/arrêt d'une prise, volet ; `target` est le nom de l'équipement, `detail` la commande |
+| `device_command` | marche/arrêt d'une prise, volet ; `target` est le nom de l'équipement, `detail` la commande. Un agent d'IA écrit la sienne avec `source: "agent"` et son libellé |
 | `automation_changed`, `automation_tested` | automatisations |
 | `device_paired`, `device_removed` | appairage (le code n'est jamais écrit) et suppression d'un équipement |
 | `export`, `import` | sauvegarde (un `import` n'est écrit que s'il est vraiment lancé, pas pour sa vérification) |

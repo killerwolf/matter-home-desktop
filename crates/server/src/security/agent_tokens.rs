@@ -43,6 +43,11 @@ pub const DEFAULT_DAYS: u32 = 90;
 pub const MAX_DAYS: u32 = 365;
 /// Lectures au plus par minute et par jeton (§8 des specs).
 pub const READS_PER_MINUTE: usize = 60;
+/// Commandes d'appareil au plus par minute et par jeton (§8 des specs), en plus des 60 appels.
+pub const COMMANDS_PER_MINUTE: usize = 20;
+/// Appareils permis au plus par jeton. Une liste plus longue n'en permet **aucun** : on ne coupe
+/// pas une liste au hasard, on la fait corriger.
+pub const MAX_DEVICES_PER_AGENT: usize = 20;
 const WINDOW: Duration = Duration::from_secs(60);
 
 /// Ce qu'un jeton a le droit de faire. Un mot inconnu (fichier d'une version plus récente) ne
@@ -56,7 +61,9 @@ pub enum Scope {
     /// « Vacances » dit que la maison est vide. Éteint par défaut ; jamais donné par la ligne de
     /// commande. Le droit `Mode` le suppose.
     Occupation,
-    /// Commander des appareils. Étape E2.
+    /// Commander des prises et des lampes (étape E2), parmi les appareils permis du jeton
+    /// (`devices`) et hors de la liste « jamais par un agent » (`never`). Jamais donné par la ligne
+    /// de commande : on l'écrit à la main dans `agents.json`.
     Control,
     /// Changer le mode. Étape E3.
     Mode,
@@ -82,6 +89,10 @@ struct Entry {
     user_id: String,
     label: String,
     scopes: Vec<Scope>,
+    /// Les appareils que ce jeton peut commander (identifiants décimaux, 20 au plus), écrits à la
+    /// main. Vide ou absent : aucun.
+    #[serde(default)]
+    devices: Vec<String>,
     /// SHA-256 du jeton, hexadécimal.
     hash: String,
     /// Secondes Unix.
@@ -97,6 +108,11 @@ struct File {
     /// L'interrupteur général : éteint par défaut.
     #[serde(default)]
     enabled: bool,
+    /// La liste « jamais par un agent » : des appareils (identifiants décimaux) qu'aucun agent ne
+    /// commande, quel que soit son jeton (congélateur, box, prise du Mac serveur). Écrite à la
+    /// main. Une entrée illisible bloque **toute** commande.
+    #[serde(default)]
+    never: Vec<String>,
     #[serde(default)]
     agents: Vec<Entry>,
 }
@@ -108,6 +124,8 @@ pub struct AgentInfo {
     pub user_id: String,
     pub label: String,
     pub scopes: Vec<Scope>,
+    /// Appareils permis (identifiants décimaux, tels qu'écrits dans `agents.json`).
+    pub devices: Vec<String>,
     /// Secondes Unix.
     pub created: f64,
     /// Secondes Unix.
@@ -115,6 +133,22 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
+    /// Ce jeton peut-il commander cet appareil ? Seulement s'il a le droit « commandes », que
+    /// l'appareil est dans sa liste et que la liste tient en 20 entrées lisibles : une liste trop
+    /// longue ou avec une entrée illisible ne permet **rien** (jamais le contraire).
+    pub fn may_command(&self, node_id: u64) -> bool {
+        self.has(Scope::Control)
+            && self.devices.len() <= MAX_DEVICES_PER_AGENT
+            && self
+                .devices
+                .iter()
+                .all(|d| protocol::wire::parse_id(d).is_ok())
+            && self
+                .devices
+                .iter()
+                .any(|d| protocol::wire::parse_id(d).ok() == Some(node_id))
+    }
+
     /// Le jeton a-t-il ce droit ? Le droit « mode » **suppose** « occupation » : pour changer le
     /// mode, l'agent doit le connaître (et la réponse le dit).
     pub fn has(&self, scope: Scope) -> bool {
@@ -135,6 +169,7 @@ impl From<&Entry> for AgentInfo {
             user_id: e.user_id.clone(),
             label: e.label.clone(),
             scopes: e.scopes.clone(),
+            devices: e.devices.clone(),
             created: e.created,
             expires: e.expires,
         }
@@ -211,6 +246,7 @@ pub fn add(dir: &Path, user_id: &str, label: &str, days: u32) -> Result<(AgentIn
         user_id: user_id.to_string(),
         label,
         scopes: vec![Scope::Read],
+        devices: Vec::new(),
         hash: hex::encode(hash_of(&token)),
         created,
         expires: created + f64::from(days) * 86_400.0,
@@ -311,6 +347,7 @@ pub struct AgentStore {
     dir: PathBuf,
     cache: Mutex<Cache>,
     reads: Mutex<HashMap<String, VecDeque<Instant>>>,
+    commands: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
 impl AgentStore {
@@ -319,6 +356,7 @@ impl AgentStore {
             dir: dir.to_path_buf(),
             cache: Mutex::new(load(dir)),
             reads: Mutex::new(HashMap::new()),
+            commands: Mutex::new(HashMap::new()),
         }
     }
 
@@ -358,6 +396,26 @@ impl AgentStore {
         (!found.is_expired()).then_some(found)
     }
 
+    /// Un appareil est-il dans la liste « jamais par un agent » ? **Oui aussi** quand la liste a une
+    /// entrée illisible (un identifiant mal recopié ne doit jamais laisser un congélateur sans
+    /// protection) : alors aucun appareil ne se commande.
+    pub fn never_commanded(&self, node_id: u64) -> bool {
+        self.with_file(|file| {
+            let mut broken = false;
+            let mut listed = false;
+            for text in &file.never {
+                match protocol::wire::parse_id(text) {
+                    Ok(id) => listed |= id == node_id,
+                    Err(_) => broken = true,
+                }
+            }
+            if broken {
+                log::error!("agents.json : la liste « never » a une entrée illisible, aucune commande d'agent n'est permise");
+            }
+            broken || listed
+        })
+    }
+
     /// Une lecture de plus pour ce jeton. `Err(secondes)` : la minute est pleine, réessayer après
     /// ce délai.
     pub fn check_read(&self, agent_id: &str) -> Result<(), u64> {
@@ -365,26 +423,46 @@ impl AgentStore {
     }
 
     fn check_read_at(&self, agent_id: &str, at: Instant) -> Result<(), u64> {
-        let mut reads = self.reads.lock().unwrap_or_else(|e| e.into_inner());
-        if reads.len() > 256 {
-            reads.retain(|_, q| q.back().is_some_and(|t| at.duration_since(*t) < WINDOW));
-        }
-        let queue = reads.entry(agent_id.to_string()).or_default();
-        while queue
-            .front()
-            .is_some_and(|t| at.duration_since(*t) >= WINDOW)
-        {
-            queue.pop_front();
-        }
-        if queue.len() >= READS_PER_MINUTE {
-            let wait = queue
-                .front()
-                .map_or(WINDOW, |t| WINDOW.saturating_sub(at.duration_since(*t)));
-            return Err(wait.as_secs().max(1));
-        }
-        queue.push_back(at);
-        Ok(())
+        check_window(&self.reads, agent_id, at, READS_PER_MINUTE)
     }
+
+    /// Une commande d'appareil de plus pour ce jeton (20 par minute, en plus des appels
+    /// comptés par `check_read`). Même retour.
+    pub fn check_command(&self, agent_id: &str) -> Result<(), u64> {
+        self.check_command_at(agent_id, Instant::now())
+    }
+
+    fn check_command_at(&self, agent_id: &str, at: Instant) -> Result<(), u64> {
+        check_window(&self.commands, agent_id, at, COMMANDS_PER_MINUTE)
+    }
+}
+
+/// Fenêtre glissante d'une minute, par jeton.
+fn check_window(
+    map: &Mutex<HashMap<String, VecDeque<Instant>>>,
+    agent_id: &str,
+    at: Instant,
+    limit: usize,
+) -> Result<(), u64> {
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() > 256 {
+        map.retain(|_, q| q.back().is_some_and(|t| at.duration_since(*t) < WINDOW));
+    }
+    let queue = map.entry(agent_id.to_string()).or_default();
+    while queue
+        .front()
+        .is_some_and(|t| at.duration_since(*t) >= WINDOW)
+    {
+        queue.pop_front();
+    }
+    if queue.len() >= limit {
+        let wait = queue
+            .front()
+            .map_or(WINDOW, |t| WINDOW.saturating_sub(at.duration_since(*t)));
+        return Err(wait.as_secs().max(1));
+    }
+    queue.push_back(at);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -546,5 +624,105 @@ mod tests {
         // Un autre jeton n'est pas touché ; une minute plus tard le premier repart.
         assert!(store.check_read_at("b", t0).is_ok());
         assert!(store.check_read_at("a", t0 + WINDOW).is_ok());
+    }
+
+    fn hand_edit(dir: &Path, f: impl FnOnce(&mut serde_json::Value)) {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(FILE)).unwrap()).unwrap();
+        f(&mut value);
+        std::fs::write(dir.join(FILE), value.to_string()).unwrap();
+    }
+
+    #[test]
+    fn commanding_needs_the_right_and_a_listed_device_in_a_list_of_twenty_at_most() {
+        let dir = temp("devices");
+        let (_, token) = add(&dir, "u1", "A", 30).unwrap();
+        let store = AgentStore::open(&dir);
+        let agent = store.verify(&token).unwrap();
+        assert!(agent.devices.is_empty() && !agent.may_command(1));
+        hand_edit(&dir, |v| {
+            v["agents"][0]["scopes"] = serde_json::json!(["read", "control"]);
+            v["agents"][0]["devices"] = serde_json::json!(["5", "12"]);
+        });
+        let agent = store.verify(&token).unwrap();
+        assert!(agent.may_command(5) && agent.may_command(12) && !agent.may_command(6));
+        // Les appareils sans le droit : rien.
+        hand_edit(&dir, |v| {
+            v["agents"][0]["scopes"] = serde_json::json!(["read"])
+        });
+        assert!(!store.verify(&token).unwrap().may_command(5));
+        // Vingt et un : aucun. Vingt : tous.
+        let twenty: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
+        hand_edit(&dir, |v| {
+            v["agents"][0]["scopes"] = serde_json::json!(["read", "control"]);
+            v["agents"][0]["devices"] = serde_json::json!(twenty);
+        });
+        assert!(store.verify(&token).unwrap().may_command(7));
+        hand_edit(&dir, |v| {
+            let list = v["agents"][0]["devices"].as_array_mut().unwrap();
+            list.push(serde_json::json!("21"));
+        });
+        assert!(!store.verify(&token).unwrap().may_command(7));
+        // Une entrée illisible : aucun non plus.
+        hand_edit(&dir, |v| {
+            v["agents"][0]["devices"] = serde_json::json!(["5", "cinq"]);
+        });
+        assert!(!store.verify(&token).unwrap().may_command(5));
+    }
+
+    #[test]
+    fn the_never_list_blocks_and_a_broken_entry_blocks_everything() {
+        let dir = temp("never");
+        add(&dir, "u1", "A", 30).unwrap();
+        let store = AgentStore::open(&dir);
+        assert!(
+            !store.never_commanded(5),
+            "vide : personne n'est protégé en plus"
+        );
+        hand_edit(&dir, |v| v["never"] = serde_json::json!(["5"]));
+        assert!(store.never_commanded(5) && !store.never_commanded(6));
+        hand_edit(&dir, |v| v["never"] = serde_json::json!(["5", "0x6"]));
+        assert!(store.never_commanded(5) && store.never_commanded(6) && store.never_commanded(7));
+        hand_edit(&dir, |v| v["never"] = serde_json::json!(["007"]));
+        assert!(
+            store.never_commanded(7),
+            "un zéro initial n'est pas un identifiant"
+        );
+    }
+
+    #[test]
+    fn the_command_line_keeps_the_lists_written_by_hand() {
+        let dir = temp("keep");
+        add(&dir, "u1", "A", 30).unwrap();
+        hand_edit(&dir, |v| {
+            v["never"] = serde_json::json!(["5"]);
+            v["agents"][0]["devices"] = serde_json::json!(["9"]);
+            v["agents"][0]["scopes"] = serde_json::json!(["read", "control"]);
+        });
+        add(&dir, "u1", "B", 30).unwrap();
+        set_enabled(&dir, true).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(FILE)).unwrap()).unwrap();
+        assert_eq!(value["never"], serde_json::json!(["5"]));
+        let a = &value["agents"][0];
+        assert_eq!(a["devices"], serde_json::json!(["9"]));
+        assert_eq!(a["scopes"], serde_json::json!(["read", "control"]));
+        assert_eq!(value["agents"][1]["scopes"], serde_json::json!(["read"]));
+        assert_eq!(value["agents"][1]["devices"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn commands_have_their_own_limit_of_twenty_a_minute() {
+        let dir = temp("cmd-limit");
+        let store = AgentStore::open(&dir);
+        let t0 = Instant::now();
+        for _ in 0..COMMANDS_PER_MINUTE {
+            assert!(store.check_command_at("a", t0).is_ok());
+        }
+        assert!((1..=60).contains(&store.check_command_at("a", t0).unwrap_err()));
+        assert!(store.check_command_at("b", t0).is_ok());
+        assert!(store.check_command_at("a", t0 + WINDOW).is_ok());
+        // Les lectures ont leur compteur à part.
+        assert!(store.check_read_at("a", t0).is_ok());
     }
 }

@@ -1,13 +1,16 @@
-# Agents d'IA : le serveur MCP intégré (étapes E1a et E1b, lecture seule)
+# Agents d'IA : le serveur MCP intégré (étapes E1a, E1b et E2)
 
 Ostal Server peut recevoir un agent d'IA (Claude Code, Cursor…) qui lit l'état de la maison par le
-protocole MCP. **C'est éteint tant que vous ne l'allumez pas**, et cette première étape ne sait que
-**lire** : aucune commande d'appareil, aucun changement de mode. Les appareils, les pièces,
+protocole MCP. **C'est éteint tant que vous ne l'allumez pas.** Les appareils, les pièces,
 l'historique, les automatisations et les caméras se lisent avec le droit de lecture ; **la présence
-et le mode** demandent un droit à part, « occupation », éteint par défaut.
+et le mode** demandent un droit à part, « occupation », éteint par défaut. Depuis l'étape E2, un
+troisième droit, « commandes », permet d'**allumer ou d'éteindre des prises et des lampes** que vous
+avez nommées, et rien d'autre : aucun volet, aucun changement de mode (voir
+[Les commandes](#les-commandes-e2)).
 
-Les étapes suivantes (commandes de prises et de lampes ; confirmations ; écrans pour créer un agent
-et lui donner des droits) sont décrites dans les spécifications du projet, pas encore livrées.
+Les étapes suivantes (confirmations par une personne ; volets et pièces entières ; mode ; écrans pour
+créer un agent et lui donner des droits) sont décrites dans les spécifications du projet, pas encore
+livrées. Tant que les confirmations n'existent pas, **tout ce qui en demanderait une est refusé**.
 
 ## Ce que ça ouvre, et ce que ça n'ouvre pas
 
@@ -82,7 +85,7 @@ vérifié pour `tools/call` seulement. À confirmer à l'essai avec un vrai clie
 
 ## Les outils (E1a et E1b)
 
-Tous en lecture seule (`readOnlyHint`), sans paramètre superflu (un argument inconnu est refusé par le
+Tous les outils de lecture sont en lecture seule (`readOnlyHint`), sans paramètre superflu (un argument inconnu est refusé par le
 serveur, pas seulement par le schéma). Chaque résultat est un objet `structuredContent` et **le même
 JSON** en bloc `text`. Une erreur d'exécution est un résultat `isError: true` avec un code de motif
 (`invalid_argument`, `not_found`, `forbidden`) et une phrase en français. Un jeton ne voit dans
@@ -125,6 +128,91 @@ ne sortent pas. Aucune adresse de webhook, aucune URL de caméra, aucune image n
 Une consigne cachée dans un nom reste un texte : c'est pourquoi les étapes qui commandent exigeront
 une confirmation humaine côté serveur.
 
+## Les commandes (E2)
+
+Un seul outil, avec le droit « commandes » (`control`) **en plus** de « lecture » :
+
+| Outil | Paramètres | Rend |
+|---|---|---|
+| `ostal_set_on_off` | `id` (texte décimal), `command` : `On` ou `Off` | `{id, name, command, sent: true, note}` : la commande est **envoyée**, pas confirmée ; relire l'appareil (`ostal_get_device`) pour vérifier. Annotations : `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` |
+
+Pas de `Toggle` : « inverser » n'est pas rejouable sans danger (Claude Code rejoue un appel
+idempotent si la connexion tombe), l'agent doit viser l'état final. Seuls les appareils qui ont un
+marche/arrêt et ne sont pas un volet (`kind: on_off` : prises et lampes) se commandent.
+
+### Qui peut commander quoi : tout se règle à la main dans `agents.json`
+
+Rien ne se règle encore par un écran (étape E4), et la ligne de commande ne donne **jamais** ce
+droit (`agent add` ne crée que des jetons en lecture). On modifie `serveur/agents.json` (0600),
+serveur arrêté ou non : il est relu dès qu'il change.
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "never": ["13828100"],
+  "agents": [
+    {
+      "id": "…", "user_id": "…", "label": "Claude Code sur le portable",
+      "scopes": ["read", "control"],
+      "devices": ["13828101", "13828102"],
+      "hash": "…", "created": 0, "expires": 0
+    }
+  ]
+}
+```
+
+- `scopes` : ajouter `"control"`.
+- `devices` : les appareils que **ce jeton** peut commander, en identifiants décimaux (ceux de
+  `ostal_list_devices`). **Vide ou absent : aucun.** 20 au plus : avec 21 entrées, ou une seule
+  entrée illisible, le jeton ne commande **rien** (on ne coupe pas une liste au hasard).
+- `never` : la liste « jamais par un agent », pour **tous** les agents : congélateur, box, **prise du
+  Mac serveur** (la couper supprimerait aussi le journal), chauffe-eau, alarme. Elle l'emporte sur
+  `devices`. **Une entrée illisible (faute de frappe, zéro initial) bloque toute commande de tout
+  agent** : un identifiant mal recopié ne doit jamais laisser un congélateur sans protection.
+  Choisissez-la activement avant de donner le droit : elle est vide tant qu'on ne l'écrit pas.
+- La ligne de commande (`agent add`, `revoke`, `enable`, `disable`) réécrit ce fichier **sans perdre**
+  ces listes.
+
+### L'ordre des contrôles
+
+1. Le droit « lecture » du jeton et du compte, puis le droit « commandes » du jeton et celui du compte
+   (`ControlDevices`) : sinon `forbidden` (`agent_denied` : `scope`, `rights` ou `control_rights`).
+2. Les arguments : `id` (texte décimal canonique) et `command` (`On` ou `Off`, ni `Toggle` ni autre
+   casse), rien d'autre (`invalid_argument`).
+3. L'appareil est dans `devices`, **avant** de chercher s'il existe, puis il n'est pas dans `never` :
+   dans les deux cas **la même phrase** (« Cet agent n'a pas le droit de commander cet appareil. »)
+   sans rien dire de la maison : un agent ne sonde pas les appareils ni la liste « jamais ».
+4. L'appareil existe (`not_found`) et c'est une prise ou une lampe (`invalid_argument`).
+5. **Les automatisations.** Une prise qui s'allume peut faire partir « quand la prise s'allume, change
+   le mode » ou « …appelle cette adresse » : l'agent ferait alors, sans confirmation, ce qu'on lui
+   interdit de faire directement. Le serveur regarde donc les automatisations **actives** dont le
+   déclencheur est « la prise s'allume » ou « s'éteint » (dans le sens de la commande) ou une mesure
+   franchissant un seuil (dans les deux sens), **de proche en proche** (une règle qui commande un
+   autre appareil, dont les règles comptent aussi). La commande est **refusée** si l'une de leurs
+   actions change le mode, appelle une adresse web, commande un volet, commande un appareil de la
+   liste `never` ou est inconnue de ce serveur. Les conditions sont ignorées (elles peuvent être
+   vraies à ce moment-là), les règles désactivées ne comptent pas (le calcul est refait à chaque
+   commande). La réponse dit seulement « ferait partir une automatisation que seule une personne
+   peut déclencher », **sans nom de règle, de mode ni d'adresse**.
+6. Le débit : **20 commandes par minute et par jeton**, en plus des 60 appels (429 +
+   `Retry-After`), compté avant tout le reste pour un jeton qui a le droit de commander ; une
+   commande refusée compte aussi.
+7. `Hub::set_on_off`, puis la ligne du journal.
+
+Limite connue, dite en clair : une règle « quand la prise X reste injoignable » (déclencheur
+`Unreachable`) n'est pas suivie. Couper la prise d'un autre appareil peut en déclencher une.
+
+### Dans le journal
+
+- Une ligne `device_command` **par commande** (réussie ou en erreur) : `source: "agent"`, la
+  connexion `agent` et son libellé, `target` le nom (nettoyé) de l'appareil, `detail` `on` ou `off`.
+  Jamais regroupée avec les lectures, jamais le jeton.
+- Un refus : `agent_denied` (`result: refused`), au plus une ligne par minute, par agent et par
+  motif, avec un mot fermé : `device` (hors de `devices` ou dans `never`), `rule` (une automatisation
+  réservée aux personnes), `control_rights` (le compte n'a plus le droit de commander), `scope`,
+  `rate`. Jamais l'identifiant ni le nom de l'appareil visé.
+
 ## Le journal d'audit des agents
 
 Chaque ligne porte le compte propriétaire du jeton, `connection.kind: "agent"` avec le libellé de
@@ -136,7 +224,7 @@ Activité d'Ostal Server et `ostal-server audit` les lisent déjà (`audit::desc
 |---|---|
 | `agent_read` | **les lectures ordinaires, regroupées** : une ligne par agent et par tranche de 10 minutes, écrite à l'échéance (un balayeur la passe chaque minute, et à l'arrêt du serveur). `detail` : `N:outil,outil` (le nombre de lectures et les outils lus, sans `ostal_`). Jamais une valeur lue ni un argument |
 | `agent_occupation` | **une ligne par lecture** du droit « occupation » : `ostal_get_mode`, `ostal_get_presence`, et `ostal_home_summary`, `ostal_list_cameras`, `ostal_list_automation_runs` quand le jeton a le droit (leur réponse en dépend). Jamais regroupée. Écrite avant la réponse |
-| `agent_denied` | un appel refusé, `result: refused`, `detail` : `unknown` (outil inconnu), `scope` (droit du jeton manquant), `rights` (le compte n'a plus le droit de lire la maison) ou `rate` (débit dépassé). Au plus **une ligne par minute, par agent et par motif**. Le nom d'un outil inconnu n'y entre jamais |
+| `agent_denied` | un appel refusé, `result: refused`, `detail` : `unknown` (outil inconnu), `scope` (droit du jeton manquant), `rights` (le compte n'a plus le droit de lire la maison), `control_rights` (ni de commander), `device` ou `rule` (une commande refusée, voir [Les commandes](#les-commandes-e2)) ou `rate` (débit dépassé). Au plus **une ligne par minute, par agent et par motif**. Le nom d'un outil inconnu n'y entre jamais |
 
 Un changement de mode fait par un agent (étape E3) s'écrira `source: "agent"` ; un ancien lecteur du
 journal qui ne connaît pas cette origine la lit « autre ».
@@ -159,3 +247,13 @@ Hors des spécifications ou à confirmer :
 - `ostal_get_history` : `since` et `until` en secondes Unix (pas de date écrite), 500 points au plus
   au total.
 - Pas de ligne `agent_expired` : un jeton expiré est simplement refusé (401, comme avant).
+- **E2** : « 20 appareils au plus » est lu comme **20 appareils permis par jeton** (`devices`) ; les
+  spécifications parlent aussi de 20 commandes par minute, appliquées de même. Une liste plus longue
+  ne permet aucun appareil. Les listes `devices` et `never` sont **écrites à la main** (l'écran
+  d'activation est l'étape E4). Une liste `devices` vide ou absente ne permet rien : le droit
+  « commandes » seul ne commande rien. Les règles **désactivées** ne comptent pas dans le calcul
+  des automatisations déclenchées (elles ne partiraient pas). Pour l'appareil commandé, le sens
+  compte (« s'allume » ou « s'éteint ») ; pour les appareils commandés ensuite par des règles, on
+  suppose les deux sens. Le texte de refus ne nomme jamais la règle, le mode ni l'adresse.
+  Un appel à `ostal_set_on_off` par un jeton sans le droit est un refus `scope` (comme pour
+  `ostal_get_mode`), pas un outil inconnu.

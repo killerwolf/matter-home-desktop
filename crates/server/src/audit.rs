@@ -80,9 +80,11 @@ pub enum Action {
     /// Une lecture du droit « occupation » (présence, mode) : **une ligne par lecture**, jamais
     /// regroupée (cible : le libellé de l'agent, détail : le nom de l'outil).
     AgentOccupation,
-    /// Un appel d'agent refusé : outil inconnu, droit manquant, droit de lecture retiré au
-    /// compte, ou débit dépassé (détail : `unknown`, `scope`, `rights` ou `rate` ; jamais le nom
-    /// d'un outil inconnu ni un argument).
+    /// Un appel d'agent refusé : outil inconnu, droit manquant, droit de lecture ou de commande
+    /// retiré au compte, appareil non permis (hors de la liste du jeton ou de la liste « jamais »),
+    /// commande qui ferait partir une automatisation réservée aux personnes, ou débit dépassé
+    /// (détail : `unknown`, `scope`, `rights`, `control_rights`, `device`, `rule` ou `rate` ;
+    /// jamais le nom d'un outil inconnu ni un argument).
     AgentDenied,
     /// Une action d'une version plus récente.
     #[serde(other)]
@@ -814,6 +816,9 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             let why = match detail {
                 "scope" => "droit manquant",
                 "rights" => "droit retiré au compte",
+                "control_rights" => "droit de commander retiré au compte",
+                "device" => "appareil non permis à cet agent",
+                "rule" => "ferait partir une automatisation réservée aux personnes",
                 "rate" => "trop d'appels",
                 _ => "outil inconnu",
             };
