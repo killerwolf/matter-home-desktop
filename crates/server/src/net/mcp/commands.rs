@@ -246,6 +246,7 @@ fn single(ctx: &Ctx<'_>, arguments: &Map<String, Value>, cover: bool) -> Result<
     // 4.
     let snapshot = ctx.hub.current_snapshot();
     let Some(view) = snapshot.devices.iter().find(|v| v.device.node_id == id) else {
+        note_denied(ctx, "not_found");
         return Err(ToolError::new("not_found", "Appareil introuvable."));
     };
     let right_kind = if cover {
@@ -254,6 +255,7 @@ fn single(ctx: &Ctx<'_>, arguments: &Map<String, Value>, cover: bool) -> Result<
         is_plug_or_lamp(&view.device.caps)
     };
     if !right_kind {
+        note_denied(ctx, "wrong_kind");
         return Err(ToolError::invalid(if cover {
             "Cet outil ne commande que les volets."
         } else {

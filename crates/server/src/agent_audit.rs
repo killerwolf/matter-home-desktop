@@ -57,7 +57,7 @@ pub fn occupation_entry(who: &Who, label: &str, tool: &str) -> Entry {
         .source(Origin::Agent)
 }
 
-/// La ligne d'un appel refusé : `reason` est un mot fermé (`unknown`, `scope`, `rights`, `rate`).
+/// La ligne d'un appel refusé : `reason` est un mot fermé (`unknown`, `scope`, `rights`, `rate`, `device`, `not_found`, `wrong_kind`, …).
 /// Le nom d'un outil inconnu n'y entre jamais (c'est un texte de l'agent).
 pub fn denied_entry(who: &Who, label: &str, reason: &str) -> Entry {
     Entry::new(Action::AgentDenied, who)

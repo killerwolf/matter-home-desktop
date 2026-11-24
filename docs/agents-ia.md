@@ -280,7 +280,7 @@ agent. Le droit « mode » (étape E3) le supposera : pour changer le mode, il f
 | Outil | Rend |
 |---|---|
 | `ostal_get_mode` | `key` (`present`, `absent`, `nuit`, `vacances`), `label`, `effect` (la phrase par défaut du mode) et `cameras` : `{id, name, behavior_now}` selon le tableau de **chaque caméra** (`off`, `live` ou `surveillance`) |
-| `ostal_get_presence` | `people` : `name` (prénom nettoyé), `state` (`home` ou `away`), `since`, `me` (c'est le propriétaire du jeton). Les personnes actives dont l'état est connu. **Jamais** le nom d'un téléphone, une adresse, l'état de la box ni le réglage du mode automatique |
+| `ostal_get_presence` | `people` : `name` (le prénom : le premier mot du nom affiché, nettoyé), `state` (`home` ou `away`), `since`, `me` (c'est le propriétaire du jeton). Les personnes actives dont l'état est connu. **Jamais** le nom d'un téléphone, une adresse, l'état de la box ni le réglage du mode automatique |
 | `ostal_home_summary`, `ostal_list_cameras`, `ostal_list_automation_runs` | donnent en plus le mode (`mode`), `behavior_now`, les exécutions des règles de mode |
 
 Fuite résiduelle, connue et acceptée par les spécifications : le **nom** d'une règle (« Vacances :

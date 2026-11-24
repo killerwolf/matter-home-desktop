@@ -2313,6 +2313,11 @@ fn the_account_right_to_control_is_checked_and_journaled() {
     });
     let denied = audit_of(&dir, "agent_denied");
     assert!(denied.iter().any(|l| l["detail"] == "control_rights"));
+    // L'appareil introuvable est journalisé aussi (motif fermé, sans identifiant).
+    assert!(
+        denied.iter().any(|l| l["detail"] == "not_found"),
+        "{denied:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3420,4 +3425,112 @@ fn the_cameras_decide_and_a_request_reaches_the_phones_of_its_owner_only() {
         assert_eq!(code, "forbidden");
         rig.hub.rights().allow_all();
     });
+}
+
+#[test]
+fn switching_off_on_the_command_line_forgets_the_pending_requests_even_if_switched_back_on() {
+    let d = demo("mcp-e3-cli-off");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&d.dir, &[&plug]);
+        let session = client.login().await;
+
+        // Une demande autorisée, et une autre encore en attente.
+        let off = json!({"id": plug, "command": "Off"});
+        let id = tool(client, token, "ostal_set_on_off", off.clone()).await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        let id2 = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "On"}),
+        )
+        .await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(requests(client, &session).await.len(), 1);
+
+        // Éteint en ligne de commande : la liste est vide et décider est refusé (404).
+        assert!(agent_cli(&d.dir, &["disable"]).0.success());
+        assert!(requests(client, &session).await.is_empty());
+        assert_eq!(decide(client, &session, &id2, "approve").await.status, 404);
+        // Rallumé aussitôt : rien n'est revenu.
+        assert!(agent_cli(&d.dir, &["enable"]).0.success());
+        assert!(requests(client, &session).await.is_empty());
+        assert_eq!(decide(client, &session, &id2, "approve").await.status, 404);
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(plug_is_on(client, token, &plug).await);
+    });
+}
+
+#[test]
+fn a_disable_then_enable_before_any_request_still_drops_the_authorised_confirmation() {
+    let d = demo("mcp-e3-cli-off2");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&d.dir, &[&plug]);
+        let session = client.login().await;
+        let id = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off"}),
+        )
+        .await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        // Aucun appel entre les deux : seul `/mcp` voit passer l'interrupteur.
+        assert!(agent_cli(&d.dir, &["disable"]).0.success());
+        assert!(agent_cli(&d.dir, &["enable"]).0.success());
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(plug_is_on(client, token, &plug).await);
+    });
+}
+
+#[test]
+fn a_command_on_the_wrong_kind_of_device_is_journaled_as_denied() {
+    let d = demo("mcp-wrong-kind");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let shutter = id_of(client, token, "Volet du salon").await;
+        hand_edit(&d.dir, &["read", "control"], &[&shutter], Some(json!([])));
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": shutter, "command": "On"}),
+        )
+        .await;
+        assert_eq!(code, "invalid_argument");
+    });
+    let denied = audit_of(&d.dir, "agent_denied");
+    assert!(
+        denied.iter().any(|l| l["detail"] == "wrong_kind"),
+        "{denied:?}"
+    );
+    assert!(!denied.iter().any(|l| l.to_string().contains("Volet")));
 }

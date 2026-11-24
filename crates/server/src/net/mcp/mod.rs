@@ -146,7 +146,11 @@ async fn handle(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
 ) -> Response {
-    // 1. Interrupteur général : sans lui, `/mcp` n'existe pas.
+    // 1. Interrupteur général : sans lui, `/mcp` n'existe pas. Éteint en ligne de commande, il
+    // fait aussi oublier les demandes à valider.
+    if state.auth.agents.switched_off_since_last_check() {
+        state.auth.confirmations.clear();
+    }
     if !state.auth.agents.enabled() {
         return not_found();
     }

@@ -113,6 +113,11 @@ struct File {
     /// L'interrupteur général : éteint par défaut.
     #[serde(default)]
     enabled: bool,
+    /// Compte les fois où l'interrupteur a été éteint (ligne de commande, « Tout couper ») : le
+    /// serveur en cours y voit qu'il doit oublier les demandes à valider, même si l'interrupteur
+    /// a été rallumé aussitôt.
+    #[serde(default)]
+    off_epoch: u64,
     /// La liste « jamais par un agent » : des appareils (identifiants décimaux) qu'aucun agent ne
     /// commande, quel que soit son jeton (congélateur, box, prise du Mac serveur). Écrite à la
     /// main. Une entrée illisible bloque **toute** commande.
@@ -412,6 +417,9 @@ pub fn revoke_owned(dir: &Path, user_id: &str, agent_id: &str) -> Result<Option<
 /// écriture. Les listes « jamais » et « sensible » restent. Rend les agents retirés.
 pub fn cut_all(dir: &Path) -> Result<Vec<AgentInfo>> {
     edit(dir, |file| {
+        if file.enabled {
+            file.off_epoch += 1;
+        }
         file.enabled = false;
         Ok(file.agents.drain(..).map(|e| AgentInfo::from(&e)).collect())
     })
@@ -480,6 +488,9 @@ pub fn list(dir: &Path) -> Result<(bool, Vec<AgentInfo>)> {
 pub fn set_enabled(dir: &Path, enabled: bool) -> Result<bool> {
     edit(dir, |file| {
         let changed = file.enabled != enabled;
+        if changed && !enabled {
+            file.off_epoch += 1;
+        }
         file.enabled = enabled;
         Ok(changed)
     })
@@ -531,6 +542,8 @@ pub struct AgentStore {
     commands: Mutex<HashMap<String, VecDeque<Instant>>>,
     /// Dernier appel et appels du jour, par jeton : **en mémoire**, remis à zéro au redémarrage.
     usage: Mutex<HashMap<String, Usage>>,
+    /// Dernier `off_epoch` pris en compte par [`AgentStore::switched_off_since_last_check`].
+    seen_off_epoch: std::sync::atomic::AtomicU64,
 }
 
 /// L'usage d'un agent depuis le démarrage du serveur.
@@ -545,9 +558,12 @@ pub struct Usage {
 
 impl AgentStore {
     pub fn open(dir: &Path) -> Self {
+        let cache = load(dir);
+        let epoch = cache.file.off_epoch;
         Self {
             dir: dir.to_path_buf(),
-            cache: Mutex::new(load(dir)),
+            cache: Mutex::new(cache),
+            seen_off_epoch: std::sync::atomic::AtomicU64::new(epoch),
             reads: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             usage: Mutex::new(HashMap::new()),
@@ -565,6 +581,14 @@ impl AgentStore {
     /// L'interrupteur général : tant qu'il est éteint, `/mcp` n'existe pas.
     pub fn enabled(&self) -> bool {
         self.with_file(|file| file.enabled)
+    }
+
+    /// `true` une fois, si l'interrupteur a été éteint depuis le dernier appel (même rallumé
+    /// depuis) : le serveur vide alors les demandes à valider.
+    pub fn switched_off_since_last_check(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.with_file(|file| file.off_epoch);
+        self.seen_off_epoch.swap(now, SeqCst) != now
     }
 
     /// Les agents de cette personne, le plus récent d'abord (expirés compris : on les montre pour

@@ -46,6 +46,15 @@ pub(super) fn get_mode(hub: &Hub) -> Value {
     out
 }
 
+/// Le prénom : le premier mot du nom affiché (jamais le nom de famille, qu'un compte peut y mettre).
+fn first_name(display_name: &str) -> String {
+    display_name
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
 pub(super) fn get_presence(hub: &Hub, ctx: &Ctx<'_>) -> Value {
     let clean = hub.push_cleaner();
     let mut people: Vec<(String, Whereabouts, f64, bool)> = hub
@@ -53,8 +62,9 @@ pub(super) fn get_presence(hub: &Hub, ctx: &Ctx<'_>) -> Value {
         .into_iter()
         .filter_map(|d| {
             let name = ctx.accounts.display_name(&d.user_id)?;
+            // Le prénom seulement : le premier mot du nom affiché.
             Some((
-                name_of(&clean, &name),
+                first_name(&name_of(&clean, &name)),
                 d.state,
                 d.since,
                 d.user_id == ctx.agent.user_id,
@@ -80,4 +90,17 @@ pub(super) fn get_presence(hub: &Hub, ctx: &Ctx<'_>) -> Value {
             }))
             .collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_name;
+
+    #[test]
+    fn presence_gives_the_first_word_of_the_display_name_only() {
+        assert_eq!(first_name("Hamdi LAADHARI"), "Hamdi");
+        assert_eq!(first_name("  Léa   Martin-Dupont "), "Léa");
+        assert_eq!(first_name("Sam"), "Sam");
+        assert_eq!(first_name(""), "");
+    }
 }

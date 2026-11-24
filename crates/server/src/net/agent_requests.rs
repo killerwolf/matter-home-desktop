@@ -36,10 +36,22 @@ pub fn router() -> Router<AppState> {
         .route("/api/agent-requests/{id}/refuse", post(refuse))
 }
 
+/// Interrupteur éteint (même en ligne de commande, serveur en marche) : plus aucune demande ne
+/// vit. Rend `true` tant qu'il est éteint.
+fn drop_if_switched_off(state: &AppState) -> bool {
+    if state.auth.agents.switched_off_since_last_check() {
+        state.auth.confirmations.clear();
+    }
+    !state.auth.agents.enabled()
+}
+
 async fn list(
     State(state): State<AppState>,
     Extension(session): Extension<SessionInfo>,
 ) -> Json<serde_json::Value> {
+    if drop_if_switched_off(&state) {
+        return Json(json!({ "requests": [] }));
+    }
     let live = |agent_id: &str| state.auth.agents.live_agent(agent_id).is_some();
     let requests = state
         .auth
@@ -79,7 +91,7 @@ async fn decide(
             "demande inconnue",
         ))
     };
-    if !confirmations::is_valid_id(&id) {
+    if drop_if_switched_off(&state) || !confirmations::is_valid_id(&id) {
         return Err(unknown());
     }
     let live = |agent_id: &str| state.auth.agents.live_agent(agent_id).is_some();
