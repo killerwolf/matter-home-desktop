@@ -66,6 +66,19 @@ Usage :
                                  dernier compte actif ne peut pas être désactivé.
                                  Ces commandes agissent aussi sur un serveur qui tourne,
                                  sans redémarrage
+  ostal-server agent add --username ID --label LIBELLÉ [--days N] [--data-dir DOSSIER]
+  ostal-server agent list [--data-dir DOSSIER]
+  ostal-server agent revoke --agent ID_OU_LIBELLÉ [--data-dir DOSSIER]
+  ostal-server agent enable [--data-dir DOSSIER]
+  ostal-server agent disable [--data-dir DOSSIER]
+                                 accès des agents d'IA (Claude Code, Cursor…) au serveur MCP
+                                 intégré, POST /mcp. « add » crée un jeton en LECTURE SEULE
+                                 (jamais d'autres droits en ligne de commande), valable N jours
+                                 (90 par défaut, 365 au plus), et l'affiche UNE seule fois. Seule
+                                 son empreinte est gardée. « list » n'affiche jamais de jeton.
+                                 L'accès est ÉTEINT tant qu'on ne l'allume pas (« enable ») :
+                                 /mcp n'existe alors pas. Ces commandes agissent aussi sur un
+                                 serveur qui tourne, sans redémarrage. Voir docs/agents-ia.md
   ostal-server audit [--user COMPTE] [--days N] [--data-dir DOSSIER]
                                  lit le journal d'audit (qui a fait quoi, depuis quel téléphone
                                  ou ordinateur), la ligne la plus récente d'abord : date, qui,
@@ -151,6 +164,7 @@ fn main() -> ExitCode {
         Some("create-account") => refuse_root("« create-account »")
             .map_or_else(|c| c, |()| run_create_account(&args[1..])),
         Some("user") => refuse_root("« user »").map_or_else(|c| c, |()| run_user(&args[1..])),
+        Some("agent") => refuse_root("« agent »").map_or_else(|c| c, |()| run_agent(&args[1..])),
         Some("fingerprint") => run_fingerprint(&args[1..]),
         Some("audit") => run_audit(&args[1..]),
         Some("init") => refuse_root("« init »").map_or_else(|c| c, |()| run_init(&args[1..])),
@@ -689,6 +703,193 @@ fn run_user(args: &[String]) -> ExitCode {
                 let user = account::set_active(&dir, &username, true)?;
                 record_account(&dir, Action::UserEnabled, &user.display_name);
                 println!("Compte « {} » réactivé.", user.username);
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `agent add|list|revoke|enable|disable` : les agents d'IA du serveur MCP (`docs/agents-ia.md`).
+/// Seule la ligne de commande écrit `agents.json`, et elle ne crée que des jetons en lecture.
+fn run_agent(args: &[String]) -> ExitCode {
+    use ostal_server::security::agent_tokens as agents;
+    let Some((action, rest)) = args.split_first() else {
+        return usage_error("agent attend add, list, revoke, enable ou disable");
+    };
+    let mut args = rest.to_vec();
+    let username = match take_value(&mut args, "--username") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    let label = match take_value(&mut args, "--label") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    let days = match take_value(&mut args, "--days") {
+        Ok(Some(d)) => match d.parse::<u32>() {
+            Ok(n) if (1..=agents::MAX_DAYS).contains(&n) => Some(n),
+            _ => {
+                return usage_error(&format!(
+                    "--days attend un nombre de jours, de 1 à {}",
+                    agents::MAX_DAYS
+                ))
+            }
+        },
+        Ok(None) => None,
+        Err(e) => return usage_error(&e),
+    };
+    let selector = match take_value(&mut args, "--agent") {
+        Ok(v) => v,
+        Err(e) => return usage_error(&e),
+    };
+    // Les autres droits (commander, changer le mode) se donnent depuis une session, jamais d'un
+    // terminal : sinon quiconque a un terminal sur ce Mac les aurait.
+    for refused in ["--scope", "--scopes", "--control", "--mode", "--occupation"] {
+        if args
+            .iter()
+            .any(|a| a == refused || a.starts_with(&format!("{refused}=")))
+        {
+            return usage_error(
+                "La ligne de commande ne crée que des jetons en lecture seule : aucune option de droits.",
+            );
+        }
+    }
+    let data_dir = match data_dir_for_command(&mut args) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    if let Some(unknown) = args.first() {
+        return usage_error(&format!("Option inconnue : {unknown}"));
+    }
+    let action = action.as_str();
+    let allowed: &[(&str, bool, bool, bool, bool)] = &[
+        // (action, --username, --label, --days, --agent)
+        ("add", true, true, true, false),
+        ("list", false, false, false, false),
+        ("revoke", false, false, false, true),
+        ("enable", false, false, false, false),
+        ("disable", false, false, false, false),
+    ];
+    let Some(&(_, uses_user, uses_label, uses_days, uses_agent)) =
+        allowed.iter().find(|a| a.0 == action)
+    else {
+        return usage_error(&format!("agent {action} : commande inconnue"));
+    };
+    let misplaced = (username.is_some() && !uses_user)
+        || (label.is_some() && !uses_label)
+        || (days.is_some() && !uses_days)
+        || (selector.is_some() && !uses_agent);
+    if misplaced {
+        return usage_error(&format!("agent {action} : option qui ne lui sert pas"));
+    }
+    if action == "add" && (username.is_none() || label.is_none()) {
+        return usage_error("agent add attend --username et --label");
+    }
+    if action == "revoke" && selector.is_none() {
+        return usage_error("agent revoke attend --agent (identifiant ou libellé)");
+    }
+    let (_lock, dir) = match prepare_accounts_dir(data_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let result: anyhow::Result<()> = (|| {
+        match action {
+            "add" => {
+                let wanted = account::username_key(&username.unwrap_or_default());
+                let user = account::list(&dir)?
+                    .into_iter()
+                    .find(|u| account::username_key(&u.username) == wanted)
+                    .ok_or_else(|| anyhow::anyhow!("aucun compte avec cet identifiant"))?;
+                if !user.active {
+                    anyhow::bail!("ce compte est désactivé");
+                }
+                let (info, token) = agents::add(
+                    &dir,
+                    &user.id,
+                    &label.unwrap_or_default(),
+                    days.unwrap_or(agents::DEFAULT_DAYS),
+                )?;
+                AuditLog::open(&dir).record(
+                    Entry::new(Action::AgentCreated, &Who::command_line())
+                        .target(&info.label)
+                        .detail(&user.display_name),
+                );
+                println!(
+                    "Agent « {} » créé pour {} : lecture seule, valable jusqu'au {}.",
+                    info.label,
+                    user.display_name,
+                    audit::stamp_label(info.expires)
+                );
+                println!("Jeton (affiché une seule fois, gardez-le hors des fichiers de configuration) :");
+                println!("{token}");
+                if !agents::list(&dir)?.0 {
+                    println!(
+                        "L'accès des agents est éteint : « ostal-server agent enable » l'allume."
+                    );
+                }
+            }
+            "list" => {
+                let (enabled, list) = agents::list(&dir)?;
+                println!(
+                    "Accès des agents : {}",
+                    if enabled { "allumé" } else { "éteint" }
+                );
+                let users = account::list(&dir)?;
+                if list.is_empty() {
+                    println!("Aucun agent.");
+                }
+                for a in list {
+                    let owner = users
+                        .iter()
+                        .find(|u| u.id == a.user_id)
+                        .map_or("compte supprimé", |u| u.username.as_str());
+                    let scopes: Vec<&str> = a.scopes.iter().map(|s| s.word()).collect();
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        a.id,
+                        a.label,
+                        owner,
+                        scopes.join(","),
+                        if a.is_expired() {
+                            "expiré".to_string()
+                        } else {
+                            format!("jusqu'au {}", audit::stamp_label(a.expires))
+                        }
+                    );
+                }
+            }
+            "revoke" => {
+                let info = agents::revoke(&dir, &selector.unwrap_or_default())?;
+                AuditLog::open(&dir).record(
+                    Entry::new(Action::AgentRevoked, &Who::command_line()).target(&info.label),
+                );
+                println!(
+                    "Agent « {} » révoqué : son jeton ne vaut plus rien.",
+                    info.label
+                );
+            }
+            _ => {
+                let on = action == "enable";
+                if agents::set_enabled(&dir, on)? {
+                    AuditLog::open(&dir).record(
+                        Entry::new(Action::AgentSwitch, &Who::command_line()).detail(if on {
+                            "on"
+                        } else {
+                            "off"
+                        }),
+                    );
+                }
+                println!(
+                    "Accès des agents d'IA {}.",
+                    if on { "allumé" } else { "éteint" }
+                );
             }
         }
         Ok(())

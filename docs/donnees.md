@@ -68,6 +68,7 @@ les données restent sur le Mac qui le fait tourner, dans :
 | `maison.json` | plan de la maison |
 | `regles.json` | automatisations |
 | `mode.json` | mode global de la maison (`present`, `absent`, `nuit` ou `vacances`) ; inclus dans la sauvegarde `.ostal` |
+| `serveur/agents.json` | l'**interrupteur général** de l'accès des agents d'IA (éteint par défaut) et leurs jetons (`ostal_agent_…`, lecture seule en ligne de commande) : **empreintes** SHA-256, jamais les jetons, droits 0600 ; propre à ce Mac, jamais exporté. Trois écrivains, chacun sous verrou (`agents.lock`) et après avoir relu le fichier : la ligne de commande (`ostal-server agent …`), l'app web (« Mes agents ») et la fenêtre d'Ostal Server (interrupteur, « Tout couper », listes) ; le serveur le relit dès qu'il change. Il porte aussi les listes « jamais » (`never`) et « sensible » (`sensitive`) et, par jeton, les droits et les appareils permis. Les **demandes en attente** d'un agent (5 minutes) ne sont **jamais écrites** : elles vivent en mémoire et un redémarrage les annule. Voir [Agents d'IA](agents-ia.md) |
 | `serveur/jetons.json` | jetons de mode et de lecture **de chaque personne** (un par téléphone, avec son libellé) : **empreintes** SHA-256, jamais les jetons, droits 0600 ; propre à ce Mac, jamais exporté (comme le reste de `serveur/`). Écrit à côté de `jeton-mode.json` et `jeton-lecture.json` (2.0.0), qui restent en place, intacts, et ne sont plus lus ensuite |
 | `serveur/audit/AAAA-MM.jsonl` | [journal d'audit](comptes-audit.md) : une ligne JSON par événement (date, personne, connexion, adresse, action, cible, résultat), un fichier par mois, en ajout seul, droits 0600 (dossier 0700) ; gardé 6 mois ; jamais de mot de passe, de jeton ni de mesure ; jamais exporté, et un import le laisse en place |
 | `serveur/box.json` | la box de la maison pour la présence par le Wi-Fi : adresse, **mot de passe d'administration** (jamais affiché, journalisé ni exporté), interrupteur « Changer le mode de la maison selon la présence » (éteint par défaut), délai avant de compter un départ (10 min) ; droits 0600 ; absent tant qu'aucune box n'est reliée ; jamais exporté |
@@ -89,10 +90,16 @@ Les fichiers sont lisibles uniquement par votre compte (droits 0600). Les heures
 d'ouverture des portes renseignent sur la présence dans la maison : ne partagez pas ce
 dossier.
 
-Le client ne parle qu'à votre serveur, sur votre réseau. Seuls les webhooks que vous configurez dans vos
-automatisations envoient des données vers les adresses que vous avez choisies, et, si vous activez les
-[descriptions](descriptions.md), la capture des événements choisis part vers l'API d'Anthropic (rien
-d'autre, jamais le flux).
+Le client ne parle qu'à votre serveur, sur votre réseau. Il n'y a **aucun cloud de l'éditeur** : rien de
+la maison ne part sans une option que vous activez. Les seules exceptions :
+
+- les webhooks que vous configurez dans vos automatisations, vers les adresses que vous avez choisies ;
+- si vous activez les [descriptions](descriptions.md), la capture des événements choisis part vers l'API
+  d'Anthropic (rien d'autre, jamais le flux) ;
+- si un appareil s'abonne aux [notifications](notifications.md), le message chiffré passe par le service
+  de push d'Apple, de Google, de Mozilla ou de Microsoft ;
+- si vous utilisez Tailscale pour l'[accès à distance](acces-distant.md), le trafic passe par votre
+  réseau privé Tailscale.
 
 ## Historique des mesures
 

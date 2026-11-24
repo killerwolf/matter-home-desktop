@@ -552,6 +552,11 @@ impl AccountStore {
         f(&cache.users)
     }
 
+    /// Le dossier `serveur/` dont les comptes sont lus (les autres fichiers de sécurité y vivent aussi).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn exists(&self) -> bool {
         self.with_users(|users| !users.is_empty())
     }

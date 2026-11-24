@@ -51,6 +51,26 @@ impl Period {
     }
 }
 
+/// D'où viennent les lignes montrées : de tout le monde, ou des seuls agents d'IA (Claude Code,
+/// Cursor…), ce qu'ils ont fait et ce qui les concerne (créés, révoqués, demandes à valider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    #[default]
+    All,
+    Agents,
+}
+
+impl Source {
+    pub const ALL: [Source; 2] = [Source::All, Source::Agents];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::All => "Toutes les sources",
+            Source::Agents => "Agents d'IA",
+        }
+    }
+}
+
 /// Une ligne de la liste : Heure, Qui, Depuis, Quoi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -135,7 +155,13 @@ pub fn days_of(entries: &[Entry], today: NaiveDate) -> Vec<Day> {
 }
 
 /// Les entrées de la période pour cette personne (`None` : tout le monde), au plus [`MAX_ROWS`].
-pub fn load(log: &AuditLog, user: Option<&str>, period: Period, now: f64) -> Vec<Entry> {
+pub fn load(
+    log: &AuditLog,
+    user: Option<&str>,
+    period: Period,
+    source: Source,
+    now: f64,
+) -> Vec<Entry> {
     let today = Local
         .timestamp_opt(now as i64, 0)
         .single()
@@ -145,6 +171,9 @@ pub fn load(log: &AuditLog, user: Option<&str>, period: Period, now: f64) -> Vec
             user: user.map(str::to_string),
             since: Some(period.since(today)),
             limit: Some(MAX_ROWS),
+            // Avant la limite : les 500 lignes sont des lignes d'agent, pas les 500 dernières lignes
+            // dont quelques-unes seulement en sont.
+            agents_only: source == Source::Agents,
             ..Filter::default()
         },
         now,
@@ -172,12 +201,19 @@ pub fn count_label(shown: usize) -> String {
 }
 
 /// Ce que dit la liste quand elle est vide, selon le filtre.
-pub fn empty_text(period: Period, person: bool) -> String {
+pub fn empty_text(period: Period, person: bool, source: Source) -> String {
     let when = match period {
         Period::Today => "aujourd'hui",
         Period::TodayAndYesterday => "aujourd'hui et hier",
         Period::Week => "ces 7 derniers jours",
     };
+    if source == Source::Agents {
+        return if person {
+            format!("Aucun agent d'IA de cette personne n'a rien fait {when}.")
+        } else {
+            format!("Aucun agent d'IA n'a rien fait {when}.")
+        };
+    }
     if person {
         format!("Rien à signaler pour cette personne {when}.")
     } else {
@@ -293,17 +329,77 @@ mod tests {
             12,
             0,
         )));
-        assert_eq!(load(&log, None, Period::TodayAndYesterday, now).len(), 2);
-        assert_eq!(load(&log, None, Period::Week, now).len(), 3);
-        assert_eq!(load(&log, Some("a"), Period::Today, now).len(), 1);
-        assert_eq!(load(&log, Some("a"), Period::Week, now).len(), 2);
-        assert!(load(&log, Some("zz"), Period::Week, now).is_empty());
+        assert_eq!(
+            load(&log, None, Period::TodayAndYesterday, Source::All, now).len(),
+            2
+        );
+        assert_eq!(load(&log, None, Period::Week, Source::All, now).len(), 3);
+        assert_eq!(
+            load(&log, Some("a"), Period::Today, Source::All, now).len(),
+            1
+        );
+        assert_eq!(
+            load(&log, Some("a"), Period::Week, Source::All, now).len(),
+            2
+        );
+        assert!(load(&log, Some("zz"), Period::Week, Source::All, now).is_empty());
         assert_eq!(count_label(0), "Aucune entrée");
         assert_eq!(count_label(1), "1 entrée");
         assert_eq!(count_label(12), "12 entrées");
         assert_eq!(
-            empty_text(Period::Today, true),
+            empty_text(Period::Today, true, Source::All),
             "Rien à signaler pour cette personne aujourd'hui."
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_agent_source_keeps_only_agent_lines_before_the_row_limit_and_marks_them_in_from() {
+        let dir = std::env::temp_dir().join(format!("ostal-journal-agents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = AuditLog::open(&dir);
+        let today = today();
+        let now = ts(today, 20, 0);
+        let mut agent = Who::user("a", Some("Hamdi".into()));
+        agent.connection = Some(ConnRef::new(Some("ag1"), "Claude Code", "agent"));
+        log.record(
+            Entry::new(Action::DeviceCommand, &agent)
+                .at(ts(today, 8, 0))
+                .target("Frigo")
+                .detail("off")
+                .source(audit::Origin::Agent),
+        );
+        // Bien plus de lignes de personne que la limite, toutes plus récentes que l'agent.
+        for i in 0..(MAX_ROWS + 20) {
+            log.record(
+                Entry::new(Action::Login, &who("a", "Hamdi", "Mac")).at(ts(today, 9, 0) + i as f64),
+            );
+        }
+        log.record(
+            Entry::new(Action::AgentRevoked, &Who::server_app())
+                .at(ts(today, 19, 0))
+                .target("Cursor"),
+        );
+        let agents = load(&log, None, Period::Today, Source::Agents, now);
+        assert_eq!(agents.len(), 2, "{agents:?}");
+        let all = load(&log, None, Period::Today, Source::All, now);
+        assert_eq!(all.len(), MAX_ROWS);
+        assert!(all.iter().all(|e| e.action != Action::DeviceCommand));
+        let days = days_of(&agents, today);
+        let command = days[0]
+            .rows
+            .iter()
+            .find(|r| r.what.contains("Frigo"))
+            .unwrap();
+        assert_eq!(command.from, "Agent d'IA · Claude Code");
+        assert_eq!(command.who, "Hamdi");
+        assert_eq!(
+            Source::ALL.map(Source::label),
+            ["Toutes les sources", "Agents d'IA"]
+        );
+        assert_eq!(
+            empty_text(Period::Today, false, Source::Agents),
+            "Aucun agent d'IA n'a rien fait aujourd'hui."
         );
         let _ = std::fs::remove_dir_all(dir);
     }

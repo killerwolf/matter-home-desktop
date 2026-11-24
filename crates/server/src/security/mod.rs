@@ -3,6 +3,7 @@
 //! un dossier que ni l'export ni l'import de sauvegarde ne touchent.
 
 pub mod account;
+pub mod agent_tokens;
 pub mod limiter;
 pub mod sessions;
 pub mod tls;

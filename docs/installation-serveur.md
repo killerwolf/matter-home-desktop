@@ -38,6 +38,13 @@ comme option avancée.
 4. Une arche (le logo d'Ostal) apparaît dans la barre de menus (pas d'icône dans le Dock). Au premier
    lancement, macOS demande l'accès au **réseau local** : acceptez.
 
+### Avant de commencer
+
+La première fenêtre le rappelle aussi : un **Mac allumé en permanence** ; vos appareils Matter
+**déjà dans l'app Maison d'Apple** ; un **HomePod ou une Apple TV** comme hub et routeur Thread (un Mac
+ne peut pas jouer ce rôle) ; **Tailscale** seulement pour l'extérieur. Il n'y a aucun cloud de
+l'éditeur : voir [ce qui sort de la maison](../README.md#ce-qui-sort-de-la-maison).
+
 ### Première configuration (une seule fois)
 
 Si le dossier de données n'a pas encore d'identité Matter ou de compte, une fenêtre s'ouvre, en
@@ -181,6 +188,14 @@ Tant que le service est installé, l'application le dit et ne démarre rien.
 - Ouverture à la connexion : `~/Library/LaunchAgents/dev.ostal.server.plist`.
 
 ### Essayer sans appareil (démo)
+
+Dans la première fenêtre, **« Essayer avec des appareils simulés »** ouvre la démonstration en un
+clic, sans Terminal : un second Ostal Server (sa propre icône dans la barre de menus), avec un
+dossier temporaire et des appareils simulés. Il ne touche jamais aux données de ce Mac. Sa fenêtre
+donne l'adresse, le compte « demo » et son mot de passe ; **« Quitter la démonstration »** (ou « Quitter » dans son menu)
+l'arrête et efface tout. Quitter Ostal Server arrête aussi la démonstration lancée depuis lui.
+
+En ligne de commande :
 
 `"/Applications/Ostal Server.app/Contents/MacOS/ostal-server-app" --demo --data-dir
 ~/essai-demo --listen 127.0.0.1:0` : appareils simulés, aucun trafic réseau, aucune ouverture à la

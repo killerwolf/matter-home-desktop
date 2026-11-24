@@ -61,6 +61,8 @@ pub fn router(state: AppState) -> Router {
         .merge(super::camera_stream::router(state.hub.live().clone()))
         .merge(super::events::router())
         .merge(super::push::router())
+        .merge(super::agent_requests::router())
+        .merge(super::agents::router())
         .merge(super::install::protected())
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))
@@ -103,6 +105,8 @@ pub fn router(state: AppState) -> Router {
             "/api/presence",
             put(put_presence).layer(DefaultBodyLimit::max(LOGIN_LIMIT)),
         )
+        // Le serveur MCP des agents d'IA : son propre jeton, 404 tant que l'interrupteur est éteint.
+        .merge(super::mcp::router())
         .merge(protected)
         .fallback(|| async { ApiErr(ApiError::new(ErrorCode::NotFound)) })
         .layer(DefaultBodyLimit::max(JSON_LIMIT))

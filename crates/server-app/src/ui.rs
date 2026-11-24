@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::accounts_ui::AccountsUi;
+use crate::agents_ui::AgentsUi;
 use crate::cameras_ui::CamerasUi;
 use crate::descriptions_ui::DescriptionsUi;
 use crate::journal_ui::JournalUi;
@@ -452,6 +453,8 @@ struct App {
     journal: JournalUi,
     /// Réglages › Présence (box, interrupteur, téléphones).
     presence: PresenceUi,
+    /// Réglages › Agents IA (interrupteur, agents, « Tout couper », listes).
+    agents: AgentsUi,
     /// La configuration a été faite dans cette session : on montre l'écran de fin.
     setup_session: bool,
     show_done: bool,
@@ -494,6 +497,10 @@ struct App {
     mode_token_shown: Option<String>,
     /// « Générer un nouveau jeton » demande une confirmation : l'ancien cessera de marcher.
     mode_token_confirm: bool,
+    /// La démonstration lancée depuis la première installation (processus à part).
+    demo_session: ostal_server_app::welcome::DemoSession,
+    /// Le lancement de la démonstration a échoué : la phrase à montrer.
+    demo_error: Option<String>,
 }
 
 impl App {
@@ -522,6 +529,7 @@ impl App {
             accounts: AccountsUi::default(),
             journal: JournalUi::default(),
             presence: PresenceUi::default(),
+            agents: AgentsUi::default(),
             setup_session: false,
             show_done: false,
             login_enabled: false,
@@ -546,6 +554,8 @@ impl App {
             web_auth_url: None,
             mode_token_shown: None,
             mode_token_confirm: false,
+            demo_session: Default::default(),
+            demo_error: None,
         };
         if !app.demo {
             if let (Some(dir), Ok(exe)) = (agent::default_dir(), std::env::current_exe()) {
@@ -673,6 +683,7 @@ impl App {
             || self.descriptions_open
             || self.accounts.editing()
             || self.presence.editing()
+            || self.agents.editing()
     }
 
     /// Le menu demande la fenêtre sur un onglet : on l'amène au premier plan, sans jeter une
@@ -693,6 +704,7 @@ impl App {
             || self.descriptions_open
             || self.accounts.is_open()
             || self.presence.is_open()
+            || self.agents.is_open()
         {
             // On repart d'une page propre : ni formulaire de caméra, ni saisie de clé, ni mot de
             // passe à moitié faits.
@@ -701,6 +713,7 @@ impl App {
             self.descriptions_open = false;
             self.accounts.reset();
             self.presence.reset();
+            self.agents.reset();
             self.journal.reset();
             self.form = AccountForm::default();
         }
@@ -734,6 +747,11 @@ impl App {
     /// principal affiche l'alerte ; le garde `quit_dialog_open` (pas de seconde alerte) est donc
     /// sans effet réel ici, mais inoffensif : on le laisse.
     fn ask_quit(&self) {
+        // La démonstration n'a rien à protéger : pas de confirmation, on en sort d'un clic.
+        if self.demo {
+            let _ = self.handle.tx.send(Cmd::Quit);
+            return;
+        }
         if self.quit_dialog_open.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -914,6 +932,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // La démonstration lancée d'ici ne survit pas à cette application.
+        self.demo_session.stop();
         // Cmd+Q ou fin de session : arrêt propre du serveur avant de sortir.
         let _ = self.handle.tx.send(Cmd::Quit);
         // L'arrêt du serveur peut durer environ 17 s : on attend le signal du chef d'orchestre,

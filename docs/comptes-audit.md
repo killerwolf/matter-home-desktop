@@ -13,16 +13,19 @@ dans cette version.
 | `connection_cut` | connexion coupée (par son propriétaire, par Ostal Server) ou déconnexion (`detail: logout`) |
 | `password_changed`, `user_created`, `user_disabled`, `user_enabled` | comptes, depuis la ligne de commande ou Ostal Server |
 | `mode_changed` | seulement quand le mode change vraiment ; `target` est le mode, `source` dit d'où il vient |
-| `device_command` | marche/arrêt d'une prise, volet ; `target` est le nom de l'équipement, `detail` la commande |
+| `device_command` | marche/arrêt d'une prise, volet ; `target` est le nom de l'équipement, `detail` la commande. Un agent d'IA écrit la sienne avec `source: "agent"` et son libellé |
 | `automation_changed`, `automation_tested` | automatisations |
 | `device_paired`, `device_removed` | appairage (le code n'est jamais écrit) et suppression d'un équipement |
 | `export`, `import` | sauvegarde (un `import` n'est écrit que s'il est vraiment lancé, pas pour sa vérification) |
 | `presence` | « Je pars » et « Je rentre » |
+| `agent_created`, `agent_revoked`, `agent_switch`, `agent_lists` | un agent d'IA créé (`target` : son libellé, `detail` : la personne) ou révoqué, depuis l'app web (la ligne porte la personne), la fenêtre d'Ostal Server (« Révoquer », « Tout couper ») ou la ligne de commande ; l'interrupteur de l'accès des agents allumé ou éteint (`detail: on` ou `off`) ; les listes « jamais » et « sensible » réécrites (`detail: N:M`, le nombre d'appareils de chaque liste, jamais leurs noms). Jamais le jeton. Voir [Agents d'IA](agents-ia.md) |
+| `confirmation_requested`, `confirmation_approved`, `confirmation_refused`, `confirmation_expired` | une action sensible d'un agent d'IA qui attend l'accord d'une personne : demandée par l'agent, autorisée ou refusée par la personne (la ligne porte **cette personne** et sa session), expirée sans réponse (5 minutes). `target` : le libellé de l'agent ; `detail` : l'outil, mot fermé. Voir [Agents d'IA](agents-ia.md#les-confirmations-e3) |
+| `agent_read`, `agent_occupation`, `agent_denied` | ce que fait un agent d'IA : ses lectures **regroupées** (une ligne par 10 minutes), ses lectures de la présence et du mode **une par une**, ses appels refusés. Jamais une valeur lue. Voir [Agents d'IA](agents-ia.md#le-journal-daudit-des-agents) |
 
 La source d'un changement de mode : `person` (une personne, dans une app), `shortcut` (un
 raccourci de l'iPhone), `automation` (une automatisation, son nom est dans `detail`) ou `automatic`
 (la maison toute seule, par la règle de présence : le journal l'attribue à celui qui a dit partir
-ou rentrer).
+ou rentrer) ; `agent` (un agent d'IA, son libellé est dans `detail`) ; une origine d'une version plus récente se lit `autre`.
 
 Les actions des automatisations (une règle qui allume une prise) ne sont pas écrites une à une :
 elles ont déjà leur historique.
@@ -49,7 +52,7 @@ par 5 secondes et par adresse et compte, une ligne de blocage par minute et par 
 
 `at` (secondes Unix), `user` (identifiant du compte) et `user_name` (son nom à ce moment-là),
 `connection` (`id`, `name`, `kind` : `web`, `mac`, `shortcut`, `server` pour Ostal Server, `cli` pour
-la ligne de commande), `ip` (derrière `tailscale serve`, c'est 127.0.0.1) et `via` (`local` ou
+la ligne de commande, `agent` pour un agent d'IA : son `name` est le libellé de l'agent et son `id` celui du jeton, jamais le jeton), `ip` (derrière `tailscale serve`, c'est 127.0.0.1) et `via` (`local` ou
 `tailscale`), `action`, `target`, `result` (`ok`, `refused` ou `error`), `source` et `detail`.
 Un champ absent est omis. Une ligne illisible (arrêt brutal) est ignorée à la lecture.
 

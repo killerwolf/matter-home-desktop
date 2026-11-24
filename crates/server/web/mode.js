@@ -37,6 +37,7 @@ export function sourceLabel(source) {
     case "rule": return source.name ? `automatisation « ${source.name} »` : "automatisation";
     case "widget": return "widget iPhone";
     case "presence": return "présence (Wi-Fi)";
+    case "agent": return "agent d'IA";
     case "other": return "autre";
     default: return "";
   }

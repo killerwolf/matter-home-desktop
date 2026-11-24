@@ -122,6 +122,11 @@ static ASSETS: &[Asset] = &[
         "text/javascript; charset=utf-8",
         "../../web/presence.js"
     ),
+    text!(
+        "agents.js",
+        "text/javascript; charset=utf-8",
+        "../../web/agents.js"
+    ),
     text!("sw.js", "text/javascript; charset=utf-8", "../../web/sw.js"),
     text!(
         "manifest.webmanifest",

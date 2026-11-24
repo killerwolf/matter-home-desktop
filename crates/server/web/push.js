@@ -204,4 +204,5 @@ export const CATEGORIES = [
   { id: "detections", label: "Détections caméra (Surveillance)" },
   { id: "battery", label: "Pile faible (moins de 15 %)" },
   { id: "unreachable", label: "Appareil injoignable (plus de 10 min)" },
+  { id: "agent_requests", label: "Demandes d'un agent d'IA à valider" },
 ];

@@ -66,9 +66,62 @@ pub enum Action {
     /// Un réglage de la box : reliée, déliée, mot de passe changé (jamais le mot de passe),
     /// mode automatique activé ou désactivé.
     BoxSetting,
+    /// Un agent d'IA créé (cible : son libellé, détail : la personne à qui il appartient). Jamais
+    /// le jeton.
+    AgentCreated,
+    /// Un agent d'IA révoqué (cible : son libellé).
+    AgentRevoked,
+    /// L'interrupteur général de l'accès des agents d'IA : détail `on` ou `off`.
+    AgentSwitch,
+    /// Les lectures d'un agent d'IA, **regroupées** : une ligne par agent et par tranche de
+    /// 10 minutes, écrite à l'échéance (cible : le libellé de l'agent, détail : `N:outil,outil`).
+    /// Jamais une valeur lue. Voir `agent_audit`.
+    AgentRead,
+    /// Une lecture du droit « occupation » (présence, mode) : **une ligne par lecture**, jamais
+    /// regroupée (cible : le libellé de l'agent, détail : le nom de l'outil).
+    AgentOccupation,
+    /// Un appel d'agent refusé : outil inconnu, droit manquant, droit de lecture ou de commande
+    /// retiré au compte, appareil non permis (hors de la liste du jeton ou de la liste « jamais »),
+    /// commande qui ferait partir une automatisation réservée aux personnes, ou débit dépassé
+    /// (détail : `unknown`, `scope`, `rights`, `control_rights`, `mode_rights`, `device`, `rule` ou `rate` ;
+    /// jamais le nom d'un outil inconnu ni un argument).
+    AgentDenied,
+    /// Un agent d'IA a demandé une action qui doit être validée par une personne (cible : le
+    /// libellé de l'agent, détail : l'outil, mot fermé). Voir `confirmations`.
+    ConfirmationRequested,
+    /// La personne propriétaire de l'agent a autorisé la demande (qui : cette personne ; cible : le
+    /// libellé de l'agent, détail : l'outil).
+    ConfirmationApproved,
+    /// La personne propriétaire de l'agent a refusé la demande.
+    ConfirmationRefused,
+    /// Personne n'a répondu à temps : la demande a expiré (5 minutes).
+    ConfirmationExpired,
+    /// Les listes « jamais par un agent » et « sensible » ont été réécrites depuis la fenêtre
+    /// d'Ostal Server (détail : `N:M`, le nombre d'appareils de chaque liste ; jamais leurs noms).
+    AgentLists,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
+}
+
+impl Action {
+    /// Cette action concerne-t-elle les agents d'IA (leur vie, leurs appels, leurs demandes) ?
+    pub fn is_agent_related(self) -> bool {
+        matches!(
+            self,
+            Action::AgentCreated
+                | Action::AgentRevoked
+                | Action::AgentSwitch
+                | Action::AgentRead
+                | Action::AgentOccupation
+                | Action::AgentDenied
+                | Action::AgentLists
+                | Action::ConfirmationRequested
+                | Action::ConfirmationApproved
+                | Action::ConfirmationRefused
+                | Action::ConfirmationExpired
+        )
+    }
 }
 
 /// Comment ça s'est terminé.
@@ -89,6 +142,11 @@ pub enum Origin {
     Shortcut,
     Automation,
     Automatic,
+    /// Un agent d'IA (serveur MCP intégré).
+    Agent,
+    /// Une origine d'une version plus récente.
+    #[serde(other)]
+    Other,
 }
 
 impl Origin {
@@ -97,6 +155,7 @@ impl Origin {
         match source {
             ModeSource::Shortcut | ModeSource::Widget => Origin::Shortcut,
             ModeSource::Presence => Origin::Automatic,
+            ModeSource::Agent => Origin::Agent,
             ModeSource::Rule { .. } => Origin::Automation,
             ModeSource::Web | ModeSource::Desktop | ModeSource::ServerApp | ModeSource::Other => {
                 Origin::Person
@@ -110,6 +169,8 @@ impl Origin {
             Origin::Shortcut => "raccourci",
             Origin::Automation => "automatisation",
             Origin::Automatic => "automatique",
+            Origin::Agent => "agent",
+            Origin::Other => "autre",
         }
     }
 }
@@ -246,6 +307,14 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// La ligne vient d'un agent d'IA (connexion de sorte « agent », ou origine « agent ») ou le
+    /// concerne (créé, révoqué, interrupteur, listes, demandes à valider).
+    pub fn is_agent(&self) -> bool {
+        self.action.is_agent_related()
+            || self.source == Some(Origin::Agent)
+            || self.connection.as_ref().is_some_and(|c| c.kind == "agent")
+    }
+
     pub fn new(action: Action, who: &Who) -> Entry {
         Entry {
             at: crate::events::now_unix(),
@@ -320,6 +389,9 @@ pub struct Filter {
     pub until: Option<f64>,
     /// Nombre maximal de lignes rendues (les plus récentes).
     pub limit: Option<usize>,
+    /// Seulement ce qui vient d'un agent d'IA ou le concerne (`Entry::is_agent`). Appliqué
+    /// **avant** `limit` : la limite compte les lignes d'agent, pas toutes les lignes.
+    pub agents_only: bool,
 }
 
 pub struct AuditLog {
@@ -504,6 +576,9 @@ impl AuditLog {
                     {
                         continue;
                     }
+                    if filter.agents_only && !entry.is_agent() {
+                        continue;
+                    }
                     out.push(entry);
                 }
             }
@@ -615,10 +690,17 @@ pub fn who_label(entry: &Entry) -> String {
 
 /// « Depuis » : le téléphone ou l'ordinateur, ou « — ».
 pub fn from_label(entry: &Entry) -> String {
-    entry
-        .connection
-        .as_ref()
-        .map_or_else(|| "—".to_string(), |c| c.name.clone())
+    entry.connection.as_ref().map_or_else(
+        || "—".to_string(),
+        |c| {
+            // Un agent d'IA se reconnaît d'un coup d'œil : « Agent d'IA · Claude Code ».
+            if c.kind == "agent" {
+                format!("Agent d'IA · {}", c.name)
+            } else {
+                c.name.clone()
+            }
+        },
+    )
 }
 
 fn mode_label(key: Option<&str>) -> String {
@@ -705,6 +787,10 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
                     format!("Mode {mode}, par le raccourci « {detail} »")
                 }
                 Some(Origin::Shortcut) => format!("Mode {mode}, par un raccourci"),
+                Some(Origin::Agent) if !detail.is_empty() => {
+                    format!("Mode {mode}, par l'agent d'IA « {detail} »")
+                }
+                Some(Origin::Agent) => format!("Mode {mode}, par un agent d'IA"),
                 _ if !detail.is_empty() => format!("Mode {mode}, choisi dans {detail}"),
                 _ => format!("Mode {mode}"),
             }
@@ -761,9 +847,62 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             "delay" => format!("Délai avant de compter un départ réglé sur {target} min"),
             _ => "Réglage de la box".to_string(),
         },
+        Action::AgentRevoked => format!("Agent d'IA « {target} » révoqué"),
+        Action::AgentCreated if detail.is_empty() => format!("Agent d'IA « {target} » créé"),
+        Action::AgentCreated => format!("Agent d'IA « {target} » créé pour {detail}"),
+        Action::AgentSwitch if detail == "on" => "Accès des agents d'IA activé".to_string(),
+        Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
+        Action::AgentLists => agent_lists_text(detail),
+        Action::AgentRead => agent_read_text(target, detail),
+        Action::AgentOccupation => {
+            let what = match detail {
+                "get_presence" => "la présence",
+                "get_mode" => "le mode de la maison",
+                "list_cameras" => "le comportement des caméras",
+                "home_summary" => "le résumé de la maison avec le mode",
+                "list_automation_runs" => "les exécutions des règles de mode",
+                "set_mode" => "le mode de la maison (changement demandé sans effet)",
+                _ => "l'occupation de la maison",
+            };
+            tone = Tone::Warn;
+            format!("L'agent d'IA « {target} » a lu {what}")
+        }
+        Action::AgentDenied => {
+            tone = Tone::Warn;
+            let why = match detail {
+                "scope" => "droit manquant",
+                "rights" => "droit retiré au compte",
+                "control_rights" => "droit de commander retiré au compte",
+                "mode_rights" => "droit de changer le mode retiré au compte",
+                "device" => "appareil non permis à cet agent",
+                "rule" => "ferait partir une automatisation réservée aux personnes",
+                "rate" => "trop d'appels",
+                _ => "outil inconnu",
+            };
+            format!("Appel de l'agent d'IA « {target} » refusé ({why})")
+        }
+        Action::ConfirmationRequested => {
+            tone = Tone::Warn;
+            format!(
+                "L'agent d'IA « {target} » demande à {}",
+                confirmation_what(detail)
+            )
+        }
+        Action::ConfirmationApproved => format!(
+            "Demande de l'agent d'IA « {target} » autorisée : {}",
+            confirmation_what(detail)
+        ),
+        Action::ConfirmationRefused => format!(
+            "Demande de l'agent d'IA « {target} » refusée : {}",
+            confirmation_what(detail)
+        ),
+        Action::ConfirmationExpired => format!(
+            "Demande de l'agent d'IA « {target} » expirée sans réponse : {}",
+            confirmation_what(detail)
+        ),
         Action::Other => "Action inconnue".to_string(),
     };
-    if failed && entry.action != Action::Login {
+    if failed && !matches!(entry.action, Action::Login | Action::AgentDenied) {
         let how = if entry.result == Outcome::Refused {
             "refusé"
         } else {
@@ -772,6 +911,57 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         return (Tone::Warn, format!("{text} ({how})"));
     }
     (tone, text)
+}
+
+/// « Listes des agents d'IA réglées : 2 appareils « jamais », 1 « sensible » » (détail `N:M`).
+fn agent_lists_text(detail: &str) -> String {
+    let count = |n: &str| n.parse::<usize>().ok();
+    match detail.split_once(':') {
+        Some((never, sensitive)) => match (count(never), count(sensitive)) {
+            (Some(n), Some(m)) => format!(
+                "Listes des agents d'IA réglées : {n} appareil{} « jamais », {m} « sensible{} »",
+                if n > 1 { "s" } else { "" },
+                if m > 1 { "s" } else { "" }
+            ),
+            _ => "Listes des agents d'IA réglées".to_string(),
+        },
+        None => "Listes des agents d'IA réglées".to_string(),
+    }
+}
+
+/// Ce qu'une demande d'agent veut faire, d'après le mot fermé du détail (jamais un texte libre).
+fn confirmation_what(detail: &str) -> &'static str {
+    match detail {
+        "set_mode" => "changer le mode de la maison",
+        "set_cover" => "commander un volet",
+        "set_room" => "commander les appareils d'une pièce",
+        "set_on_off" => "allumer ou éteindre un appareil",
+        _ => "faire une action",
+    }
+}
+
+/// « L'agent d'IA « X » a lu la maison (14 lectures : list_devices, get_history) ». Le détail
+/// s'écrit `N:outil,outil` ; un détail d'une autre forme n'est jamais cité tel quel.
+fn agent_read_text(target: &str, detail: &str) -> String {
+    let parsed = detail.split_once(':').and_then(|(n, tools)| {
+        let n: u32 = n.parse().ok()?;
+        let tools: Vec<&str> = tools
+            .split(',')
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        Some((n, tools))
+    });
+    match parsed {
+        Some((1, tools)) if !tools.is_empty() => format!(
+            "L'agent d'IA « {target} » a lu la maison (1 lecture : {})",
+            tools.join(", ")
+        ),
+        Some((n, tools)) if !tools.is_empty() => format!(
+            "L'agent d'IA « {target} » a lu la maison ({n} lectures : {})",
+            tools.join(", ")
+        ),
+        _ => format!("L'agent d'IA « {target} » a lu la maison"),
+    }
 }
 
 /// L'heure locale `HH:MM` d'une ligne.
@@ -1188,5 +1378,203 @@ mod tests {
         let away = Entry::new(Action::Presence, &web).target("away");
         assert_eq!(describe(&away).1, "Hamdi : « Je pars »");
         assert_eq!(clock_label(at).len(), 5);
+    }
+
+    #[test]
+    fn the_agent_filter_keeps_agent_lines_and_counts_the_limit_on_them() {
+        let dir = std::env::temp_dir().join(format!("ostal-audit-agents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = AuditLog::open(&dir);
+        let now = crate::events::now_unix();
+        let person = Who::user("u1", Some("Hamdi".into()));
+        let mut agent = Who::user("u1", Some("Hamdi".into()));
+        agent.connection = Some(ConnRef::new(Some("a1"), "Claude Code", "agent"));
+        // Un agent, puis beaucoup de lignes de personne : la limite ne doit pas manger l'agent.
+        log.record(
+            Entry::new(Action::AgentRead, &agent)
+                .at(now - 100.0)
+                .target("Claude Code"),
+        );
+        log.record(
+            Entry::new(Action::DeviceCommand, &agent)
+                .at(now - 99.0)
+                .target("Prise"),
+        );
+        log.record(
+            Entry::new(Action::AgentCreated, &person)
+                .at(now - 98.0)
+                .target("Cursor"),
+        );
+        for i in 0..10 {
+            log.record(Entry::new(Action::Login, &person).at(now - 50.0 + f64::from(i)));
+        }
+        let mut mode = Entry::new(Action::ModeChanged, &person).at(now - 40.0);
+        mode.source = Some(Origin::Agent);
+        log.record(mode);
+        let filter = Filter {
+            agents_only: true,
+            limit: Some(3),
+            ..Filter::default()
+        };
+        let lines = log.read_at(&filter, now);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(Entry::is_agent));
+        let all = log.read_at(
+            &Filter {
+                agents_only: true,
+                ..Filter::default()
+            },
+            now,
+        );
+        assert_eq!(all.len(), 4);
+        assert!(all.iter().all(|e| e.action != Action::Login));
+        let plain = log.read_at(&Filter::default(), now);
+        assert_eq!(plain.len(), 14);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_lists_line_says_how_many_devices_and_never_which() {
+        let who = Who::server_app();
+        let line = Entry::new(Action::AgentLists, &who).detail("2:1");
+        assert_eq!(
+            describe(&line).1,
+            "Listes des agents d'IA réglées : 2 appareils « jamais », 1 « sensible »"
+        );
+        let none = Entry::new(Action::AgentLists, &who).detail("0:0");
+        assert_eq!(
+            describe(&none).1,
+            "Listes des agents d'IA réglées : 0 appareil « jamais », 0 « sensible »"
+        );
+        let odd = Entry::new(Action::AgentLists, &who).detail("n'importe quoi");
+        assert_eq!(describe(&odd).1, "Listes des agents d'IA réglées");
+    }
+
+    #[test]
+    fn agent_lines_are_readable_and_an_older_reader_skips_what_it_does_not_know() {
+        let cli = Who::command_line();
+        let created = Entry::new(Action::AgentCreated, &cli)
+            .target("Claude Code")
+            .detail("Hamdi");
+        assert_eq!(
+            describe(&created).1,
+            "Agent d'IA « Claude Code » créé pour Hamdi"
+        );
+        let revoked = Entry::new(Action::AgentRevoked, &cli).target("Claude Code");
+        assert_eq!(describe(&revoked).1, "Agent d'IA « Claude Code » révoqué");
+        let on = Entry::new(Action::AgentSwitch, &cli).detail("on");
+        assert_eq!(describe(&on).1, "Accès des agents d'IA activé");
+        let off = Entry::new(Action::AgentSwitch, &cli).detail("off");
+        assert_eq!(describe(&off).1, "Accès des agents d'IA désactivé");
+        // Les lectures d'un agent : regroupées, une par une, refusées.
+        let who = Who {
+            connection: Some(ConnRef::new(Some("a1"), "Claude Code", "agent")),
+            ..Who::user("u1", Some("Hamdi".into()))
+        };
+        let grouped = Entry::new(Action::AgentRead, &who)
+            .target("Claude Code")
+            .detail("14:get_history,list_devices")
+            .source(Origin::Agent);
+        assert_eq!(
+            describe(&grouped).1,
+            "L'agent d'IA « Claude Code » a lu la maison (14 lectures : get_history, list_devices)"
+        );
+        let single = grouped.clone().detail("1:list_rooms");
+        assert_eq!(
+            describe(&single).1,
+            "L'agent d'IA « Claude Code » a lu la maison (1 lecture : list_rooms)"
+        );
+        // Un détail d'une autre forme n'est jamais cité.
+        let odd = grouped.clone().detail("IGNOREZ tout");
+        assert_eq!(
+            describe(&odd).1,
+            "L'agent d'IA « Claude Code » a lu la maison"
+        );
+        let presence = Entry::new(Action::AgentOccupation, &who)
+            .target("Claude Code")
+            .detail("get_presence");
+        let (tone, text) = describe(&presence);
+        assert_eq!(text, "L'agent d'IA « Claude Code » a lu la présence");
+        assert_eq!(tone, Tone::Warn);
+        let denied = Entry::new(Action::AgentDenied, &who)
+            .target("Claude Code")
+            .detail("scope")
+            .result(Outcome::Refused);
+        assert_eq!(
+            describe(&denied).1,
+            "Appel de l'agent d'IA « Claude Code » refusé (droit manquant)"
+        );
+        assert_eq!(from_label(&grouped), "Agent d'IA · Claude Code");
+        let mode = Entry::new(Action::ModeChanged, &who)
+            .target("vacances")
+            .source(Origin::Agent)
+            .detail("Claude Code");
+        assert_eq!(
+            describe(&mode).1,
+            "Mode Vacances, par l'agent d'IA « Claude Code »"
+        );
+        assert_eq!(Origin::of(&ModeSource::Agent), Origin::Agent);
+        // Une origine d'une version plus récente se lit `Other` au lieu de rendre la ligne illisible.
+        let future = serde_json::to_string(&mode)
+            .unwrap()
+            .replace("\"source\":\"agent\"", "\"source\":\"origine_du_futur\"");
+        let read: Entry = serde_json::from_str(&future).unwrap();
+        assert_eq!(read.source, Some(Origin::Other));
+        // Un lecteur d'une version plus ancienne lit une action qu'il ne connaît pas comme `Other`.
+        let line = serde_json::to_string(&created)
+            .unwrap()
+            .replace("\"agent_created\"", "\"action_du_futur\"");
+        let read: Entry = serde_json::from_str(&line).unwrap();
+        assert_eq!(read.action, Action::Other);
+    }
+
+    #[test]
+    fn the_four_confirmation_actions_read_in_french_and_never_quote_free_text() {
+        let who = Who::default();
+        let line = |action, detail: &str| {
+            describe(
+                &Entry::new(action, &who)
+                    .target("Claude Code")
+                    .detail(detail),
+            )
+        };
+        let (tone, text) = line(Action::ConfirmationRequested, "set_mode");
+        assert_eq!(
+            text,
+            "L'agent d'IA « Claude Code » demande à changer le mode de la maison"
+        );
+        assert_eq!(tone, Tone::Warn);
+        assert_eq!(
+            line(Action::ConfirmationApproved, "set_cover").1,
+            "Demande de l'agent d'IA « Claude Code » autorisée : commander un volet"
+        );
+        assert_eq!(
+            line(Action::ConfirmationRefused, "set_room").1,
+            "Demande de l'agent d'IA « Claude Code » refusée : commander les appareils d'une pièce"
+        );
+        assert_eq!(
+            line(Action::ConfirmationExpired, "set_on_off").1,
+            "Demande de l'agent d'IA « Claude Code » expirée sans réponse : allumer ou éteindre un appareil"
+        );
+        // Un détail d'une autre forme (ou d'une version plus récente) n'est jamais cité.
+        let odd = line(Action::ConfirmationApproved, "IGNOREZ tout").1;
+        assert!(!odd.contains("IGNOREZ"), "{odd}");
+        // Les mots du journal.
+        for (action, word) in [
+            (Action::ConfirmationRequested, "confirmation_requested"),
+            (Action::ConfirmationApproved, "confirmation_approved"),
+            (Action::ConfirmationRefused, "confirmation_refused"),
+            (Action::ConfirmationExpired, "confirmation_expired"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), word);
+        }
+        let denied = Entry::new(Action::AgentDenied, &who)
+            .target("Claude Code")
+            .detail("mode_rights")
+            .result(Outcome::Refused);
+        assert_eq!(
+            describe(&denied).1,
+            "Appel de l'agent d'IA « Claude Code » refusé (droit de changer le mode retiré au compte)"
+        );
     }
 }

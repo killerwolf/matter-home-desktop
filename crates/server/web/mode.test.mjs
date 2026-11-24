@@ -36,6 +36,8 @@ assert.equal(sourceLabel({ kind: "rule", name: "Nuit à 23 h" }), "automatisatio
 assert.equal(sourceLabel({ kind: "rule" }), "automatisation");
 assert.equal(sourceLabel({ kind: "widget" }), "widget iPhone");
 assert.equal(sourceLabel({ kind: "presence" }), "présence (Wi-Fi)");
+assert.equal(sourceLabel({ kind: "agent" }), "agent d'IA");
+assert.equal(modeChangeNotice("vacances", { kind: "agent" }, null), "Mode Vacances · agent d'IA");
 assert.equal(sourceLabel({ kind: "other" }), "autre");
 assert.equal(sourceLabel({ kind: "montre" }), "");
 assert.equal(sourceLabel(undefined), "");

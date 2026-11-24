@@ -6,6 +6,7 @@
 
 pub mod accounts;
 pub mod agent;
+pub mod agents;
 pub mod cameras;
 pub mod confirm;
 pub mod controller;
@@ -22,3 +23,4 @@ pub mod status;
 pub mod system;
 pub mod tailscale;
 pub mod version;
+pub mod welcome;

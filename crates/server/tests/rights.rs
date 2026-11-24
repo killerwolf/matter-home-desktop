@@ -138,6 +138,16 @@ fn gated() -> Vec<Gated> {
             Some(json!({"enabled": true})),
             EditAutomations,
         ),
+        // Créer un agent en lecture : « voir la maison ». Les droits « commandes » et « mode » qu'il
+        // peut porter demandent en plus ceux du compte (prouvé par
+        // agents_web::the_account_can_only_give_the_rights_it_has_itself).
+        g(
+            "POST",
+            "/api/agents",
+            "/api/agents",
+            Some(json!({"label": "Table des droits", "scopes": ["read"]})),
+            View,
+        ),
         g(
             "DELETE",
             "/api/events/{id}",
@@ -152,6 +162,26 @@ fn gated() -> Vec<Gated> {
 /// la personne elle-même (sa session, ses connexions, ses jetons, ses abonnements).
 const EXEMPT: &[(&str, &str)] = &[
     ("/api/version", "lecture, publique"),
+    (
+        "/mcp",
+        "jeton d'agent, pas une session : can(View), can(ControlDevices) et can(ChangeMode) sont vérifiés outil par outil dans net/mcp/tools.rs::call, prouvé par the_account_right_to_control_is_checked_and_journaled et every_tool_is_refused_when_the_account_loses_the_right_to_read",
+    ),
+    (
+        "/api/agents/{id}",
+        "révoque l'un de ses propres agents d'IA (jamais celui d'une autre personne : 404) ; la lecture et la création sont dans la table",
+    ),
+    (
+        "/api/agent-requests",
+        "lecture de ses propres demandes d'agent (jamais celles d'une autre personne)",
+    ),
+    (
+        "/api/agent-requests/{id}/approve",
+        "sa propre demande d'agent : le droit demandé dépend de l'action (commander ou changer le mode), vérifié par confirmations.rs avec can() de la capacité de la demande, prouvé par the_account_right_to_change_the_mode_is_checked_at_the_call_and_at_the_approval",
+    ),
+    (
+        "/api/agent-requests/{id}/refuse",
+        "refuser sa propre demande d'agent ne change rien dans la maison",
+    ),
     ("/api/login", "ouvre une session"),
     ("/api/logout", "ferme sa propre session"),
     ("/api/me/installations", "lecture de ses connexions"),
@@ -232,8 +262,20 @@ fn gated_routes_in_source_form() -> BTreeSet<String> {
 fn routes_in_source() -> BTreeSet<String> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net");
     let mut found = BTreeSet::new();
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let text = std::fs::read_to_string(entry.path()).unwrap();
+    // Les sous-dossiers aussi (`net/mcp/`).
+    let mut files = Vec::new();
+    let mut folders = vec![dir];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap().flatten() {
+            if entry.path().is_dir() {
+                folders.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    for file in files {
+        let text = std::fs::read_to_string(file).unwrap();
         let code = text.split("#[cfg(test)]").next().unwrap();
         for part in code.split(".route(").skip(1) {
             let expr = part.split(',').next().unwrap().trim();

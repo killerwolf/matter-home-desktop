@@ -1,12 +1,14 @@
 //! Serveur Ostal : tout ce qui pilote les appareils et garde les données, sans
 //! aucune interface graphique. Le binaire `ostal-server` (voir `main.rs`) l'assemble.
 
+pub mod agent_audit;
 pub mod announce;
 pub mod app;
 pub mod audit;
 pub mod automation;
 pub mod backup;
 pub mod cameras;
+pub mod confirmations;
 pub mod demo;
 pub mod descriptions;
 pub mod detection;
