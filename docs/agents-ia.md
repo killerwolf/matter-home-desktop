@@ -191,7 +191,8 @@ serveur arrêté ou non : il est relu dès qu'il change.
    franchissant un seuil (dans les deux sens), **de proche en proche** (une règle qui commande un
    autre appareil, dont les règles comptent aussi). La commande est **refusée** si l'une de leurs
    actions change le mode, appelle une adresse web, commande un volet, commande un appareil de la
-   liste `never` ou est inconnue de ce serveur. Les conditions sont ignorées (elles peuvent être
+   liste `never`, commande un appareil hors des appareils permis de ce jeton (`devices`) ou est
+   inconnue de ce serveur. Les conditions sont ignorées (elles peuvent être
    vraies à ce moment-là), les règles désactivées ne comptent pas (le calcul est refait à chaque
    commande). La réponse dit seulement « ferait partir une automatisation que seule une personne
    peut déclencher », **sans nom de règle, de mode ni d'adresse**.
@@ -200,8 +201,11 @@ serveur arrêté ou non : il est relu dès qu'il change.
    commande refusée compte aussi.
 7. `Hub::set_on_off`, puis la ligne du journal.
 
-Limite connue, dite en clair : une règle « quand la prise X reste injoignable » (déclencheur
-`Unreachable`) n'est pas suivie. Couper la prise d'un autre appareil peut en déclencher une.
+Limite connue, dite en clair : deux sortes de déclencheurs ne sont pas suivies. Une règle « quand
+la prise X reste injoignable » (`Unreachable`) : couper la prise d'un autre appareil peut en
+déclencher une. Un seuil (`Threshold`) posé sur **un autre appareil** dont la mesure dépend de la
+prise commandée (un thermomètre près d'un radiateur, par exemple) : le serveur ne sait pas que
+l'un influe sur l'autre.
 
 ### Dans le journal
 
@@ -257,3 +261,9 @@ Hors des spécifications ou à confirmer :
   suppose les deux sens. Le texte de refus ne nomme jamais la règle, le mode ni l'adresse.
   Un appel à `ostal_set_on_off` par un jeton sans le droit est un refus `scope` (comme pour
   `ostal_get_mode`), pas un outil inconnu.
+- **Jetons refusés** : un échec d'authentification n'est ni compté ni écrit au journal d'audit
+  (les spécifications techniques disaient « compté »). Il est retardé de 250 ms et une ligne du
+  journal de fonctionnement (adresse, jamais le jeton) le signale ; aucun blocage par adresse.
+- Les noms d'appareils rendus à l'agent perdent aussi les caractères invisibles ou bidi (largeur
+  nulle, U+202A à U+202E, U+2066 à U+2069, séparateurs de ligne, étiquettes), pas seulement les
+  caractères de contrôle.

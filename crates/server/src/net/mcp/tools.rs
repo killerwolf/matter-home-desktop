@@ -335,9 +335,24 @@ pub(super) fn only_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> Res
 // Texte et pièces
 // ---------------------------------------------------------------------------
 
-/// Un nom rendu à l'agent : sans caractères de contrôle, nettoyé, coupé.
+/// Un caractère qui peut cacher ou renverser du texte : contrôle, bidi, largeur nulle, séparateurs
+/// de ligne, étiquettes. (Rust n'a pas de test « caractère de format » dans la bibliothèque.)
+fn is_hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}')
+}
+
+/// Un nom rendu à l'agent : sans caractères de contrôle ni caractères invisibles ou bidi, nettoyé,
+/// coupé.
 pub(super) fn name_of(clean: &dyn Fn(&str) -> String, raw: &str) -> String {
-    let text: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let text: String = raw.chars().filter(|c| !is_hidden_char(*c)).collect();
     truncate(clean(&text).trim(), NAME_MAX)
 }
 
@@ -618,6 +633,13 @@ mod tests {
     use protocol::wire::{
         CameraModes, CameraPlacement, CameraProblem, ErrorCode, LatestReading, WireNode,
     };
+
+    #[test]
+    fn name_of_drops_invisible_and_bidi_characters() {
+        let keep = |s: &str| s.to_string();
+        let raw = "Lam\u{202E}pe\u{200B} \u{2066}sal\u{2069}on\u{FEFF}\u{E0041}\u{0007}";
+        assert_eq!(name_of(&keep, raw), "Lampe salon");
+    }
 
     fn node(id: u64, name: &str, caps: Capabilities) -> WireNode {
         WireNode {

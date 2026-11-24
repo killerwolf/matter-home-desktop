@@ -2055,6 +2055,38 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
 }
 
 #[test]
+fn a_rule_that_commands_a_device_outside_the_token_list_is_refused() {
+    let d = demo("mcp-cmd-rule-devices");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        let plug_n: u64 = plug.parse().unwrap();
+        let other = (plug_n + 1_000).to_string();
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        let on = json!({"id": plug, "command": "On"});
+        let rules = vec![rule_json(
+            1,
+            json!({"type": "Switch", "node_id": plug, "on": true}),
+            json!([{"type": "SetOnOff", "node_id": other, "command": "On"}]),
+        )];
+        put_rules(client, rules.clone()).await;
+        let (code, _) = tool_error(client, token, "ostal_set_on_off", on.clone()).await;
+        assert_eq!(code, "forbidden");
+        // Le même appareil, une fois permis : la commande passe.
+        hand_edit(&d.dir, &["read", "control"], &[&plug, &other], None);
+        assert_eq!(
+            tool(client, token, "ostal_set_on_off", on).await["sent"],
+            true
+        );
+    });
+    let denials: Vec<Value> = audit_of(&d.dir, "agent_denied")
+        .into_iter()
+        .filter(|l| l["detail"] == "rule")
+        .collect();
+    assert_eq!(denials.len(), 1);
+}
+
+#[test]
 fn commands_are_limited_to_twenty_a_minute_per_token_and_the_refusal_is_journaled() {
     let d = demo("mcp-cmd-rate");
     common::runtime().block_on(async {

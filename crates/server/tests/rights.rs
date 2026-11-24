@@ -154,7 +154,7 @@ const EXEMPT: &[(&str, &str)] = &[
     ("/api/version", "lecture, publique"),
     (
         "/mcp",
-        "E1a : trois outils de lecture seule, jeton d'agent ; dès qu'un outil commande, il passera par can() et sortira de cette liste",
+        "jeton d'agent, pas une session : can(View) et can(ControlDevices) sont vérifiés outil par outil dans net/mcp/tools.rs::call, prouvé par the_account_right_to_control_is_checked_and_journaled et every_tool_is_refused_when_the_account_loses_the_right_to_read",
     ),
     ("/api/login", "ouvre une session"),
     ("/api/logout", "ferme sa propre session"),

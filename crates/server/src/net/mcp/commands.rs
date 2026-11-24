@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 
 use super::tools::{name_of, only_keys, Ctx, ToolError};
 use crate::audit::{Action, Entry, Origin};
-use crate::security::agent_tokens::AgentStore;
+use crate::security::agent_tokens::{AgentInfo, AgentStore};
 
 pub(super) const SET_ON_OFF: &str = "ostal_set_on_off";
 
@@ -97,7 +97,7 @@ pub(super) fn set_on_off(
         ));
     }
     // 5.
-    if triggers_risky_rule(&ctx.hub.rules(), id, command, ctx.agents) {
+    if triggers_risky_rule(&ctx.hub.rules(), id, command, ctx.agents, ctx.agent) {
         return Err(refuse(ctx, "rule", RULE_REFUSED));
     }
     // 6.
@@ -155,8 +155,11 @@ fn triggers_risky_rule(
     node_id: u64,
     command: OnOffCommand,
     agents: &AgentStore,
+    agent: &AgentInfo,
 ) -> bool {
-    risky_from(rules, node_id, command, &|id| agents.never_commanded(id))
+    risky_from(rules, node_id, command, &|id| {
+        agents.never_commanded(id) || !agent.may_command(id)
+    })
 }
 
 fn risky_from(
@@ -361,5 +364,43 @@ mod tests {
         )]);
         assert!(!risky_from(&rules, 1, OnOffCommand::Off, &nobody));
         assert!(risky_from(&rules, 1, OnOffCommand::Off, &|id| id == 7));
+    }
+
+    #[test]
+    fn a_rule_that_commands_a_device_outside_the_token_list_is_refused() {
+        use crate::security::agent_tokens::Scope;
+        let store = AgentStore::open(&std::env::temp_dir().join("ostal-mcp-no-such-dir"));
+        let agent = |devices: &[&str]| AgentInfo {
+            id: "a".into(),
+            user_id: "u".into(),
+            label: "t".into(),
+            scopes: vec![Scope::Read, Scope::Control],
+            devices: devices.iter().map(|d| d.to_string()).collect(),
+            created: 0.0,
+            expires: f64::MAX,
+        };
+        // A permis, règle « A s'allume -> B s'allume ».
+        let rules = set(vec![rule(
+            1,
+            switch(1, true),
+            vec![RuleAction::SetOnOff {
+                node_id: 2,
+                command: OnOffCommand::On,
+            }],
+        )]);
+        assert!(triggers_risky_rule(
+            &rules,
+            1,
+            OnOffCommand::On,
+            &store,
+            &agent(&["1"])
+        ));
+        assert!(!triggers_risky_rule(
+            &rules,
+            1,
+            OnOffCommand::On,
+            &store,
+            &agent(&["1", "2"])
+        ));
     }
 }
