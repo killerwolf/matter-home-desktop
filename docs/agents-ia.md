@@ -126,12 +126,12 @@ par le fabricant) passent champ par champ dans le même nettoyeur que les notifi
 identifiants et mots de passe de caméras, adresses, identifiants de nœud masqués), sans caractères de
 contrôle, coupés à 80 caractères. Les identifiants ne sont jamais nettoyés. `vendor` et `product`
 ne sortent pas. Aucune adresse de webhook, aucune URL de caméra, aucune image n'est jamais rendue.
-Une consigne cachée dans un nom reste un texte : c'est pourquoi les étapes qui commandent exigeront
-une confirmation humaine côté serveur.
+Une consigne cachée dans un nom reste un texte : c'est pourquoi ce qui est sensible exige une
+confirmation humaine côté serveur (voir [Les confirmations](#les-confirmations-e3)).
 
 ## Les commandes (E2)
 
-Un seul outil, avec le droit « commandes » (`control`) **en plus** de « lecture » :
+Le premier outil de commande, avec le droit « commandes » (`control`) **en plus** de « lecture » (les volets, les pièces et le mode viennent à l'étape E3, plus bas) :
 
 | Outil | Paramètres | Rend |
 |---|---|---|
@@ -139,7 +139,7 @@ Un seul outil, avec le droit « commandes » (`control`) **en plus** de « lectu
 
 Pas de `Toggle` : « inverser » n'est pas rejouable sans danger (Claude Code rejoue un appel
 idempotent si la connexion tombe), l'agent doit viser l'état final. Seuls les appareils qui ont un
-marche/arrêt et ne sont pas un volet (`kind: on_off` : prises et lampes) se commandent.
+marche/arrêt et ne sont pas un volet (`kind: on_off` : prises et lampes) se commandent par cet outil ; les volets ont le leur, `ostal_set_cover`.
 
 ### Qui peut commander quoi : tout se règle à la main dans `agents.json`
 
@@ -307,7 +307,7 @@ demande une** (les caméras extérieures quittent la surveillance : c'est le pri
 l'effet, accepté pour chaque matin) ; Présent → Absent en demande une tant que quelqu'un est (ou
 peut être) à la maison, pas quand tout le monde est parti ; Absent ou Vacances → Nuit éteint les
 caméras intérieures, donc une confirmation. **Le même mode que l'actuel** : rien ne change, rien n'est
-demandé. Le changement se fait **sous le verrou du mode** : si le mode a bougé depuis le calcul, rien
+demandé (une ligne `agent_occupation` garde la trace de la lecture). Le changement se fait **sous le verrou du mode** : si le mode a bougé depuis le calcul, rien
 n'est changé et la demande ne vaut plus.
 
 La réponse et la carte **listent les automatisations qui se déclenchent** (noms nettoyés). Un
@@ -330,7 +330,7 @@ Activité d'Ostal Server et `ostal-server audit` les lisent déjà (`audit::desc
 | Ligne | Quand |
 |---|---|
 | `agent_read` | **les lectures ordinaires, regroupées** : une ligne par agent et par tranche de 10 minutes, écrite à l'échéance (un balayeur la passe chaque minute, et à l'arrêt du serveur). `detail` : `N:outil,outil` (le nombre de lectures et les outils lus, sans `ostal_`). Jamais une valeur lue ni un argument |
-| `agent_occupation` | **une ligne par lecture** du droit « occupation » : `ostal_get_mode`, `ostal_get_presence`, et `ostal_home_summary`, `ostal_list_cameras`, `ostal_list_automation_runs` quand le jeton a le droit (leur réponse en dépend). Jamais regroupée. Écrite avant la réponse |
+| `agent_occupation` | **une ligne par lecture** du droit « occupation » : `ostal_get_mode`, `ostal_get_presence`, et `ostal_home_summary`, `ostal_list_cameras`, `ostal_list_automation_runs` quand le jeton a le droit (leur réponse en dépend), ainsi que `ostal_set_mode` quand il ne change rien (même mode : la réponse dit le mode et ce que fait chaque caméra ; un vrai changement est la ligne `mode_changed`). Jamais regroupée. Écrite avant la réponse |
 | `agent_denied` | un appel refusé, `result: refused`, `detail` : `unknown` (outil inconnu), `scope` (droit du jeton manquant), `rights` (le compte n'a plus le droit de lire la maison), `control_rights` (ni de commander), `mode_rights` (ni de changer le mode), `device` (appareil hors de `devices` ou dans `never`, y compris des appareils sautés dans une pièce) ou `rate` (débit dépassé). Au plus **une ligne par minute, par agent et par motif**. Le nom d'un outil inconnu n'y entre jamais. (`rule`, d'avant l'étape E3, ne s'écrit plus : une commande qui ferait partir une règle sensible attend une personne) |
 | `confirmation_requested`, `confirmation_approved`, `confirmation_refused`, `confirmation_expired` | la vie d'une demande. `target` : le libellé de l'agent ; `detail` : l'outil (`set_on_off`, `set_cover`, `set_room`, `set_mode`), mot fermé. **Autorisée ou refusée : la ligne porte la personne** et sa session, pas l'agent. Jamais l'identifiant de la demande, l'appareil visé ni le mode |
 

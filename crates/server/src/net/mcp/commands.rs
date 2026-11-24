@@ -493,15 +493,33 @@ pub(super) fn set_room(ctx: &Ctx<'_>, arguments: &Map<String, Value>) -> Result<
         text,
         &targets,
     );
-    if let Gate::Wait(answer) = gate(ctx, &tool_plan, confirmation.as_deref())? {
-        return Ok(answer);
+    // Le débit : un appareil, une commande (la première est déjà comptée dans `mod.rs`). Il se compte
+    // **avant** que l'autorisation soit consommée : une minute pleine ne doit jamais brûler l'accord
+    // d'une personne sans que rien ne parte. Si finalement rien ne part, on rend ce qui a été compté.
+    let extra = lot.len() - 1;
+    let will_run = confirmation.is_some() || tool_plan.reasons.is_empty();
+    if will_run {
+        if let Err(wait) = ctx.agents.check_commands(&ctx.agent.id, extra) {
+            return Err(ToolError::new(
+                "rate_limited",
+                format!("Trop de commandes (20 par minute) : réessayez dans {wait} s."),
+            ));
+        }
     }
-    // Le débit : un appareil, une commande (la première est déjà comptée dans `mod.rs`).
-    if let Err(wait) = ctx.agents.check_commands(&ctx.agent.id, lot.len() - 1) {
-        return Err(ToolError::new(
-            "rate_limited",
-            format!("Trop de commandes (20 par minute) : réessayez dans {wait} s."),
-        ));
+    match gate(ctx, &tool_plan, confirmation.as_deref()) {
+        Ok(Gate::Go) => {}
+        Ok(Gate::Wait(answer)) => {
+            if will_run {
+                ctx.agents.refund_commands(&ctx.agent.id, extra);
+            }
+            return Ok(answer);
+        }
+        Err(e) => {
+            if will_run {
+                ctx.agents.refund_commands(&ctx.agent.id, extra);
+            }
+            return Err(e);
+        }
     }
     let mut sent = Vec::new();
     let mut failed = Vec::new();

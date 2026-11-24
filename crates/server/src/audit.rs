@@ -816,6 +816,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
                 "list_cameras" => "le comportement des caméras",
                 "home_summary" => "le résumé de la maison avec le mode",
                 "list_automation_runs" => "les exécutions des règles de mode",
+                "set_mode" => "le mode de la maison (changement demandé sans effet)",
                 _ => "l'occupation de la maison",
             };
             tone = Tone::Warn;

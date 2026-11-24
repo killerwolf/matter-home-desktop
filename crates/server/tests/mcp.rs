@@ -2941,6 +2941,65 @@ fn a_room_counts_for_its_devices_in_the_twenty_commands_a_minute_all_or_nothing(
 }
 
 #[test]
+fn a_full_minute_never_burns_the_approval_of_a_room() {
+    let d = demo_with("mcp-e3-room-burn", &[("OSTAL_DEMO_HOUSE", "1")]);
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        let lamp = id_of(client, token, "Plafonnier").await;
+        let rooms = tool(client, token, "ostal_list_rooms", json!({})).await;
+        let kitchen = rooms["floors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["rooms"].as_array().unwrap().clone())
+            .find(|r| r["name"] == "Cuisine")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &lamp],
+            Some(json!([])),
+        );
+        set_sensitive(&d.dir, &[&lamp]);
+        let args = json!({"room_id": kitchen, "kind": "on_off", "command": "Off"});
+        let wait = tool(client, token, "ostal_set_room", args.clone()).await;
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        let session = client.login().await;
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        // La minute se remplit (19 commandes, plus la demande) : il ne reste pas de place pour deux.
+        for _ in 0..agent_tokens::COMMANDS_PER_MINUTE - 2 {
+            tool(
+                client,
+                token,
+                "ostal_set_on_off",
+                json!({"id": plug, "command": "On"}),
+            )
+            .await;
+        }
+        let mut with_id = args.clone();
+        with_id["confirmation_id"] = json!(id);
+        let (code, _) = tool_error(client, token, "ostal_set_room", with_id.clone()).await;
+        assert_eq!(code, "rate_limited");
+        // Rien n'est parti, et l'autorisation n'a pas servi : elle attend toujours.
+        let status = tool(
+            client,
+            token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(status["state"], "approved");
+        assert!(audit_of(&d.dir, "device_command")
+            .iter()
+            .all(|l| l["detail"] == "on"));
+    });
+}
+
+#[test]
 fn the_mode_right_changes_the_mode_by_the_effect_and_vacances_always_asks() {
     let d = demo("mcp-e3-mode");
     common::runtime().block_on(async {
@@ -2976,6 +3035,13 @@ fn the_mode_right_changes_the_mode_by_the_effect_and_vacances_always_asks() {
         // Le même mode : rien ne change, rien n'est demandé.
         let same = tool(client, token, "ostal_set_mode", json!({"mode": "present"})).await;
         assert_eq!(same["changed"], false);
+        // Sa réponse dit le mode et les caméras : une lecture d'« occupation », une ligne.
+        let reads: Vec<Value> = audit_of(&d.dir, "agent_occupation")
+            .into_iter()
+            .filter(|l| l["detail"] == "set_mode")
+            .collect();
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        assert!(audit_of(&d.dir, "mode_changed").is_empty());
         // Sans caméra ni règle : Absent passe tout de suite, et le journal le dit.
         let done = tool(client, token, "ostal_set_mode", json!({"mode": "absent"})).await;
         assert_eq!(done["changed"], true);

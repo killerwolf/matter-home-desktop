@@ -150,6 +150,13 @@ pub(super) fn set_mode(ctx: &Ctx<'_>, arguments: &Map<String, Value>) -> Result<
                 return Ok(answer);
             }
         }
+        // La réponse dit le mode et ce que fait chaque caméra : c'est une lecture d'« occupation »,
+        // écrite une par une comme les autres (ce n'est ni une lecture ordinaire ni un changement).
+        ctx.hub.audit().record(crate::agent_audit::occupation_entry(
+            ctx.who,
+            &ctx.agent.label,
+            SET_MODE,
+        ));
         return Ok(outcome(&snapshot, to, false, &[]));
     }
     let rules = ctx.hub.rules();

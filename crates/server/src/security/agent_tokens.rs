@@ -485,6 +485,17 @@ impl AgentStore {
             n,
         )
     }
+
+    /// Rend `n` commandes comptées par [`AgentStore::check_commands`] et finalement pas envoyées
+    /// (la demande attendait une personne, ou l'autorisation était refusée).
+    pub fn refund_commands(&self, agent_id: &str, n: usize) {
+        let mut map = self.commands.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(queue) = map.get_mut(agent_id) {
+            for _ in 0..n {
+                queue.pop_back();
+            }
+        }
+    }
 }
 
 /// Fenêtre glissante d'une minute, par jeton.
@@ -826,6 +837,11 @@ mod tests {
         // Un autre jeton n'est pas touché.
         assert!(store.check_commands("b", COMMANDS_PER_MINUTE).is_ok());
         assert!(store.check_commands("b", 1).is_err());
+        // Ce qui n'est finalement pas envoyé se rend.
+        store.refund_commands("b", 3);
+        assert!(store.check_commands("b", 3).is_ok());
+        assert!(store.check_commands("b", 1).is_err());
+        store.refund_commands("inconnu", 5);
     }
 
     #[test]
