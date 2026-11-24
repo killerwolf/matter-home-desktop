@@ -163,7 +163,7 @@ impl AgentsUi {
         widgets::section(ui, "Accès des agents", |ui| {
             let mut on = self.enabled;
             if ui.checkbox(&mut on, "Autoriser les agents IA").changed() {
-                self.notice = match agents::set_switch(data_dir, on) {
+                self.notice = match agents::set_switch(data_dir, on, Some(&auth.confirmations)) {
                     Ok(_) => None,
                     Err(e) => Some(Notice::Err(e)),
                 };

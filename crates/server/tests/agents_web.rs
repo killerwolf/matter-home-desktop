@@ -226,6 +226,23 @@ fn a_token_is_created_with_the_ticked_rights_shown_once_and_revoked_at_once() {
         assert_eq!(state["max_days"], 365);
         assert_eq!(state["can"], json!({"control": true, "mode": true}));
 
+        // Tant que les deux listes sont vides, on ne donne pas le droit de commander.
+        let blocked = create(
+            client,
+            session,
+            &json!({"label": "Trop tôt", "scopes": ["control"], "devices": [plug]}),
+        )
+        .await;
+        assert_eq!(blocked.status, 403, "{}", blocked.text());
+        assert!(blocked.text().contains("classé les appareils"));
+        let path = d.dir.join("serveur/agents.json");
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        file["sensitive"] = json!([other]);
+        let tmp = d.dir.join("serveur/agents.json.tmp");
+        std::fs::write(&tmp, file.to_string()).unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+
         // La création : les droits cochés, la durée, l'appareil permis.
         let created = create(
             client,

@@ -464,8 +464,9 @@ Le serveur calcule le passage du mode actuel au mode demandé **avec le tableau 
 
 1. une caméra qui **surveille** cesserait de surveiller (elle passerait à `off` ou `live`) : on se désarme ;
 2. une caméra **intérieure** se mettrait à surveiller ou à diffuser alors que **quelqu'un est à la
-   maison, ou que la présence est inconnue** (box injoignable, ou une personne active sans état
-   déclaré : dans le doute, quelqu'un est là) ;
+   maison, ou que la présence est inconnue** (box Wi-Fi liée mais injoignable ou refusée, dont les
+   déclarations « absent » sont figées, ou une personne active sans état déclaré : dans le doute,
+   quelqu'un est là) ;
 3. le mode demandé est **`vacances`**, toujours ;
 4. le changement fait partir des règles « quand le mode devient… » qui appellent une adresse web,
    changent le mode, sont inconnues, ou commandent un appareil sensible ou « jamais ».

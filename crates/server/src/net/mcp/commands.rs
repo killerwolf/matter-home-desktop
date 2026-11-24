@@ -583,17 +583,19 @@ pub(super) struct Walk {
 ///   « s'allume », `Off` qu'un « s'éteint » ; un seuil (puissance…) part dans les deux sens.
 /// - Pour les appareils que ces règles commandent à leur tour, on suppose les deux sens (on ne sait
 ///   pas ce qu'ils étaient avant).
+/// - Un appareil atteint avec un sens (la commande de départ) est revu sans sens quand une règle
+///   le commande à son tour : une minuterie « allumé → éteint » peut en réveiller une autre.
 /// - Les conditions sont ignorées : elles peuvent être vraies à ce moment-là.
 /// - Les règles désactivées ne comptent pas : elles ne partiront pas. Le calcul est refait à chaque
 ///   commande.
 pub(super) fn walk(rules: &RuleSet, starts: &[Start], flagged: &dyn Fn(u64) -> bool) -> Walk {
-    let mut seen: HashSet<u64> = HashSet::new();
+    let mut seen: HashSet<(u64, Option<bool>)> = HashSet::new();
     let mut queue: Vec<(u64, Option<bool>)> = Vec::new();
     let mut fired_ids: HashSet<u64> = HashSet::new();
     let mut risky_ids: HashSet<u64> = HashSet::new();
     let mut handle = |rule: &protocol::automation::Rule,
                       queue: &mut Vec<(u64, Option<bool>)>,
-                      seen: &mut HashSet<u64>| {
+                      seen: &mut HashSet<(u64, Option<bool>)>| {
         fired_ids.insert(rule.id);
         for action in &rule.actions {
             match action {
@@ -602,7 +604,7 @@ pub(super) fn walk(rules: &RuleSet, starts: &[Start], flagged: &dyn Fn(u64) -> b
                     if flagged(*node_id) {
                         risky_ids.insert(rule.id);
                     }
-                    if seen.insert(*node_id) {
+                    if seen.insert((*node_id, None)) {
                         queue.push((*node_id, None));
                     }
                 }
@@ -616,7 +618,7 @@ pub(super) fn walk(rules: &RuleSet, starts: &[Start], flagged: &dyn Fn(u64) -> b
     for start in starts {
         match start {
             Start::Node(node, direction) => {
-                if seen.insert(*node) {
+                if seen.insert((*node, *direction)) {
                     queue.push((*node, *direction));
                 }
             }
@@ -737,6 +739,24 @@ mod tests {
         let walked = walk(&rules, &[Start::Node(1, Some(true))], &nobody);
         assert_eq!(walked.fired, vec![1]);
         assert!(walked.risky.is_empty());
+    }
+
+    #[test]
+    fn a_rule_that_switches_the_commanded_device_back_is_followed() {
+        let off = RuleAction::SetOnOff {
+            node_id: 1,
+            command: OnOffCommand::Off,
+        };
+        let rules = set(vec![
+            rule(1, switch(1, true), vec![off]),
+            rule(2, switch(1, false), vec![webhook()]),
+        ]);
+        assert!(risky_from(&rules, 1, OnOffCommand::On, &nobody));
+        assert!(risky_from(&rules, 1, OnOffCommand::Off, &nobody));
+        assert!(risky_from(&rules, 1, OnOffCommand::Toggle, &nobody));
+        // Sans la règle 2, la boucle ne trouve rien (et se termine).
+        let calm = set(vec![rules.rules[0].clone()]);
+        assert!(!risky_from(&calm, 1, OnOffCommand::On, &nobody));
     }
 
     #[test]

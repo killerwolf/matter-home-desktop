@@ -2093,6 +2093,90 @@ fn a_command_that_would_start_a_mode_web_or_flagged_rule_waits_for_a_person() {
 }
 
 #[test]
+fn a_rule_that_switches_the_commanded_device_back_cannot_hide_a_risky_rule() {
+    let d = demo("mcp-cmd-loop-back");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        let switch = |on: bool| json!({"type": "Switch", "node_id": plug, "on": on});
+        let back_off = json!([{"type": "SetOnOff", "node_id": plug, "command": "Off"}]);
+        let hook = json!([{"type": "Webhook", "url": "https://exemple.invalid/x", "body": ""}]);
+        let session = client.login().await;
+        // A : « allumé -> éteint » (minuterie) ; B : « éteint -> adresse web ».
+        put_rules(
+            client,
+            vec![
+                rule_json(1, switch(true), back_off),
+                rule_json(2, switch(false), hook),
+            ],
+        )
+        .await;
+        let waiting = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "On"}),
+        )
+        .await;
+        assert_eq!(waiting["status"], "confirmation_required", "{waiting}");
+        settle(client, &session).await;
+        // Le sens direct était déjà attrapé.
+        let off = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off"}),
+        )
+        .await;
+        assert_eq!(off["status"], "confirmation_required", "{off}");
+        settle(client, &session).await;
+    });
+}
+
+#[test]
+fn an_accept_from_the_client_never_counts_as_a_confirmation() {
+    let d = demo("mcp-e3-no-elicitation");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&d.dir, &[&plug]);
+        let session = client.login().await;
+        let args = json!({"id": plug, "command": "Off"});
+        let call = |extra: Value| {
+            let mut params = json!({"name": "ostal_set_on_off", "arguments": args.clone()});
+            for (k, v) in extra.as_object().unwrap() {
+                params[k] = v.clone();
+            }
+            params
+        };
+        let accept = json!({"action": "accept", "content": {"confirmed": true}});
+        let extra = json!({
+            "_meta": {"elicitation": accept.clone()},
+            "inputResponses": {"confirm": accept.clone()},
+        });
+        let first = legacy(client, token, "tools/call", call(extra)).await;
+        assert_eq!(first.status, 200, "{}", first.text());
+        let result = first.json()["result"]["structuredContent"].clone();
+        assert_eq!(result["status"], "confirmation_required", "{result}");
+        let id = result["confirmation_id"].as_str().unwrap().to_string();
+        // Une réponse JSON-RPC du client, « accept », avec l'identifiant de la requête.
+        let reply = json!({"jsonrpc": "2.0", "id": 1, "result": {"action": "accept"}});
+        let resp = post(client, Some(token), &[LEGACY], &reply).await;
+        assert_eq!(resp.status, 202);
+        // Toujours en attente, rien n'a bougé.
+        let again = tool(client, token, "ostal_set_on_off", args.clone()).await;
+        assert_eq!(again["status"], "confirmation_required", "{again}");
+        assert_eq!(again["confirmation_id"], id.as_str());
+        assert_eq!(requests(client, &session).await.len(), 1);
+        assert!(plug_is_on(client, token, &plug).await);
+        assert!(audit_of(&d.dir, "device_command").is_empty());
+        settle(client, &session).await;
+    });
+}
+
+#[test]
 fn a_rule_that_commands_a_device_outside_the_token_list_waits_for_a_person() {
     let d = demo("mcp-cmd-rule-devices");
     common::runtime().block_on(async {

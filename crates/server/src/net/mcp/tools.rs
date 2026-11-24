@@ -391,7 +391,10 @@ pub fn call(ctx: &Ctx<'_>, name: &str, arguments: &Map<String, Value>) -> Outcom
         commands::SET_ROOM => commands::set_room(ctx, arguments),
         modechange::SET_MODE => modechange::set_mode(ctx, arguments),
         confirm::STATUS => confirm::status(ctx, arguments),
-        _ => only_keys(arguments, &[]).map(|()| occupation::get_presence(hub, ctx)),
+        "ostal_get_presence" => {
+            only_keys(arguments, &[]).map(|()| occupation::get_presence(hub, ctx))
+        }
+        _ => return Outcome::Unknown,
     };
     Outcome::Done(result)
 }

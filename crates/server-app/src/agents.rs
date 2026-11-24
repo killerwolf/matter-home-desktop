@@ -264,10 +264,21 @@ fn failed(what: &str, e: &anyhow::Error) -> String {
     format!("{what} : le fichier des agents n'a pas pu être écrit.")
 }
 
-/// Allume ou éteint l'interrupteur général. Rend `true` si l'état a changé.
-pub fn set_switch(data_dir: &Path, enabled: bool) -> Result<bool, String> {
+/// Allume ou éteint l'interrupteur général. Rend `true` si l'état a changé. En éteignant, les
+/// demandes en attente ou autorisées sans avoir servi sont oubliées : rallumer l'interrupteur dans
+/// les cinq minutes ne doit pas les rendre utilisables.
+pub fn set_switch(
+    data_dir: &Path,
+    enabled: bool,
+    confirmations: Option<&Confirmations>,
+) -> Result<bool, String> {
     let changed = agent_tokens::set_enabled(&dir(data_dir), enabled)
         .map_err(|e| failed("Interrupteur", &e))?;
+    if !enabled {
+        if let Some(c) = confirmations {
+            c.clear();
+        }
+    }
     if changed {
         record(
             data_dir,
@@ -409,16 +420,51 @@ mod tests {
     #[test]
     fn the_switch_writes_the_file_and_one_journal_line_per_change() {
         let data = temp("switch");
-        assert_eq!(set_switch(&data, true), Ok(true));
-        assert_eq!(set_switch(&data, true), Ok(false));
+        assert_eq!(set_switch(&data, true, None), Ok(true));
+        assert_eq!(set_switch(&data, true, None), Ok(false));
         assert!(AgentStore::open(&dir(&data)).enabled());
-        assert_eq!(set_switch(&data, false), Ok(true));
+        assert_eq!(set_switch(&data, false, None), Ok(true));
         let lines = log_lines(&data);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines.iter().all(|l| l.action == Action::AgentSwitch));
         assert!(lines
             .iter()
             .all(|l| l.connection.as_ref().is_some_and(|c| c.kind == "server")));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn turning_the_switch_off_forgets_requests_even_if_turned_back_on() {
+        use ostal_server::confirmations::Draft;
+        use ostal_server::rights::Capability;
+        let data = temp("switch-clears");
+        let confirmations = Confirmations::default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let ticket = confirmations
+            .request_at(
+                Draft {
+                    agent_id: "a1".into(),
+                    user_id: "u1".into(),
+                    label: "Claude Code".into(),
+                    who: Who::default(),
+                    tool: "set_mode",
+                    capability: Capability::ChangeMode,
+                    fingerprint: "f".into(),
+                    text: "Mettre la maison en mode Vacances.".into(),
+                    details: vec![],
+                    rules: vec![],
+                },
+                now,
+            )
+            .unwrap();
+        assert_eq!(set_switch(&data, true, Some(&confirmations)), Ok(true));
+        assert!(confirmations.status_at("a1", &ticket.id, now).is_some());
+        assert_eq!(set_switch(&data, false, Some(&confirmations)), Ok(true));
+        assert_eq!(set_switch(&data, true, Some(&confirmations)), Ok(true));
+        assert!(confirmations.status_at("a1", &ticket.id, now).is_none());
         let _ = std::fs::remove_dir_all(data);
     }
 

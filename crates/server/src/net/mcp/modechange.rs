@@ -32,6 +32,7 @@ use super::tools::{name_of, only_keys, Ctx, ToolError};
 use crate::audit::{ModeCause, Origin};
 use crate::presence::Whereabouts;
 use crate::rights::Capability;
+use crate::wifi::Link;
 
 pub(super) const SET_MODE: &str = "ostal_set_mode";
 
@@ -57,7 +58,8 @@ pub(super) struct Effect {
 
 /// L'effet du passage de `from` à `to`, d'après le tableau réel de chaque caméra.
 /// `someone_home` : quelqu'un est (ou peut être) à la maison. `flagged` : un appareil sensible ou
-/// « jamais ».
+/// « jamais » (les appareils hors de la liste « permis » du jeton n'y sont pas : c'est « sensible
+/// ou jamais » que la spécification demande, pas « non permis »).
 pub(super) fn effect(
     cameras: &[CameraView],
     from: HomeMode,
@@ -105,17 +107,40 @@ pub(super) fn effect(
 }
 
 /// Quelqu'un est-il à la maison ? **Oui** dès qu'une personne active est déclarée là, et **oui
-/// aussi** quand l'état d'une personne active est inconnu (box injoignable, rien de déclaré) :
-/// dans le doute, on suppose quelqu'un.
+/// aussi** quand l'état d'une personne active est inconnu (rien de déclaré) ou peut être périmé :
+/// une box Wi-Fi liée qui ne répond plus (injoignable ou refusée) fige les dernières déclarations
+/// « absent », alors la personne a pu rentrer. Dans le doute, on suppose quelqu'un.
 fn someone_home(ctx: &Ctx<'_>) -> bool {
-    let declared = ctx.hub.presence_of(ctx.accounts);
-    declared.iter().any(|d| d.state == Whereabouts::Home)
-        || ctx
-            .accounts
-            .users()
+    let active: Vec<String> = ctx
+        .accounts
+        .users()
+        .iter()
+        .filter(|u| u.active)
+        .map(|u| u.id.clone())
+        .collect();
+    someone_home_in(
+        box_is_silent(ctx.hub.wifi()),
+        &ctx.hub.presence_of(ctx.accounts),
+        &active,
+    )
+}
+
+/// Une box Wi-Fi est liée mais ne répond plus : ses déclarations « absent » sont figées.
+fn box_is_silent(wifi: &crate::wifi::Wifi) -> bool {
+    let status = wifi.status();
+    status.linked && matches!(status.link, Link::Unreachable | Link::Refused)
+}
+
+fn someone_home_in(
+    box_silent: bool,
+    declared: &[crate::presence::Declared],
+    active: &[String],
+) -> bool {
+    box_silent
+        || declared.iter().any(|d| d.state == Whereabouts::Home)
+        || active
             .iter()
-            .filter(|u| u.active)
-            .any(|u| !declared.iter().any(|d| d.user_id == u.id))
+            .any(|id| !declared.iter().any(|d| &d.user_id == id))
 }
 
 pub(super) fn set_mode(ctx: &Ctx<'_>, arguments: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -267,6 +292,78 @@ mod tests {
             camera(1, CameraPlacement::Exterieure),
             camera(2, CameraPlacement::Interieure),
         ]
+    }
+
+    #[test]
+    fn a_silent_box_means_someone_may_be_home_and_the_indoor_camera_asks() {
+        use crate::presence::{Declared, Source};
+        use crate::wifi::bbox::{BoxApi, BoxError, Host};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Flaky(Arc<AtomicBool>);
+        impl BoxApi for Flaky {
+            fn hosts(&self, _url: &str, _password: &str) -> Result<Vec<Host>, BoxError> {
+                if self.0.load(Ordering::SeqCst) {
+                    Err(BoxError::Unreachable)
+                } else {
+                    Ok(vec![Host {
+                        name: "iPhone-de-Sam".into(),
+                        active: true,
+                    }])
+                }
+            }
+        }
+        let down = Arc::new(AtomicBool::new(false));
+        let wifi = crate::wifi::Wifi::in_memory(Box::new(Flaky(down.clone())));
+        // Pas de box liée : rien n'est silencieux.
+        assert!(!box_is_silent(&wifi));
+        wifi.link("http://box.test", "mot-de-passe").unwrap();
+        assert!(!box_is_silent(&wifi));
+        // La box se tait : le dernier relevé est figé.
+        down.store(true, Ordering::SeqCst);
+        wifi.observe(1000.0, true);
+        assert!(box_is_silent(&wifi));
+
+        // Sam, seule personne, est « absent » d'après le Wi-Fi.
+        let away = [Declared {
+            user_id: "sam".into(),
+            state: Whereabouts::Away,
+            since: 1.0,
+            source: Source::Wifi,
+            said: 0.0,
+        }];
+        let active = ["sam".to_string()];
+        assert!(!someone_home_in(false, &away, &active));
+        assert!(someone_home_in(true, &away, &active));
+        // Une personne sans déclaration, ou déclarée là : quelqu'un.
+        assert!(someone_home_in(false, &[], &active));
+        assert!(!someone_home_in(false, &[], &[]));
+
+        // Passer d'« présent » à « absent » avec une caméra intérieure en surveillance : on demande.
+        let mut indoor = camera(2, CameraPlacement::Interieure);
+        indoor.modes.set(Absent, CameraBehavior::Surveillance);
+        let home = someone_home_in(true, &away, &active);
+        let reasons = effect(
+            &[indoor.clone()],
+            Present,
+            Absent,
+            home,
+            &RuleSet::default(),
+            &nobody,
+        )
+        .reasons;
+        assert!(reasons.contains(&Reason::Privacy), "{reasons:?}");
+        let blind = effect(
+            &[indoor],
+            Present,
+            Absent,
+            false,
+            &RuleSet::default(),
+            &nobody,
+        )
+        .reasons;
+        assert!(!blind.contains(&Reason::Privacy));
     }
 
     #[test]

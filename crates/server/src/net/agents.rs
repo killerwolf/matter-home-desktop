@@ -189,6 +189,20 @@ async fn create(
         )));
     }
     let snapshot = state.hub.current_snapshot();
+    // Le droit de commander n'est donné qu'une fois les listes « jamais » et « sensibles » choisies
+    // dans Ostal Server (elles peuvent rester vides seulement si aucun appareil ne se commande).
+    if scopes.contains(&Scope::Control) {
+        let (never, sensitive) = state.auth.agents.lists();
+        let commandable = snapshot
+            .devices
+            .iter()
+            .any(|v| v.device.caps.on_off || v.device.caps.cover);
+        if never.is_empty() && sensitive.is_empty() && commandable {
+            return Err(forbidden(
+                "Ostal Server n'a pas encore classé les appareils : demandez à la personne qui gère le serveur de régler les listes « jamais » et « sensibles » (Réglages › Agents IA)",
+            ));
+        }
+    }
     for id in &devices {
         let ok = snapshot
             .devices
