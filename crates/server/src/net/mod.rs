@@ -4,6 +4,7 @@
 //! borné au total et par adresse.
 
 mod agent_requests;
+mod agents;
 mod body;
 mod camera_snapshot;
 mod camera_stream;

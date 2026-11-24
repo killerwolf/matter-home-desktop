@@ -138,6 +138,16 @@ fn gated() -> Vec<Gated> {
             Some(json!({"enabled": true})),
             EditAutomations,
         ),
+        // Créer un agent en lecture : « voir la maison ». Les droits « commandes » et « mode » qu'il
+        // peut porter demandent en plus ceux du compte (prouvé par
+        // agents_web::the_account_can_only_give_the_rights_it_has_itself).
+        g(
+            "POST",
+            "/api/agents",
+            "/api/agents",
+            Some(json!({"label": "Table des droits", "scopes": ["read"]})),
+            View,
+        ),
         g(
             "DELETE",
             "/api/events/{id}",
@@ -155,6 +165,10 @@ const EXEMPT: &[(&str, &str)] = &[
     (
         "/mcp",
         "jeton d'agent, pas une session : can(View) et can(ControlDevices) sont vérifiés outil par outil dans net/mcp/tools.rs::call, prouvé par the_account_right_to_control_is_checked_and_journaled et every_tool_is_refused_when_the_account_loses_the_right_to_read",
+    ),
+    (
+        "/api/agents/{id}",
+        "révoque l'un de ses propres agents d'IA (jamais celui d'une autre personne : 404) ; la lecture et la création sont dans la table",
     ),
     (
         "/api/agent-requests",

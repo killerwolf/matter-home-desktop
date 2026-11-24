@@ -96,9 +96,32 @@ pub enum Action {
     ConfirmationRefused,
     /// Personne n'a répondu à temps : la demande a expiré (5 minutes).
     ConfirmationExpired,
+    /// Les listes « jamais par un agent » et « sensible » ont été réécrites depuis la fenêtre
+    /// d'Ostal Server (détail : `N:M`, le nombre d'appareils de chaque liste ; jamais leurs noms).
+    AgentLists,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
+}
+
+impl Action {
+    /// Cette action concerne-t-elle les agents d'IA (leur vie, leurs appels, leurs demandes) ?
+    pub fn is_agent_related(self) -> bool {
+        matches!(
+            self,
+            Action::AgentCreated
+                | Action::AgentRevoked
+                | Action::AgentSwitch
+                | Action::AgentRead
+                | Action::AgentOccupation
+                | Action::AgentDenied
+                | Action::AgentLists
+                | Action::ConfirmationRequested
+                | Action::ConfirmationApproved
+                | Action::ConfirmationRefused
+                | Action::ConfirmationExpired
+        )
+    }
 }
 
 /// Comment ça s'est terminé.
@@ -284,6 +307,14 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// La ligne vient d'un agent d'IA (connexion de sorte « agent », ou origine « agent ») ou le
+    /// concerne (créé, révoqué, interrupteur, listes, demandes à valider).
+    pub fn is_agent(&self) -> bool {
+        self.action.is_agent_related()
+            || self.source == Some(Origin::Agent)
+            || self.connection.as_ref().is_some_and(|c| c.kind == "agent")
+    }
+
     pub fn new(action: Action, who: &Who) -> Entry {
         Entry {
             at: crate::events::now_unix(),
@@ -358,6 +389,9 @@ pub struct Filter {
     pub until: Option<f64>,
     /// Nombre maximal de lignes rendues (les plus récentes).
     pub limit: Option<usize>,
+    /// Seulement ce qui vient d'un agent d'IA ou le concerne (`Entry::is_agent`). Appliqué
+    /// **avant** `limit` : la limite compte les lignes d'agent, pas toutes les lignes.
+    pub agents_only: bool,
 }
 
 pub struct AuditLog {
@@ -542,6 +576,9 @@ impl AuditLog {
                     {
                         continue;
                     }
+                    if filter.agents_only && !entry.is_agent() {
+                        continue;
+                    }
                     out.push(entry);
                 }
             }
@@ -653,10 +690,17 @@ pub fn who_label(entry: &Entry) -> String {
 
 /// « Depuis » : le téléphone ou l'ordinateur, ou « — ».
 pub fn from_label(entry: &Entry) -> String {
-    entry
-        .connection
-        .as_ref()
-        .map_or_else(|| "—".to_string(), |c| c.name.clone())
+    entry.connection.as_ref().map_or_else(
+        || "—".to_string(),
+        |c| {
+            // Un agent d'IA se reconnaît d'un coup d'œil : « Agent d'IA · Claude Code ».
+            if c.kind == "agent" {
+                format!("Agent d'IA · {}", c.name)
+            } else {
+                c.name.clone()
+            }
+        },
+    )
 }
 
 fn mode_label(key: Option<&str>) -> String {
@@ -808,6 +852,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::AgentCreated => format!("Agent d'IA « {target} » créé pour {detail}"),
         Action::AgentSwitch if detail == "on" => "Accès des agents d'IA activé".to_string(),
         Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
+        Action::AgentLists => agent_lists_text(detail),
         Action::AgentRead => agent_read_text(target, detail),
         Action::AgentOccupation => {
             let what = match detail {
@@ -866,6 +911,22 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         return (Tone::Warn, format!("{text} ({how})"));
     }
     (tone, text)
+}
+
+/// « Listes des agents d'IA réglées : 2 appareils « jamais », 1 « sensible » » (détail `N:M`).
+fn agent_lists_text(detail: &str) -> String {
+    let count = |n: &str| n.parse::<usize>().ok();
+    match detail.split_once(':') {
+        Some((never, sensitive)) => match (count(never), count(sensitive)) {
+            (Some(n), Some(m)) => format!(
+                "Listes des agents d'IA réglées : {n} appareil{} « jamais », {m} « sensible{} »",
+                if n > 1 { "s" } else { "" },
+                if m > 1 { "s" } else { "" }
+            ),
+            _ => "Listes des agents d'IA réglées".to_string(),
+        },
+        None => "Listes des agents d'IA réglées".to_string(),
+    }
 }
 
 /// Ce qu'une demande d'agent veut faire, d'après le mot fermé du détail (jamais un texte libre).
@@ -1320,6 +1381,76 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_filter_keeps_agent_lines_and_counts_the_limit_on_them() {
+        let dir = std::env::temp_dir().join(format!("ostal-audit-agents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = AuditLog::open(&dir);
+        let now = crate::events::now_unix();
+        let person = Who::user("u1", Some("Hamdi".into()));
+        let mut agent = Who::user("u1", Some("Hamdi".into()));
+        agent.connection = Some(ConnRef::new(Some("a1"), "Claude Code", "agent"));
+        // Un agent, puis beaucoup de lignes de personne : la limite ne doit pas manger l'agent.
+        log.record(
+            Entry::new(Action::AgentRead, &agent)
+                .at(now - 100.0)
+                .target("Claude Code"),
+        );
+        log.record(
+            Entry::new(Action::DeviceCommand, &agent)
+                .at(now - 99.0)
+                .target("Prise"),
+        );
+        log.record(
+            Entry::new(Action::AgentCreated, &person)
+                .at(now - 98.0)
+                .target("Cursor"),
+        );
+        for i in 0..10 {
+            log.record(Entry::new(Action::Login, &person).at(now - 50.0 + f64::from(i)));
+        }
+        let mut mode = Entry::new(Action::ModeChanged, &person).at(now - 40.0);
+        mode.source = Some(Origin::Agent);
+        log.record(mode);
+        let filter = Filter {
+            agents_only: true,
+            limit: Some(3),
+            ..Filter::default()
+        };
+        let lines = log.read_at(&filter, now);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(Entry::is_agent));
+        let all = log.read_at(
+            &Filter {
+                agents_only: true,
+                ..Filter::default()
+            },
+            now,
+        );
+        assert_eq!(all.len(), 4);
+        assert!(all.iter().all(|e| e.action != Action::Login));
+        let plain = log.read_at(&Filter::default(), now);
+        assert_eq!(plain.len(), 14);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_lists_line_says_how_many_devices_and_never_which() {
+        let who = Who::server_app();
+        let line = Entry::new(Action::AgentLists, &who).detail("2:1");
+        assert_eq!(
+            describe(&line).1,
+            "Listes des agents d'IA réglées : 2 appareils « jamais », 1 « sensible »"
+        );
+        let none = Entry::new(Action::AgentLists, &who).detail("0:0");
+        assert_eq!(
+            describe(&none).1,
+            "Listes des agents d'IA réglées : 0 appareil « jamais », 0 « sensible »"
+        );
+        let odd = Entry::new(Action::AgentLists, &who).detail("n'importe quoi");
+        assert_eq!(describe(&odd).1, "Listes des agents d'IA réglées");
+    }
+
+    #[test]
     fn agent_lines_are_readable_and_an_older_reader_skips_what_it_does_not_know() {
         let cli = Who::command_line();
         let created = Entry::new(Action::AgentCreated, &cli)
@@ -1373,7 +1504,7 @@ mod tests {
             describe(&denied).1,
             "Appel de l'agent d'IA « Claude Code » refusé (droit manquant)"
         );
-        assert_eq!(from_label(&grouped), "Claude Code");
+        assert_eq!(from_label(&grouped), "Agent d'IA · Claude Code");
         let mode = Entry::new(Action::ModeChanged, &who)
             .target("vacances")
             .source(Origin::Agent)

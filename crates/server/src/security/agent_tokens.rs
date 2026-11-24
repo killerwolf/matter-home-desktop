@@ -11,12 +11,16 @@
 //! `Kind` ne tolère pas une variante inconnue), avec l'**interrupteur général** `enabled`, éteint
 //! tant que le fichier ou le champ manque.
 //!
-//! **Seule la ligne de commande écrit ce fichier** (`ostal-server agent add|revoke|enable|disable`,
-//! fonctions libres de ce module). Le serveur ne fait que le lire : il le relit dès qu'il change
-//! (date, taille, inode), donc une révocation lancée pendant qu'il tourne prend effet à la requête
-//! suivante, et il ne peut jamais ressusciter un jeton qui vient d'être révoqué en réécrivant une
-//! liste gardée en mémoire. Un fichier illisible vaut « interrupteur éteint, aucun jeton » (jamais
-//! l'inverse).
+//! **Ce fichier s'écrit par les fonctions libres de ce module, et seulement par elles** : la ligne
+//! de commande (`ostal-server agent add|revoke|enable|disable`, jetons en lecture seule), les routes
+//! de session de l'app web (`net/agents.rs` : « Mes agents », avec les droits cochés) et la fenêtre
+//! d'Ostal Server (Réglages › Agents IA : interrupteur, « Tout couper », listes). **Chaque écriture
+//! relit le fichier sur le disque** (jamais le cache de l'`AgentStore`), sous un verrou : un mutex
+//! du processus et un verrou de fichier (`agents.lock`) pour la ligne de commande lancée pendant
+//! que le serveur tourne. Le serveur relit le fichier dès qu'il change (date, taille, inode), donc
+//! une révocation prend effet à la requête suivante, et aucune liste gardée en mémoire ne peut
+//! ressusciter un jeton révoqué. Un fichier illisible vaut « interrupteur éteint, aucun jeton »
+//! (jamais l'inverse), et n'est jamais écrasé.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -226,69 +230,242 @@ fn write(dir: &Path, file: &mut File) -> Result<()> {
     )
 }
 
+/// Un seul écrivain à la fois dans ce processus (`write_secret` passe toujours par le même
+/// fichier temporaire : deux écritures en même temps s'écraseraient).
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Le fichier de verrou : il ne contient rien, il ne sert qu'à `flock`.
+const LOCK_FILE: &str = "agents.lock";
+
+/// Lit, modifie et écrit **sous verrou** : mutex du processus, puis verrou du fichier
+/// `agents.lock` (la ligne de commande est un autre processus). Si le fichier de verrou ne peut pas
+/// être ouvert (dossier absent), l'écriture échouera de toute façon plus loin.
+fn edit<T>(dir: &Path, change: impl FnOnce(&mut File) -> Result<T>) -> Result<T> {
+    let _in_process = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let lock = {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(dir.join(LOCK_FILE)).ok()
+    };
+    if let Some(lock) = &lock {
+        lock.lock()
+            .with_context(|| format!("verrou de {}", dir.join(LOCK_FILE).display()))?;
+    }
+    let mut file = read_for_edit(dir)?;
+    let before = serde_json::to_string(&file)?;
+    let out = change(&mut file)?;
+    // Rien de changé : le fichier n'est pas réécrit (ni créé), son horodatage ne bouge pas.
+    if serde_json::to_string(&file)? != before {
+        write(dir, &mut file)?;
+    }
+    // Le verrou tombe avec `lock` (fermeture du fichier).
+    drop(lock);
+    Ok(out)
+}
+
+/// Les droits d'un nouveau jeton, dans l'ordre fixe lecture, occupation, commandes, mode. « Lecture »
+/// y est toujours ; « mode » suppose « occupation » ; un mot inconnu est refusé.
+pub fn normalize_scopes(wanted: &[Scope]) -> Result<Vec<Scope>> {
+    if wanted.contains(&Scope::Unknown) {
+        bail!("droit inconnu");
+    }
+    let has = |s: Scope| wanted.contains(&s);
+    let mut out = vec![Scope::Read];
+    if has(Scope::Occupation) || has(Scope::Mode) {
+        out.push(Scope::Occupation);
+    }
+    if has(Scope::Control) {
+        out.push(Scope::Control);
+    }
+    if has(Scope::Mode) {
+        out.push(Scope::Mode);
+    }
+    Ok(out)
+}
+
+/// Cet identifiant est-il dans une liste « jamais » ? Une entrée illisible rend **tous** les
+/// appareils « jamais » (même règle que [`AgentStore::never_commanded`]).
+fn listed_in(list: &[String], node_id: u64) -> bool {
+    let mut broken = false;
+    let mut listed = false;
+    for text in list {
+        match protocol::wire::parse_id(text) {
+            Ok(id) => listed |= id == node_id,
+            Err(_) => broken = true,
+        }
+    }
+    broken || listed
+}
+
 /// Crée un jeton d'agent **en lecture seule** pour cette personne (`user_id` : identifiant
 /// interne). Rend le jeton en clair, **une seule fois**. Les autres droits ne se donnent pas en
 /// ligne de commande : sinon quiconque a un terminal sur le Mac les aurait.
 pub fn add(dir: &Path, user_id: &str, label: &str, days: u32) -> Result<(AgentInfo, String)> {
+    add_with(dir, user_id, label, days, &[Scope::Read], &[])
+}
+
+/// Crée un jeton d'agent avec les droits demandés (app web « Mes agents »). **L'appelant a déjà
+/// vérifié** que la personne a elle-même chacun de ces droits et que les appareils existent ; ici
+/// on garde ce qui tient au fichier : durée, droits normalisés, appareils en identifiants décimaux
+/// canoniques (20 au plus, seulement avec le droit « commandes », aucun dans la liste « jamais »),
+/// 16 agents par personne, un libellé par personne.
+pub fn add_with(
+    dir: &Path,
+    user_id: &str,
+    label: &str,
+    days: u32,
+    scopes: &[Scope],
+    devices: &[u64],
+) -> Result<(AgentInfo, String)> {
     if days == 0 || days > MAX_DAYS {
         bail!("la durée va de 1 à {MAX_DAYS} jours");
     }
-    let mut file = read_for_edit(dir)?;
-    if file.agents.iter().filter(|e| e.user_id == user_id).count() >= MAX_PER_USER {
-        bail!("{MAX_PER_USER} agents au plus par personne : révoquez-en un d'abord");
+    let scopes = normalize_scopes(scopes)?;
+    let mut devices: Vec<String> = devices.iter().map(u64::to_string).collect();
+    devices.sort_by_key(|d| d.parse::<u64>().unwrap_or(0));
+    devices.dedup();
+    if !scopes.contains(&Scope::Control) && !devices.is_empty() {
+        bail!("des appareils permis n'ont de sens qu'avec le droit « commandes »");
     }
-    let label = super::user_tokens::clean_label(label, "Agent");
-    if file
-        .agents
-        .iter()
-        .any(|e| e.user_id == user_id && e.label.to_lowercase() == label.to_lowercase())
-    {
-        bail!("cette personne a déjà un agent « {label} » : choisissez un autre libellé");
+    if devices.len() > MAX_DEVICES_PER_AGENT {
+        bail!("{MAX_DEVICES_PER_AGENT} appareils permis au plus par agent");
     }
-    let token = draw_token();
-    let created = now();
-    let entry = Entry {
-        id: new_id(),
-        user_id: user_id.to_string(),
-        label,
-        scopes: vec![Scope::Read],
-        devices: Vec::new(),
-        hash: hex::encode(hash_of(&token)),
-        created,
-        expires: created + f64::from(days) * 86_400.0,
-    };
-    let info = AgentInfo::from(&entry);
-    file.agents.push(entry);
-    write(dir, &mut file)?;
-    Ok((info, token))
+    edit(dir, |file| {
+        if file.agents.iter().filter(|e| e.user_id == user_id).count() >= MAX_PER_USER {
+            bail!("{MAX_PER_USER} agents au plus par personne : révoquez-en un d'abord");
+        }
+        let label = super::user_tokens::clean_label(label, "Agent");
+        if file
+            .agents
+            .iter()
+            .any(|e| e.user_id == user_id && e.label.to_lowercase() == label.to_lowercase())
+        {
+            bail!("cette personne a déjà un agent « {label} » : choisissez un autre libellé");
+        }
+        if devices.iter().any(|d| {
+            d.parse::<u64>()
+                .map_or(true, |id| listed_in(&file.never, id))
+        }) {
+            bail!("un de ces appareils est dans la liste « jamais par un agent »");
+        }
+        let token = draw_token();
+        let created = now();
+        let entry = Entry {
+            id: new_id(),
+            user_id: user_id.to_string(),
+            label,
+            scopes,
+            devices,
+            hash: hex::encode(hash_of(&token)),
+            created,
+            expires: created + f64::from(days) * 86_400.0,
+        };
+        let info = AgentInfo::from(&entry);
+        file.agents.push(entry);
+        Ok((info, token))
+    })
 }
 
 /// Révoque un agent d'après son identifiant ou son libellé (insensible à la casse ; un libellé
-/// porté par plusieurs agents est refusé : il faut alors l'identifiant).
+/// porté par plusieurs agents est refusé : il faut alors l'identifiant). **Ligne de commande
+/// seulement** : le libellé vaut pour toutes les personnes ; une route de session passe par
+/// [`revoke_owned`].
 pub fn revoke(dir: &Path, selector: &str) -> Result<AgentInfo> {
-    let mut file = read_for_edit(dir)?;
-    let lower = selector.to_lowercase();
-    let by_id: Vec<usize> = (0..file.agents.len())
-        .filter(|&i| file.agents[i].id == selector)
-        .collect();
-    let hits = if by_id.is_empty() {
-        (0..file.agents.len())
-            .filter(|&i| file.agents[i].label.to_lowercase() == lower)
-            .collect()
-    } else {
-        by_id
-    };
-    match hits.as_slice() {
-        [] => bail!("aucun agent « {selector} »"),
-        [i] => {
-            let gone = file.agents.remove(*i);
-            write(dir, &mut file)?;
-            Ok(AgentInfo::from(&gone))
+    edit(dir, |file| {
+        let lower = selector.to_lowercase();
+        let by_id: Vec<usize> = (0..file.agents.len())
+            .filter(|&i| file.agents[i].id == selector)
+            .collect();
+        let hits = if by_id.is_empty() {
+            (0..file.agents.len())
+                .filter(|&i| file.agents[i].label.to_lowercase() == lower)
+                .collect()
+        } else {
+            by_id
+        };
+        match hits.as_slice() {
+            [] => bail!("aucun agent « {selector} »"),
+            [i] => Ok(AgentInfo::from(&file.agents.remove(*i))),
+            _ => {
+                bail!("plusieurs agents s'appellent « {selector} » : donnez l'identifiant (agent list)")
+            }
         }
-        _ => {
-            bail!("plusieurs agents s'appellent « {selector} » : donnez l'identifiant (agent list)")
-        }
+    })
+}
+
+/// Révoque l'agent d'identifiant `agent_id` **s'il appartient à cette personne**. `None` : il n'y
+/// en a pas (inconnu ou à quelqu'un d'autre : même réponse, une personne ne sonde pas les agents
+/// des autres).
+pub fn revoke_owned(dir: &Path, user_id: &str, agent_id: &str) -> Result<Option<AgentInfo>> {
+    edit(dir, |file| {
+        Ok(file
+            .agents
+            .iter()
+            .position(|e| e.id == agent_id && e.user_id == user_id)
+            .map(|i| AgentInfo::from(&file.agents.remove(i))))
+    })
+}
+
+/// « Tout couper » : l'interrupteur s'éteint **et** tous les jetons sont révoqués, en une seule
+/// écriture. Les listes « jamais » et « sensible » restent. Rend les agents retirés.
+pub fn cut_all(dir: &Path) -> Result<Vec<AgentInfo>> {
+    edit(dir, |file| {
+        file.enabled = false;
+        Ok(file.agents.drain(..).map(|e| AgentInfo::from(&e)).collect())
+    })
+}
+
+/// Révoque un agent par son identifiant, quelle que soit la personne (la fenêtre d'Ostal Server,
+/// qui voit tous les agents). `None` : il n'existe plus.
+pub fn revoke_id(dir: &Path, agent_id: &str) -> Result<Option<AgentInfo>> {
+    edit(dir, |file| {
+        Ok(file
+            .agents
+            .iter()
+            .position(|e| e.id == agent_id)
+            .map(|i| AgentInfo::from(&file.agents.remove(i))))
+    })
+}
+
+/// Les listes « jamais par un agent » et « sensible » : au plus ce nombre d'appareils chacune.
+pub const MAX_LISTED: usize = 200;
+
+/// Remplace les deux listes. **Seulement des identifiants canoniques** (jamais d'entrée illisible :
+/// une seule bloquerait toute commande, ou rendrait tout appareil sensible), triés, sans doublon.
+/// Un appareil « jamais » qui figurerait aussi dans la liste « sensible » n'y reste pas (« jamais »
+/// l'emporte). Rend `true` si le fichier a changé.
+pub fn set_lists(dir: &Path, never: &[u64], sensitive: &[u64]) -> Result<bool> {
+    if never.len() > MAX_LISTED || sensitive.len() > MAX_LISTED {
+        bail!("{MAX_LISTED} appareils au plus par liste");
     }
+    let canon = |ids: &[u64]| {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let never = canon(never);
+    let sensitive: Vec<u64> = canon(sensitive)
+        .into_iter()
+        .filter(|id| !never.contains(id))
+        .collect();
+    let texts = |ids: &[u64]| ids.iter().map(u64::to_string).collect::<Vec<_>>();
+    let (never, sensitive) = (texts(&never), texts(&sensitive));
+    edit(dir, |file| {
+        let changed = file.never != never || file.sensitive != sensitive;
+        file.never = never;
+        file.sensitive = sensitive;
+        Ok(changed)
+    })
+}
+
+/// Les deux listes telles qu'écrites dans le fichier (entrées illisibles comprises : on les
+/// montre, on ne les cache pas).
+pub fn lists(dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let file = read_for_edit(dir)?;
+    Ok((file.never, file.sensitive))
 }
 
 /// L'interrupteur général et les agents, le plus récent d'abord. Jamais un jeton ni une empreinte.
@@ -301,13 +478,11 @@ pub fn list(dir: &Path) -> Result<(bool, Vec<AgentInfo>)> {
 
 /// Allume ou éteint l'interrupteur général. Rend `true` si l'état a changé.
 pub fn set_enabled(dir: &Path, enabled: bool) -> Result<bool> {
-    let mut file = read_for_edit(dir)?;
-    if file.enabled == enabled {
-        return Ok(false);
-    }
-    file.enabled = enabled;
-    write(dir, &mut file)?;
-    Ok(true)
+    edit(dir, |file| {
+        let changed = file.enabled != enabled;
+        file.enabled = enabled;
+        Ok(changed)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +529,18 @@ pub struct AgentStore {
     cache: Mutex<Cache>,
     reads: Mutex<HashMap<String, VecDeque<Instant>>>,
     commands: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// Dernier appel et appels du jour, par jeton : **en mémoire**, remis à zéro au redémarrage.
+    usage: Mutex<HashMap<String, Usage>>,
+}
+
+/// L'usage d'un agent depuis le démarrage du serveur.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Usage {
+    /// Secondes Unix du dernier appel.
+    pub last: f64,
+    /// Appels depuis minuit (heure locale), refusés par le débit compris.
+    pub today: u32,
+    day: chrono::NaiveDate,
 }
 
 impl AgentStore {
@@ -363,6 +550,7 @@ impl AgentStore {
             cache: Mutex::new(load(dir)),
             reads: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
+            usage: Mutex::new(HashMap::new()),
         }
     }
 
@@ -377,6 +565,76 @@ impl AgentStore {
     /// L'interrupteur général : tant qu'il est éteint, `/mcp` n'existe pas.
     pub fn enabled(&self) -> bool {
         self.with_file(|file| file.enabled)
+    }
+
+    /// Les agents de cette personne, le plus récent d'abord (expirés compris : on les montre pour
+    /// qu'elle les retire). Jamais un jeton ni une empreinte.
+    pub fn agents_of(&self, user_id: &str) -> Vec<AgentInfo> {
+        let mut agents = self.all_agents();
+        agents.retain(|a| a.user_id == user_id);
+        agents
+    }
+
+    /// Tous les agents, le plus récent d'abord (la fenêtre d'Ostal Server).
+    pub fn all_agents(&self) -> Vec<AgentInfo> {
+        let mut agents =
+            self.with_file(|file| file.agents.iter().map(AgentInfo::from).collect::<Vec<_>>());
+        agents.sort_by(|a, b| b.created.total_cmp(&a.created));
+        agents
+    }
+
+    /// Les listes « jamais » et « sensible » **lisibles** (les entrées illisibles ne sont pas
+    /// rendues ; leur effet, lui, reste : voir `never_commanded` et `is_sensitive`).
+    pub fn lists(&self) -> (Vec<u64>, Vec<u64>) {
+        self.with_file(|file| {
+            let ids = |list: &[String]| {
+                list.iter()
+                    .filter_map(|t| protocol::wire::parse_id(t).ok())
+                    .collect::<Vec<u64>>()
+            };
+            (ids(&file.never), ids(&file.sensitive))
+        })
+    }
+
+    /// Une liste a-t-elle une entrée illisible (écrite à la main) ? Elle bloque alors tout ou rend
+    /// tout sensible : la fenêtre le dit.
+    pub fn lists_are_broken(&self) -> bool {
+        self.with_file(|file| {
+            file.never
+                .iter()
+                .chain(file.sensitive.iter())
+                .any(|t| protocol::wire::parse_id(t).is_err())
+        })
+    }
+
+    /// Le dernier appel et les appels du jour de cet agent depuis le démarrage.
+    pub fn usage(&self, agent_id: &str) -> Option<Usage> {
+        let map = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(agent_id).copied().map(|mut u| {
+            if u.day != chrono::Local::now().date_naive() {
+                u.today = 0;
+            }
+            u
+        })
+    }
+
+    fn note_use(&self, agent_id: &str) {
+        let today = chrono::Local::now().date_naive();
+        let mut map = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() > 256 && !map.contains_key(agent_id) {
+            map.clear();
+        }
+        let u = map.entry(agent_id.to_string()).or_insert(Usage {
+            last: 0.0,
+            today: 0,
+            day: today,
+        });
+        if u.day != today {
+            u.day = today;
+            u.today = 0;
+        }
+        u.today = u.today.saturating_add(1);
+        u.last = now();
     }
 
     /// À qui est ce jeton ? `None` s'il est inconnu, révoqué ou expiré. Comparaison en temps
@@ -457,6 +715,7 @@ impl AgentStore {
     /// Une lecture de plus pour ce jeton. `Err(secondes)` : la minute est pleine, réessayer après
     /// ce délai.
     pub fn check_read(&self, agent_id: &str) -> Result<(), u64> {
+        self.note_use(agent_id);
         self.check_read_at(agent_id, Instant::now())
     }
 
@@ -858,5 +1117,197 @@ mod tests {
         file.agents[0].expires = now() - 1.0;
         write(&dir, &mut file).unwrap();
         assert!(store.live_agent(&b.id).is_none());
+    }
+
+    #[test]
+    fn scopes_are_normalized_and_an_unknown_word_is_refused() {
+        assert_eq!(
+            normalize_scopes(&[Scope::Mode]).unwrap(),
+            vec![Scope::Read, Scope::Occupation, Scope::Mode]
+        );
+        assert_eq!(
+            normalize_scopes(&[Scope::Control, Scope::Read, Scope::Control]).unwrap(),
+            vec![Scope::Read, Scope::Control]
+        );
+        assert_eq!(normalize_scopes(&[]).unwrap(), vec![Scope::Read]);
+        assert!(normalize_scopes(&[Scope::Read, Scope::Unknown]).is_err());
+    }
+
+    #[test]
+    fn add_with_gives_the_checked_rights_and_only_them() {
+        let dir = temp("add-with");
+        let (agent, token) = add_with(
+            &dir,
+            "u1",
+            "Claude Code",
+            30,
+            &[Scope::Control, Scope::Mode],
+            &[13828102, 13828101, 13828102],
+        )
+        .unwrap();
+        assert!(token.starts_with(PREFIX));
+        assert_eq!(
+            agent.scopes,
+            vec![Scope::Read, Scope::Occupation, Scope::Control, Scope::Mode]
+        );
+        assert_eq!(agent.devices, vec!["13828101", "13828102"]);
+        let store = AgentStore::open(&dir);
+        let seen = store.verify(&token).unwrap();
+        assert!(seen.may_command(13828101) && !seen.may_command(7));
+        // Des appareils sans le droit de commander : refusé, et rien n'est écrit.
+        assert!(add_with(&dir, "u1", "Autre", 30, &[Scope::Read], &[1]).is_err());
+        assert_eq!(list(&dir).unwrap().1.len(), 1);
+        // Plus de 20 appareils : refusé.
+        let many: Vec<u64> = (1..=21).collect();
+        assert!(add_with(&dir, "u1", "Trop", 30, &[Scope::Control], &many).is_err());
+        // Durée hors bornes : refusé.
+        assert!(add_with(&dir, "u1", "Durée", 0, &[Scope::Read], &[]).is_err());
+        assert!(add_with(&dir, "u1", "Durée", MAX_DAYS + 1, &[Scope::Read], &[]).is_err());
+        // Le jeton en clair n'est nulle part dans le fichier.
+        let text = std::fs::read_to_string(path_of(&dir)).unwrap();
+        assert!(!text.contains(&token));
+    }
+
+    #[test]
+    fn a_device_of_the_never_list_is_refused_and_a_broken_never_list_refuses_all() {
+        let dir = temp("add-never");
+        set_lists(&dir, &[10], &[]).unwrap();
+        assert!(add_with(&dir, "u1", "A", 30, &[Scope::Control], &[10]).is_err());
+        assert!(add_with(&dir, "u1", "A", 30, &[Scope::Control], &[11]).is_ok());
+        hand_edit(&dir, |v| v["never"] = serde_json::json!(["010"]));
+        assert!(add_with(&dir, "u1", "B", 30, &[Scope::Control], &[11]).is_err());
+    }
+
+    #[test]
+    fn a_person_revokes_only_her_own_agents() {
+        let dir = temp("revoke-owned");
+        let (mine, _) = add(&dir, "u1", "Portable", 30).unwrap();
+        let (theirs, _) = add(&dir, "u2", "Portable", 30).unwrap();
+        // L'identifiant d'un autre : même réponse qu'un identifiant inconnu, et rien ne bouge.
+        assert!(revoke_owned(&dir, "u1", &theirs.id).unwrap().is_none());
+        assert!(revoke_owned(&dir, "u1", "inconnu").unwrap().is_none());
+        // Le libellé ne désigne rien : seul l'identifiant vaut.
+        assert!(revoke_owned(&dir, "u1", "Portable").unwrap().is_none());
+        assert_eq!(list(&dir).unwrap().1.len(), 2);
+        assert_eq!(
+            revoke_owned(&dir, "u1", &mine.id).unwrap().unwrap().id,
+            mine.id
+        );
+        let left = list(&dir).unwrap().1;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, theirs.id);
+    }
+
+    #[test]
+    fn cut_all_switches_off_and_revokes_everything_but_keeps_the_lists() {
+        let dir = temp("cut-all");
+        add(&dir, "u1", "A", 30).unwrap();
+        add(&dir, "u2", "B", 30).unwrap();
+        set_enabled(&dir, true).unwrap();
+        set_lists(&dir, &[1, 2], &[3]).unwrap();
+        let store = AgentStore::open(&dir);
+        assert!(store.enabled());
+        let cut = cut_all(&dir).unwrap();
+        assert_eq!(cut.len(), 2);
+        assert!(!store.enabled());
+        assert!(store.all_agents().is_empty());
+        assert_eq!(store.lists(), (vec![1, 2], vec![3]));
+    }
+
+    #[test]
+    fn lists_are_written_canonical_sorted_and_never_wins_over_sensitive() {
+        let dir = temp("lists");
+        assert!(set_lists(&dir, &[30, 10, 10], &[20, 30]).unwrap());
+        let text = std::fs::read_to_string(path_of(&dir)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["never"], serde_json::json!(["10", "30"]));
+        assert_eq!(v["sensitive"], serde_json::json!(["20"]));
+        // Les mêmes listes : rien ne change.
+        assert!(!set_lists(&dir, &[10, 30], &[20]).unwrap());
+        let store = AgentStore::open(&dir);
+        assert!(store.never_commanded(10) && !store.never_commanded(20));
+        assert!(store.is_sensitive(20) && !store.is_sensitive(10));
+        assert!(!store.lists_are_broken());
+        let too_many: Vec<u64> = (0..=MAX_LISTED as u64).collect();
+        assert!(set_lists(&dir, &too_many, &[]).is_err());
+        hand_edit(&dir, |v| v["sensitive"] = serde_json::json!(["x"]));
+        assert!(store.lists_are_broken());
+        // On réécrit les listes : l'entrée illisible disparaît.
+        set_lists(&dir, &[10], &[20]).unwrap();
+        assert!(!store.lists_are_broken());
+    }
+
+    #[test]
+    fn an_unreadable_file_is_never_overwritten_by_a_change() {
+        let dir = temp("broken-file");
+        std::fs::write(path_of(&dir), "{ pas du json").unwrap();
+        assert!(set_enabled(&dir, true).is_err());
+        assert!(add_with(&dir, "u1", "A", 30, &[Scope::Read], &[]).is_err());
+        assert!(cut_all(&dir).is_err());
+        assert_eq!(
+            std::fs::read_to_string(path_of(&dir)).unwrap(),
+            "{ pas du json"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_switch_does_not_even_create_the_file() {
+        let dir = temp("no-write");
+        assert!(!set_enabled(&dir, false).unwrap());
+        assert!(!path_of(&dir).exists());
+        assert!(set_enabled(&dir, true).unwrap());
+        assert!(!set_enabled(&dir, true).unwrap());
+    }
+
+    #[test]
+    fn writers_in_parallel_never_lose_an_agent_or_clash_on_the_temporary_file() {
+        let dir = temp("parallel");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for j in 0..4 {
+                        add(&dir, "u1", &format!("agent {i}-{j}"), 30)
+                            .map(|_| ())
+                            .ok();
+                        // Ne dépasse jamais 16 par personne : on change de personne.
+                        add(&dir, &format!("p{i}"), &format!("x{j}"), 30).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let (_, agents) = list(&dir).unwrap();
+        // 8 personnes x 4 agents, plus 16 au plus pour u1.
+        assert_eq!(agents.iter().filter(|a| a.user_id != "u1").count(), 32);
+        assert_eq!(agents.iter().filter(|a| a.user_id == "u1").count(), 16);
+    }
+
+    #[test]
+    fn usage_counts_calls_since_the_start_per_agent() {
+        let dir = temp("usage");
+        let store = AgentStore::open(&dir);
+        assert!(store.usage("a").is_none());
+        store.check_read("a").unwrap();
+        store.check_read("a").unwrap();
+        store.check_read("b").unwrap();
+        let a = store.usage("a").unwrap();
+        assert_eq!(a.today, 2);
+        assert!(a.last > 0.0);
+        assert_eq!(store.usage("b").unwrap().today, 1);
+    }
+
+    #[test]
+    fn the_agents_of_a_person_are_hers_alone() {
+        let dir = temp("agents-of");
+        add(&dir, "u1", "A", 30).unwrap();
+        add(&dir, "u2", "B", 30).unwrap();
+        let store = AgentStore::open(&dir);
+        assert_eq!(store.agents_of("u1").len(), 1);
+        assert_eq!(store.agents_of("u1")[0].label, "A");
+        assert!(store.agents_of("u3").is_empty());
+        assert_eq!(store.all_agents().len(), 2);
     }
 }

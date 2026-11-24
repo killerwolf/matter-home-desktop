@@ -8,6 +8,7 @@
 //! - `--open ONGLET`          : ouvre la fenêtre sur cet onglet au lancement (essais, captures)
 
 mod accounts_ui;
+mod agents_ui;
 mod cameras_ui;
 mod descriptions_ui;
 mod journal_ui;

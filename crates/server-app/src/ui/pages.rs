@@ -1476,6 +1476,18 @@ impl App {
                 }
                 return;
             }
+            if self.agents.is_open() {
+                if self.agents.show(
+                    ui,
+                    ctx,
+                    &st.data_dir,
+                    st.auth.as_ref().map(|a| &a.0),
+                    st.hub.as_ref().map(|h| &h.0),
+                ) {
+                    self.agents.reset();
+                }
+                return;
+            }
             widgets::section(ui, "Comptes", |ui| {
                 ui.label("Chaque personne de la maison a son compte : l'identifiant et le mot de passe qu'elle entre sur son téléphone ou son ordinateur.");
                 if let Some(n) = &st.notice {
@@ -1491,6 +1503,14 @@ impl App {
                 ui.label("Ostal sait qui est à la maison grâce au Wi-Fi de la box. La maison peut passer en Absent quand plus personne n'est là, et en Présent dès qu'une personne arrive.");
                 if ui.button("Régler la présence…").clicked() {
                     self.presence.open();
+                }
+            });
+        }
+        if st.phase == Phase::Running {
+            widgets::section(ui, "Agents IA", |ui| {
+                ui.label("Claude Code, Cursor et d'autres agents peuvent lire la maison, et la commander si vous le permettez. C'est éteint tant que vous ne l'allumez pas.");
+                if ui.button("Régler les agents IA…").clicked() {
+                    self.agents.open();
                 }
             });
         }

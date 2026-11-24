@@ -413,6 +413,16 @@ impl Confirmations {
         lines
     }
 
+    /// « Tout couper » : oublie **toutes** les demandes, en attente comme autorisées sans avoir
+    /// servi, et les compteurs. Rend le nombre de demandes encore vivantes qui sont tombées.
+    pub fn clear(&self) -> usize {
+        let mut table = self.lock();
+        let live = table.items.iter().filter(|i| i.state.live()).count();
+        table.items.clear();
+        table.recent.clear();
+        live
+    }
+
     pub fn sweep(&self) -> Vec<Entry> {
         self.sweep_at(crate::events::now_unix())
     }
@@ -471,6 +481,32 @@ mod tests {
             Err(ConsumeError::Used)
         );
         assert_eq!(c.status_at("a1", &t.id, 1005.0).unwrap().0, State::Used);
+    }
+
+    #[test]
+    fn cutting_everything_forgets_pending_and_approved_requests_alike() {
+        let c = Confirmations::default();
+        let pending = c.request_at(draft("a1", "u1", "f"), 0.0).unwrap();
+        let approved = c.request_at(draft("a1", "u1", "g"), 0.0).unwrap();
+        c.decide_at("u1", &approved.id, true, 1.0, &alive, &allowed)
+            .unwrap();
+        assert_eq!(c.clear(), 2);
+        assert_eq!(c.len(), 0);
+        // L'autorisation donnée avant n'existe plus, même avec le même identifiant et la même
+        // empreinte : rallumer l'interrupteur ne la ressuscite pas.
+        assert_eq!(
+            c.consume_at("a1", &approved.id, "g", 2.0),
+            Err(ConsumeError::Unknown)
+        );
+        assert!(c.status_at("a1", &pending.id, 2.0).is_none());
+        // Et les compteurs d'une heure repartent de zéro.
+        for i in 0..MAX_NEW_PER_HOUR {
+            let mut d = draft("a1", "u1", &format!("n{i}"));
+            d.agent_id = format!("agent-{}", i % 3);
+            let _ = c.request_at(d, 3.0);
+        }
+        c.clear();
+        assert!(c.request_at(draft("a1", "u1", "z"), 4.0).is_ok());
     }
 
     #[test]

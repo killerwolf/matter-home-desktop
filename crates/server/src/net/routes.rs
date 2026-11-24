@@ -62,6 +62,7 @@ pub fn router(state: AppState) -> Router {
         .merge(super::events::router())
         .merge(super::push::router())
         .merge(super::agent_requests::router())
+        .merge(super::agents::router())
         .merge(super::install::protected())
         .route("/api/plan", get(get_plan).put(put_plan))
         .route("/api/rules", get(get_rules).put(put_rules))

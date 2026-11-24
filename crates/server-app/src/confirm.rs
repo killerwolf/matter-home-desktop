@@ -32,6 +32,10 @@ pub enum Confirmation {
     CutConnection { name: String },
     /// Délier la box de la maison (présence par le Wi-Fi).
     UnlinkBox,
+    /// Révoquer un agent d'IA (son jeton ne sert plus).
+    RevokeAgent { label: String },
+    /// « Tout couper » : éteindre l'accès des agents et révoquer tous les agents.
+    CutAllAgents { count: usize },
 }
 
 /// Ce que l'alerte affiche.
@@ -86,6 +90,20 @@ impl Confirmation {
                 format!("Couper la connexion « {name} » ?"),
                 "Elle se ferme tout de suite, et les raccourcis et le widget installés depuis elle cessent de marcher. Ce téléphone ou cet ordinateur devra se reconnecter avec son identifiant et son mot de passe.".into(),
                 "Couper",
+            ),
+            Confirmation::RevokeAgent { label } => (
+                format!("Révoquer l'agent « {label} » ?"),
+                "Il est coupé tout de suite : son jeton ne sert plus à rien et ses demandes en attente tombent. Cela ne se défait pas : il faudra créer un nouvel agent et lui donner un nouveau jeton.".into(),
+                "Révoquer",
+            ),
+            Confirmation::CutAllAgents { count } => (
+                "Tout couper ?".into(),
+                match count {
+                    0 => "L'accès des agents s'éteint et leurs demandes en attente sont oubliées. Il n'y a aucun agent à révoquer.".to_string(),
+                    1 => "L'accès des agents s'éteint, l'agent est révoqué et ses demandes en attente sont oubliées. Cela ne se défait pas : il faudra recréer l'agent avec un nouveau jeton.".to_string(),
+                    n => format!("L'accès des agents s'éteint, les {n} agents sont révoqués et leurs demandes en attente sont oubliées. Cela ne se défait pas : il faudra recréer chaque agent avec un nouveau jeton."),
+                },
+                "Tout couper",
             ),
             Confirmation::UnlinkBox => (
                 "Délier la box ?".into(),
@@ -154,6 +172,10 @@ mod tests {
                 name: "iPhone de Sam".into(),
             },
             Confirmation::UnlinkBox,
+            Confirmation::RevokeAgent {
+                label: "Claude Code".into(),
+            },
+            Confirmation::CutAllAgents { count: 3 },
         ]
     }
 
@@ -188,6 +210,27 @@ mod tests {
                 assert!(!ask_with(&what, |_| other.clone()), "{what:?} {other:?}");
             }
         }
+    }
+
+    #[test]
+    fn cutting_the_agents_says_how_many_go_and_that_it_cannot_be_undone() {
+        let one = Confirmation::CutAllAgents { count: 1 }.dialog();
+        assert!(one.body.contains("l'agent est révoqué"), "{}", one.body);
+        let many = Confirmation::CutAllAgents { count: 3 }.dialog();
+        assert!(
+            many.body.contains("les 3 agents sont révoqués"),
+            "{}",
+            many.body
+        );
+        assert!(many.body.contains("ne se défait pas"));
+        assert_eq!(many.action, "Tout couper");
+        let none = Confirmation::CutAllAgents { count: 0 }.dialog();
+        assert!(none.body.contains("aucun agent à révoquer"));
+        let revoke = Confirmation::RevokeAgent {
+            label: "Claude Code".into(),
+        }
+        .dialog();
+        assert_eq!(revoke.title, "Révoquer l'agent « Claude Code » ?");
     }
 
     #[test]

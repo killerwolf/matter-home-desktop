@@ -24,6 +24,7 @@ pub struct JournalUi {
     /// Identifiant du compte choisi ; `None` : toutes les personnes.
     person: Option<String>,
     period: journal::Period,
+    source: journal::Source,
     /// (identifiant, nom affiché) de chaque compte.
     people: Vec<(String, String)>,
     log: Option<AuditLog>,
@@ -41,7 +42,7 @@ impl JournalUi {
     fn reload(&mut self, data_dir: &Path) {
         let log = self.log.get_or_insert_with(|| journal::open(data_dir));
         let now = ostal_server::events::now_unix();
-        let entries = journal::load(log, self.person.as_deref(), self.period, now);
+        let entries = journal::load(log, self.person.as_deref(), self.period, self.source, now);
         self.shown = entries.len();
         self.days = journal::days_of(&entries, journal::today());
         self.people = accounts::list(data_dir)
@@ -95,6 +96,17 @@ impl JournalUi {
                             .changed();
                     }
                 });
+            ui.add_space(10.0);
+            ui.label(RichText::new("Source").strong().small());
+            egui::ComboBox::from_id_salt("journal_source")
+                .selected_text(self.source.label())
+                .show_ui(ui, |ui| {
+                    for source in journal::Source::ALL {
+                        changed |= ui
+                            .selectable_value(&mut self.source, source, source.label())
+                            .changed();
+                    }
+                });
         });
         if changed {
             self.reload(data_dir);
@@ -107,8 +119,12 @@ impl JournalUi {
             if self.days.is_empty() {
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(journal::empty_text(self.period, self.person.is_some()))
-                        .color(p.text_secondary),
+                    RichText::new(journal::empty_text(
+                        self.period,
+                        self.person.is_some(),
+                        self.source,
+                    ))
+                    .color(p.text_secondary),
                 );
                 return;
             }

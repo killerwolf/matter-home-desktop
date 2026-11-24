@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::accounts_ui::AccountsUi;
+use crate::agents_ui::AgentsUi;
 use crate::cameras_ui::CamerasUi;
 use crate::descriptions_ui::DescriptionsUi;
 use crate::journal_ui::JournalUi;
@@ -452,6 +453,8 @@ struct App {
     journal: JournalUi,
     /// Réglages › Présence (box, interrupteur, téléphones).
     presence: PresenceUi,
+    /// Réglages › Agents IA (interrupteur, agents, « Tout couper », listes).
+    agents: AgentsUi,
     /// La configuration a été faite dans cette session : on montre l'écran de fin.
     setup_session: bool,
     show_done: bool,
@@ -526,6 +529,7 @@ impl App {
             accounts: AccountsUi::default(),
             journal: JournalUi::default(),
             presence: PresenceUi::default(),
+            agents: AgentsUi::default(),
             setup_session: false,
             show_done: false,
             login_enabled: false,
@@ -679,6 +683,7 @@ impl App {
             || self.descriptions_open
             || self.accounts.editing()
             || self.presence.editing()
+            || self.agents.editing()
     }
 
     /// Le menu demande la fenêtre sur un onglet : on l'amène au premier plan, sans jeter une
@@ -699,6 +704,7 @@ impl App {
             || self.descriptions_open
             || self.accounts.is_open()
             || self.presence.is_open()
+            || self.agents.is_open()
         {
             // On repart d'une page propre : ni formulaire de caméra, ni saisie de clé, ni mot de
             // passe à moitié faits.
@@ -707,6 +713,7 @@ impl App {
             self.descriptions_open = false;
             self.accounts.reset();
             self.presence.reset();
+            self.agents.reset();
             self.journal.reset();
             self.form = AccountForm::default();
         }

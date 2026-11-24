@@ -15,7 +15,7 @@ import * as push from "./push.js";
 import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
 import * as presence from "./presence.js";
 import * as agents from "./agents.js";
-import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
+import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, copyText, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const view = $("#view");
@@ -773,6 +773,8 @@ function renderDevices() {
       notif.id = "notifications";
       const connections = make("button", "ghost", "Mes connexions");
       connections.id = "connections";
+      const myAgents = make("button", "ghost", "Mes agents");
+      myAgents.id = "agents";
       const myPhone = make("button", "ghost", "Mon téléphone");
       myPhone.id = "my-phone";
       myPhone.hidden = !state.phones?.linked;
@@ -780,7 +782,7 @@ function renderDevices() {
       widgets.id = "widgets";
       const logout = make("button", "ghost", "Se déconnecter");
       logout.id = "logout";
-      out.append(notif, connections, myPhone, widgets, logout);
+      out.append(notif, connections, myAgents, myPhone, widgets, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -1328,6 +1330,7 @@ function closeSheet() {
   pushUi.open = false;
   modeUi.open = false;
   connUi.open = false;
+  closeAgents();
   if (wasOpen) {
     const target = sheetOpener;
     sheetOpener = null;
@@ -1629,6 +1632,255 @@ function renderConnections() {
     ul.appendChild(li);
   }
   body.appendChild(ul);
+}
+
+// ---------------------------------------------------------------------------
+// Mes agents : les agents d'IA (Claude Code, Cursor…) de ce compte (GET/POST /api/agents,
+// DELETE /api/agents/{id}). Le jeton n'existe ici que le temps de l'afficher une fois : il n'est ni
+// gardé dans le navigateur ni relu, et tombe avec la feuille. Tout est écrit en `textContent`.
+// ---------------------------------------------------------------------------
+const agentUi = { open: false, data: null, error: "", busy: false, form: null, token: "", note: "", copied: "" };
+
+function closeAgents() {
+  agentUi.open = false;
+  agentUi.token = ""; // le jeton ne survit pas à la feuille
+  agentUi.form = null;
+  agentUi.copied = "";
+}
+
+async function openAgents() {
+  closeSheet();
+  agentUi.open = true;
+  agentUi.data = null;
+  agentUi.error = "";
+  agentUi.note = "";
+  $("#sheet-title").textContent = "Mes agents";
+  renderAgents();
+  showSheet("tall");
+  await loadAgents();
+}
+
+async function loadAgents() {
+  try {
+    agentUi.data = agents.agentState(await api.request("GET", "/api/agents"));
+    agentUi.error = "";
+  } catch (error) {
+    agentUi.error = agents.agentError(error);
+  }
+  if (agentUi.open) renderAgents();
+}
+
+async function createAgent() {
+  const { form, data } = agentUi;
+  const problem = agents.formError(form, data);
+  if (problem) { agentUi.error = problem; renderAgents(); return; }
+  agentUi.busy = true;
+  agentUi.error = "";
+  renderAgents();
+  try {
+    const answer = await api.request("POST", "/api/agents", agents.createBody(form));
+    agentUi.token = typeof answer?.token === "string" ? answer.token : "";
+    agentUi.form = null;
+    agentUi.note = `Agent « ${answer?.agent?.label ?? form.label.trim()} » créé.`;
+  } catch (error) {
+    // Le formulaire reste, avec sa phrase d'erreur (la liste relue l'effacerait).
+    agentUi.error = agents.agentError(error);
+    agentUi.busy = false;
+    renderAgents();
+    return;
+  }
+  agentUi.busy = false;
+  await loadAgents();
+}
+
+async function revokeAgent(agent) {
+  const text = "Il est coupé tout de suite : ses outils cessent de répondre et son jeton ne sert plus à rien. Cela ne se défait pas : il faudrait créer un nouvel agent.";
+  if (!await askConfirm({ title: `Révoquer « ${agent.label} » ?`, text, action: "Révoquer" })) return;
+  agentUi.busy = true;
+  agentUi.error = "";
+  renderAgents();
+  try {
+    await api.request("DELETE", `/api/agents/${encodeURIComponent(agent.id)}`);
+    agentUi.note = `Agent « ${agent.label} » révoqué.`;
+  } catch (error) {
+    // Déjà révoqué (404) : la liste relue le montre. Le reste est dit.
+    if (error?.status !== 404) {
+      agentUi.error = agents.agentError(error);
+      agentUi.busy = false;
+      renderAgents();
+      return;
+    }
+  }
+  agentUi.busy = false;
+  await loadAgents();
+}
+
+async function copyAgentText(key, text) {
+  const result = await copyText(text, clipboardDeps());
+  agentUi.copied = result === "copied" ? key : "";
+  if (agentUi.open) renderAgents();
+}
+
+/** Un bloc à copier : un titre, le texte (en lecture seule, sélectionnable) et « Copier ». */
+function snippetBlock(key, title, text, rows) {
+  const box = make("div", "agent-snippet");
+  box.appendChild(make("strong", "", title));
+  const area = document.createElement("textarea");
+  area.className = "widgets-script agent-code";
+  area.readOnly = true;
+  area.rows = rows;
+  area.spellcheck = false;
+  area.value = text;
+  area.addEventListener("focus", () => area.select());
+  const copy = make("button", "btn", agentUi.copied === key ? "Copié" : "Copier");
+  copy.type = "button";
+  copy.addEventListener("click", () => copyAgentText(key, text));
+  box.append(area, copy);
+  return box;
+}
+
+function agentForm(data) {
+  const form = agentUi.form;
+  const box = make("form", "agent-form");
+  box.noValidate = true;
+  box.addEventListener("submit", (e) => { e.preventDefault(); createAgent(); });
+  const nameRow = make("label", "agent-field");
+  nameRow.appendChild(make("span", "", "Nom de l'agent"));
+  const name = document.createElement("input");
+  name.type = "text";
+  name.maxLength = 48;
+  name.placeholder = "Claude Code sur le portable";
+  name.autocomplete = "off";
+  name.spellcheck = false;
+  name.value = form.label;
+  name.addEventListener("input", () => { form.label = name.value; });
+  nameRow.appendChild(name);
+  const lengthRow = make("label", "agent-field");
+  lengthRow.appendChild(make("span", "", "Durée"));
+  const select = document.createElement("select");
+  for (const d of agents.DURATIONS.filter((x) => x.days <= data.maxDays)) {
+    const option = document.createElement("option");
+    option.value = String(d.days);
+    option.textContent = d.days === data.defaultDays ? `${d.label} (conseillé)` : d.label;
+    option.selected = d.days === form.days;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => { form.days = Number(select.value); });
+  lengthRow.appendChild(select);
+  box.append(nameRow, lengthRow);
+  box.appendChild(make("p", "agent-fixed", "✓ Lire la maison : appareils, pièces, historique, automatisations et caméras (jamais une image)."));
+  for (const choice of agents.SCOPE_CHOICES) {
+    const allowed = choice.key === "control" ? data.canControl : choice.key === "mode" ? data.canMode : true;
+    const row = checkbox(choice.label, Boolean(form[choice.key]) || (choice.key === "occupation" && form.mode), (on) => {
+      form[choice.key] = on;
+      if (choice.key === "occupation" && !on) form.mode = false;
+      renderAgents();
+    });
+    const input = row.querySelector("input");
+    input.disabled = !allowed || (choice.key === "occupation" && form.mode);
+    box.appendChild(row);
+    box.appendChild(make("p", "w-note agent-note", allowed ? choice.note : "Votre compte n'a pas ce droit."));
+  }
+  if (form.control) {
+    const { choices, hidden } = agents.deviceChoices(state.devices.values(), data.never, data.sensitive);
+    box.appendChild(make("h3", "", `Appareils permis (${form.devices.size} sur ${data.maxDevices} au plus)`));
+    if (!choices.length) box.appendChild(make("p", "w-note", "Aucune prise, lampe ou volet à proposer."));
+    for (const c of choices) {
+      const row = checkbox(`${c.name} (${c.kind})`, form.devices.has(c.id), (on, input) => {
+        if (on && form.devices.size >= data.maxDevices) { input.checked = false; return; }
+        if (on) form.devices.add(c.id); else form.devices.delete(c.id);
+        renderAgents();
+      });
+      box.appendChild(row);
+      if (c.sensitive) box.appendChild(make("p", "w-note agent-note", "Sensible : chaque commande de cet appareil attend votre accord."));
+    }
+    if (hidden) box.appendChild(make("p", "w-note", `${hidden} appareil${hidden > 1 ? "s sont exclus" : " est exclu"} par Ostal Server (liste « jamais »).`));
+  }
+  const actions = make("div", "agent-actions");
+  const create = make("button", "primary", "Créer l'agent");
+  create.type = "submit";
+  create.disabled = agentUi.busy;
+  const cancel = make("button", "btn", "Annuler");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => { agentUi.form = null; agentUi.error = ""; renderAgents(); });
+  actions.append(create, cancel);
+  box.appendChild(actions);
+  return box;
+}
+
+function renderAgents() {
+  const body = $("#sheet-body");
+  body.dataset.id = "agents";
+  body.replaceChildren();
+  const note = (text, cls = "w-note") => { const p = make("p", cls, text); body.appendChild(p); return p; };
+  note("Un agent d'IA (Claude Code, Cursor…) peut lire la maison et, si vous le décidez, la commander. Ce qu'il lit part chez son fournisseur. Vous le coupez quand vous voulez.", "ev-note");
+  if (agentUi.error) { const p = note(agentUi.error, "error"); p.setAttribute("role", "alert"); }
+  const data = agentUi.data;
+
+  // Le jeton, une seule fois.
+  if (agentUi.token) {
+    const box = make("div", "callout agent-secret");
+    const inner = make("div", "agent-secret-body");
+    inner.appendChild(make("strong", "", "Voici le jeton de cet agent. Il ne s'affichera plus."));
+    inner.appendChild(make("p", "", "Copiez-le maintenant et rangez-le dans le Trousseau du Mac, pas dans un fichier de configuration."));
+    inner.appendChild(snippetBlock("token", "Jeton", agentUi.token, 2));
+    box.appendChild(inner);
+    body.appendChild(box);
+    const snippets = agents.connectionSnippets(location.origin);
+    body.appendChild(make("h3", "", "Brancher l'agent"));
+    note("Trois lignes pour un agent qui tourne sur un autre ordinateur ; adaptez l'adresse si vous passez par Tailscale. Aucune ne contient le jeton.");
+    body.appendChild(snippetBlock("keychain", "1. Ranger le jeton dans le Trousseau (la commande le demande, collez-le)", snippets.keychain, 2));
+    body.appendChild(snippetBlock("env", "2. Le mettre dans la variable d'environnement, dans votre profil de terminal", snippets.env, 2));
+    body.appendChild(snippetBlock("claude", "3. Claude Code : fichier .mcp.json du projet", snippets.claudeCode, 9));
+    body.appendChild(snippetBlock("cursor", "Cursor : fichier .cursor/mcp.json", snippets.cursor, 9));
+    note("Détails, Tailscale et certificat : docs/agents-ia.md.");
+    const done = make("button", "primary", "J'ai rangé le jeton");
+    done.type = "button";
+    done.addEventListener("click", () => { agentUi.token = ""; agentUi.copied = ""; renderAgents(); });
+    body.appendChild(done);
+    return;
+  }
+
+  if (!data) { if (!agentUi.error) note("Chargement…"); return; }
+  if (agentUi.note) note(agentUi.note, "w-status");
+  if (!data.enabled) {
+    note("L'accès des agents est éteint sur ce serveur : aucun agent ne peut se connecter. Il s'allume depuis le Mac du serveur, dans Ostal Server › Réglages › Agents IA.", "callout");
+  }
+  note("Prévoyez l'agent sur un autre ordinateur que le Mac du serveur : avec un terminal sur ce Mac, il pourrait contourner ces protections.");
+
+  body.appendChild(make("h3", "", "Vos agents"));
+  if (!data.agents.length) note("Aucun agent pour l'instant.");
+  const ul = make("ul", "conn-list");
+  const now = Date.now() / 1000;
+  for (const a of data.agents) {
+    const li = make("li", "conn");
+    const who = make("div", "who");
+    who.appendChild(make("strong", "", a.label));
+    who.appendChild(make("span", "", `Droits : ${agents.scopeWords(a.scopes)}${a.devices.length ? ` · ${a.devices.length} appareil${a.devices.length > 1 ? "s" : ""} permis` : ""}`));
+    who.appendChild(make("span", "", a.expired ? "Expiré : il ne se connecte plus" : agents.expiryText(a.expires, now)));
+    who.appendChild(make("span", "", agents.usageText(a, now)));
+    li.appendChild(who);
+    const cut = make("button", "btn", "Révoquer");
+    cut.type = "button";
+    cut.setAttribute("aria-label", `Révoquer ${a.label}`);
+    cut.disabled = agentUi.busy;
+    cut.addEventListener("click", () => revokeAgent(a));
+    li.appendChild(cut);
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
+
+  if (agentUi.form) {
+    body.appendChild(make("h3", "", "Nouvel agent"));
+    body.appendChild(agentForm(data));
+  } else {
+    const add = make("button", "primary", "Ajouter un agent");
+    add.type = "button";
+    add.disabled = agentUi.busy || data.agents.length >= 16;
+    add.addEventListener("click", () => { agentUi.form = agents.emptyForm(data.defaultDays); agentUi.error = ""; agentUi.note = ""; renderAgents(); });
+    body.appendChild(add);
+    if (data.agents.length >= 16) note("16 agents au plus : révoquez-en un pour en ajouter.");
+  }
 }
 
 function checkbox(label, checked, onChange) {
@@ -2373,6 +2625,7 @@ view.addEventListener("click", (e) => {
   if (e.target.closest("#logout")) { api.logout().then(() => showLogin()); return; }
   if (e.target.closest("#notifications")) { openNotifications(); return; }
   if (e.target.closest("#connections")) { openConnections(); return; }
+  if (e.target.closest("#agents")) { openAgents(); return; }
   if (e.target.closest("#my-phone")) { loadPhones().then(() => openPhonePick(false)); return; }
   if (e.target.closest("#widgets")) { openWidgets(); return; }
   const cam = e.target.closest(".cam");

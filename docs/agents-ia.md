@@ -1,4 +1,4 @@
-# Agents d'IA : le serveur MCP intégré (étapes E1a, E1b, E2 et E3)
+# Agents d'IA : le serveur MCP intégré (étapes E1a à E4)
 
 Ostal Server peut recevoir un agent d'IA (Claude Code, Cursor…) qui lit l'état de la maison par le
 protocole MCP. **C'est éteint tant que vous ne l'allumez pas.** Les appareils, les pièces,
@@ -10,8 +10,12 @@ permet de **changer le mode de la maison** (il suppose « occupation »). **Ce q
 jamais exécuté sur la seule parole de l'agent** : une personne doit l'autoriser dans l'app web (voir
 [Les confirmations](#les-confirmations-e3)).
 
-Reste à venir (étape E4) : les écrans pour créer un agent et lui donner ses droits. En attendant, les
-droits et les listes se règlent à la main dans `agents.json`.
+**Les écrans (étape E4)** : chaque personne crée, voit et révoque **ses** agents dans l'app web
+(« Mes agents »). L'interrupteur général, « Tout couper », la liste de tous les agents et les listes
+« jamais » et « sensible » se règlent dans **Ostal Server › Réglages › Agents IA**, c'est-à-dire
+devant le Mac du serveur. Voir [Créer un agent](#créer-un-agent-app-web),
+[Réglages Agents IA dans Ostal Server](#réglages-agents-ia-dans-ostal-server) et
+[Brancher Claude Code et Cursor](#brancher-claude-code-et-cursor).
 
 ## Ce que ça ouvre, et ce que ça n'ouvre pas
 
@@ -40,18 +44,179 @@ ostal-server agent disable     # éteint tout : /mcp n'existe plus
 
 - `add` crée un jeton **en lecture seule** pour ce compte et l'affiche **une seule fois**
   (`ostal_agent_` suivi de 64 caractères). Il n'existe aucune option pour donner d'autres droits :
-  commander ou changer le mode se donnera depuis une session, jamais d'un terminal. Durée : 90 jours
+  commander ou changer le mode se donne depuis une session (l'app web), jamais d'un terminal. Durée : 90 jours
   par défaut, 365 au plus. 16 agents au plus par personne, un libellé par agent.
 - Ces commandes agissent aussi sur un serveur qui tourne, sans redémarrage : le serveur relit
   `serveur/agents.json` dès qu'il change. Une révocation prend effet à la requête suivante.
 - Un compte désactivé coupe ses agents. Un jeton expiré est refusé.
 - Rangez le jeton dans une variable d'environnement ou le Trousseau, **pas** dans un fichier de
-  configuration (voir Claude Code : `headers` avec `${OSTAL_AGENT_TOKEN}`).
+  configuration (voir [Brancher Claude Code et Cursor](#brancher-claude-code-et-cursor)).
 
-L'interrupteur et les jetons vivent dans `serveur/agents.json` (0600, jamais exporté) : seule
-l'**empreinte** SHA-256 de chaque jeton y est gardée. Un fichier illisible coupe tout l'accès. Le
-journal d'audit note la création et la révocation d'un agent et les changements d'interrupteur
-(`ostal-server audit`), jamais le jeton.
+L'interrupteur, les listes et les jetons vivent dans `serveur/agents.json` (0600, jamais exporté) :
+seule l'**empreinte** SHA-256 de chaque jeton y est gardée. Un fichier illisible coupe tout l'accès
+(et n'est jamais réécrit). Le journal d'audit note la création et la révocation d'un agent, les
+changements d'interrupteur et des listes (`ostal-server audit`), jamais le jeton.
+
+**Qui écrit ce fichier.** Trois écrivains : la ligne de commande, les routes de l'app web (`/api/agents`,
+sous une session) et la fenêtre d'Ostal Server. Chacun relit le fichier sur le disque avant de le
+modifier, sous un verrou (un mutex du processus, et un verrou de fichier `agents.lock` pour la ligne
+de commande lancée pendant que le serveur tourne), et ne réécrit rien quand rien ne change. Une
+panne d'écriture se dit, elle ne perd rien.
+
+## Créer un agent (app web)
+
+App web › « Mes agents ». Une personne connectée voit **ses** agents (jamais ceux d'une autre) et en
+crée un en choisissant :
+
+- un **nom** (48 caractères au plus, unique pour elle : « Claude Code sur le portable ») ;
+- une **durée** (7, 30, 90, 180 jours ou 1 an ; 90 par défaut) ;
+- les **droits** : « lecture » est toujours donnée ; « voir qui est à la maison et le mode »
+  (occupation), « commander des prises, des lampes et des volets » (avec les appareils permis, 20 au
+  plus, cochés un par un) et « changer le mode » (qui suppose « occupation »).
+
+**Le compte ne donne que ce qu'il a lui-même** : « commandes » demande le droit de commander, « mode »
+celui de changer le mode. Les appareils proposés sont les prises, lampes et volets **hors de la liste
+« jamais »** ; ceux de la liste « sensible » sont marqués (« chaque commande attend votre accord »).
+Le serveur vérifie tout cela de son côté : un corps hors forme, un droit inconnu, un appareil qui
+n'existe pas, qui n'est pas commandable ou qui est « jamais », une durée hors de 1 à 365 jours, un
+17e agent ou un nom déjà pris sont refusés (400), sans rien écrire.
+
+**Le jeton s'affiche une seule fois**, avec les lignes à copier pour brancher le client (voir plus bas).
+Il n'est ni relu, ni gardé par l'app (il disparaît quand on ferme la feuille), ni écrit au journal ;
+la réponse porte `Cache-Control: no-store`. Chaque agent montre ses droits, ses appareils permis,
+son expiration et, **depuis le démarrage du serveur**, son dernier appel et ses appels du jour
+(compteurs en mémoire). « Révoquer » coupe l'agent à la requête suivante.
+
+Les routes (sous une **session** : un jeton d'agent, de mode ou de lecture y reçoit 401, un agent ne
+se crée donc pas d'agent et ne se donne pas de droits) :
+
+| Route | |
+|---|---|
+| `GET /api/agents` | `{enabled, default_days, max_days, max_devices, agents, never, sensitive, can}` : les agents de cette personne ; `never` et `sensitive` sont des identifiants, `can` ce que le compte peut donner |
+| `POST /api/agents` | `{label, days?, scopes: ["read", "occupation", "control", "mode"], devices?: ["…"]}` → `201 {agent, token}`. Corps de 4 Kio au plus, aucun champ inconnu |
+| `DELETE /api/agents/{id}` | `202`. Un agent inconnu **ou à une autre personne** : le même `404` ; un libellé ne désigne rien, seul l'identifiant |
+
+**L'app web ne règle ni l'interrupteur ni les listes** : elle montre l'état (« éteint sur ce serveur »)
+et renvoie vers le Mac du serveur. Un agent qu'on crée alors que l'interrupteur est éteint existe,
+mais ne se connecte pas.
+
+## Réglages Agents IA dans Ostal Server
+
+La fenêtre tourne dans le même processus que le serveur : ses gestes écrivent `agents.json` et le
+serveur les voit à la requête suivante. Chaque geste écrit une ligne au journal, au nom d'« Ostal Server ».
+
+- **Avertissements** en tête : un agent d'IA envoie ce qu'il lit à son fournisseur ; et un agent qui
+  a un terminal **sur ce Mac** peut contourner les protections (voir la limite plus haut), donc prévoir
+  l'agent sur un autre ordinateur.
+- **Interrupteur « Autoriser les agents IA »**, éteint par défaut. L'allumer pour la première fois, avec
+  des listes encore vides, ouvre tout de suite le choix des listes.
+- **« Tout couper »** (avec confirmation) : éteint l'interrupteur, **révoque tous les agents** (une
+  seule écriture), oublie les demandes en attente et celles qui étaient autorisées sans avoir servi.
+  Les listes restent. Ce n'est pas défaisable : il faut recréer chaque agent avec un nouveau jeton.
+- **Tous les agents**, toutes personnes confondues : nom, personne, droits, appareils permis (par
+  nom), dernier appel et appels du jour (depuis le démarrage), expiration, « Révoquer » (avec confirmation).
+- **Les listes** « jamais par un agent » (aucun agent ne les commande, quel que soit son jeton) et
+  « sensible » (chaque commande attend votre accord). **Propositions par défaut**, d'après le nom des
+  appareils, ignorant la casse et les accents : « jamais » = congélateur, box, Mac ou serveur ;
+  « sensible » = garage, baie. Elles sont **cochées d'avance, pas écrites** : rien ne l'est avant
+  « Enregistrer ». Sans appareil de ce nom, les listes restent vides à remplir. Un appareil « jamais »
+  n'est jamais aussi « sensible ». Le serveur n'écrit que des identifiants canoniques (une seule entrée
+  illisible bloquerait toute commande, ou rendrait tout appareil sensible) ; si une entrée écrite à la
+  main est illisible, la fenêtre le dit et « Enregistrer » la répare.
+- Ce que font les agents se lit dans l'onglet **Activité**, filtre **Source › Agents d'IA** : leurs
+  appels, leurs refus, leurs demandes à valider, leur création, leur révocation, l'interrupteur et les
+  listes. La colonne « Depuis » y dit « Agent d'IA · Claude Code ». Le filtre agit **avant** la limite
+  de 500 lignes (elles sont toutes des lignes d'agent). `ostal-server audit` écrit la même mention.
+
+## Brancher Claude Code et Cursor
+
+> **Ces configurations suivent la documentation de Claude Code et de Cursor ; elles n'ont pas été
+> essayées avec les vrais clients** (ce serait appeler un vrai service d'IA). L'essai de l'étape E5
+> les confirmera ou les corrigera. Si un client refuse, la ligne de commande
+> `ostal-server agent list` et l'onglet Activité disent ce que le serveur a vu.
+
+**Où est l'adresse.** `POST /mcp` est sur **le même écouteur que l'app web**, donc la même adresse que
+celle que vous ouvrez dans le navigateur, suivie de `/mcp`.
+
+| Où tourne l'agent | Adresse | Certificat |
+|---|---|---|
+| Un autre ordinateur de la maison ou à distance, par **Tailscale serve** | `https://<nom>.<tailnet>.ts.net/mcp` (voir [Accès à distance](acces-distant.md)) | un vrai certificat (Tailscale), rien à ajouter |
+| Un autre ordinateur du réseau local | `https://<nom du Mac>.local:8443/mcp` ou l'adresse locale du Mac | celui d'Ostal, **auto-signé** : voir plus bas. Il annonce le nom de la machine (et `.local`), ses adresses et `localhost`, **pas** le nom `.ts.net` : sur `…ts.net:8443`, un client qui contrôle le nom le refusera, prenez le port 443 de `tailscale serve` |
+| **Le Mac du serveur lui-même** | `https://localhost:8443/mcp` | idem. **À éviter** : un agent qui a un terminal sur ce Mac peut contourner les protections d'Ostal (voir la limite en tête de page) |
+
+Aucun Funnel, aucun tunnel : l'accès public n'existe pas. L'app Claude (claude.ai) et l'iPhone ne sont
+pas visés : leurs requêtes viendraient du cloud d'Anthropic, donc d'une adresse publique.
+
+**Le jeton ne s'écrit jamais en clair dans une configuration.** Claude Code écrit la ligne
+`--header "Authorization: Bearer …"` telle quelle dans `~/.claude.json` : ne la faites pas. Et ne
+collez pas le jeton dans une commande de shell (il resterait dans l'historique et dans la liste des
+processus). À la place :
+
+1. **Le ranger dans le Trousseau** du Mac de l'agent. La commande demande le jeton au clavier :
+
+   ```sh
+   security add-generic-password -U -s ostal-agent -a "$USER" -w
+   ```
+
+   (`-w` en dernier : sans valeur, `security` la demande ; collez le jeton, ni lui ni la commande ne
+   passent par l'historique.)
+2. **Le lire dans une variable d'environnement**, dans votre profil de terminal (`~/.zshrc`), sans
+   qu'il y figure :
+
+   ```sh
+   export OSTAL_AGENT_TOKEN="$(security find-generic-password -s ostal-agent -w)"
+   ```
+
+3. **Claude Code** : fichier `.mcp.json` du projet. Le jeton y est une variable (`${…}` est développée
+   par Claude Code), jamais une valeur :
+
+   ```json
+   {
+     "mcpServers": {
+       "ostal": {
+         "type": "http",
+         "url": "https://<adresse>/mcp",
+         "headers": { "Authorization": "Bearer ${OSTAL_AGENT_TOKEN}" }
+       }
+     }
+   }
+   ```
+
+   Variante sans variable d'environnement : `headersHelper`, une commande que Claude Code lance à
+   chaque connexion et qui écrit les en-têtes en JSON sur sa sortie (elle est coupée au bout de 10
+   secondes). Par exemple un script `~/.config/ostal/agent-headers.sh`, `chmod 700`, qui lit le
+   Trousseau :
+
+   ```sh
+   #!/bin/sh
+   printf '{"Authorization":"Bearer %s"}\n' "$(security find-generic-password -s ostal-agent -w)"
+   ```
+
+   puis `"headersHelper": "/Users/vous/.config/ostal/agent-headers.sh"` à la place de `headers`.
+4. **Cursor** : `.cursor/mcp.json`, avec l'interpolation `${env:…}` :
+
+   ```json
+   {
+     "mcpServers": {
+       "ostal": {
+         "url": "https://<adresse>/mcp",
+         "headers": { "Authorization": "Bearer ${env:OSTAL_AGENT_TOKEN}" }
+       }
+     }
+   }
+   ```
+
+   Lancez Cursor depuis un terminal où la variable existe, ou définissez-la pour toute la session.
+
+**Le certificat auto-signé** (adresse locale, pas Tailscale). Claude Code est un programme Node :
+donnez-lui le certificat d'Ostal avec `NODE_EXTRA_CA_CERTS=/chemin/tls-cert.pem` (le fichier
+`tls-cert.pem` se trouve dans `serveur/` du dossier de données ; il se copie depuis le Mac du serveur.
+Il n'a rien de secret, mais **copiez seulement lui : `tls-key.pem`, la clé privée, ne sort jamais**). Ne le faites pas entrer dans le trousseau du système si
+vous voulez éviter de changer un réglage de sécurité du Mac. Que Claude Code accepte une feuille
+auto-signée comme ancre reste à confirmer à l'essai (E5) ; par Tailscale serve la question ne se pose pas.
+
+**Dans le journal et dans les réglages**, l'agent apparaît sous le nom que vous lui avez donné.
+Derrière `tailscale serve`, toutes ses requêtes viennent de 127.0.0.1 : seule compte son nom.
 
 ## Le protocole
 
@@ -141,11 +306,13 @@ Pas de `Toggle` : « inverser » n'est pas rejouable sans danger (Claude Code re
 idempotent si la connexion tombe), l'agent doit viser l'état final. Seuls les appareils qui ont un
 marche/arrêt et ne sont pas un volet (`kind: on_off` : prises et lampes) se commandent par cet outil ; les volets ont le leur, `ostal_set_cover`.
 
-### Qui peut commander quoi : tout se règle à la main dans `agents.json`
+### Qui peut commander quoi
 
-Rien ne se règle encore par un écran (étape E4), et la ligne de commande ne donne **jamais** ce
-droit (`agent add` ne crée que des jetons en lecture). On modifie `serveur/agents.json` (0600),
-serveur arrêté ou non : il est relu dès qu'il change.
+Les droits d'un agent se cochent à sa création dans l'app web, et les listes « jamais » et
+« sensible » se règlent dans la fenêtre d'Ostal Server (voir plus haut). La ligne de commande ne
+donne **jamais** ce droit (`agent add` ne crée que des jetons en lecture). On peut aussi modifier
+`serveur/agents.json` (0600) à la main, serveur arrêté ou non : il est relu dès qu'il change. Le
+fichier ressemble à ceci :
 
 ```json
 {
@@ -172,7 +339,8 @@ serveur arrêté ou non : il est relu dès qu'il change.
   Mac serveur** (la couper supprimerait aussi le journal), chauffe-eau, alarme. Elle l'emporte sur
   `devices`. **Une entrée illisible (faute de frappe, zéro initial) bloque toute commande de tout
   agent** : un identifiant mal recopié ne doit jamais laisser un congélateur sans protection.
-  Choisissez-la activement avant de donner le droit : elle est vide tant qu'on ne l'écrit pas.
+  Choisissez-la activement avant de donner le droit : elle est vide tant qu'on ne l'écrit pas (la
+  fenêtre d'Ostal Server en propose une d'après le nom des appareils, voir plus haut).
 - La ligne de commande (`agent add`, `revoke`, `enable`, `disable`) réécrit ce fichier **sans perdre**
   ces listes.
 
@@ -315,8 +483,8 @@ changement de mode écrit une ligne `mode_changed` d'origine `agent` avec le lib
 
 ### La liste « sensible »
 
-Comme `never`, elle s'écrit à la main dans `agents.json` (`"sensitive": ["13828101"]`), vaut pour tous
-les agents, survit à la ligne de commande, et se **durcit** : une entrée illisible (faute de frappe,
+Comme `never`, elle se règle dans la fenêtre d'Ostal Server (ou à la main dans `agents.json` :
+`"sensitive": ["13828101"]`), vaut pour tous les agents, survit à la ligne de commande, et se **durcit** : une entrée illisible (faute de frappe,
 zéro initial) rend **tout** appareil sensible. Mettez-y la porte de garage et la baie vitrée. `never`
 l'emporte toujours (un appareil « jamais » n'est commandé par aucun agent, sensible ou non).
 
@@ -341,10 +509,9 @@ en `detail`) ; un ancien lecteur du journal qui ne connaît pas cette origine la
 
 Hors des spécifications ou à confirmer :
 
-- **Comment un agent reçoit le droit « occupation »** : les spécifications disent qu'il se coche
-  depuis une session (étape E4), jamais en ligne de commande. Cette étape ne livre donc **pas** le
-  moyen de le donner : `ostal-server agent add` continue de refuser toute option de droits, et le
-  serveur n'écrit jamais `agents.json`. Les tests le donnent en réécrivant le fichier.
+- **Comment un agent reçoit le droit « occupation »** : il se coche depuis une session (app web,
+  « Mes agents »), jamais en ligne de commande : `ostal-server agent add` refuse toute option de
+  droits. Depuis l'étape E4 le serveur écrit donc `agents.json` (voir « Qui écrit ce fichier »).
 - Un jeton doit avoir « lecture » **pour tout outil**, y compris ceux de l'occupation (« occupation »
   s'ajoute à « lecture », il ne la remplace pas).
 - `ostal_list_automation_runs` ne rend **pas** le texte des exécutions (les spécifications en
@@ -357,8 +524,8 @@ Hors des spécifications ou à confirmer :
 - Pas de ligne `agent_expired` : un jeton expiré est simplement refusé (401, comme avant).
 - **E2** : « 20 appareils au plus » est lu comme **20 appareils permis par jeton** (`devices`) ; les
   spécifications parlent aussi de 20 commandes par minute, appliquées de même. Une liste plus longue
-  ne permet aucun appareil. Les listes `devices` et `never` sont **écrites à la main** (l'écran
-  d'activation est l'étape E4). Une liste `devices` vide ou absente ne permet rien : le droit
+  ne permet aucun appareil. La liste `devices` se coche dans l'app web et les listes `never` et
+  `sensitive` dans la fenêtre d'Ostal Server (étape E4) ; on peut toujours les écrire à la main. Une liste `devices` vide ou absente ne permet rien : le droit
   « commandes » seul ne commande rien. Les règles **désactivées** ne comptent pas dans le calcul
   des automatisations déclenchées (elles ne partiraient pas). Pour l'appareil commandé, le sens
   compte (« s'allume » ou « s'éteint ») ; pour les appareils commandés ensuite par des règles, on
@@ -372,7 +539,8 @@ Hors des spécifications ou à confirmer :
   nulle, U+202A à U+202E, U+2066 à U+2069, séparateurs de ligne, étiquettes), pas seulement les
   caractères de contrôle.
 - **E3 : durées et bornes** : 5 minutes fixes (les spécifications parlent d'un réglage de 1 à 15 minutes,
-  qui viendra avec l'écran de l'étape E4), 3 demandes vivantes et 10 nouvelles par heure par jeton,
+  que l'étape E4 **ne livre pas** : une confirmation qui dure plus longtemps laisse plus longtemps
+  un ordre en attente, on ne l'allonge pas sans décision), 3 demandes vivantes et 10 nouvelles par heure par jeton,
   128 en tout, relues toutes les 5 s par l'app web tant qu'une attend. Les demandes expirées sont
   écrites au journal à la minute suivante (balayeur) ; une demande terminée reste lisible un quart
   d'heure pour `ostal_confirmation_status`.
@@ -385,9 +553,18 @@ Hors des spécifications ou à confirmer :
 - **E3 : `ostal_set_mode` et les appareils permis** : les règles de mode ne sont jugées que sur
   « sensible » et « jamais », pas sur les appareils permis du jeton (changer le mode allume
   normalement des lampes que l'agent n'a pas le droit de commander seul).
-- **E3 : la liste « sensible »** est écrite à la main, pour tous les agents ; les propositions par
-  défaut à l'activation (porte de garage et baie vitrée, congélateur, box, prise du Mac serveur) sont
-  celles de l'assistant de l'étape E4.
+- **E3 : la liste « sensible »** vaut pour tous les agents ; les propositions par défaut à
+  l'activation (porte de garage et baie vitrée, congélateur, box, prise du Mac serveur) sont celles de
+  la fenêtre d'Ostal Server (étape E4), d'après le **nom** des appareils.
+- **E4 : ce qu'on n'a pas fait** : pas d'assistant en plusieurs pages (l'interrupteur ouvre le choix
+  des listes, c'est tout), pas de réglage de la durée de confirmation ni de la durée par défaut d'un
+  jeton, pas de filtre « Source » à quatre valeurs (« personne, raccourci, automatisation, agent »)
+  mais deux (toutes, agents d'IA), pas de création d'agent depuis la fenêtre du Mac (une personne le
+  fait depuis l'app web, avec son compte). Les compteurs « dernier appel » et « appels du jour » sont
+  en mémoire et repartent de zéro au redémarrage.
+- **E4 : « Tout couper » révoque** tous les agents en plus d'éteindre l'interrupteur : éteindre seul
+  se fait avec l'interrupteur, et se défait. Les demandes en mémoire sont oubliées, y compris les
+  autorisées non utilisées ; de toute façon une autorisation ne vaut que pour le jeton qui l'a demandée.
 - **E3 : le texte de la notification** est le même pour toutes les demandes et ne dit pas ce qui est
   demandé.
 - **E3 : `Unreachable` et les capteurs de porte** ne sont pas suivis (voir plus haut).
