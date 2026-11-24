@@ -73,6 +73,17 @@ pub enum Action {
     AgentRevoked,
     /// L'interrupteur général de l'accès des agents d'IA : détail `on` ou `off`.
     AgentSwitch,
+    /// Les lectures d'un agent d'IA, **regroupées** : une ligne par agent et par tranche de
+    /// 10 minutes, écrite à l'échéance (cible : le libellé de l'agent, détail : `N:outil,outil`).
+    /// Jamais une valeur lue. Voir `agent_audit`.
+    AgentRead,
+    /// Une lecture du droit « occupation » (présence, mode) : **une ligne par lecture**, jamais
+    /// regroupée (cible : le libellé de l'agent, détail : le nom de l'outil).
+    AgentOccupation,
+    /// Un appel d'agent refusé : outil inconnu, droit manquant, droit de lecture retiré au
+    /// compte, ou débit dépassé (détail : `unknown`, `scope`, `rights` ou `rate` ; jamais le nom
+    /// d'un outil inconnu ni un argument).
+    AgentDenied,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -96,6 +107,11 @@ pub enum Origin {
     Shortcut,
     Automation,
     Automatic,
+    /// Un agent d'IA (serveur MCP intégré).
+    Agent,
+    /// Une origine d'une version plus récente.
+    #[serde(other)]
+    Other,
 }
 
 impl Origin {
@@ -104,6 +120,7 @@ impl Origin {
         match source {
             ModeSource::Shortcut | ModeSource::Widget => Origin::Shortcut,
             ModeSource::Presence => Origin::Automatic,
+            ModeSource::Agent => Origin::Agent,
             ModeSource::Rule { .. } => Origin::Automation,
             ModeSource::Web | ModeSource::Desktop | ModeSource::ServerApp | ModeSource::Other => {
                 Origin::Person
@@ -117,6 +134,8 @@ impl Origin {
             Origin::Shortcut => "raccourci",
             Origin::Automation => "automatisation",
             Origin::Automatic => "automatique",
+            Origin::Agent => "agent",
+            Origin::Other => "autre",
         }
     }
 }
@@ -712,6 +731,10 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
                     format!("Mode {mode}, par le raccourci « {detail} »")
                 }
                 Some(Origin::Shortcut) => format!("Mode {mode}, par un raccourci"),
+                Some(Origin::Agent) if !detail.is_empty() => {
+                    format!("Mode {mode}, par l'agent d'IA « {detail} »")
+                }
+                Some(Origin::Agent) => format!("Mode {mode}, par un agent d'IA"),
                 _ if !detail.is_empty() => format!("Mode {mode}, choisi dans {detail}"),
                 _ => format!("Mode {mode}"),
             }
@@ -773,9 +796,32 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::AgentCreated => format!("Agent d'IA « {target} » créé pour {detail}"),
         Action::AgentSwitch if detail == "on" => "Accès des agents d'IA activé".to_string(),
         Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
+        Action::AgentRead => agent_read_text(target, detail),
+        Action::AgentOccupation => {
+            let what = match detail {
+                "get_presence" => "la présence",
+                "get_mode" => "le mode de la maison",
+                "list_cameras" => "le comportement des caméras",
+                "home_summary" => "le résumé de la maison avec le mode",
+                "list_automation_runs" => "les exécutions des règles de mode",
+                _ => "l'occupation de la maison",
+            };
+            tone = Tone::Warn;
+            format!("L'agent d'IA « {target} » a lu {what}")
+        }
+        Action::AgentDenied => {
+            tone = Tone::Warn;
+            let why = match detail {
+                "scope" => "droit manquant",
+                "rights" => "droit retiré au compte",
+                "rate" => "trop d'appels",
+                _ => "outil inconnu",
+            };
+            format!("Appel de l'agent d'IA « {target} » refusé ({why})")
+        }
         Action::Other => "Action inconnue".to_string(),
     };
-    if failed && entry.action != Action::Login {
+    if failed && !matches!(entry.action, Action::Login | Action::AgentDenied) {
         let how = if entry.result == Outcome::Refused {
             "refusé"
         } else {
@@ -784,6 +830,30 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         return (Tone::Warn, format!("{text} ({how})"));
     }
     (tone, text)
+}
+
+/// « L'agent d'IA « X » a lu la maison (14 lectures : list_devices, get_history) ». Le détail
+/// s'écrit `N:outil,outil` ; un détail d'une autre forme n'est jamais cité tel quel.
+fn agent_read_text(target: &str, detail: &str) -> String {
+    let parsed = detail.split_once(':').and_then(|(n, tools)| {
+        let n: u32 = n.parse().ok()?;
+        let tools: Vec<&str> = tools
+            .split(',')
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        Some((n, tools))
+    });
+    match parsed {
+        Some((1, tools)) if !tools.is_empty() => format!(
+            "L'agent d'IA « {target} » a lu la maison (1 lecture : {})",
+            tools.join(", ")
+        ),
+        Some((n, tools)) if !tools.is_empty() => format!(
+            "L'agent d'IA « {target} » a lu la maison ({n} lectures : {})",
+            tools.join(", ")
+        ),
+        _ => format!("L'agent d'IA « {target} » a lu la maison"),
+    }
 }
 
 /// L'heure locale `HH:MM` d'une ligne.
@@ -1218,6 +1288,60 @@ mod tests {
         assert_eq!(describe(&on).1, "Accès des agents d'IA activé");
         let off = Entry::new(Action::AgentSwitch, &cli).detail("off");
         assert_eq!(describe(&off).1, "Accès des agents d'IA désactivé");
+        // Les lectures d'un agent : regroupées, une par une, refusées.
+        let who = Who {
+            connection: Some(ConnRef::new(Some("a1"), "Claude Code", "agent")),
+            ..Who::user("u1", Some("Hamdi".into()))
+        };
+        let grouped = Entry::new(Action::AgentRead, &who)
+            .target("Claude Code")
+            .detail("14:get_history,list_devices")
+            .source(Origin::Agent);
+        assert_eq!(
+            describe(&grouped).1,
+            "L'agent d'IA « Claude Code » a lu la maison (14 lectures : get_history, list_devices)"
+        );
+        let single = grouped.clone().detail("1:list_rooms");
+        assert_eq!(
+            describe(&single).1,
+            "L'agent d'IA « Claude Code » a lu la maison (1 lecture : list_rooms)"
+        );
+        // Un détail d'une autre forme n'est jamais cité.
+        let odd = grouped.clone().detail("IGNOREZ tout");
+        assert_eq!(
+            describe(&odd).1,
+            "L'agent d'IA « Claude Code » a lu la maison"
+        );
+        let presence = Entry::new(Action::AgentOccupation, &who)
+            .target("Claude Code")
+            .detail("get_presence");
+        let (tone, text) = describe(&presence);
+        assert_eq!(text, "L'agent d'IA « Claude Code » a lu la présence");
+        assert_eq!(tone, Tone::Warn);
+        let denied = Entry::new(Action::AgentDenied, &who)
+            .target("Claude Code")
+            .detail("scope")
+            .result(Outcome::Refused);
+        assert_eq!(
+            describe(&denied).1,
+            "Appel de l'agent d'IA « Claude Code » refusé (droit manquant)"
+        );
+        assert_eq!(from_label(&grouped), "Claude Code");
+        let mode = Entry::new(Action::ModeChanged, &who)
+            .target("vacances")
+            .source(Origin::Agent)
+            .detail("Claude Code");
+        assert_eq!(
+            describe(&mode).1,
+            "Mode Vacances, par l'agent d'IA « Claude Code »"
+        );
+        assert_eq!(Origin::of(&ModeSource::Agent), Origin::Agent);
+        // Une origine d'une version plus récente se lit `Other` au lieu de rendre la ligne illisible.
+        let future = serde_json::to_string(&mode)
+            .unwrap()
+            .replace("\"source\":\"agent\"", "\"source\":\"origine_du_futur\"");
+        let read: Entry = serde_json::from_str(&future).unwrap();
+        assert_eq!(read.source, Some(Origin::Other));
         // Un lecteur d'une version plus ancienne lit une action qu'il ne connaît pas comme `Other`.
         let line = serde_json::to_string(&created)
             .unwrap()

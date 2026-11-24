@@ -19,11 +19,12 @@ dans cette version.
 | `export`, `import` | sauvegarde (un `import` n'est écrit que s'il est vraiment lancé, pas pour sa vérification) |
 | `presence` | « Je pars » et « Je rentre » |
 | `agent_created`, `agent_revoked`, `agent_switch` | un agent d'IA créé (`target` : son libellé, `detail` : la personne) ou révoqué ; l'interrupteur de l'accès des agents allumé ou éteint (`detail: on` ou `off`), depuis la ligne de commande. Jamais le jeton. Voir [Agents d'IA](agents-ia.md) |
+| `agent_read`, `agent_occupation`, `agent_denied` | ce que fait un agent d'IA : ses lectures **regroupées** (une ligne par 10 minutes), ses lectures de la présence et du mode **une par une**, ses appels refusés. Jamais une valeur lue. Voir [Agents d'IA](agents-ia.md#le-journal-daudit-des-agents) |
 
 La source d'un changement de mode : `person` (une personne, dans une app), `shortcut` (un
 raccourci de l'iPhone), `automation` (une automatisation, son nom est dans `detail`) ou `automatic`
 (la maison toute seule, par la règle de présence : le journal l'attribue à celui qui a dit partir
-ou rentrer).
+ou rentrer) ; `agent` (un agent d'IA, son libellé est dans `detail`) ; une origine d'une version plus récente se lit `autre`.
 
 Les actions des automatisations (une règle qui allume une prise) ne sont pas écrites une à une :
 elles ont déjà leur historique.
@@ -50,7 +51,7 @@ par 5 secondes et par adresse et compte, une ligne de blocage par minute et par 
 
 `at` (secondes Unix), `user` (identifiant du compte) et `user_name` (son nom à ce moment-là),
 `connection` (`id`, `name`, `kind` : `web`, `mac`, `shortcut`, `server` pour Ostal Server, `cli` pour
-la ligne de commande), `ip` (derrière `tailscale serve`, c'est 127.0.0.1) et `via` (`local` ou
+la ligne de commande, `agent` pour un agent d'IA : son `name` est le libellé de l'agent et son `id` celui du jeton, jamais le jeton), `ip` (derrière `tailscale serve`, c'est 127.0.0.1) et `via` (`local` ou
 `tailscale`), `action`, `target`, `result` (`ok`, `refused` ou `error`), `source` et `detail`.
 Un champ absent est omis. Une ligne illisible (arrêt brutal) est ignorée à la lecture.
 

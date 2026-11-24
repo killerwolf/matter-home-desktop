@@ -108,6 +108,8 @@ pub enum ModeSource {
     /// La maison toute seule : le Wi-Fi de la box a vu quelqu'un arriver ou la dernière personne
     /// partir (règle de présence).
     Presence,
+    /// Un agent d'IA (serveur MCP intégré, jeton d'agent). Un ancien client le lit `Other`.
+    Agent,
     /// Un client qui ne dit rien (ancienne version) ou une source inconnue.
     #[serde(other)]
     Other,
@@ -126,6 +128,7 @@ impl ModeSource {
             ModeSource::Rule { name } => format!("automatisation « {name} »"),
             ModeSource::Widget => "widget iPhone".into(),
             ModeSource::Presence => "présence (Wi-Fi)".into(),
+            ModeSource::Agent => "agent d'IA".into(),
             ModeSource::Other => "autre".into(),
         }
     }
@@ -168,6 +171,7 @@ mod tests {
             rule.clone(),
             ModeSource::Widget,
             ModeSource::Presence,
+            ModeSource::Agent,
             ModeSource::Other,
         ] {
             let json = serde_json::to_string(&source).unwrap();
@@ -196,6 +200,9 @@ mod tests {
         assert_eq!(ModeSource::claimed(Some(Shortcut), false), Other);
         assert_eq!(ModeSource::claimed(Some(ServerApp), false), Other);
         assert_eq!(ModeSource::claimed(Some(rule()), false), Other);
+        // Personne ne peut se dire « agent » : seul le serveur MCP passe cette source au Hub.
+        assert_eq!(ModeSource::claimed(Some(Agent), true), Shortcut);
+        assert_eq!(ModeSource::claimed(Some(Agent), false), Other);
     }
 
     #[test]

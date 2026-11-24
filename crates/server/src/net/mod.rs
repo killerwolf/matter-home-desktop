@@ -81,6 +81,8 @@ pub struct Auth {
     pub limiter: LoginLimiter,
     /// Les agents d'IA du serveur MCP (`/mcp`) : `agents.json`, relu à chaque changement.
     pub agents: crate::security::agent_tokens::AgentStore,
+    /// Les lectures des agents, regroupées avant d'être écrites au journal (`agent_audit`).
+    pub agent_reads: crate::agent_audit::ReadGroups,
     /// Vérifications de mot de passe simultanées : une seule (argon2 consomme du temps et de la
     /// mémoire ; c'est aussi le débit maximal d'une attaque répartie).
     pub hash_slots: Semaphore,
@@ -100,6 +102,7 @@ impl Auth {
             sessions,
             limiter: LoginLimiter::new(),
             agents,
+            agent_reads: crate::agent_audit::ReadGroups::default(),
             hash_slots: Semaphore::new(1),
         }
     }
@@ -175,6 +178,12 @@ pub struct NetServer {
     /// Le superviseur de la détection : attendu (3 s au plus) à l'arrêt, pour que les passages en
     /// cours soient clos et écrits.
     detection: Option<tokio::task::JoinHandle<()>>,
+    /// Le balayeur des lectures d'agent : attendu à l'arrêt, pour que les dernières lignes soient
+    /// écrites.
+    reads: Option<tokio::task::JoinHandle<()>>,
+    /// Pour écrire les dernières lectures d'agent à l'arrêt, après la fin des requêtes en cours.
+    hub: Arc<Hub>,
+    auth: Arc<Auth>,
 }
 
 pub fn start(
@@ -220,6 +229,14 @@ pub fn start(
             .push()
             .set_owner_filter(Arc::new(move |user| auth.accounts.is_active(user)));
     }
+    // Les lectures des agents, regroupées par tranches de 10 minutes : écrites à l'échéance même
+    // quand l'agent se tait, et à l'arrêt.
+    let reads = runtime.spawn(sweep_agent_reads(
+        state.hub.clone(),
+        state.auth.clone(),
+        shutdown_rx.clone(),
+    ));
+    let (hub_kept, auth_kept) = (state.hub.clone(), state.auth.clone());
     // Les dossiers de signature d'un arrêt brutal portent un jeton en clair.
     crate::shortcuts::remove_leftovers();
     let router = routes::router(state);
@@ -239,7 +256,45 @@ pub fn start(
         shutdown: shutdown_tx,
         connections,
         detection,
+        reads: Some(reads),
+        hub: hub_kept,
+        auth: auth_kept,
     })
+}
+
+/// Écrit au journal toutes les tranches de lectures d'agent encore ouvertes (à l'arrêt, une fois
+/// les requêtes en cours terminées : une lecture qui arrive pendant l'arrêt est écrite aussi).
+fn flush_agent_reads(hub: &Hub, auth: &Auth) {
+    for entry in auth.agent_reads.flush_all() {
+        hub.audit().record(entry);
+    }
+}
+
+/// Écrit au journal les tranches de lectures d'agent échues (une fois par minute). À l'arrêt, le
+/// reste est écrit par [`NetServer::shutdown`] (et par `Drop`), après les requêtes en cours.
+async fn sweep_agent_reads(hub: Arc<Hub>, auth: Arc<Auth>, mut shutdown: watch::Receiver<bool>) {
+    async fn write(hub: &Arc<Hub>, entries: Vec<crate::audit::Entry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let log = hub.audit().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for entry in entries {
+                log.record(entry);
+            }
+        })
+        .await;
+    }
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                write(&hub, auth.agent_reads.flush_due(crate::events::now_unix())).await;
+            }
+            _ = shutdown.changed() => return,
+        }
+    }
 }
 
 async fn accept_loop(
@@ -364,6 +419,11 @@ impl NetServer {
                 )
                 .await;
             });
+            if let Some(reads) = self.reads.take() {
+                runtime.block_on(async {
+                    let _ = tokio::time::timeout(Duration::from_secs(3), reads).await;
+                });
+            }
             if let Some(detection) = self.detection.take() {
                 runtime.block_on(async {
                     let _ = tokio::time::timeout(
@@ -375,6 +435,7 @@ impl NetServer {
             }
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
+        flush_agent_reads(&self.hub, &self.auth);
     }
 }
 
@@ -384,6 +445,8 @@ impl Drop for NetServer {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+        // Après `shutdown` il n'y a plus rien à écrire ; sinon (arrêt par `Drop`) on les écrit ici.
+        flush_agent_reads(&self.hub, &self.auth);
     }
 }
 

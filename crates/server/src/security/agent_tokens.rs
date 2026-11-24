@@ -52,7 +52,9 @@ const WINDOW: Duration = Duration::from_secs(60);
 pub enum Scope {
     /// Lire les appareils et l'état de la maison.
     Read,
-    /// Lire la présence et le mode (« Vacances » dit que la maison est vide). Étape E1b.
+    /// Lire la présence et le mode, et ce qui en dépend (le comportement des caméras selon le mode) :
+    /// « Vacances » dit que la maison est vide. Éteint par défaut ; jamais donné par la ligne de
+    /// commande. Le droit `Mode` le suppose.
     Occupation,
     /// Commander des appareils. Étape E2.
     Control,
@@ -113,8 +115,12 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
+    /// Le jeton a-t-il ce droit ? Le droit « mode » **suppose** « occupation » : pour changer le
+    /// mode, l'agent doit le connaître (et la réponse le dit).
     pub fn has(&self, scope: Scope) -> bool {
-        scope != Scope::Unknown && self.scopes.contains(&scope)
+        scope != Scope::Unknown
+            && (self.scopes.contains(&scope)
+                || (scope == Scope::Occupation && self.scopes.contains(&Scope::Mode)))
     }
 
     pub fn is_expired(&self) -> bool {

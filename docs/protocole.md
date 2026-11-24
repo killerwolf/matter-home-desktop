@@ -183,7 +183,7 @@ Ticket n° 8, voir [Modes](modes.md). Un mode global : `present`, `absent`, `nui
   `mode_changed` porte un champ facultatif `source`, par exemple
   `{"type": "mode_changed", "mode": "nuit", "source": {"kind": "rule", "name": "Nuit à 23 h"}}`.
   `kind` vaut `shortcut` (raccourci iPhone : jeton de mode), `web`, `desktop`, `server_app` (fenêtre
-  du serveur), `rule` (automatisation, avec `name`), `widget` ou `other`. Un client l'annonce dans
+  du serveur), `rule` (automatisation, avec `name`), `widget`, `presence`, `agent` (un agent d'IA, par le serveur MCP : aucun client ne peut se le donner, voir [Agents d'IA](agents-ia.md)) ou `other`. Un client l'annonce dans
   `PUT /api/mode` (`"source": {"kind": "web"}`), mais le serveur ne garde que ce que le jeton
   permet : avec le jeton de mode, `shortcut` (ou `widget` s'il le dit) ; avec une session, `web` ou
   `desktop`, sinon `other` (un ancien client n'envoie rien). Une valeur inconnue se lit `other` ; un
