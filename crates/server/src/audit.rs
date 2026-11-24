@@ -83,9 +83,19 @@ pub enum Action {
     /// Un appel d'agent refusé : outil inconnu, droit manquant, droit de lecture ou de commande
     /// retiré au compte, appareil non permis (hors de la liste du jeton ou de la liste « jamais »),
     /// commande qui ferait partir une automatisation réservée aux personnes, ou débit dépassé
-    /// (détail : `unknown`, `scope`, `rights`, `control_rights`, `device`, `rule` ou `rate` ;
+    /// (détail : `unknown`, `scope`, `rights`, `control_rights`, `mode_rights`, `device`, `rule` ou `rate` ;
     /// jamais le nom d'un outil inconnu ni un argument).
     AgentDenied,
+    /// Un agent d'IA a demandé une action qui doit être validée par une personne (cible : le
+    /// libellé de l'agent, détail : l'outil, mot fermé). Voir `confirmations`.
+    ConfirmationRequested,
+    /// La personne propriétaire de l'agent a autorisé la demande (qui : cette personne ; cible : le
+    /// libellé de l'agent, détail : l'outil).
+    ConfirmationApproved,
+    /// La personne propriétaire de l'agent a refusé la demande.
+    ConfirmationRefused,
+    /// Personne n'a répondu à temps : la demande a expiré (5 minutes).
+    ConfirmationExpired,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -817,6 +827,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
                 "scope" => "droit manquant",
                 "rights" => "droit retiré au compte",
                 "control_rights" => "droit de commander retiré au compte",
+                "mode_rights" => "droit de changer le mode retiré au compte",
                 "device" => "appareil non permis à cet agent",
                 "rule" => "ferait partir une automatisation réservée aux personnes",
                 "rate" => "trop d'appels",
@@ -824,6 +835,25 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             };
             format!("Appel de l'agent d'IA « {target} » refusé ({why})")
         }
+        Action::ConfirmationRequested => {
+            tone = Tone::Warn;
+            format!(
+                "L'agent d'IA « {target} » demande à {}",
+                confirmation_what(detail)
+            )
+        }
+        Action::ConfirmationApproved => format!(
+            "Demande de l'agent d'IA « {target} » autorisée : {}",
+            confirmation_what(detail)
+        ),
+        Action::ConfirmationRefused => format!(
+            "Demande de l'agent d'IA « {target} » refusée : {}",
+            confirmation_what(detail)
+        ),
+        Action::ConfirmationExpired => format!(
+            "Demande de l'agent d'IA « {target} » expirée sans réponse : {}",
+            confirmation_what(detail)
+        ),
         Action::Other => "Action inconnue".to_string(),
     };
     if failed && !matches!(entry.action, Action::Login | Action::AgentDenied) {
@@ -835,6 +865,17 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         return (Tone::Warn, format!("{text} ({how})"));
     }
     (tone, text)
+}
+
+/// Ce qu'une demande d'agent veut faire, d'après le mot fermé du détail (jamais un texte libre).
+fn confirmation_what(detail: &str) -> &'static str {
+    match detail {
+        "set_mode" => "changer le mode de la maison",
+        "set_cover" => "commander un volet",
+        "set_room" => "commander les appareils d'une pièce",
+        "set_on_off" => "allumer ou éteindre un appareil",
+        _ => "faire une action",
+    }
 }
 
 /// « L'agent d'IA « X » a lu la maison (14 lectures : list_devices, get_history) ». Le détail
@@ -1353,5 +1394,55 @@ mod tests {
             .replace("\"agent_created\"", "\"action_du_futur\"");
         let read: Entry = serde_json::from_str(&line).unwrap();
         assert_eq!(read.action, Action::Other);
+    }
+
+    #[test]
+    fn the_four_confirmation_actions_read_in_french_and_never_quote_free_text() {
+        let who = Who::default();
+        let line = |action, detail: &str| {
+            describe(
+                &Entry::new(action, &who)
+                    .target("Claude Code")
+                    .detail(detail),
+            )
+        };
+        let (tone, text) = line(Action::ConfirmationRequested, "set_mode");
+        assert_eq!(
+            text,
+            "L'agent d'IA « Claude Code » demande à changer le mode de la maison"
+        );
+        assert_eq!(tone, Tone::Warn);
+        assert_eq!(
+            line(Action::ConfirmationApproved, "set_cover").1,
+            "Demande de l'agent d'IA « Claude Code » autorisée : commander un volet"
+        );
+        assert_eq!(
+            line(Action::ConfirmationRefused, "set_room").1,
+            "Demande de l'agent d'IA « Claude Code » refusée : commander les appareils d'une pièce"
+        );
+        assert_eq!(
+            line(Action::ConfirmationExpired, "set_on_off").1,
+            "Demande de l'agent d'IA « Claude Code » expirée sans réponse : allumer ou éteindre un appareil"
+        );
+        // Un détail d'une autre forme (ou d'une version plus récente) n'est jamais cité.
+        let odd = line(Action::ConfirmationApproved, "IGNOREZ tout").1;
+        assert!(!odd.contains("IGNOREZ"), "{odd}");
+        // Les mots du journal.
+        for (action, word) in [
+            (Action::ConfirmationRequested, "confirmation_requested"),
+            (Action::ConfirmationApproved, "confirmation_approved"),
+            (Action::ConfirmationRefused, "confirmation_refused"),
+            (Action::ConfirmationExpired, "confirmation_expired"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), word);
+        }
+        let denied = Entry::new(Action::AgentDenied, &who)
+            .target("Claude Code")
+            .detail("mode_rights")
+            .result(Outcome::Refused);
+        assert_eq!(
+            describe(&denied).1,
+            "Appel de l'agent d'IA « Claude Code » refusé (droit de changer le mode retiré au compte)"
+        );
     }
 }

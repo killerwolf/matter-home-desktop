@@ -936,7 +936,7 @@ fn the_first_read_tools_over_the_demo_house() {
             client,
             token,
             "tools/call",
-            json!({"name": "ostal_set_mode", "arguments": {"mode": "absent"}}),
+            json!({"name": "ostal_inconnu", "arguments": {"mode": "absent"}}),
         )
         .await;
         assert_eq!(unknown.json()["error"]["code"], -32602);
@@ -1950,7 +1950,7 @@ fn only_permitted_plugs_and_lamps_with_on_or_off_are_commanded_and_refusals_say_
 }
 
 #[test]
-fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
+fn a_command_that_would_start_a_mode_web_or_flagged_rule_waits_for_a_person() {
     let d = demo("mcp-cmd-rules");
     common::runtime().block_on(async {
         let (client, token) = (&d.client, d.token.as_str());
@@ -1975,6 +1975,7 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
         let mode = json!([{"type": "SetMode", "mode": "present"}]);
         let cover = json!([{"type": "SetCover", "node_id": shutter_t, "command": "Open"}]);
         let notify = json!([{"type": "Notify", "title": "t", "message": "m"}]);
+        let session = client.login().await;
 
         // Une notification : sans risque, la commande passe.
         put_rules(client, vec![rule_json(1, switch(true), notify.clone())]).await;
@@ -1982,27 +1983,61 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
             tool(client, token, "ostal_set_on_off", on.clone()).await["sent"],
             true
         );
-
-        // Mode, adresse web, volet : « On » est refusé, « Off » (autre sens) passe.
-        for actions in [mode, hook.clone(), cover] {
+        // Un volet ordinaire, permis ou non : un volet n'est pas un appareil sensible, mais ce
+        // jeton ne le commande pas (il n'est pas dans sa liste) : une personne doit valider.
+        // Mode et adresse web : « On » attend une personne, « Off » (autre sens) passe.
+        for actions in [mode, hook.clone(), cover.clone()] {
             put_rules(client, vec![rule_json(1, switch(true), actions)]).await;
-            let (code, message) = tool_error(client, token, "ostal_set_on_off", on.clone()).await;
-            assert_eq!(code, "forbidden");
-            assert!(message.contains("automatisation"), "{message}");
-            assert!(!message.contains("exemple.invalid"), "{message}");
+            let waiting = tool(client, token, "ostal_set_on_off", on.clone()).await;
+            assert_eq!(waiting["status"], "confirmation_required", "{waiting}");
+            let text = waiting.to_string();
+            assert!(!text.contains("exemple.invalid"), "{text}");
+            assert!(
+                !text.contains("Règle 1"),
+                "pas de nom de règle à l'agent : {text}"
+            );
             assert_eq!(
                 tool(client, token, "ostal_set_on_off", off.clone()).await["sent"],
                 true
             );
+            settle(client, &session).await;
         }
+        // Un volet que ce jeton peut commander, et qui n'est pas sensible : la règle ne dérange
+        // personne.
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &shutter_t],
+            Some(json!([])),
+        );
+        put_rules(client, vec![rule_json(1, switch(true), cover.clone())]).await;
+        assert_eq!(
+            tool(client, token, "ostal_set_on_off", on.clone()).await["sent"],
+            true
+        );
+        // Sensible : elle attend.
+        set_sensitive(&d.dir, &[&shutter_t]);
+        let waiting = tool(client, token, "ostal_set_on_off", on.clone()).await;
+        assert_eq!(waiting["status"], "confirmation_required");
+        let cards = requests(client, &session).await;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(
+            cards[0]["rules"],
+            json!(["Règle 1"]),
+            "la carte nomme la règle"
+        );
+        set_sensitive(&d.dir, &[]);
+        settle(client, &session).await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
         // Un seuil de puissance part dans les deux sens.
         let threshold = json!({"type": "Threshold", "node_id": plug_t, "measure": "Power",
                                "above": true, "value": 50.0, "for_s": 0});
         put_rules(client, vec![rule_json(1, threshold, hook.clone())]).await;
         for command in [&on, &off] {
-            let (code, _) = tool_error(client, token, "ostal_set_on_off", command.clone()).await;
-            assert_eq!(code, "forbidden");
+            let waiting = tool(client, token, "ostal_set_on_off", command.clone()).await;
+            assert_eq!(waiting["status"], "confirmation_required");
         }
+        settle(client, &session).await;
         // De proche en proche : prise -> autre appareil -> adresse web.
         let chain = vec![
             rule_json(
@@ -2017,8 +2052,9 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
             ),
         ];
         put_rules(client, chain).await;
-        let (code, _) = tool_error(client, token, "ostal_set_on_off", on.clone()).await;
-        assert_eq!(code, "forbidden");
+        let waiting = tool(client, token, "ostal_set_on_off", on.clone()).await;
+        assert_eq!(waiting["status"], "confirmation_required");
+        settle(client, &session).await;
         // Une règle désactivée ne part pas : la commande passe.
         let mut disabled = rule_json(1, switch(true), hook.clone());
         disabled["enabled"] = json!(false);
@@ -2027,7 +2063,8 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
             tool(client, token, "ostal_set_on_off", on.clone()).await["sent"],
             true
         );
-        // Une règle qui commande un appareil de la liste « jamais » est refusée.
+        // Une règle qui commande un appareil de la liste « jamais » attend aussi une personne : ce
+        // n'est pas à l'agent de décider de ce qui arrive au congélateur.
         hand_edit(
             &d.dir,
             &["read", "control"],
@@ -2043,19 +2080,20 @@ fn a_command_that_would_start_a_mode_web_or_cover_rule_is_refused() {
             )],
         )
         .await;
-        let (code, _) = tool_error(client, token, "ostal_set_on_off", on.clone()).await;
-        assert_eq!(code, "forbidden");
+        let waiting = tool(client, token, "ostal_set_on_off", on.clone()).await;
+        assert_eq!(waiting["status"], "confirmation_required");
     });
-    let rule_denials: Vec<Value> = audit_of(&d.dir, "agent_denied")
-        .into_iter()
-        .filter(|l| l["detail"] == "rule")
-        .collect();
-    assert_eq!(rule_denials.len(), 1, "une ligne par minute et par motif");
-    assert!(!rule_denials[0].to_string().contains("exemple.invalid"));
+    // Plus aucun refus « rule » : ces commandes attendent une personne, elles ne sont pas refusées.
+    assert!(audit_of(&d.dir, "agent_denied")
+        .iter()
+        .all(|l| l["detail"] != "rule"));
+    assert!(!audit_lines(&d.dir)
+        .iter()
+        .any(|l| l.to_string().contains("exemple.invalid")));
 }
 
 #[test]
-fn a_rule_that_commands_a_device_outside_the_token_list_is_refused() {
+fn a_rule_that_commands_a_device_outside_the_token_list_waits_for_a_person() {
     let d = demo("mcp-cmd-rule-devices");
     common::runtime().block_on(async {
         let (client, token) = (&d.client, d.token.as_str());
@@ -2070,8 +2108,8 @@ fn a_rule_that_commands_a_device_outside_the_token_list_is_refused() {
             json!([{"type": "SetOnOff", "node_id": other, "command": "On"}]),
         )];
         put_rules(client, rules.clone()).await;
-        let (code, _) = tool_error(client, token, "ostal_set_on_off", on.clone()).await;
-        assert_eq!(code, "forbidden");
+        let waiting = tool(client, token, "ostal_set_on_off", on.clone()).await;
+        assert_eq!(waiting["status"], "confirmation_required");
         // Le même appareil, une fois permis : la commande passe.
         hand_edit(&d.dir, &["read", "control"], &[&plug, &other], None);
         assert_eq!(
@@ -2079,11 +2117,6 @@ fn a_rule_that_commands_a_device_outside_the_token_list_is_refused() {
             true
         );
     });
-    let denials: Vec<Value> = audit_of(&d.dir, "agent_denied")
-        .into_iter()
-        .filter(|l| l["detail"] == "rule")
-        .collect();
-    assert_eq!(denials.len(), 1);
 }
 
 #[test]
@@ -2126,6 +2159,7 @@ fn the_hand_written_lists_survive_the_command_line_and_the_cli_cannot_give_contr
         &["13828100"],
         Some(json!(["42", "43"])),
     );
+    set_sensitive(&dir, &["44"]);
     // Ajouter, révoquer, allumer : la ligne de commande réécrit le fichier sans rien perdre.
     add_agent(&dir, "Second");
     assert!(agent_cli(&dir, &["enable"]).0.success());
@@ -2136,6 +2170,7 @@ fn the_hand_written_lists_survive_the_command_line_and_the_cli_cannot_give_contr
         serde_json::from_str(&std::fs::read_to_string(dir.join("serveur/agents.json")).unwrap())
             .unwrap();
     assert_eq!(file["never"], json!(["42", "43"]));
+    assert_eq!(file["sensitive"], json!(["44"]));
     assert_eq!(file["agents"][0]["devices"], json!(["13828100"]));
     assert_eq!(file["agents"][0]["scopes"], json!(["read", "control"]));
     // Un agent créé ensuite n'a que la lecture, et aucun appareil.
@@ -2146,6 +2181,7 @@ fn the_hand_written_lists_survive_the_command_line_and_the_cli_cannot_give_contr
     assert_eq!(file["agents"][1]["scopes"], json!(["read"]));
     assert_eq!(file["agents"][1]["devices"], json!([]));
     assert_eq!(file["never"], json!(["42", "43"]));
+    assert_eq!(file["sensitive"], json!(["44"]));
 }
 
 #[test]
@@ -2193,4 +2229,1045 @@ fn the_account_right_to_control_is_checked_and_journaled() {
     });
     let denied = audit_of(&dir, "agent_denied");
     assert!(denied.iter().any(|l| l["detail"] == "control_rights"));
+}
+
+// ---------------------------------------------------------------------------
+// Les confirmations (étape E3) : volets, pièces, mode
+// ---------------------------------------------------------------------------
+
+/// Écrit la liste « sensible » à la main, comme `never`.
+fn set_sensitive(dir: &Path, list: &[&str]) {
+    let path = dir.join("serveur/agents.json");
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file["sensitive"] = json!(list);
+    let tmp = dir.join("serveur/agents.json.tmp");
+    std::fs::write(&tmp, file.to_string()).unwrap();
+    std::fs::rename(&tmp, &path).unwrap();
+}
+
+/// La carte « Demandes à valider » d'une session.
+async fn requests(client: &Client, session: &str) -> Vec<Value> {
+    let resp = client.get("/api/agent-requests", session).await;
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    resp.json()["requests"].as_array().unwrap().clone()
+}
+
+async fn decide(client: &Client, session: &str, id: &str, verb: &str) -> Resp {
+    client
+        .request(
+            "POST",
+            &format!("/api/agent-requests/{id}/{verb}"),
+            Some(session),
+            None,
+        )
+        .await
+}
+
+/// Refuse toutes les demandes en attente de cette session (pour repartir de zéro).
+async fn settle(client: &Client, session: &str) {
+    for card in requests(client, session).await {
+        let resp = decide(client, session, card["id"].as_str().unwrap(), "refuse").await;
+        assert_eq!(resp.status, 202, "{}", resp.text());
+    }
+}
+
+fn demo_with(tag: &str, env: &[(&str, &str)]) -> Demo {
+    let dir = common::temp_dir(tag);
+    let server = Server::start_with(&dir, env);
+    let client = server.client();
+    let token = add_agent(&dir, "Claude Code");
+    assert!(agent_cli(&dir, &["enable"]).0.success());
+    common::runtime().block_on(async {
+        let session = client.login().await;
+        client.wait_startup_burst_over(&session).await;
+    });
+    Demo {
+        server,
+        client,
+        token,
+        dir,
+    }
+}
+
+async fn plug_is_on(client: &Client, token: &str, plug: &str) -> bool {
+    let device = tool(client, token, "ostal_get_device", json!({"id": plug})).await;
+    device["device"]["latest"]["on_off"]["value"].as_f64() == Some(1.0)
+}
+
+#[test]
+fn a_sensitive_plug_waits_for_its_owner_and_is_switched_once_after_the_approval() {
+    let d = demo("mcp-e3-sensitive");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&d.dir, &[&plug]);
+        let off = json!({"id": plug, "command": "Off"});
+        let wait = tool(client, token, "ostal_set_on_off", off.clone()).await;
+        assert_eq!(wait["status"], "confirmation_required");
+        assert_eq!(wait["state"], "pending");
+        assert!(
+            wait["message"].as_str().unwrap().contains("hamdi"),
+            "{wait}"
+        );
+        assert!(
+            wait.get("reasons").is_none(),
+            "l'agent n'apprend pas pourquoi : {wait}"
+        );
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        assert_eq!(id.len(), 32);
+        assert!(wait["expires_at"].as_f64().unwrap() > 0.0);
+        // Rien n'est parti.
+        assert!(plug_is_on(client, token, &plug).await);
+        assert!(audit_of(&d.dir, "device_command").is_empty());
+        assert_eq!(audit_of(&d.dir, "confirmation_requested").len(), 1);
+        // Insister ne crée pas une deuxième demande ; rappeler avec l'identifiant avant l'accord
+        // redonne l'attente.
+        let again = tool(client, token, "ostal_set_on_off", off.clone()).await;
+        assert_eq!(again["confirmation_id"], id.as_str());
+        let early = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(early["state"], "pending");
+        assert_eq!(audit_of(&d.dir, "confirmation_requested").len(), 1);
+        assert!(plug_is_on(client, token, &plug).await);
+        let status = tool(
+            client,
+            token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(status["state"], "pending");
+        assert_eq!(status["tool"], "ostal_set_on_off");
+
+        // L'agent ne s'autorise pas lui-même : son jeton n'ouvre aucune de ces routes.
+        for (method, path) in [
+            ("GET", "/api/agent-requests".to_string()),
+            ("POST", format!("/api/agent-requests/{id}/approve")),
+            ("POST", format!("/api/agent-requests/{id}/refuse")),
+        ] {
+            let resp = client.request(method, &path, Some(token), None).await;
+            assert_eq!(resp.status, 401, "{method} {path}");
+        }
+        // Ni un mauvais identifiant.
+        let session = client.login().await;
+        for bad in ["inconnu", &"0".repeat(32), &"A".repeat(32)] {
+            assert_eq!(decide(client, &session, bad, "approve").await.status, 404);
+        }
+
+        // La carte : du texte fabriqué par Ostal, rien venu de l'agent.
+        let cards = requests(client, &session).await;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["id"], id.as_str());
+        assert_eq!(cards[0]["agent"], "Claude Code");
+        assert!(cards[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Éteindre « "));
+        assert!(cards[0]["details"][0]
+            .as_str()
+            .unwrap()
+            .contains("sensible"));
+        assert!(cards[0]["expires"].as_f64().unwrap() > cards[0]["created"].as_f64().unwrap());
+
+        // La personne autorise.
+        let ok = decide(client, &session, &id, "approve").await;
+        assert_eq!(ok.status, 202, "{}", ok.text());
+        assert!(requests(client, &session).await.is_empty());
+        let status = tool(
+            client,
+            token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(status["state"], "approved");
+        // Une deuxième décision : refusée (déjà traitée).
+        assert_eq!(decide(client, &session, &id, "refuse").await.status, 400);
+        // D'autres arguments : l'autorisation ne vaut pas, et n'est pas brûlée.
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "On", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(message.contains("refaites la demande"), "{message}");
+        assert!(plug_is_on(client, token, &plug).await);
+        // Un identifiant mal formé : refusé, jamais ignoré.
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": "pas-un-id"}),
+        )
+        .await;
+        assert_eq!(code, "invalid_argument");
+        // Les bons arguments, le bon identifiant : la commande part, une seule fois.
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(sent["sent"], true);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while plug_is_on(client, token, &plug).await {
+            assert!(Instant::now() < deadline, "la prise ne s'est pas éteinte");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(message.contains("déjà servi"), "{message}");
+        let status = tool(
+            client,
+            token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(status["state"], "used");
+    });
+    let lines = audit_of(&d.dir, "device_command");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["source"], "agent");
+    assert_eq!(lines[0]["detail"], "off");
+    let approved = audit_of(&d.dir, "confirmation_approved");
+    assert_eq!(approved.len(), 1);
+    // C'est la personne qui a autorisé, depuis sa session : pas l'agent.
+    assert!(approved[0]["connection"]["kind"] != "agent", "{approved:?}");
+    assert_eq!(approved[0]["user_name"], "hamdi");
+    assert_eq!(approved[0]["target"], "Claude Code");
+    assert_eq!(approved[0]["detail"], "set_on_off");
+    let everything = audit_lines(&d.dir)
+        .iter()
+        .map(Value::to_string)
+        .collect::<String>();
+    assert!(!everything.contains(&d.token));
+}
+
+#[test]
+fn a_refused_request_stays_refused_and_a_request_can_be_asked_again() {
+    let d = demo("mcp-e3-refuse");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&d.dir, &[&plug]);
+        let off = json!({"id": plug, "command": "Off"});
+        let first = tool(client, token, "ostal_set_on_off", off.clone()).await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let session = client.login().await;
+        assert_eq!(decide(client, &session, &first, "refuse").await.status, 202);
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off", "confirmation_id": first}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(message.contains("refusé"), "{message}");
+        // Une nouvelle demande est possible : un nouvel identifiant.
+        let second = tool(client, token, "ostal_set_on_off", off).await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(first, second);
+        // Une demande inconnue ou venue d'ailleurs : « inconnue », sans distinction.
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": "0".repeat(32)}),
+        )
+        .await;
+        assert_eq!(code, "not_found");
+    });
+    assert_eq!(audit_of(&d.dir, "confirmation_refused").len(), 1);
+    assert_eq!(audit_of(&d.dir, "confirmation_requested").len(), 2);
+    assert!(audit_of(&d.dir, "device_command").is_empty());
+}
+
+#[test]
+fn only_the_person_who_owns_the_agent_sees_and_decides_its_requests() {
+    let dir = common::temp_dir("mcp-e3-owner");
+    let server = Server::start(&dir);
+    let client = server.client();
+    account::add(
+        &server_dir(&dir).unwrap(),
+        "lea",
+        Some("Léa"),
+        "le-mot-de-passe-de-lea",
+    )
+    .unwrap();
+    let token = add_agent(&dir, "Claude Code");
+    assert!(agent_cli(&dir, &["enable"]).0.success());
+    common::runtime().block_on(async {
+        let hamdi = client.login().await;
+        client.wait_startup_burst_over(&hamdi).await;
+        let plug = id_of(&client, &token, "frigo").await;
+        hand_edit(&dir, &["read", "control"], &[&plug], Some(json!([])));
+        set_sensitive(&dir, &[&plug]);
+        let id = tool(
+            &client,
+            &token,
+            "ostal_set_on_off",
+            json!({"id": plug, "command": "Off"}),
+        )
+        .await["confirmation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let lea = client
+            .login_as("lea", "le-mot-de-passe-de-lea", common::PROTOCOL)
+            .await;
+        assert_eq!(lea.status, 200, "{}", lea.text());
+        let lea = lea.json()["token"].as_str().unwrap().to_string();
+        // Léa ne voit rien, ne peut ni autoriser ni refuser : la demande n'existe pas pour elle.
+        assert!(requests(&client, &lea).await.is_empty());
+        for verb in ["approve", "refuse"] {
+            let resp = decide(&client, &lea, &id, verb).await;
+            assert_eq!(resp.status, 404, "{verb}");
+            assert_eq!(resp.json()["error"]["code"], "not_found");
+        }
+        // La demande attend toujours son propriétaire.
+        assert_eq!(requests(&client, &hamdi).await.len(), 1);
+        let status = tool(
+            &client,
+            &token,
+            "ostal_confirmation_status",
+            json!({"confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(status["state"], "pending");
+        // Un agent révoqué : sa demande disparaît de la carte, et ne s'autorise plus.
+        assert!(agent_cli(&dir, &["revoke", "--agent", "Claude Code"])
+            .0
+            .success());
+        assert!(requests(&client, &hamdi).await.is_empty());
+        assert_eq!(decide(&client, &hamdi, &id, "approve").await.status, 404);
+    });
+    assert!(audit_of(&dir, "confirmation_approved").is_empty());
+}
+
+#[test]
+fn only_a_session_opens_the_requests_not_a_mode_a_read_or_an_agent_token() {
+    let dir = common::temp_dir("mcp-e3-tokens");
+    let rig = in_process::start(in_process::Setup {
+        data_dir: &dir,
+        listen: "127.0.0.1:0",
+        password: "mot-de-passe-jetable-du-test",
+        camera_addr: "127.0.0.1:0",
+        camera: Default::default(),
+        client_write_timeout: Duration::from_secs(10),
+    });
+    let sdir = server_dir(&dir).unwrap();
+    let client = Client::new(rig.server.addr, &rig.fingerprint);
+    agent_tokens::set_enabled(&sdir, true).unwrap();
+    let (_, agent) = agent_tokens::add(&sdir, &rig.user_id, "Portable", 30).unwrap();
+    let read = rig.hub.generate_read_token(&rig.user_id, "iPhone").unwrap();
+    let mode = rig.hub.generate_mode_token(&rig.user_id, "iPhone").unwrap();
+    let approve = format!("/api/agent-requests/{}/approve", "0".repeat(32));
+    common::runtime().block_on(async {
+        let none = client
+            .request("GET", "/api/agent-requests", None, None)
+            .await;
+        assert_eq!(none.status, 401);
+        // Ni l'agent, ni un jeton de lecture (widget), ni un jeton de mode (raccourci) : ce ne sont
+        // pas des sessions, même pour la route qui ne fait que lire.
+        for (what, token) in [("agent", &agent), ("lecture", &read), ("mode", &mode)] {
+            for (method, path) in [("GET", "/api/agent-requests"), ("POST", approve.as_str())] {
+                let resp = client.request(method, path, Some(token), None).await;
+                assert_eq!(resp.status, 401, "{what} {method} {path}");
+            }
+        }
+        let session = client
+            .login_as(
+                in_process::USER,
+                "mot-de-passe-jetable-du-test",
+                common::PROTOCOL,
+            )
+            .await
+            .json()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            client.get("/api/agent-requests", &session).await.status,
+            200
+        );
+    });
+}
+
+#[test]
+fn a_cover_is_commanded_directly_unless_it_is_sensitive_and_the_arguments_are_strict() {
+    let d = demo("mcp-e3-cover");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        let shutter = id_of(client, token, "Volet du salon").await;
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &shutter],
+            Some(json!([])),
+        );
+        // Un volet ordinaire, permis : il part tout de suite (une position, puis une commande).
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_cover",
+            json!({"id": shutter, "position": 30}),
+        )
+        .await;
+        assert_eq!(sent["sent"], true);
+        assert_eq!(sent["command"], "position 30");
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_cover",
+            json!({"id": shutter, "command": "Stop"}),
+        )
+        .await;
+        assert_eq!(sent["command"], "Stop");
+        // Des arguments stricts.
+        for (args, code) in [
+            (json!({"id": shutter}), "invalid_argument"),
+            (
+                json!({"id": shutter, "command": "Toggle"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"id": shutter, "command": "open"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"id": shutter, "command": "Open", "position": 10}),
+                "invalid_argument",
+            ),
+            (json!({"id": shutter, "position": 101}), "invalid_argument"),
+            (json!({"id": shutter, "position": -5}), "invalid_argument"),
+            (json!({"id": shutter, "position": "10"}), "invalid_argument"),
+            (
+                json!({"id": shutter, "command": "Open", "x": 1}),
+                "invalid_argument",
+            ),
+            (json!({"id": plug, "command": "Open"}), "invalid_argument"),
+        ] {
+            let (got, _) = tool_error(client, token, "ostal_set_cover", args.clone()).await;
+            assert_eq!(got, code, "{args}");
+        }
+        // Un volet n'est pas une prise, et l'inverse.
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_on_off",
+            json!({"id": shutter, "command": "On"}),
+        )
+        .await;
+        assert_eq!(code, "invalid_argument");
+        // Un volet hors de la liste du jeton : la même phrase que pour une prise.
+        let kitchen = id_of(client, token, "Volet de la cuisine").await;
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_cover",
+            json!({"id": kitchen, "command": "Open"}),
+        )
+        .await;
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            ("forbidden", NOT_PERMITTED)
+        );
+
+        // Sensible (une porte de garage) : une personne doit valider, puis il part.
+        set_sensitive(&d.dir, &[&shutter]);
+        let args = json!({"id": shutter, "command": "Close"});
+        let wait = tool(client, token, "ostal_set_cover", args.clone()).await;
+        assert_eq!(wait["status"], "confirmation_required");
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        let session = client.login().await;
+        let cards = requests(client, &session).await;
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Fermer le volet « "));
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_cover",
+            json!({"id": shutter, "command": "Close", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(sent["command"], "Close");
+    });
+    let lines = audit_of(&d.dir, "device_command");
+    let words: Vec<&str> = lines
+        .iter()
+        .map(|l| l["detail"].as_str().unwrap())
+        .collect();
+    assert_eq!(words, ["position:30", "stop", "close"]);
+    assert!(lines.iter().all(|l| l["source"] == "agent"));
+}
+
+#[test]
+fn a_room_is_commanded_device_by_device_skipping_what_the_token_may_not_touch() {
+    let d = demo_with("mcp-e3-room", &[("OSTAL_DEMO_HOUSE", "1")]);
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        let lamp = id_of(client, token, "Plafonnier").await;
+        let rooms = tool(client, token, "ostal_list_rooms", json!({})).await;
+        let kitchen = rooms["floors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["rooms"].as_array().unwrap().clone())
+            .find(|r| r["name"] == "Cuisine")
+            .expect("la cuisine")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Le jeton ne peut commander que la prise : la lampe est sautée, et dite.
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "On"}),
+        )
+        .await;
+        assert_eq!(sent["room"]["name"], "Cuisine");
+        assert_eq!(sent["sent"].as_array().unwrap().len(), 1);
+        assert_eq!(sent["sent"][0]["id"], plug.as_str());
+        assert_eq!(sent["failed"], json!([]));
+        assert_eq!(sent["skipped"][0]["id"], lamp.as_str());
+        assert_eq!(sent["skipped"][0]["reason"], "not_permitted");
+        // Même motif pour « jamais » : l'agent ne distingue pas.
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &lamp],
+            Some(json!([lamp])),
+        );
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "On"}),
+        )
+        .await;
+        assert_eq!(sent["skipped"][0]["reason"], "not_permitted");
+        assert_eq!(sent["sent"].as_array().unwrap().len(), 1);
+
+        // Des arguments stricts : un nom de pièce n'est pas un identifiant.
+        for (args, code) in [
+            (
+                json!({"room_id": "Cuisine", "kind": "on_off", "command": "On"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "lights", "command": "On"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "on_off", "command": "Open"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "on_off", "command": "Toggle"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "on_off", "command": "On", "position": 3}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "cover", "command": "On"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": "424242", "kind": "on_off", "command": "On"}),
+                "not_found",
+            ),
+            (
+                json!({"kind": "on_off", "command": "On"}),
+                "invalid_argument",
+            ),
+            (
+                json!({"room_id": kitchen, "kind": "on_off", "command": "On", "plus": 1}),
+                "invalid_argument",
+            ),
+        ] {
+            let (got, _) = tool_error(client, token, "ostal_set_room", args.clone()).await;
+            assert_eq!(got, code, "{args}");
+        }
+        // Une pièce sans appareil permis : le même refus que pour un appareil seul.
+        hand_edit(&d.dir, &["read", "control"], &[], Some(json!([])));
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "Off"}),
+        )
+        .await;
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            ("forbidden", NOT_PERMITTED)
+        );
+
+        // Un appareil sensible dans le lot : toute la pièce attend une personne.
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &lamp],
+            Some(json!([])),
+        );
+        set_sensitive(&d.dir, &[&lamp]);
+        let args = json!({"room_id": kitchen, "kind": "on_off", "command": "Off"});
+        let wait = tool(client, token, "ostal_set_room", args.clone()).await;
+        assert_eq!(wait["status"], "confirmation_required");
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        let session = client.login().await;
+        let cards = requests(client, &session).await;
+        assert!(cards[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Éteindre 2 appareils de la pièce « Cuisine »"));
+        // Un lot qui change (un appareil de moins de permis) : l'autorisation ne vaut plus.
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        hand_edit(&d.dir, &["read", "control"], &[&plug], Some(json!([])));
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        // Le lot d'origine rétabli : elle vaut encore (elle n'a pas été brûlée).
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &lamp],
+            Some(json!([])),
+        );
+        let sent = tool(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "Off", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(sent["sent"].as_array().unwrap().len(), 2);
+    });
+    // Une ligne de journal par appareil, jamais regroupées.
+    let lines = audit_of(&d.dir, "device_command");
+    assert_eq!(lines.len(), 1 + 1 + 2, "{lines:?}");
+    assert!(lines
+        .iter()
+        .all(|l| l["source"] == "agent" && l["result"] == "ok"));
+    let denied: Vec<Value> = audit_of(&d.dir, "agent_denied")
+        .into_iter()
+        .filter(|l| l["detail"] == "device")
+        .collect();
+    assert!(!denied.is_empty());
+    assert!(denied.iter().all(|l| !l.to_string().contains("Plafonnier")));
+}
+
+#[test]
+fn a_room_counts_for_its_devices_in_the_twenty_commands_a_minute_all_or_nothing() {
+    let d = demo_with("mcp-e3-room-rate", &[("OSTAL_DEMO_HOUSE", "1")]);
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        let plug = id_of(client, token, "frigo").await;
+        let lamp = id_of(client, token, "Plafonnier").await;
+        let rooms = tool(client, token, "ostal_list_rooms", json!({})).await;
+        let kitchen = rooms["floors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["rooms"].as_array().unwrap().clone())
+            .find(|r| r["name"] == "Cuisine")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        hand_edit(
+            &d.dir,
+            &["read", "control"],
+            &[&plug, &lamp],
+            Some(json!([])),
+        );
+        // 19 commandes, puis une pièce de deux appareils : il ne reste qu'une place, rien ne part.
+        for _ in 0..agent_tokens::COMMANDS_PER_MINUTE - 1 {
+            tool(
+                client,
+                token,
+                "ostal_set_on_off",
+                json!({"id": plug, "command": "On"}),
+            )
+            .await;
+        }
+        let before = audit_of(&d.dir, "device_command").len();
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_room",
+            json!({"room_id": kitchen, "kind": "on_off", "command": "Off"}),
+        )
+        .await;
+        assert_eq!(code, "rate_limited", "{message}");
+        assert_eq!(audit_of(&d.dir, "device_command").len(), before);
+    });
+}
+
+#[test]
+fn the_mode_right_changes_the_mode_by_the_effect_and_vacances_always_asks() {
+    let d = demo("mcp-e3-mode");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        // Sans le droit « mode », l'outil n'existe pas pour ce jeton : refus de droit.
+        let (code, _) =
+            tool_error(client, token, "ostal_set_mode", json!({"mode": "absent"})).await;
+        assert_eq!(code, "forbidden");
+        set_scopes(&d.dir, &["read", "mode"]);
+        let list =
+            legacy(client, token, "tools/list", json!({})).await.json()["result"]["tools"].clone();
+        let tool_names: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(tool_names.contains(&"ostal_set_mode"));
+        assert!(!tool_names.contains(&"ostal_set_on_off"));
+        let mode = tool(client, token, "ostal_get_mode", json!({})).await;
+        assert_eq!(mode["key"], "present");
+        // Argument strict.
+        for bad in [
+            json!({}),
+            json!({"mode": "Absent"}),
+            json!({"mode": "jour"}),
+            json!({"mode": 1}),
+            json!({"mode": "absent", "x": 1}),
+        ] {
+            let (code, _) = tool_error(client, token, "ostal_set_mode", bad.clone()).await;
+            assert_eq!(code, "invalid_argument", "{bad}");
+        }
+        // Le même mode : rien ne change, rien n'est demandé.
+        let same = tool(client, token, "ostal_set_mode", json!({"mode": "present"})).await;
+        assert_eq!(same["changed"], false);
+        // Sans caméra ni règle : Absent passe tout de suite, et le journal le dit.
+        let done = tool(client, token, "ostal_set_mode", json!({"mode": "absent"})).await;
+        assert_eq!(done["changed"], true);
+        assert_eq!(done["mode"]["key"], "absent");
+        assert_eq!(done["rules_triggered"], json!([]));
+        assert_eq!(
+            tool(client, token, "ostal_get_mode", json!({})).await["key"],
+            "absent"
+        );
+        // Vacances : toujours une personne.
+        let wait = tool(client, token, "ostal_set_mode", json!({"mode": "vacances"})).await;
+        assert_eq!(wait["status"], "confirmation_required");
+        assert_eq!(wait["reasons"], json!(["vacances"]));
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            tool(client, token, "ostal_get_mode", json!({})).await["key"],
+            "absent",
+            "rien n'a changé"
+        );
+        let session = client.login().await;
+        let cards = requests(client, &session).await;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(
+            cards[0]["text"],
+            "Mettre la maison en mode Vacances (elle est en Absent)."
+        );
+        assert!(cards[0]["details"][0]
+            .as_str()
+            .unwrap()
+            .contains("Vacances"));
+        // Le mode a bougé depuis la demande : l'effet autorisé n'est plus celui qui arriverait.
+        let moved = client
+            .send_json("PUT", "/api/mode", &session, &json!({"mode": "nuit"}))
+            .await;
+        assert_eq!(moved.status, 200, "{}", moved.text());
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_mode",
+            json!({"mode": "vacances", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        // Une nouvelle demande depuis le mode actuel, autorisée, exécutée une fois.
+        let wait = tool(client, token, "ostal_set_mode", json!({"mode": "vacances"})).await;
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        let done = tool(
+            client,
+            token,
+            "ostal_set_mode",
+            json!({"mode": "vacances", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(done["changed"], true);
+        assert_eq!(done["mode"]["key"], "vacances");
+        let state = client.get("/api/state", &session).await.json();
+        assert_eq!(state["mode"], "vacances");
+        let (code, _) = tool_error(
+            client,
+            token,
+            "ostal_set_mode",
+            json!({"mode": "vacances", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+    });
+    let changes = audit_of(&d.dir, "mode_changed");
+    let by_agent: Vec<&Value> = changes.iter().filter(|l| l["source"] == "agent").collect();
+    assert_eq!(by_agent.len(), 2, "absent, puis vacances : {changes:?}");
+    assert_eq!(by_agent[0]["target"], "absent");
+    assert_eq!(by_agent[0]["detail"], "Claude Code");
+    assert_eq!(by_agent[0]["connection"]["kind"], "agent");
+    assert_eq!(by_agent[1]["target"], "vacances");
+    assert_eq!(audit_of(&d.dir, "confirmation_requested").len(), 2);
+}
+
+#[test]
+fn a_mode_that_starts_rules_lists_them_and_an_approval_does_not_survive_a_change_of_rules() {
+    let d = demo("mcp-e3-mode-rules");
+    common::runtime().block_on(async {
+        let (client, token) = (&d.client, d.token.as_str());
+        set_scopes(&d.dir, &["read", "mode"]);
+        let session = client.login().await;
+        // Une règle de mode qui appelle une adresse web (jamais montrée), une autre sans risque.
+        let hook =
+            json!([{"type": "Webhook", "url": "https://exemple.invalid/secret", "body": "x"}]);
+        let notify = json!([{"type": "Notify", "title": "t", "message": "m"}]);
+        let mode_rule = |id: u64, to: &str, actions: Value| {
+            rule_json(id, json!({"type": "Mode", "to": to}), actions)
+        };
+        put_rules(
+            client,
+            vec![
+                mode_rule(1, "nuit", hook),
+                mode_rule(2, "nuit", notify.clone()),
+                mode_rule(3, "absent", notify),
+            ],
+        )
+        .await;
+        // Absent : une règle qui part, sans risque : le mode change tout de suite et la réponse la liste.
+        let done = tool(client, token, "ostal_set_mode", json!({"mode": "absent"})).await;
+        assert_eq!(done["changed"], true);
+        assert_eq!(done["rules_triggered"], json!(["Règle 3"]));
+        // Nuit : une règle appelle une adresse web : une personne doit valider.
+        let wait = tool(client, token, "ostal_set_mode", json!({"mode": "nuit"})).await;
+        assert_eq!(wait["status"], "confirmation_required");
+        assert_eq!(wait["reasons"], json!(["automation"]));
+        assert_eq!(wait["rules"], json!(["Règle 1", "Règle 2"]));
+        assert!(!wait.to_string().contains("exemple.invalid"));
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        let cards = requests(client, &session).await;
+        assert_eq!(cards[0]["rules"], json!(["Règle 1", "Règle 2"]));
+        assert!(!cards[0].to_string().contains("exemple.invalid"));
+        assert_eq!(decide(client, &session, &id, "approve").await.status, 202);
+        // Les règles ont changé depuis : ce que la personne a vu n'est plus ce qui partirait.
+        put_rules(client, vec![]).await;
+        let (code, message) = tool_error(
+            client,
+            token,
+            "ostal_set_mode",
+            json!({"mode": "nuit", "confirmation_id": id}),
+        )
+        .await;
+        assert_eq!(code, "confirmation_invalid");
+        assert!(message.contains("refaites la demande"));
+        assert_eq!(
+            tool(client, token, "ostal_get_mode", json!({})).await["key"],
+            "absent"
+        );
+    });
+}
+
+#[test]
+fn the_account_right_to_change_the_mode_is_checked_at_the_call_and_at_the_approval() {
+    let dir = common::temp_dir("mcp-e3-mode-rights");
+    let rig = in_process::start(in_process::Setup {
+        data_dir: &dir,
+        listen: "127.0.0.1:0",
+        password: "mot-de-passe-jetable-du-test",
+        camera_addr: "127.0.0.1:0",
+        camera: Default::default(),
+        client_write_timeout: Duration::from_secs(10),
+    });
+    let sdir = server_dir(&dir).unwrap();
+    let client = Client::new(rig.server.addr, &rig.fingerprint);
+    agent_tokens::set_enabled(&sdir, true).unwrap();
+    let (_, token) = agent_tokens::add(&sdir, &rig.user_id, "Claude Code", 30).unwrap();
+    set_scopes(&dir, &["read", "mode"]);
+    common::runtime().block_on(async {
+        use ostal_server::rights::Capability;
+        let login = client
+            .login_as(
+                in_process::USER,
+                "mot-de-passe-jetable-du-test",
+                common::PROTOCOL,
+            )
+            .await;
+        let session = login.json()["token"].as_str().unwrap().to_string();
+        rig.hub.rights().deny(Capability::ChangeMode);
+        let (code, message) =
+            tool_error(&client, &token, "ostal_set_mode", json!({"mode": "absent"})).await;
+        assert_eq!(code, "forbidden");
+        assert!(message.contains("mode"), "{message}");
+        rig.hub.rights().allow_all();
+        // Une demande faite, puis le compte perd le droit : il ne peut plus autoriser, mais refuse.
+        let wait = tool(
+            &client,
+            &token,
+            "ostal_set_mode",
+            json!({"mode": "vacances"}),
+        )
+        .await;
+        let id = wait["confirmation_id"].as_str().unwrap().to_string();
+        rig.hub.rights().deny(Capability::ChangeMode);
+        let resp = decide(&client, &session, &id, "approve").await;
+        assert_eq!(resp.status, 403, "{}", resp.text());
+        assert_eq!(decide(&client, &session, &id, "refuse").await.status, 202);
+        rig.hub.rights().allow_all();
+    });
+    assert!(audit_of(&dir, "agent_denied")
+        .iter()
+        .any(|l| l["detail"] == "mode_rights"));
+}
+
+#[test]
+fn the_cameras_decide_and_a_request_reaches_the_phones_of_its_owner_only() {
+    use ostal_server::push::transport::{PushReply, PushRequest, SendError, Transport};
+    use ostal_server::rights::Capability;
+    use protocol::mode::{HomeMode, ModeSource};
+    use protocol::wire::{PushKeys, PushSubscribeRequest};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Seen(Mutex<Vec<String>>);
+    impl Transport for Seen {
+        fn post(&self, request: &PushRequest) -> Result<PushReply, SendError> {
+            self.0.lock().unwrap().push(request.endpoint.clone());
+            Ok(PushReply {
+                status: 201,
+                retry_after: None,
+            })
+        }
+    }
+    // La clé d'un appareil de test (RFC 8291, annexe A) : un vrai point de la courbe P-256.
+    let subscription = |endpoint: &str| {
+        PushSubscribeRequest {
+        endpoint: endpoint.into(),
+        keys: PushKeys {
+            p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4".into(),
+            auth: "BTBZMqHH6r4Tts7J_aSIgg".into(),
+        },
+        label: "iPhone".into(),
+        categories: None,
+    }
+    };
+    let dir = common::temp_dir("mcp-e3-cameras");
+    let rig = in_process::start(in_process::Setup {
+        data_dir: &dir,
+        listen: "127.0.0.1:0",
+        password: "mot-de-passe-jetable-du-test",
+        camera_addr: "127.0.0.1:0",
+        camera: Default::default(),
+        client_write_timeout: Duration::from_secs(10),
+    });
+    let transport = Arc::new(Seen::default());
+    rig.hub.push().set_transport(transport.clone());
+    rig.hub
+        .push()
+        .subscribe_for(
+            &rig.user_id,
+            subscription("https://web.push.apple.com/proprietaire"),
+            "",
+        )
+        .unwrap();
+    rig.hub
+        .push()
+        .subscribe_for(
+            "une-autre-personne",
+            subscription("https://web.push.apple.com/autre"),
+            "",
+        )
+        .unwrap();
+    let sdir = server_dir(&dir).unwrap();
+    let client = Client::new(rig.server.addr, &rig.fingerprint);
+    agent_tokens::set_enabled(&sdir, true).unwrap();
+    let (_, token) = agent_tokens::add(&sdir, &rig.user_id, "Claude Code", 30).unwrap();
+    set_scopes(&dir, &["read", "mode"]);
+    common::runtime().block_on(async {
+        // Deux caméras extérieures aux réglages d'origine : surveillance sauf quand on est là.
+        // Présent → Nuit : on s'arme, tout de suite.
+        let done = tool(&client, &token, "ostal_set_mode", json!({"mode": "nuit"})).await;
+        assert_eq!(done["changed"], true);
+        assert!(done["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["behavior_now"] == "surveillance"));
+        // Nuit → Présent : les caméras quittent la surveillance : une personne doit valider.
+        let wait = tool(
+            &client,
+            &token,
+            "ostal_set_mode",
+            json!({"mode": "present"}),
+        )
+        .await;
+        assert_eq!(wait["status"], "confirmation_required");
+        assert_eq!(wait["reasons"], json!(["disarm"]));
+        assert_eq!(rig.hub.mode(), HomeMode::Nuit);
+        // La notification part vers l'appareil du propriétaire seulement, sans dire quoi.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while transport.0.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "aucune notification");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            *transport.0.lock().unwrap(),
+            vec!["https://web.push.apple.com/proprietaire".to_string()]
+        );
+        // Un changement de mode fait ailleurs ne remplace pas l'effet : une autre session le fait
+        // sans demander à personne (une personne n'a pas besoin d'accord).
+        rig.hub.set_mode(HomeMode::Absent, ModeSource::Web).unwrap();
+        // Absent → Nuit : l'intérieur s'éteint, mais il n'y a que des caméras extérieures : rien.
+        let done = tool(&client, &token, "ostal_set_mode", json!({"mode": "nuit"})).await;
+        assert_eq!(done["changed"], true);
+        // Le droit du compte retiré : refus.
+        rig.hub.rights().deny(Capability::ChangeMode);
+        let (code, _) =
+            tool_error(&client, &token, "ostal_set_mode", json!({"mode": "absent"})).await;
+        assert_eq!(code, "forbidden");
+        rig.hub.rights().allow_all();
+    });
 }

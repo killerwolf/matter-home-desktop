@@ -113,6 +113,11 @@ struct File {
     /// main. Une entrée illisible bloque **toute** commande.
     #[serde(default)]
     never: Vec<String>,
+    /// La liste « sensible » : des appareils (identifiants décimaux) dont toute commande par un
+    /// agent demande l'accord d'une personne (porte de garage, baie vitrée). Écrite à la main. Une
+    /// entrée illisible rend **tout** appareil sensible (jamais l'inverse).
+    #[serde(default)]
+    sensitive: Vec<String>,
     #[serde(default)]
     agents: Vec<Entry>,
 }
@@ -416,6 +421,38 @@ impl AgentStore {
         })
     }
 
+    /// Un appareil est-il « sensible » : toute commande d'un agent demande l'accord d'une personne ?
+    /// **Oui pour tout appareil** quand la liste a une entrée illisible (on durcit, on n'assouplit
+    /// jamais).
+    pub fn is_sensitive(&self, node_id: u64) -> bool {
+        self.with_file(|file| {
+            let mut broken = false;
+            let mut listed = false;
+            for text in &file.sensitive {
+                match protocol::wire::parse_id(text) {
+                    Ok(id) => listed |= id == node_id,
+                    Err(_) => broken = true,
+                }
+            }
+            if broken {
+                log::error!("agents.json : la liste « sensitive » a une entrée illisible, toute commande d'agent demande un accord");
+            }
+            broken || listed
+        })
+    }
+
+    /// Cet agent existe-t-il encore (ni révoqué ni expiré) ? Pour ne plus proposer à une personne la
+    /// demande d'un agent qu'on lui a retiré.
+    pub fn live_agent(&self, agent_id: &str) -> Option<AgentInfo> {
+        let found = self.with_file(|file| {
+            file.agents
+                .iter()
+                .find(|e| e.id == agent_id)
+                .map(AgentInfo::from)
+        })?;
+        (!found.is_expired()).then_some(found)
+    }
+
     /// Une lecture de plus pour ce jeton. `Err(secondes)` : la minute est pleine, réessayer après
     /// ce délai.
     pub fn check_read(&self, agent_id: &str) -> Result<(), u64> {
@@ -435,6 +472,18 @@ impl AgentStore {
     fn check_command_at(&self, agent_id: &str, at: Instant) -> Result<(), u64> {
         check_window(&self.commands, agent_id, at, COMMANDS_PER_MINUTE)
     }
+
+    /// `n` commandes de plus d'un coup (une pièce entière : un appareil, une commande), **tout ou
+    /// rien** : si la minute ne les contient pas toutes, aucune n'est comptée.
+    pub fn check_commands(&self, agent_id: &str, n: usize) -> Result<(), u64> {
+        check_window_n(
+            &self.commands,
+            agent_id,
+            Instant::now(),
+            COMMANDS_PER_MINUTE,
+            n,
+        )
+    }
 }
 
 /// Fenêtre glissante d'une minute, par jeton.
@@ -443,6 +492,16 @@ fn check_window(
     agent_id: &str,
     at: Instant,
     limit: usize,
+) -> Result<(), u64> {
+    check_window_n(map, agent_id, at, limit, 1)
+}
+
+fn check_window_n(
+    map: &Mutex<HashMap<String, VecDeque<Instant>>>,
+    agent_id: &str,
+    at: Instant,
+    limit: usize,
+    n: usize,
 ) -> Result<(), u64> {
     let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
     if map.len() > 256 {
@@ -455,13 +514,15 @@ fn check_window(
     {
         queue.pop_front();
     }
-    if queue.len() >= limit {
+    if queue.len() + n > limit {
         let wait = queue
             .front()
             .map_or(WINDOW, |t| WINDOW.saturating_sub(at.duration_since(*t)));
         return Err(wait.as_secs().max(1));
     }
-    queue.push_back(at);
+    for _ in 0..n {
+        queue.push_back(at);
+    }
     Ok(())
 }
 
@@ -724,5 +785,61 @@ mod tests {
         assert!(store.check_command_at("a", t0 + WINDOW).is_ok());
         // Les lectures ont leur compteur à part.
         assert!(store.check_read_at("a", t0).is_ok());
+    }
+
+    #[test]
+    fn the_sensitive_list_is_hand_written_survives_the_command_line_and_fails_safe() {
+        let dir = temp("sensitive");
+        add(&dir, "u1", "A", 30).unwrap();
+        // Rien d'écrit : aucun appareil n'est sensible.
+        assert!(!AgentStore::open(&dir).is_sensitive(7));
+        let mut file = read_for_edit(&dir).unwrap();
+        file.sensitive = vec!["7".into(), "13828100".into()];
+        write(&dir, &mut file).unwrap();
+        let store = AgentStore::open(&dir);
+        assert!(store.is_sensitive(7) && store.is_sensitive(13_828_100));
+        assert!(!store.is_sensitive(8));
+        // La ligne de commande réécrit le fichier sans perdre la liste.
+        add(&dir, "u1", "B", 30).unwrap();
+        set_enabled(&dir, true).unwrap();
+        assert_eq!(read_for_edit(&dir).unwrap().sensitive.len(), 2);
+        assert!(store.is_sensitive(7));
+        // Une entrée illisible (zéro initial, faute de frappe) rend **tout** sensible.
+        let mut file = read_for_edit(&dir).unwrap();
+        file.sensitive.push("007".into());
+        write(&dir, &mut file).unwrap();
+        assert!(store.is_sensitive(8) && store.is_sensitive(123));
+        // La liste « jamais » reste une autre liste.
+        assert!(!store.never_commanded(7));
+    }
+
+    #[test]
+    fn a_batch_of_commands_is_counted_all_or_nothing() {
+        let dir = temp("batch");
+        let store = AgentStore::open(&dir);
+        assert!(store.check_commands("a", COMMANDS_PER_MINUTE - 1).is_ok());
+        // Il reste une place : un lot de deux ne passe pas, et ne mange rien.
+        assert!(store.check_commands("a", 2).is_err());
+        assert!(store.check_command("a").is_ok());
+        assert!(store.check_command("a").is_err());
+        // Un autre jeton n'est pas touché.
+        assert!(store.check_commands("b", COMMANDS_PER_MINUTE).is_ok());
+        assert!(store.check_commands("b", 1).is_err());
+    }
+
+    #[test]
+    fn a_live_agent_is_found_by_id_until_it_is_revoked_or_expires() {
+        let dir = temp("live");
+        let (a, _) = add(&dir, "u1", "A", 30).unwrap();
+        let store = AgentStore::open(&dir);
+        assert_eq!(store.live_agent(&a.id).map(|x| x.label), Some("A".into()));
+        assert!(store.live_agent("inconnu").is_none());
+        revoke(&dir, &a.id).unwrap();
+        assert!(store.live_agent(&a.id).is_none());
+        let (b, _) = add(&dir, "u1", "B", 30).unwrap();
+        let mut file = read_for_edit(&dir).unwrap();
+        file.agents[0].expires = now() - 1.0;
+        write(&dir, &mut file).unwrap();
+        assert!(store.live_agent(&b.id).is_none());
     }
 }

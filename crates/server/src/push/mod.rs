@@ -65,6 +65,8 @@ pub enum Category {
     Detections,
     Battery,
     Unreachable,
+    /// Une demande d'un agent d'IA à valider (envoyée à une seule personne).
+    AgentRequests,
 }
 
 impl Category {
@@ -74,6 +76,7 @@ impl Category {
             Category::Detections => c.detections,
             Category::Battery => c.battery,
             Category::Unreachable => c.unreachable,
+            Category::AgentRequests => c.agent_requests,
         }
     }
 
@@ -84,6 +87,8 @@ impl Category {
             Category::Rules | Category::Detections => ("high", 3600),
             Category::Battery => ("normal", 24 * 3600),
             Category::Unreachable => ("normal", 6 * 3600),
+            // Une demande expire au bout de 5 minutes : plus aucun intérêt après.
+            Category::AgentRequests => ("high", 300),
         }
     }
 }
@@ -101,6 +106,8 @@ pub enum PushError {
 struct Job {
     /// Un seul abonnement (notification d'essai) ; sinon tous ceux qui veulent la catégorie.
     target: Option<String>,
+    /// Les abonnements de cette personne seulement (jamais ceux sans propriétaire).
+    owner: Option<String>,
     category: Option<Category>,
     payload: PushPayload,
 }
@@ -529,6 +536,7 @@ impl Push {
         }
         self.enqueue(Job {
             target: Some(id.to_string()),
+            owner: None,
             category: None,
             payload: content::test_message(),
         });
@@ -551,6 +559,29 @@ impl Push {
         }
         self.enqueue(Job {
             target: None,
+            owner: None,
+            category: Some(category),
+            payload,
+        });
+    }
+
+    /// Comme [`Push::notify`], mais **aux appareils de cette personne seulement** (ceux qui veulent
+    /// la catégorie) : la demande d'un agent ne part jamais vers le téléphone d'un autre. Un
+    /// appareil sans propriétaire (abonné avant les comptes) n'est pas à elle : il ne reçoit rien.
+    pub fn notify_user(self: &Arc<Self>, user_id: &str, category: Category, payload: PushPayload) {
+        {
+            let stored = lock(&self.stored);
+            if !stored.enabled
+                || !stored.subscriptions.iter().any(|s| {
+                    s.user_id.as_deref() == Some(user_id) && category.wanted_by(&s.categories)
+                })
+            {
+                return;
+            }
+        }
+        self.enqueue(Job {
+            target: None,
+            owner: Some(user_id.to_string()),
             category: Some(category),
             payload,
         });
@@ -807,6 +838,11 @@ impl Push {
                 .filter(|s| match (&active, &s.user_id) {
                     (Some(active), Some(owner)) => active(owner),
                     _ => true,
+                })
+                .filter(|s| {
+                    job.owner
+                        .as_deref()
+                        .is_none_or(|owner| s.user_id.as_deref() == Some(owner))
                 })
                 .filter(|s| match (&job.target, job.category) {
                     (Some(id), _) => &s.id == id,

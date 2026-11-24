@@ -39,6 +39,9 @@ pub struct PushCategories {
     pub battery: bool,
     /// Appareil injoignable depuis plus de 10 minutes.
     pub unreachable: bool,
+    /// Une demande d'un agent d'IA à valider (serveur MCP intégré). Part vers les appareils de la
+    /// personne à qui appartient l'agent, jamais vers ceux des autres.
+    pub agent_requests: bool,
 }
 
 impl Default for PushCategories {
@@ -48,6 +51,7 @@ impl Default for PushCategories {
             detections: true,
             battery: true,
             unreachable: true,
+            agent_requests: true,
         }
     }
 }

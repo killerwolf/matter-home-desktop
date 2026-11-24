@@ -256,6 +256,27 @@ pub fn test_message() -> PushPayload {
     }
 }
 
+/// Une demande d'un agent d'IA à valider. Le texte reste **générique** : il s'affiche sur l'écran
+/// verrouillé, où ni le mode demandé (« Vacances » dit que la maison est vide) ni l'appareil visé
+/// n'ont leur place. Seul le libellé de l'agent, choisi par la personne, y figure.
+pub fn agent_request(clean: &dyn Fn(&str) -> String, label: &str) -> PushPayload {
+    let who = truncate(clean(label).trim(), 40);
+    let who = if who.is_empty() {
+        "Un agent d'IA".to_string()
+    } else {
+        format!("« {who} »")
+    };
+    PushPayload {
+        title: "Demande à valider".into(),
+        body: truncate(
+            &format!("{who} attend votre accord dans l'app Ostal."),
+            BODY_MAX,
+        ),
+        url: HOME_URL.into(),
+        tag: Some("demande-agent".into()),
+    }
+}
+
 fn display_name(name: Option<&str>) -> String {
     match name.map(str::trim) {
         Some(n) if !n.is_empty() && !looks_like_node_id(n) => n.to_string(),

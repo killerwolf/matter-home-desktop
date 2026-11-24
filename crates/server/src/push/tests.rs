@@ -479,6 +479,77 @@ fn messages_go_to_every_active_person_with_their_own_categories() {
 }
 
 #[test]
+fn an_agent_request_goes_to_the_devices_of_its_owner_only_and_says_nothing_of_the_request() {
+    let (push, fake, _dir) = rig("agent-request");
+    let lea = push.subscribe_for("lea", request(APPLE), "").unwrap();
+    push.subscribe_for("adam", request(GOOGLE), "").unwrap();
+    // Un appareil abonné avant les comptes (sans propriétaire) n'est à personne : il ne reçoit rien.
+    push.subscribe(
+        request("https://updates.push.services.mozilla.com/wpush/v2/gAAA"),
+        "",
+    )
+    .unwrap();
+    let payload = content::agent_request(&|s| s.to_string(), "Claude Code sur le portable");
+    push.notify_user("lea", Category::AgentRequests, payload.clone());
+    push.run_pending();
+    assert_eq!(fake.count(), 1, "seulement l'appareil de Léa");
+    let sent = fake.last();
+    // Le texte reste générique : ni mode, ni appareil, rien qui dise que la maison est vide.
+    assert_eq!(sent.title, "Demande à valider");
+    assert!(
+        sent.body.contains("Claude Code sur le portable"),
+        "{sent:?}"
+    );
+    for word in ["Vacances", "vacances", "mode", "volet", "prise"] {
+        assert!(
+            !sent.body.contains(word) && !sent.title.contains(word),
+            "{word}"
+        );
+    }
+    assert_eq!(sent.url, "/app/");
+    // Une personne sans appareil : rien ne part, et rien ne reste en file.
+    push.notify_user("personne", Category::AgentRequests, payload.clone());
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+    // Léa décoche la catégorie : plus rien pour elle, Adam n'en reçoit pas pour autant.
+    push.update_for(
+        "lea",
+        &lea.id,
+        PushUpdateRequest {
+            categories: Some(PushCategories {
+                agent_requests: false,
+                ..PushCategories::default()
+            }),
+            label: None,
+        },
+    )
+    .unwrap();
+    push.notify_user("lea", Category::AgentRequests, payload.clone());
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+    // Notifications coupées : rien. Compte désactivé : rien non plus.
+    push.set_enabled(false).unwrap();
+    push.notify_user("adam", Category::AgentRequests, payload.clone());
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+    push.set_enabled(true).unwrap();
+    push.set_owner_filter(Arc::new(|user| user != "adam"));
+    push.notify_user("adam", Category::AgentRequests, payload);
+    push.run_pending();
+    assert_eq!(fake.count(), 1);
+}
+
+#[test]
+fn the_agent_request_text_is_cleaned_and_short() {
+    let long = "x".repeat(300);
+    let p = content::agent_request(&|s| s.replace("secret", "•••"), &format!("secret {long}"));
+    assert!(!p.body.contains("secret"));
+    assert!(p.body.chars().count() <= content::BODY_MAX);
+    let anonymous = content::agent_request(&|_| String::new(), "   ");
+    assert!(anonymous.body.starts_with("Un agent d'IA"));
+}
+
+#[test]
 fn old_subscriptions_go_to_the_first_user_once_and_nothing_else_changes() {
     let (push, _fake, dir) = rig("adopt");
     let v = push.subscribe(request(APPLE), "").unwrap();

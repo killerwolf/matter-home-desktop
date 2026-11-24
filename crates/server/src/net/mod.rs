@@ -3,6 +3,7 @@
 //! chiffrement, délais sur la poignée de main, les en-têtes et le corps, nombre de connexions
 //! borné au total et par adresse.
 
+mod agent_requests;
 mod body;
 mod camera_snapshot;
 mod camera_stream;
@@ -83,6 +84,8 @@ pub struct Auth {
     pub agents: crate::security::agent_tokens::AgentStore,
     /// Les lectures des agents, regroupées avant d'être écrites au journal (`agent_audit`).
     pub agent_reads: crate::agent_audit::ReadGroups,
+    /// Les demandes d'agent qui attendent l'accord d'une personne (en mémoire seulement).
+    pub confirmations: crate::confirmations::Confirmations,
     /// Vérifications de mot de passe simultanées : une seule (argon2 consomme du temps et de la
     /// mémoire ; c'est aussi le débit maximal d'une attaque répartie).
     pub hash_slots: Semaphore,
@@ -103,6 +106,7 @@ impl Auth {
             limiter: LoginLimiter::new(),
             agents,
             agent_reads: crate::agent_audit::ReadGroups::default(),
+            confirmations: crate::confirmations::Confirmations::default(),
             hash_slots: Semaphore::new(1),
         }
     }
@@ -291,6 +295,8 @@ async fn sweep_agent_reads(hub: Arc<Hub>, auth: Arc<Auth>, mut shutdown: watch::
         tokio::select! {
             _ = tick.tick() => {
                 write(&hub, auth.agent_reads.flush_due(crate::events::now_unix())).await;
+                // Les demandes d'agent restées sans réponse : une ligne « expirée » chacune.
+                write(&hub, auth.confirmations.sweep()).await;
             }
             _ = shutdown.changed() => return,
         }

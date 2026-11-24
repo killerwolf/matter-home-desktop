@@ -8,6 +8,7 @@ pub mod audit;
 pub mod automation;
 pub mod backup;
 pub mod cameras;
+pub mod confirmations;
 pub mod demo;
 pub mod descriptions;
 pub mod detection;
