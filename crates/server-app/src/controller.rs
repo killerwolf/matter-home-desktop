@@ -74,6 +74,9 @@ pub struct State {
     /// Comptes et sessions du serveur qui tourne : les connexions ouvertes se lisent et se
     /// coupent ici.
     pub auth: Option<AuthHandle>,
+    /// Démonstration seulement : le mot de passe, tiré au sort, du compte « demo » (appareils
+    /// simulés, rien de réel). `None` hors démonstration.
+    pub demo_password: Option<String>,
 }
 
 /// Les sessions du serveur qui tourne (voir `accounts::connections`). `Debug` n'en montre rien.
@@ -254,6 +257,7 @@ pub fn spawn(config: Config, first_lock: (LockOutcome, Option<DataLock>)) -> Han
         migrated: None,
         hub: None,
         auth: None,
+        demo_password: None,
     }));
     let (tx, rx) = mpsc::channel();
     let exited = ExitSignal::default();
@@ -441,7 +445,8 @@ impl Controller {
             persistence::data_dir()
         };
         if self.cfg.demo && !self.cfg.demo_setup {
-            ensure_demo_account(&data_dir);
+            let password = ensure_demo_account(&data_dir);
+            self.set(|s| s.demo_password = password);
         }
         let config = ServerConfig::new(data_dir, self.cfg.listen, self.cfg.demo);
         match Server::start(config) {
@@ -785,7 +790,7 @@ fn create_account(username: &str, password: &str) -> Result<(), String> {
 
 /// En démo, un compte « demo » est créé s'il n'y en a pas ; son mot de passe est tiré au sort
 /// et écrit sur la sortie standard, jamais dans le journal.
-fn ensure_demo_account(data_dir: &std::path::Path) {
+fn ensure_demo_account(data_dir: &std::path::Path) -> Option<String> {
     use ostal_server::security::account::AccountStore;
     let result = security::server_dir(data_dir).and_then(|dir| {
         if AccountStore::open(&dir)?.exists() {
@@ -798,14 +803,37 @@ fn ensure_demo_account(data_dir: &std::path::Path) {
         Ok(Some(password))
     });
     match result {
-        Ok(Some(p)) => println!("Compte de démonstration : demo / {p}"),
-        Ok(None) => {}
-        Err(e) => log::error!("compte de démonstration impossible : {e:#}"),
+        Ok(Some(p)) => {
+            println!("Compte de démonstration : demo / {p}");
+            Some(p)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log::error!("compte de démonstration impossible : {e:#}");
+            None
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_demo_account_password_is_returned_once_in_the_given_folder_only() {
+        let dir =
+            std::env::temp_dir().join(format!("ostal-demo-account-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = super::ensure_demo_account(&dir);
+        let password = first.expect("le premier appel crée le compte");
+        assert!(password.starts_with("demo-") && password.len() > 10);
+        assert_eq!(
+            super::ensure_demo_account(&dir),
+            None,
+            "le compte existe déjà"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_failed_prologue_says_to_quit_first() {
         let e = anyhow::anyhow!("un import de sauvegarde interrompu attend");

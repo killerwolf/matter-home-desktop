@@ -89,10 +89,16 @@ Les fichiers sont lisibles uniquement par votre compte (droits 0600). Les heures
 d'ouverture des portes renseignent sur la présence dans la maison : ne partagez pas ce
 dossier.
 
-Le client ne parle qu'à votre serveur, sur votre réseau. Seuls les webhooks que vous configurez dans vos
-automatisations envoient des données vers les adresses que vous avez choisies, et, si vous activez les
-[descriptions](descriptions.md), la capture des événements choisis part vers l'API d'Anthropic (rien
-d'autre, jamais le flux).
+Le client ne parle qu'à votre serveur, sur votre réseau. Il n'y a **aucun cloud de l'éditeur** : rien de
+la maison ne part sans une option que vous activez. Les seules exceptions :
+
+- les webhooks que vous configurez dans vos automatisations, vers les adresses que vous avez choisies ;
+- si vous activez les [descriptions](descriptions.md), la capture des événements choisis part vers l'API
+  d'Anthropic (rien d'autre, jamais le flux) ;
+- si un appareil s'abonne aux [notifications](notifications.md), le message chiffré passe par le service
+  de push d'Apple, de Google, de Mozilla ou de Microsoft ;
+- si vous utilisez Tailscale pour l'[accès à distance](acces-distant.md), le trafic passe par votre
+  réseau privé Tailscale.
 
 ## Historique des mesures
 

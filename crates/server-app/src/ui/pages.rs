@@ -16,6 +16,7 @@ use ostal_server_app::controller::Notice;
 use ostal_server_app::overview::Level;
 use ostal_server_app::startup::Blocker;
 use ostal_server_app::system::HelpPage;
+use ostal_server_app::welcome;
 use ostal_server_app::{descriptions, version};
 use protocol::mode::HomeMode;
 
@@ -148,6 +149,9 @@ impl App {
         if let Some(migrated) = &st.migrated {
             notice_label(ui, &Notice::Ok(migrated.clone()));
             ui.add_space(8.0);
+        }
+        if self.demo {
+            self.demo_banner(ui, st);
         }
         match (&st.phase, &st.setup) {
             (Phase::NeedsSetup, Some(SetupNeed::Identity { unreadable })) => {
@@ -290,10 +294,77 @@ impl App {
 
     // ---- première installation -----------------------------------------------------------------
 
+    /// Le bandeau de la démonstration : ce qu'elle est, comment s'y connecter, comment en sortir.
+    fn demo_banner(&mut self, ui: &mut egui::Ui, st: &State) {
+        widgets::section(ui, "Démonstration : appareils simulés", |ui| {
+            ui.label("Rien de votre maison n'est lu ni modifié, et rien n'est gardé : tout disparaît quand vous quittez la démonstration.");
+            if let (Some(url), Some(pw)) = (&st.url, &st.demo_password) {
+                ui.add_space(4.0);
+                ui.label(format!("Pour la regarder depuis le client ou un navigateur : adresse {url}, compte « demo », mot de passe {pw} (valable pour cette démonstration seulement)."));
+            }
+            ui.add_space(6.0);
+            if theme::secondary_button(ui, "Quitter la démonstration").clicked() {
+                let _ = self.handle.tx.send(Cmd::Quit);
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    /// Ce qu'il faut avoir avant de commencer.
+    fn prerequisites(&mut self, ui: &mut egui::Ui) {
+        widgets::section(ui, "Avant de commencer", |ui| {
+            for line in welcome::PREREQUISITES {
+                ui.label(format!("•  {line}"));
+            }
+            ui.add_space(4.0);
+            widgets::hint(ui, welcome::PRIVACY_PROMISE);
+            for line in welcome::PRIVACY_EXCEPTIONS {
+                widgets::hint(ui, &format!("•  {line}"));
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    /// « Essayer avec des appareils simulés » : lance la démonstration dans un autre processus.
+    fn demo_trial(&mut self, ui: &mut egui::Ui) {
+        let open = self.demo_session.is_open();
+        let mut start = false;
+        let mut stop = false;
+        widgets::section(ui, "Pas encore d'appareils ? Essayez d'abord", |ui| {
+            ui.label("Une démonstration s'ouvre dans une autre fenêtre, avec des appareils simulés (thermomètres, porte, prise, volets). Elle n'utilise ni vos appareils ni les données de ce Mac, et ne laisse rien derrière elle.");
+            ui.add_space(4.0);
+            if open {
+                ui.label("La démonstration est ouverte : son icône est dans la barre de menus.");
+                stop = theme::secondary_button(ui, "Fermer la démonstration").clicked();
+            } else {
+                start = theme::secondary_button(ui, "Essayer avec des appareils simulés").clicked();
+            }
+            if let Some(e) = &self.demo_error {
+                ui.colored_label(theme::palette(ui).error, e);
+            }
+        });
+        if start {
+            self.demo_error = std::env::current_exe()
+                .and_then(|exe| self.demo_session.start(&exe))
+                .err()
+                .map(|e| {
+                    log::warn!("démonstration impossible : {e}");
+                    "La démonstration n'a pas pu s'ouvrir. Quittez puis rouvrez Ostal Server, et réessayez.".to_string()
+                });
+        }
+        if stop {
+            self.demo_session.stop();
+        }
+        ui.add_space(8.0);
+    }
+
     fn identity_page(&mut self, ui: &mut egui::Ui, st: &State, unreadable: Option<&str>) {
         setup_header(ui, 1, "Bienvenue : votre maison");
         ui.label("Ce Mac va devenir le serveur de votre maison : il pilote vos appareils Matter, exécute les automatismes et garde l'historique des capteurs, jour et nuit. Vous le consulterez depuis vos autres appareils (ordinateur, iPhone).");
         ui.add_space(8.0);
+        if matches!(self.page, Page::Start) {
+            self.prerequisites(ui);
+        }
         if let Some(n) = &st.notice {
             notice_label(ui, n);
             ui.add_space(6.0);
@@ -354,6 +425,7 @@ impl App {
                         self.page = Page::NewHome;
                     }
                 }
+                self.demo_trial(ui);
             }
             Page::NewHome => {
                 let (mut back, mut go) = (false, false);

@@ -10,6 +10,9 @@ Les téléchargements de chaque version sont sur la
 
 ## [Unreleased]
 
+- Ostal Server : la première installation montre d'abord les prérequis (Mac allumé en permanence, appareils Matter déjà dans Apple Maison, HomePod ou Apple TV comme hub et routeur Thread, Tailscale pour l'extérieur) et la promesse de confidentialité avec ses exceptions.
+- Ostal Server : « Essayer avec des appareils simulés » dans la première installation lance la démonstration (`--demo`) dans un autre processus, sans Terminal et sans toucher aux données réelles ; sa fenêtre porte un bandeau avec l'adresse, le compte de démonstration et « Quitter la démonstration » (sans confirmation) ; la démonstration s'arrête avec l'application qui l'a lancée.
+- Documentation : « tout reste en local, sans cloud » devient « aucun cloud de l'éditeur ; rien de la maison ne part sans une option que vous activez », avec le tableau de ce qui sort (descriptions par IA, notifications push Apple, Google, Mozilla ou Microsoft, Tailscale, webhooks) et l'historique de 7 jours.
 - Ostal Server : quand tous les appareils (ou 80 % au moins, et trois au minimum) sont injoignables en même temps, la phrase d'état dit « Tous les appareils ont décroché en même temps » et renvoie au Wi-Fi du Mac, pas à l'alimentation ; la logique commune est dans `protocol::status::devices_point`, reprise par l'app Mac et l'app web.
 - Ostal Server : Réglages › Dépannage donne trois cas (tout injoignable, un seul injoignable, « La maison ne répond pas »), le journal technique en dernier.
 - Ostal Server : les étapes de connexion citent la découverte automatique d'abord, l'adresse en secours, et ne parlent plus de Windows ni de Linux.

@@ -9,8 +9,22 @@
 [![Dernière version](https://img.shields.io/github/v/release/killerwolf/matter-home-desktop)](https://github.com/killerwolf/matter-home-desktop/releases/latest)
 
 Pilote et observe vos appareils **Matter** (Thread ou Wi-Fi) déjà installés dans Apple Maison :
-mesures en direct, plan de la maison, automatisations. Il s'ajoute comme un contrôleur de plus ;
-tout reste en local, sans cloud.
+mesures en direct, plan de la maison, automatisations. Il s'ajoute comme un contrôleur de plus.
+**Aucun cloud de l'éditeur : rien de la maison ne part sans une option que vous activez**
+([la liste exacte](#ce-qui-sort-de-la-maison)).
+
+## Avant de commencer
+
+- **Un Mac allumé en permanence** sur le même réseau que vos appareils (un ancien Mac convient) :
+  c'est lui qui fait tourner le serveur.
+- **Vos appareils Matter doivent déjà être dans l'app Maison d'Apple** : Ostal s'y ajoute comme un
+  contrôleur de plus, il ne remplace pas Maison.
+- **Un HomePod ou une Apple TV** comme hub et routeur de bordure Thread : un Mac ne peut pas
+  jouer ce rôle. Il est nécessaire pour les appareils Thread.
+- **[Tailscale](https://tailscale.com)** seulement pour consulter la maison depuis l'extérieur.
+
+Pas encore d'appareils, ou envie de regarder avant ? Ostal Server propose, dès sa première
+installation, **« Essayer avec des appareils simulés »** (voir [Essayer sans appareil](#essayer-sans-appareil)).
 
 **Depuis la version 1, l'application est en deux parties :**
 
@@ -19,7 +33,7 @@ tout reste en local, sans cloud.
 | **Serveur** (`ostal-server`) | Tourne en continu, sans fenêtre, sur un Mac du réseau local (un ancien Mac convient). Il pilote les appareils, exécute les automatisations, garde les données et l'historique. | Service macOS qui démarre avec le Mac |
 | **Client** (« Ostal ») | L'application avec fenêtre : elle affiche et commande, sans stocker de données. On y saisit l'adresse du serveur, un identifiant et un mot de passe. | N'importe quel Mac du réseau |
 
-Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un compte par personne du foyer, aucun cloud.
+Liaison chiffrée (HTTPS, certificat du serveur épinglé par le client), un compte par personne du foyer, aucun cloud de l'éditeur.
 Vous venez de la v0.2.1 ? [Reprenez vos données](docs/migration.md) sans réappairer un seul appareil.
 
 <table>
@@ -133,7 +147,13 @@ Ouvrez ensuite l'application normalement. C'est à refaire après chaque nouvell
 
 ### Essayer sans appareil
 
-Le **mode démo** du serveur simule thermomètres, porte, prise, volets et automatisations (dossier
+Dans **Ostal Server**, la fenêtre de première installation propose **« Essayer avec des appareils
+simulés »** : un clic, sans Terminal, ouvre une démonstration dans un autre processus. Elle a son
+propre dossier temporaire (jamais les données de la maison), ne parle pas au réseau Matter et
+disparaît quand on la quitte : bouton « Quitter la démonstration » dans sa fenêtre, ou « Quitter »
+dans le menu de sa barre de menus.
+
+En ligne de commande, le **mode démo** du serveur simule thermomètres, porte, prise, volets et automatisations (dossier
 temporaire, écoute sur `127.0.0.1:8443`, compte « demo » dont le mot de passe est affiché) :
 
 ```bash
@@ -221,8 +241,23 @@ Tout reste sur le Mac du **serveur**, dans
 `~/Library/Application Support/dev.ostal.OstalServer/` : identité du
 contrôleur, appareils, plan, règles, 7 jours d'historique des mesures, compte et certificat du
 serveur. Le client ne garde que l'adresse du serveur, l'empreinte du certificat et un jeton de
-session. Rien n'est envoyé ailleurs, sauf les webhooks que vous configurez vous-même. Détails :
+session. Rien n'est envoyé ailleurs que dans les cas de la liste ci-dessous. Détails :
 [docs/donnees.md](docs/donnees.md).
+
+### Ce qui sort de la maison
+
+Il n'y a **aucun cloud de l'éditeur** : pas de compte Ostal, pas de serveur d'Ostal, pas de mesure
+d'usage. Rien de la maison ne part sans une option que vous activez, ou un service que vous choisissez :
+
+| Quoi | Quand | Où ça va |
+|---|---|---|
+| Descriptions des événements par IA ([détails](docs/descriptions.md)) | Si vous les activez avec votre clé d'API : une image par événement choisi, jamais la vidéo | API d'Anthropic |
+| Notifications push ([détails](docs/notifications.md)) | Si un appareil s'abonne : message chiffré de bout en bout | Service de push d'Apple, Google, Mozilla ou Microsoft, selon l'appareil |
+| Accès à distance ([détails](docs/acces-distant.md)) | Si vous utilisez Tailscale | Votre réseau privé Tailscale |
+| Webhooks | Si une automatisation en contient un | L'adresse que vous avez choisie |
+
+Le reste (appareils, plan, règles, comptes, caméras) ne quitte jamais le Mac du serveur ; l'historique
+des mesures y est gardé **7 jours**.
 
 ## Limites
 

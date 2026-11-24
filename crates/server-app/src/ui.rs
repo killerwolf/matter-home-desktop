@@ -494,6 +494,10 @@ struct App {
     mode_token_shown: Option<String>,
     /// « Générer un nouveau jeton » demande une confirmation : l'ancien cessera de marcher.
     mode_token_confirm: bool,
+    /// La démonstration lancée depuis la première installation (processus à part).
+    demo_session: ostal_server_app::welcome::DemoSession,
+    /// Le lancement de la démonstration a échoué : la phrase à montrer.
+    demo_error: Option<String>,
 }
 
 impl App {
@@ -546,6 +550,8 @@ impl App {
             web_auth_url: None,
             mode_token_shown: None,
             mode_token_confirm: false,
+            demo_session: Default::default(),
+            demo_error: None,
         };
         if !app.demo {
             if let (Some(dir), Ok(exe)) = (agent::default_dir(), std::env::current_exe()) {
@@ -734,6 +740,11 @@ impl App {
     /// principal affiche l'alerte ; le garde `quit_dialog_open` (pas de seconde alerte) est donc
     /// sans effet réel ici, mais inoffensif : on le laisse.
     fn ask_quit(&self) {
+        // La démonstration n'a rien à protéger : pas de confirmation, on en sort d'un clic.
+        if self.demo {
+            let _ = self.handle.tx.send(Cmd::Quit);
+            return;
+        }
         if self.quit_dialog_open.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -914,6 +925,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // La démonstration lancée d'ici ne survit pas à cette application.
+        self.demo_session.stop();
         // Cmd+Q ou fin de session : arrêt propre du serveur avant de sortir.
         let _ = self.handle.tx.send(Cmd::Quit);
         // L'arrêt du serveur peut durer environ 17 s : on attend le signal du chef d'orchestre,

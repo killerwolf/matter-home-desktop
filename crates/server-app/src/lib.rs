@@ -22,3 +22,4 @@ pub mod status;
 pub mod system;
 pub mod tailscale;
 pub mod version;
+pub mod welcome;
