@@ -1,15 +1,16 @@
-//! Tests d'intégration : l'adresse du client derrière un relais (Caddy, `tailscale serve`) et
+//! Tests d'intégration : l'adresse du client derrière un relais (reverse proxy, `tailscale serve`) et
 //! l'adresse publique. Le vrai binaire en mode démo, dossier et HOME factices, 127.0.0.1 : aucun
 //! réseau réel, aucun nom réel.
 //!
-//! - un pair de confiance (par défaut la boucle locale, ici le seul pair possible) qui envoie
+//! - un pair de confiance (rien n'est de confiance par défaut : ici la boucle locale, le seul pair
+//!   possible, est ajoutée dans `serveur/reseau.json`) qui envoie
 //!   `X-Forwarded-For` donne l'adresse du client : « à distance » et limiteur d'essais sur cette
 //!   adresse, pas sur celle du relais ;
-//! - un pair qui n'est pas de confiance (liste vide dans `serveur/reseau.json`) : l'en-tête est
-//!   ignoré, forgé ou non ;
+//! - un pair qui n'est pas de confiance (c'est le cas par défaut) : l'en-tête est ignoré, forgé ou
+//!   non ;
 //! - un `X-Forwarded-For` à plusieurs valeurs se lit de droite à gauche ;
 //! - l'adresse publique : un `Host` égal compte « à distance », le serveur l'annonce à la place des
-//!   adresses du tailnet, les raccourcis l'acceptent ;
+//!   adresses du tailnet (qui restent annoncées), les raccourcis l'acceptent ;
 //! - la ligne de commande `ostal-server network`.
 
 mod common;
@@ -23,8 +24,10 @@ use protocol::wire::Via;
 use serde_json::{json, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ostal-server");
-const PUBLIC: &str = "https://ostal.klbr.h4md1.fr";
-const PUBLIC_HOST: &str = "ostal.klbr.h4md1.fr";
+const PUBLIC: &str = "https://maison.exemple.fr";
+const PUBLIC_HOST: &str = "maison.exemple.fr";
+/// Un relais configuré : le pair des essais (la boucle locale) est un proxy de confiance.
+const LOOPBACK_RELAY: &str = r#"{"version":1,"trusted_proxies":["127.0.0.1/32"]}"#;
 
 fn seed(dir: &Path, text: &str) {
     let server_dir = dir.join("serveur");
@@ -81,10 +84,11 @@ fn network(dir: &Path, args: &[&str]) -> (bool, String) {
 #[test]
 fn a_trusted_proxy_gives_the_real_client_to_the_limiter_and_the_journal() {
     let dir = temp_dir("client-ip-trusted");
+    seed(&dir, LOOPBACK_RELAY);
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
-        // Le pair (127.0.0.1) est un proxy de confiance par défaut : la limite se compte sur 100.64.0.1.
+        // Le pair (127.0.0.1) est un proxy de confiance réglé : la limite se compte sur 100.64.0.1.
         let tail = [("X-Forwarded-For", "100.64.0.1")];
         let mut locked = false;
         for i in 0..8 {
@@ -126,8 +130,7 @@ fn a_trusted_proxy_gives_the_real_client_to_the_limiter_and_the_journal() {
 #[test]
 fn an_untrusted_peer_cannot_forge_x_forwarded_for() {
     let dir = temp_dir("client-ip-untrusted");
-    // Aucun proxy de confiance : même la boucle locale n'est pas crue.
-    seed(&dir, r#"{"version":1,"trusted_proxies":[]}"#);
+    // Rien n'est réglé : aucun proxy de confiance par défaut, même la boucle locale n'est pas crue.
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
@@ -164,6 +167,7 @@ fn an_untrusted_peer_cannot_forge_x_forwarded_for() {
     });
     // Sans verrou : l'adresse du journal reste celle du pair, sur place.
     let dir2 = temp_dir("client-ip-untrusted-2");
+    // Et une liste explicitement vide donne la même chose.
     seed(&dir2, r#"{"trusted_proxies":[]}"#);
     let server2 = Server::start(&dir2);
     let client2 = server2.client();
@@ -188,6 +192,7 @@ fn an_untrusted_peer_cannot_forge_x_forwarded_for() {
 #[test]
 fn several_forwarded_values_are_read_from_the_right() {
     let dir = temp_dir("client-ip-chain");
+    seed(&dir, LOOPBACK_RELAY);
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
@@ -251,20 +256,26 @@ fn the_public_address_counts_as_remote_and_is_announced_to_the_client() {
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
-        // Caddy garde Host : « à distance », même sans X-Forwarded-For.
+        // Le relais garde Host : « à distance », même sans X-Forwarded-For.
         let r = login_with(&client, USER, PASSWORD, &[("Host", PUBLIC_HOST)]).await;
         assert_eq!(r.status, 200, "{}", r.text());
         let body = r.json();
-        // L'adresse publique remplace les adresses du tailnet.
+        // L'adresse publique s'ajoute aux adresses du tailnet, annoncées comme sans elle (ici le
+        // serveur écoute sur 127.0.0.1 : la liste du tailnet est la même que celle du serveur).
         assert_eq!(body["public_url"], PUBLIC);
-        assert!(body.get("tailnet_urls").is_none(), "{body}");
+        let expected = ostal_server::net::tailnet_urls(server.addr);
+        let announced: Vec<String> = body
+            .get("tailnet_urls")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        assert_eq!(announced, expected, "{body}");
         let token = body["token"].as_str().unwrap().to_string();
         // Un nom qui ressemble seulement : sur place.
         let r = login_with(
             &client,
             USER,
             PASSWORD,
-            &[("Host", "evilostal.klbr.h4md1.fr")],
+            &[("Host", "evilmaison.exemple.fr")],
         )
         .await;
         assert_eq!(r.status, 200, "{}", r.text());
@@ -299,8 +310,8 @@ fn the_public_address_counts_as_remote_and_is_announced_to_the_client() {
         assert_eq!(prepared.status, 200, "{}", prepared.text());
         // ...pas un autre nom, ni l'adresse publique avec un autre Host.
         for (origin, host) in [
-            ("https://evilostal.klbr.h4md1.fr", "evilostal.klbr.h4md1.fr"),
-            ("https://autre.klbr.h4md1.fr", "autre.klbr.h4md1.fr"),
+            ("https://evilmaison.exemple.fr", "evilmaison.exemple.fr"),
+            ("https://autre.exemple.fr", "autre.exemple.fr"),
             (PUBLIC, "maison.tailnet-1.ts.net"),
         ] {
             let r = client
@@ -353,29 +364,26 @@ fn the_command_line_sets_the_settings_and_a_running_server_follows() {
     let (ok, text) = network(&dir, &["show"]);
     assert!(ok, "{text}");
     assert!(text.contains("Adresse publique : aucune"), "{text}");
-    assert!(
-        text.contains("192.168.5.0/24, 127.0.0.1/32, ::1/128"),
-        "{text}"
-    );
+    assert!(text.contains("Proxys de confiance : aucun"), "{text}");
     // Refus : pas https, un chemin, un port, une IP, un réseau mal écrit.
     for bad in [
-        "http://ostal.exemple.fr",
-        "https://ostal.exemple.fr/app",
-        "https://ostal.exemple.fr:8443",
+        "http://maison.exemple.fr",
+        "https://maison.exemple.fr/app",
+        "https://maison.exemple.fr:8443",
         "https://100.64.0.1",
-        "ostal.exemple.fr",
+        "maison.exemple.fr",
     ] {
         let (ok, text) = network(&dir, &["public-address", bad]);
         assert!(!ok, "{bad} : {text}");
     }
-    let (ok, text) = network(&dir, &["trusted-proxies", "192.168.5.0/33"]);
+    let (ok, text) = network(&dir, &["trusted-proxies", "10.0.0.0/33"]);
     assert!(!ok, "{text}");
     assert!(
         !dir.join("serveur/reseau.json").exists(),
         "aucun fichier après un refus"
     );
     // Le serveur qui tourne suit, sans redémarrage.
-    let (ok, text) = network(&dir, &["public-address", "https://Ostal.Klbr.H4md1.fr/"]);
+    let (ok, text) = network(&dir, &["public-address", "https://Maison.Exemple.Fr/"]);
     assert!(ok, "{text}");
     assert!(text.contains(PUBLIC), "{text}");
     runtime().block_on(async {
@@ -383,15 +391,18 @@ fn the_command_line_sets_the_settings_and_a_running_server_follows() {
         assert_eq!(r.status, 200, "{}", r.text());
         assert_eq!(r.json()["public_url"], PUBLIC);
     });
-    // Le défaut est gardé quand on règle l'adresse ; les proxys se règlent à part.
-    let (ok, text) = network(&dir, &["trusted-proxies", "10.9.8.0/24", "::1"]);
+    // Les proxys se règlent à part, sans toucher à l'adresse publique.
+    let (ok, text) = network(
+        &dir,
+        &["trusted-proxies", "127.0.0.1", "10.9.8.0/24", "::1"],
+    );
     assert!(ok, "{text}");
     let (_, shown) = network(&dir, &["show"]);
     assert!(
-        shown.contains(PUBLIC) && shown.contains("10.9.8.0/24, ::1/128"),
+        shown.contains(PUBLIC) && shown.contains("127.0.0.1/32, 10.9.8.0/24, ::1/128"),
         "{shown}"
     );
-    // 127.0.0.1 n'est plus de confiance : l'en-tête forgé n'a plus d'effet.
+    // 127.0.0.1 est de confiance : l'en-tête est cru.
     runtime().block_on(async {
         let r = login_with(
             &client,
@@ -402,13 +413,40 @@ fn the_command_line_sets_the_settings_and_a_running_server_follows() {
         .await;
         assert_eq!(r.status, 200, "{}", r.text());
     });
+    assert!(logins(&dir)
+        .iter()
+        .any(|e| e.ip.as_deref() == Some("100.64.0.3")));
+    // Retiré de la liste, 127.0.0.1 n'est plus de confiance : l'en-tête forgé n'a plus d'effet.
+    let (ok, _) = network(&dir, &["trusted-proxies", "10.9.8.0/24"]);
+    assert!(ok);
+    runtime().block_on(async {
+        let r = login_with(
+            &client,
+            USER,
+            PASSWORD,
+            &[("X-Forwarded-For", "100.64.0.5")],
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+    });
     assert!(
         logins(&dir)
             .iter()
-            .all(|e| e.ip.as_deref() != Some("100.64.0.3")),
-        "un pair qui n'est plus de confiance ne choisit plus son adresse"
+            .all(|e| e.ip.as_deref() != Some("100.64.0.5")),
+        "un pair qui n'est pas de confiance ne choisit pas son adresse"
     );
-    let (ok, _) = network(&dir, &["trusted-proxies", "--default"]);
+    // Les changements sont au journal d'audit, sans adresse ni nom.
+    let audited: Vec<_> = AuditLog::of_data_dir(&dir)
+        .read(&Filter::default())
+        .into_iter()
+        .filter(|e| e.action == Action::NetworkSettings)
+        .collect();
+    assert!(audited.len() >= 3, "{audited:?}");
+    assert!(audited.iter().all(|e| e
+        .detail
+        .as_deref()
+        .is_some_and(|d| !d.contains("exemple") && !d.contains("10.9.8"))));
+    let (ok, _) = network(&dir, &["trusted-proxies", "--none"]);
     assert!(ok);
     let (ok, _) = network(&dir, &["public-address", "--clear"]);
     assert!(ok);

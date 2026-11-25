@@ -432,7 +432,7 @@ impl ConnectScreen {
                 ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.url)
-                        .hint_text("192.168.1.20:8443, mac-mini.local ou https://ostal.exemple.fr")
+                        .hint_text("192.168.1.20:8443, mac-mini.local ou https://maison.exemple.fr")
                         .desired_width(full),
                 );
             });
@@ -453,7 +453,9 @@ impl ConnectScreen {
                 ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.remote)
-                        .hint_text("https://ostal.exemple.fr, mac-mini.exemple.ts.net ou 100.x.y.z")
+                        .hint_text(
+                            "https://maison.exemple.fr, mac-mini.exemple.ts.net ou 100.x.y.z",
+                        )
                         .desired_width(full),
                 );
             });
@@ -821,8 +823,8 @@ mod tests {
 
     #[test]
     fn the_user_is_told_which_name_a_public_certificate_will_check() {
-        let note = public_chain_note("https://ostal.klbr.h4md1.fr 100.64.0.5").unwrap();
-        assert!(note.contains("ostal.klbr.h4md1.fr") && !note.contains("100.64.0.5"));
+        let note = public_chain_note("https://maison.exemple.fr 100.64.0.5").unwrap();
+        assert!(note.contains("maison.exemple.fr") && !note.contains("100.64.0.5"));
         let two = public_chain_note("a.exemple.fr:443, b.exemple.fr:443").unwrap();
         assert!(two.contains("a.exemple.fr, b.exemple.fr"));
         // Rien à dire pour une IP, un nom .local, un autre port, une liste illisible ou vide.
@@ -830,8 +832,8 @@ mod tests {
             "",
             "192.168.1.20:443",
             "mac.local:443",
-            "ostal.klbr.h4md1.fr:8443",
-            "ostal.klbr.h4md1.fr",
+            "maison.exemple.fr:8443",
+            "maison.exemple.fr",
             "http://x",
         ] {
             assert_eq!(public_chain_note(none), None, "{none:?}");

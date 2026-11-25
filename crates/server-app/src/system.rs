@@ -218,21 +218,21 @@ mod tests {
 
     #[test]
     fn only_the_configured_public_address_is_opened() {
-        let public = "https://ostal.klbr.h4md1.fr";
-        assert!(is_under_public("https://ostal.klbr.h4md1.fr/app/", public));
+        let public = "https://maison.exemple.fr";
+        assert!(is_under_public("https://maison.exemple.fr/app/", public));
         assert!(is_under_public(public, public));
         for bad in [
-            "https://evilostal.klbr.h4md1.fr/app/",
-            "https://ostal.klbr.h4md1.fr.evil.com/app/",
-            "https://ostal.klbr.h4md1.fr@evil.com/app/",
-            "http://ostal.klbr.h4md1.fr/app/",
-            "https://ostal.klbr.h4md1.fr/app/ x",
+            "https://evilmaison.exemple.fr/app/",
+            "https://maison.exemple.fr.evil.com/app/",
+            "https://maison.exemple.fr@evil.com/app/",
+            "http://maison.exemple.fr/app/",
+            "https://maison.exemple.fr/app/ x",
             "https://autre.exemple.fr/",
         ] {
             assert!(!is_under_public(bad, public), "{bad}");
         }
         // Rien de réglé : rien ne s'ouvre.
-        assert!(!is_under_public("https://ostal.klbr.h4md1.fr/", ""));
+        assert!(!is_under_public("https://maison.exemple.fr/", ""));
     }
 
     #[test]

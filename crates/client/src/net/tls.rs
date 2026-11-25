@@ -11,7 +11,7 @@
 //!   ni son nom MagicDNS ni son IP Tailscale, et l'empreinte exacte prouve déjà qui répond ;
 //! - **chaîne publique**, seulement pour un nom de domaine public sur le port 443
 //!   ([`ServerAddr::is_public_chain`] : `*.ts.net` derrière `tailscale serve`, ou le nom d'un
-//!   relais comme Caddy) : le certificat présenté est un certificat Let's Encrypt, d'empreinte
+//!   reverse proxy) : le certificat présenté est un certificat Let's Encrypt, d'empreinte
 //!   changeante. Il est alors validé comme dans un navigateur (chaîne jusqu'à une autorité
 //!   publique, nom, dates), sans épinglage : ce n'est pas « le certificat du serveur ». Une IP, un
 //!   nom `.local` ou un autre port n'y ont jamais droit, une chaîne invalide ou un nom qui ne
@@ -759,8 +759,8 @@ mod tests {
         let pinned = Trust::Pinned(fingerprint_of(b"x"));
         // Nom public sur 443 : chaîne publique, en première lecture comme en connexion épinglée.
         for t in [
-            "https://ostal.klbr.h4md1.fr",
-            "ostal.klbr.h4md1.fr:443",
+            "https://maison.exemple.fr",
+            "maison.exemple.fr:443",
             "https://mon-mac.tailnet-xxxx.ts.net/",
         ] {
             assert_eq!(mode(t, &Trust::Probe), Mode::PublicChain, "{t}");
@@ -774,8 +774,8 @@ mod tests {
             "mac-mini.local:443",
             "100.64.0.1:443",
             "[fd7a:115c:a1e0::1]:443",
-            "ostal.klbr.h4md1.fr",
-            "ostal.klbr.h4md1.fr:8443",
+            "maison.exemple.fr",
+            "maison.exemple.fr:8443",
             "mon-mac.tailnet-xxxx.ts.net:8443",
         ] {
             assert_eq!(mode(t, &Trust::Probe), Mode::ReadFingerprint, "{t}");

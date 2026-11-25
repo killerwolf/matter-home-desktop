@@ -85,12 +85,13 @@ Usage :
                                  réglages réseau (serveur/reseau.json), pris en compte sans
                                  redémarrage. L'adresse publique est le nom en https, sans chemin
                                  ni port, sous lequel la maison se joint de loin derrière un relais
-                                 au certificat officiel (https://ostal.exemple.fr) ; les Raccourcis
+                                 au certificat officiel (https://maison.exemple.fr) ; les Raccourcis
                                  et le widget de l'iPhone la savent joindre. Les proxys de
                                  confiance sont les réseaux (CIDR) dont l'en-tête X-Forwarded-For
-                                 est cru pour connaître l'adresse du vrai client ; par défaut
-                                 192.168.5.0/24 (la passerelle Colima/Lima), 127.0.0.1/32 et
-                                 ::1/128. Si le réseau de la maison est en 192.168.5.x, changez-les
+                                 est cru pour connaître l'adresse du vrai client. Aucun par défaut :
+                                 n'ajoutez que l'adresse de votre relais (--default et --none
+                                 reviennent à aucun). Les changements sont inscrits au journal
+                                 d'audit. Voir docs/acces-distant.md
   ostal-server audit [--user COMPTE] [--days N] [--data-dir DOSSIER]
                                  lit le journal d'audit (qui a fait quoi, depuis quel téléphone
                                  ou ordinateur), la ligne la plus récente d'abord : date, qui,
@@ -731,8 +732,9 @@ fn run_user(args: &[String]) -> ExitCode {
     }
 }
 
-/// `agent add|list|revoke|enable|disable` : les agents d'IA du serveur MCP (`docs/agents-ia.md`).
-/// Seule la ligne de commande écrit `agents.json`, et elle ne crée que des jetons en lecture.
+/// `network show|public-address|trusted-proxies` : les réglages réseau (`serveur/reseau.json`,
+/// `docs/acces-distant.md`). Prise en compte sans redémarrage ; chaque changement est inscrit au
+/// journal d'audit, sans autre valeur que les noms réglés.
 fn run_network(args: &[String]) -> ExitCode {
     use ostal_server::security::network as net;
     let Some((action, rest)) = args.split_first() else {
@@ -790,7 +792,7 @@ fn run_network(args: &[String]) -> ExitCode {
                 Ok(d) => d,
                 Err(e) => return fail(e),
             };
-            match net::set_public_address(&dir, address) {
+            match net::set_public_address(&dir, address, &Who::command_line()) {
                 Ok(Some(a)) => {
                     println!("Adresse publique réglée : {a}");
                     ExitCode::SUCCESS
@@ -809,7 +811,7 @@ fn run_network(args: &[String]) -> ExitCode {
                 (true, false, true) => Some(Vec::new()),
                 _ => {
                     return usage_error(
-                        "trusted-proxies attend des réseaux (192.168.5.0/24 …), ou --default, ou --none",
+                        "trusted-proxies attend des réseaux (10.0.0.0/24 …), ou --none",
                     )
                 }
             };
@@ -817,7 +819,7 @@ fn run_network(args: &[String]) -> ExitCode {
                 Ok(d) => d,
                 Err(e) => return fail(e),
             };
-            match net::set_trusted_proxies(&dir, list.as_deref()) {
+            match net::set_trusted_proxies(&dir, list.as_deref(), &Who::command_line()) {
                 Ok(done) if done.is_empty() => {
                     println!("Aucun proxy de confiance : X-Forwarded-For est toujours ignoré.");
                     ExitCode::SUCCESS
@@ -833,6 +835,8 @@ fn run_network(args: &[String]) -> ExitCode {
     }
 }
 
+/// `agent add|list|revoke|enable|disable` : les agents d'IA du serveur MCP (`docs/agents-ia.md`).
+/// Seule la ligne de commande écrit `agents.json`, et elle ne crée que des jetons en lecture.
 fn run_agent(args: &[String]) -> ExitCode {
     use ostal_server::security::agent_tokens as agents;
     let Some((action, rest)) = args.split_first() else {

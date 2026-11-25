@@ -99,6 +99,10 @@ pub enum Action {
     /// Les listes « jamais par un agent » et « sensible » ont été réécrites depuis la fenêtre
     /// d'Ostal Server (détail : `N:M`, le nombre d'appareils de chaque liste ; jamais leurs noms).
     AgentLists,
+    /// Les réglages réseau (proxys de confiance, adresse publique) ont changé, depuis la fenêtre
+    /// d'Ostal Server ou la ligne de commande. Détail : `trusted:N` (nombre de réseaux, jamais
+    /// leurs adresses), `public:set` ou `public:cleared` (jamais le nom lui-même).
+    NetworkSettings,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -853,6 +857,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::AgentSwitch if detail == "on" => "Accès des agents d'IA activé".to_string(),
         Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
         Action::AgentLists => agent_lists_text(detail),
+        Action::NetworkSettings => network_settings_text(detail),
         Action::AgentRead => agent_read_text(target, detail),
         Action::AgentOccupation => {
             let what = match detail {
@@ -914,6 +919,22 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
 }
 
 /// « Listes des agents d'IA réglées : 2 appareils « jamais », 1 « sensible » » (détail `N:M`).
+fn network_settings_text(detail: &str) -> String {
+    match detail.split_once(':') {
+        Some(("trusted", "0")) => "Réglages réseau : plus aucun proxy de confiance".to_string(),
+        Some(("trusted", n)) if n.parse::<usize>().is_ok() => {
+            let n: usize = n.parse().unwrap_or(0);
+            format!(
+                "Réglages réseau : {n} réseau{} de confiance",
+                if n > 1 { "x" } else { "" }
+            )
+        }
+        Some(("public", "set")) => "Réglages réseau : adresse publique réglée".to_string(),
+        Some(("public", "cleared")) => "Réglages réseau : adresse publique effacée".to_string(),
+        _ => "Réglages réseau modifiés".to_string(),
+    }
+}
+
 fn agent_lists_text(detail: &str) -> String {
     let count = |n: &str| n.parse::<usize>().ok();
     match detail.split_once(':') {

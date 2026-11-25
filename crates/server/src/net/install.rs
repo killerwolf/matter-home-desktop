@@ -250,7 +250,7 @@ fn page_address(origin: &str, public: Option<&PublicAddress>) -> Result<String, 
 /// L'adresse publique à écrire dans les fichiers : celle de la page (`origin`), l'adresse publique
 /// réglée ou un nom en .ts.net (`page_address`), et **celle de ce Mac** :
 /// - le navigateur envoie `Origin` avec un `POST` : elle doit être la même que `origin` ;
-/// - `tailscale serve` et le relais Caddy transmettent l'en-tête `Host` d'origine (le nom en
+/// - `tailscale serve` et le relais inverse transmettent l'en-tête `Host` d'origine (le nom en
 ///   .ts.net, ou l'adresse publique), comme le prouve le contrôle `Origin`/`Host` des WebSocket, qui
 ///   passe derrière eux. `X-Forwarded-Host` est lu aussi, au cas où. Si l'un des deux est un nom en
 ///   .ts.net ou l'adresse publique, l'adresse doit être ce nom-là ; sinon (relais qui réécrit
@@ -539,11 +539,11 @@ mod tests {
 
     #[test]
     fn the_configured_public_address_is_accepted_and_nothing_else_looks_like_it() {
-        let public = PublicAddress::parse("https://ostal.klbr.h4md1.fr").unwrap();
+        let public = PublicAddress::parse("https://maison.exemple.fr").unwrap();
         let p = Some(&public);
-        let ok = "https://ostal.klbr.h4md1.fr";
-        // Caddy garde Host et la page envoie Origin.
-        let h = headers(&[("host", "ostal.klbr.h4md1.fr"), ("origin", ok)]);
+        let ok = "https://maison.exemple.fr";
+        // Le relais garde Host et la page envoie Origin.
+        let h = headers(&[("host", "maison.exemple.fr"), ("origin", ok)]);
         assert_eq!(this_mac(&h, ok, p).unwrap(), ok);
         // Host réécrit par un relais : l'adresse validée est gardée.
         assert_eq!(
@@ -554,17 +554,17 @@ mod tests {
         assert!(this_mac(&h, ok, None).is_err());
         // Un autre nom ressemblant, ou un port, n'est pas l'adresse réglée.
         for bad in [
-            "https://evilostal.klbr.h4md1.fr",
-            "https://x.ostal.klbr.h4md1.fr",
-            "https://ostal.klbr.h4md1.fr:8443",
-            "https://autre.klbr.h4md1.fr",
+            "https://evilmaison.exemple.fr",
+            "https://x.maison.exemple.fr",
+            "https://maison.exemple.fr:8443",
+            "https://autre.exemple.fr",
         ] {
             assert!(this_mac(&headers(&[]), bad, p).is_err(), "{bad}");
         }
         // Origin d'une autre adresse, Host d'un autre nom : refusé.
         assert!(this_mac(
             &headers(&[
-                ("host", "ostal.klbr.h4md1.fr"),
+                ("host", "maison.exemple.fr"),
                 ("origin", "https://m.tailnet-1.ts.net")
             ]),
             ok,
@@ -578,7 +578,7 @@ mod tests {
             this_mac(&headers(&[("host", "m.tailnet-1.ts.net")]), ts, p).unwrap(),
             ts
         );
-        assert!(this_mac(&headers(&[("host", "ostal.klbr.h4md1.fr")]), ts, p).is_err());
+        assert!(this_mac(&headers(&[("host", "maison.exemple.fr")]), ts, p).is_err());
     }
 
     #[test]

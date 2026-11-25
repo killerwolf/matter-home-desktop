@@ -11,7 +11,7 @@ pub enum NetError {
     BadAddress(String),
     /// Le certificat présenté n'est pas celui qui a été épinglé. Refus, sans contournement.
     CertificateChanged { expected: String, found: String },
-    /// Nom de domaine public sur le port 443 (`*.ts.net`, relais Caddy…) : le certificat public
+    /// Nom de domaine public sur le port 443 (`*.ts.net`, relais inverse…) : le certificat public
     /// présenté n'est pas valable (autorité inconnue, nom, dates). Refus, sans contournement.
     PublicCertificateRejected(String),
     /// Serveur introuvable, connexion refusée ou coupée, handshake TLS raté…
@@ -54,7 +54,7 @@ impl NetError {
             NetError::PublicCertificateRejected(_) => "Le certificat HTTPS de cette adresse \
                 n'est pas reconnu : il doit être délivré par une autorité publique, pour ce nom \
                 exact, et être encore valable. Vérifiez le nom saisi et que le relais \
-                (« tailscale serve », Caddy…) fonctionne, ou utilisez l'adresse directe du \
+                (« tailscale serve », reverse proxy…) fonctionne, ou utilisez l'adresse directe du \
                 serveur (IP ou nom .local, port 8443)."
                 .into(),
             NetError::Unreachable(why) => format!("Serveur injoignable : {why}"),

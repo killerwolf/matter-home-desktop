@@ -126,7 +126,6 @@ impl App {
         }
     }
 
-    /// Une valeur à recopier ailleurs, avec son bouton « Copier ».
     /// Relit l'adresse publique réglée (`serveur/reseau.json`) si on ne l'a pas déjà lue.
     fn refresh_public(&mut self, st: &State) {
         if self.public_loaded {
@@ -144,7 +143,11 @@ impl App {
     /// relit tout seul.
     fn save_public(&mut self, st: &State) {
         let result = ostal_server::security::server_dir(&st.data_dir).and_then(|dir| {
-            ostal_server::security::network::set_public_address(&dir, Some(&self.public_input))
+            ostal_server::security::network::set_public_address(
+                &dir,
+                Some(&self.public_input),
+                &ostal_server::audit::Who::server_app(),
+            )
         });
         match result {
             Ok(Some(address)) => {
@@ -165,11 +168,11 @@ impl App {
         self.refresh_public(st);
         let p = theme::palette(ui);
         widgets::section(ui, "Adresse publique", |ui| {
-            ui.label("C'est le nom (par exemple https://ostal.exemple.fr) que l'iPhone et les autres appareils utilisent pour joindre la maison quand ils n'y sont pas, si vous avez installé un relais avec un certificat officiel devant ce Mac. Laissez la case vide si vous passez par l'adresse Tailscale habituelle.");
+            ui.label("C'est le nom (par exemple https://maison.exemple.fr) que l'iPhone et les autres appareils utilisent pour joindre la maison quand ils n'y sont pas, si vous avez installé un relais avec un certificat officiel devant ce Mac. Laissez la case vide si vous passez par l'adresse Tailscale habituelle.");
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.public_input)
-                    .hint_text("https://ostal.exemple.fr")
+                    .hint_text("https://maison.exemple.fr")
                     .desired_width(320.0),
             );
             ui.horizontal(|ui| {
@@ -188,6 +191,7 @@ impl App {
         });
     }
 
+    /// Une valeur à recopier ailleurs, avec son bouton « Copier ».
     fn copy_field(&mut self, ui: &mut egui::Ui, key: &'static str, value: &str) {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -207,7 +207,7 @@ réseau local ; seul le client change d'adresse.
 ne s'en soucie pas : il compare l'**empreinte** du certificat, la même par n'importe quelle
 adresse, donc `mon-mac.tailnet-xxxx.ts.net:8443` fonctionne. Seule exception : un **nom de
 domaine sur le port 443** (l'adresse publiée par l'accès à distance, `https://mon-mac.tailnet-xxxx.ts.net/`,
-ou celle d'un relais, `https://ostal.exemple.fr/`) présente un certificat Let's Encrypt ; le client le
+ou celle d'un relais, `https://maison.exemple.fr/`) présente un certificat Let's Encrypt ; le client le
 valide alors par la chaîne de confiance publique, comme un navigateur (nom et dates contrôlés),
 **sans épinglage** : il ne vérifie plus que le serveur est bien le vôtre par son empreinte, seulement
 que le nom est le bon. Vérifiez donc le nom. Une IP ou un nom `.local` restent épinglés sur

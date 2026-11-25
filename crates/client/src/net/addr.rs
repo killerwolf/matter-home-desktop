@@ -144,45 +144,7 @@ impl ServerAddr {
     }
 }
 
-/// Fins de nom qui ne désignent jamais un domaine public (réseau local, usages réservés).
-const LOCAL_SUFFIXES: &[&str] = &[
-    "local",
-    "localhost",
-    "lan",
-    "internal",
-    "intranet",
-    "corp",
-    "home",
-    "private",
-    "test",
-    "invalid",
-    "arpa",
-];
-
-/// Vrai pour un nom de domaine qui peut avoir un certificat public : pas une IP, au moins deux
-/// étiquettes valables, une fin de nom qui n'est ni numérique ni réservée au réseau local
-/// (`.local`, `.lan`, `.internal`…). Un nom sans point (`mac-mini`) n'en est pas un.
-pub fn is_public_name(host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        return false;
-    }
-    let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() < 2 {
-        return false;
-    }
-    let valid = |l: &&str| {
-        !l.is_empty()
-            && l.len() <= 63
-            && !l.starts_with('-')
-            && !l.ends_with('-')
-            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-    };
-    let tld = labels[labels.len() - 1];
-    labels.iter().all(valid)
-        && !tld.chars().all(|c| c.is_ascii_digit())
-        && !LOCAL_SUFFIXES.contains(&tld)
-}
+pub use protocol::domain::is_public_name;
 
 #[cfg(test)]
 mod tests {
@@ -269,11 +231,11 @@ mod tests {
     #[test]
     fn https_without_a_port_is_443_for_any_public_name_only() {
         let port = |t: &str| ServerAddr::parse(t).unwrap().port;
-        assert_eq!(port("https://ostal.klbr.h4md1.fr"), 443);
-        assert_eq!(port("https://ostal.klbr.h4md1.fr/"), 443);
+        assert_eq!(port("https://maison.exemple.fr"), 443);
+        assert_eq!(port("https://maison.exemple.fr/"), 443);
         assert_eq!(port("https://mon-mac.tailnet-xxxx.ts.net"), 443);
         // Sans le schéma : toujours l'accès direct.
-        assert_eq!(port("ostal.klbr.h4md1.fr"), 8443);
+        assert_eq!(port("maison.exemple.fr"), 8443);
         // Ni IP, ni nom local, ni nom sans point : 8443.
         assert_eq!(port("https://192.168.1.20"), 8443);
         assert_eq!(port("https://[fe80::1]"), 8443);
@@ -281,20 +243,20 @@ mod tests {
         assert_eq!(port("https://mac-mini"), 8443);
         assert_eq!(port("https://nas.lan"), 8443);
         // Un port écrit est toujours respecté.
-        assert_eq!(port("https://ostal.klbr.h4md1.fr:8443"), 8443);
-        assert_eq!(port("ostal.klbr.h4md1.fr:443"), 443);
+        assert_eq!(port("https://maison.exemple.fr:8443"), 8443);
+        assert_eq!(port("maison.exemple.fr:443"), 443);
     }
 
     #[test]
     fn only_a_public_name_on_443_is_judged_by_the_public_chain() {
         let public = |t: &str| ServerAddr::parse(t).unwrap().is_public_chain();
-        assert!(public("https://ostal.klbr.h4md1.fr"));
-        assert!(public("ostal.klbr.h4md1.fr:443"));
+        assert!(public("https://maison.exemple.fr"));
+        assert!(public("maison.exemple.fr:443"));
         assert!(public("https://mon-mac.tailnet-xxxx.ts.net/"));
         assert!(public("EXEMPLE.FR:443"));
         // Autre port : épinglé sur l'empreinte.
-        assert!(!public("ostal.klbr.h4md1.fr"));
-        assert!(!public("ostal.klbr.h4md1.fr:8443"));
+        assert!(!public("maison.exemple.fr"));
+        assert!(!public("maison.exemple.fr:8443"));
         // IP, .local et consorts : épinglés, même sur 443.
         assert!(!public("192.168.1.20:443"));
         assert!(!public("100.64.0.1:443"));
@@ -310,7 +272,7 @@ mod tests {
     fn what_counts_as_a_public_name() {
         for yes in [
             "a.fr",
-            "ostal.klbr.h4md1.fr",
+            "maison.exemple.fr",
             "xn--bcher-kva.example",
             "A-b.C-d.io",
         ] {

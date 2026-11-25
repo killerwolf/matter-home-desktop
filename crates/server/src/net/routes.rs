@@ -399,7 +399,7 @@ async fn version(
 
 /// D'où vient la requête : par Tailscale (adresse du tailnet, `tailscale serve` qui relaie depuis
 /// cette machine en laissant son nom `….ts.net` et ses en-têtes d'identité, ou l'adresse publique
-/// réglée : un relais comme Caddy l'atteint depuis le tailnet), sinon sur place. `client` est
+/// réglée : un relais inverse l'atteint depuis le tailnet), sinon sur place. `client` est
 /// l'adresse décidée par `security::network::client_ip` (derrière un proxy de confiance, celle de
 /// l'`X-Forwarded-For`). Une indication pour s'y retrouver, jamais une décision de sécurité.
 pub(super) fn via_of(state: &AppState, client: std::net::IpAddr, headers: &HeaderMap) -> Via {
@@ -520,9 +520,9 @@ async fn login(
                 max_expires_at: session.max_expires_at,
                 protocol_version: version,
                 server_version: SERVER_VERSION.to_string(),
-                // Une adresse publique réglée remplace les adresses du tailnet : c'est par elle que
-                // la maison se joint de loin (certificat officiel, même pour Raccourcis).
-                tailnet_urls: if version >= 4 && public_url.is_none() {
+                // Les adresses du tailnet sont annoncées comme avant, adresse publique réglée ou non :
+                // le client range l'adresse publique **après** elles (voir `merge_public_url`).
+                tailnet_urls: if version >= 4 {
                     super::tailnet_urls(state.listen)
                 } else {
                     Vec::new()

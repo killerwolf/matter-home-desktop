@@ -166,10 +166,8 @@ fn stalled_request_body_times_out_but_slow_progress_does_not() {
 fn connections_per_address_are_capped() {
     use tokio::io::AsyncReadExt;
     let dir = temp_dir("perip");
-    // Le pair des essais (127.0.0.1) est un proxy de confiance par défaut, au plafond plus large
-    // (voir le test suivant) : ici aucun proxy de confiance, c'est le plafond d'une adresse ordinaire.
-    std::fs::create_dir_all(dir.join("serveur")).unwrap();
-    std::fs::write(dir.join("serveur/reseau.json"), r#"{"trusted_proxies":[]}"#).unwrap();
+    // Aucun proxy de confiance par défaut : le pair des essais (127.0.0.1) a le plafond d'une
+    // adresse ordinaire (le test suivant le déclare proxy de confiance, au plafond plus large).
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
@@ -208,12 +206,18 @@ fn connections_per_address_are_capped() {
     });
 }
 
-/// Un proxy de confiance (par défaut la boucle locale, ici le pair des essais) relaie tous ses
+/// Un proxy de confiance (ici la boucle locale, le pair des essais, réglée dans `reseau.json`) relaie tous ses
 /// clients : son plafond est de 64 connexions et non 16, et la 65e est fermée.
 #[test]
 fn a_trusted_proxy_has_a_wider_connection_cap() {
     use tokio::io::AsyncReadExt;
     let dir = temp_dir("perip-proxy");
+    std::fs::create_dir_all(dir.join("serveur")).unwrap();
+    std::fs::write(
+        dir.join("serveur/reseau.json"),
+        r#"{"trusted_proxies":["127.0.0.1/32"]}"#,
+    )
+    .unwrap();
     let server = Server::start(&dir);
     runtime().block_on(async {
         let mut held = Vec::new();

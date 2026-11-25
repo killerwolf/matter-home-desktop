@@ -1243,13 +1243,13 @@ mod tests {
     #[test]
     fn the_announced_public_address_is_kept_only_when_it_is_safe() {
         let known = vec!["https://100.64.0.5:8443".to_string()];
-        let url = "https://ostal.klbr.h4md1.fr";
+        let url = "https://maison.exemple.fr";
         let kept = merge_public_url(&known, Some(url), true);
         assert_eq!(
             kept,
             vec![
                 known[0].clone(),
-                "https://ostal.klbr.h4md1.fr:443".to_string()
+                "https://maison.exemple.fr:443".to_string()
             ]
         );
         // Deux fois la même : une seule entrée ; sans annonce : rien ne change.
@@ -1259,15 +1259,15 @@ mod tests {
         assert_eq!(merge_public_url(&known, Some(url), false), known);
         // Pas de schéma, IP, .local, autre port, chemin, http : ignorés.
         for bad in [
-            "ostal.klbr.h4md1.fr",
-            "ostal.klbr.h4md1.fr:443",
+            "maison.exemple.fr",
+            "maison.exemple.fr:443",
             "https://192.168.1.20",
             "https://192.168.1.20:443",
             "https://mac.local",
             "https://mac.local:443",
-            "https://ostal.klbr.h4md1.fr:8443",
-            "https://ostal.klbr.h4md1.fr/chemin",
-            "http://ostal.klbr.h4md1.fr",
+            "https://maison.exemple.fr:8443",
+            "https://maison.exemple.fr/chemin",
+            "http://maison.exemple.fr",
             "https://",
             "",
         ] {
@@ -1288,7 +1288,7 @@ mod tests {
     #[test]
     fn a_public_name_is_remote_and_the_primary_stays_first() {
         let primary = ServerAddr::parse("https://192.168.1.20:8443").unwrap();
-        let alts = vec!["https://ostal.klbr.h4md1.fr".to_string()];
+        let alts = vec!["https://maison.exemple.fr".to_string()];
         let mut creds = Creds::new(primary.clone(), &alts, "AA".into(), "t".into());
         assert_eq!(creds.candidates()[0], primary);
         assert!(!creds.is_remote());
@@ -1296,7 +1296,7 @@ mod tests {
         assert!(creds.is_remote());
         // Un nom public en adresse principale : à distance aussi (derrière un relais).
         let direct = Creds::new(
-            ServerAddr::parse("https://ostal.klbr.h4md1.fr").unwrap(),
+            ServerAddr::parse("https://maison.exemple.fr").unwrap(),
             &[],
             "AA".into(),
             "t".into(),

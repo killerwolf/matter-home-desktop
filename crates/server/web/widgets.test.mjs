@@ -18,20 +18,20 @@ test("seule l'adresse en .ts.net convient ; sinon, un conseil", () => {
 });
 
 test("l'adresse publique réglée sur le serveur convient aussi, exactement et seulement elle", () => {
-  const pub = "https://ostal.klbr.h4md1.fr";
+  const pub = "https://maison.exemple.fr";
   const ok = originInfo({ origin: pub }, pub);
   assert.equal(ok.usable, true);
   assert.equal(ok.warning, "");
   // Casse ignorée ; le .ts.net marche toujours à côté.
-  assert.equal(originInfo({ origin: "https://OSTAL.klbr.h4md1.fr" }, pub).usable, true);
+  assert.equal(originInfo({ origin: "https://MAISON.exemple.fr" }, pub).usable, true);
   assert.equal(originInfo({ origin: "https://mac.tailnet-1234.ts.net" }, pub).usable, true);
   // Sans adresse réglée, ce nom ne convient pas ; un nom voisin, un port, un autre schéma non plus.
   assert.equal(originInfo({ origin: pub }, undefined).usable, false);
   assert.equal(originInfo({ origin: pub }, "").usable, false);
-  for (const origin of ["https://evilostal.klbr.h4md1.fr", "https://x.ostal.klbr.h4md1.fr", `${pub}:8443`, "http://ostal.klbr.h4md1.fr", "https://autre.klbr.h4md1.fr"]) {
+  for (const origin of ["https://evilmaison.exemple.fr", "https://x.maison.exemple.fr", `${pub}:8443`, "http://maison.exemple.fr", "https://autre.exemple.fr"]) {
     const info = originInfo({ origin }, pub);
     assert.equal(info.usable, false, origin);
-    assert.match(info.warning, /ostal\.klbr\.h4md1\.fr/);
+    assert.match(info.warning, /maison\.exemple\.fr/);
   }
   // Une valeur du serveur qui n'est pas un simple https://nom ne rend rien utilisable.
   assert.equal(originInfo({ origin: "https://a.fr/x" }, "https://a.fr/x").usable, false);

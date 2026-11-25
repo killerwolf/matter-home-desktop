@@ -2,27 +2,23 @@
 //!
 //! - les **proxys de confiance** : des réseaux (CIDR) dont le serveur croit l'en-tête
 //!   `X-Forwarded-For` pour savoir d'où vient vraiment une requête (voir [`client_ip`]) ;
-//! - l'**adresse publique** : le nom en https (`https://ostal.exemple.fr`) sous lequel la maison se
-//!   joint de loin, derrière un relais (Caddy…) qui présente un certificat officiel. C'est celle que
+//! - l'**adresse publique** : le nom en https (`https://maison.exemple.fr`) sous lequel la maison se
+//!   joint de loin, derrière un reverse proxy qui présente un certificat officiel. C'est celle que
 //!   les Raccourcis et le widget de l'iPhone, qui refusent un certificat auto-signé, savent joindre.
 //!
-//! # Proxys de confiance : le défaut
+//! # Proxys de confiance : aucun par défaut
 //!
-//! Par défaut : `192.168.5.0/24`, `127.0.0.1/32` et `::1/128`.
-//!
-//! - `192.168.5.0/24` est le réseau privé de la machine virtuelle Colima/Lima : un relais qui tourne
-//!   dans Docker sur ce Mac (Caddy) joint le serveur par la passerelle de cette machine virtuelle,
-//!   donc le serveur voit `192.168.5.x` et non l'adresse réelle du client. Ce réseau n'existe que
-//!   dans le Mac : aucun autre appareil ne peut en émettre une connexion.
-//! - la boucle locale (`127.0.0.1`, `::1`) est celle d'un relais lancé directement sur le Mac
-//!   (`tailscale serve`). Un programme du Mac qui y écrit un `X-Forwarded-For` ne gagne rien qu'il
-//!   ne puisse déjà faire : il est sur la machine.
-//!
-//! **Attention** : si le réseau de la maison est lui-même en `192.168.5.x`, n'importe quel appareil
-//! de la maison pourrait écrire un faux `X-Forwarded-For` et se faire passer pour une autre
-//! adresse (échapper au limiteur d'essais de connexion, brouiller le journal). Il faut alors
-//! changer ce réglage (`ostal-server network trusted-proxies …`) pour y mettre la vraie adresse du
-//! relais.
+//! La liste est **vide** tant qu'on ne la règle pas : l'`X-Forwarded-For` est alors toujours
+//! ignoré, exactement comme avant l'existence de ce réglage. **Même la boucle locale
+//! (`127.0.0.1`, `::1`) n'est pas de confiance par défaut** : un relais lancé sur la machine
+//! (`tailscale serve`, un reverse proxy local) y est vu comme `127.0.0.1`, mais en lui faisant
+//! confiance d'office on croirait aussi n'importe quel programme local qui écrit un faux
+//! `X-Forwarded-For`, et le comportement d'une installation existante changerait sans que personne
+//! l'ait demandé. Qui a un relais ajoute son adresse
+//! (`ostal-server network trusted-proxies 127.0.0.1/32`, ou le réseau du relais) ; n'ajoutez
+//! **que** l'adresse du relais : tout appareil qui peut joindre le serveur depuis un réseau de cette
+//! liste peut écrire un faux `X-Forwarded-For`, échapper au limiteur d'essais de connexion et
+//! brouiller le journal.
 //!
 //! # Lecture et écriture
 //!
@@ -41,12 +37,10 @@ use axum::http::{header, HeaderMap};
 use serde::{Deserialize, Serialize};
 
 use super::write_secret;
+use crate::audit::{Action, AuditLog, Entry, Who};
 
 /// Le fichier des réglages réseau.
 pub const FILE: &str = "reseau.json";
-
-/// Les proxys de confiance quand rien n'est réglé (voir l'en-tête du module).
-pub const DEFAULT_TRUSTED_PROXIES: [&str; 3] = ["192.168.5.0/24", "127.0.0.1/32", "::1/128"];
 
 /// Au plus ce nombre de réseaux de confiance.
 const MAX_PROXIES: usize = 32;
@@ -63,7 +57,7 @@ pub struct Cidr {
 }
 
 impl Cidr {
-    /// `192.168.5.0/24`, `::1/128`, ou une adresse seule (`10.0.0.1`, comme `/32`). Les bits
+    /// `10.7.7.0/24`, `::1/128`, ou une adresse seule (`10.0.0.1`, comme `/32`). Les bits
     /// d'hôte sont mis à zéro. Un préfixe trop long ou une adresse illisible est refusé.
     pub fn parse(text: &str) -> Result<Cidr> {
         let text = text.trim();
@@ -72,7 +66,7 @@ impl Cidr {
             None => (text, None),
         };
         let ip: IpAddr = addr.parse().map_err(|_| {
-            anyhow::anyhow!("« {text} » n'est pas un réseau (exemple : 192.168.5.0/24)")
+            anyhow::anyhow!("« {text} » n'est pas un réseau (exemple : 10.7.7.0/24)")
         })?;
         // Une IPv4 écrite en IPv6 (`::ffff:a.b.c.d`) est la même machine : on la range en IPv4.
         let ip = ip.to_canonical();
@@ -158,8 +152,9 @@ impl TrustedProxies {
 }
 
 impl Default for TrustedProxies {
+    /// Aucun proxy de confiance (voir l'en-tête du module).
     fn default() -> Self {
-        Self::parse_list(&DEFAULT_TRUSTED_PROXIES).expect("défaut valide")
+        Self::none()
     }
 }
 
@@ -247,7 +242,7 @@ pub struct PublicAddress {
 }
 
 impl PublicAddress {
-    /// `https://ostal.exemple.fr` (un `/` final est toléré). Un nom de domaine seulement : ni
+    /// `https://maison.exemple.fr` (un `/` final est toléré). Un nom de domaine seulement : ni
     /// adresse IP, ni port, ni chemin, ni identifiant, ni `http://`.
     pub fn parse(text: &str) -> Result<PublicAddress> {
         let bad = |why: &str| anyhow::anyhow!("adresse publique refusée : {why}");
@@ -258,7 +253,7 @@ impl PublicAddress {
         let host = rest.trim_end_matches('/').to_ascii_lowercase();
         if host.contains(['/', '?', '#', '@', ':', ' ']) {
             return Err(bad(
-                "écrivez seulement le nom, sans chemin ni port (par exemple https://ostal.exemple.fr)",
+                "écrivez seulement le nom, sans chemin ni port (par exemple https://maison.exemple.fr)",
             ));
         }
         let well_formed = !host.is_empty()
@@ -274,6 +269,12 @@ impl PublicAddress {
         }
         if host.parse::<IpAddr>().is_ok() || host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
             return Err(bad("une adresse IP n'a pas de certificat officiel"));
+        }
+        // Mêmes fins de nom refusées que dans l'app (`.local`, `.lan`, `.internal`…).
+        if !protocol::domain::is_public_name(&host) {
+            return Err(bad(
+                "ce nom est réservé au réseau local (.local, .lan, .internal…) : il ne peut pas avoir de certificat officiel",
+            ));
         }
         Ok(PublicAddress {
             origin: format!("https://{host}"),
@@ -291,8 +292,8 @@ impl PublicAddress {
     }
 
     /// Cet en-tête `Host` est-il celui de l'adresse publique, ou un nom qui se termine comme elle
-    /// (`ostal.exemple.fr`, `x.ostal.exemple.fr`, avec ou sans port) ? La frontière est un point :
-    /// `evilostal.exemple.fr` n'en est pas.
+    /// (`maison.exemple.fr`, `x.maison.exemple.fr`, avec ou sans port) ? La frontière est un point :
+    /// `evilmaison.exemple.fr` n'en est pas.
     pub fn matches_host(&self, host_header: &str) -> bool {
         let host = host_name(host_header);
         host == self.host || host.ends_with(&format!(".{}", self.host))
@@ -334,7 +335,7 @@ pub struct Settings {
 struct File {
     #[serde(default)]
     version: u32,
-    /// Absent : le défaut. Présent (même vide) : exactement cette liste.
+    /// Absent : aucun proxy. Présent (même vide) : exactement cette liste.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trusted_proxies: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,26 +418,56 @@ fn save(server_dir: &Path, mut file: File) -> Result<()> {
 }
 
 /// Règle l'adresse publique (`None` : l'efface). Rend l'adresse retenue, sous sa forme normale.
-pub fn set_public_address(server_dir: &Path, address: Option<&str>) -> Result<Option<String>> {
+/// Un changement est inscrit au journal d'audit (qui l'a fait, jamais le nom lui-même).
+pub fn set_public_address(
+    server_dir: &Path,
+    address: Option<&str>,
+    who: &Who,
+) -> Result<Option<String>> {
     let parsed = match address.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => Some(PublicAddress::parse(a)?),
         None => None,
     };
     let mut file = load_for_write(server_dir)?;
-    file.public_address = parsed.as_ref().map(|p| p.origin().to_string());
+    let new = parsed.as_ref().map(|p| p.origin().to_string());
+    let changed = file.public_address.as_deref().filter(|a| !a.is_empty()) != new.as_deref();
+    file.public_address = new.clone();
     save(server_dir, file)?;
-    Ok(parsed.map(|p| p.origin().to_string()))
+    if changed {
+        let detail = if new.is_some() {
+            "public:set"
+        } else {
+            "public:cleared"
+        };
+        AuditLog::open(server_dir).record(Entry::new(Action::NetworkSettings, who).detail(detail));
+    }
+    Ok(new)
 }
 
-/// Règle les proxys de confiance (`None` : retour au défaut ; liste vide : aucun).
-pub fn set_trusted_proxies(server_dir: &Path, list: Option<&[String]>) -> Result<Vec<String>> {
+/// Règle les proxys de confiance (`None` : retour au défaut, soit aucun ; liste vide : aucun).
+/// Un changement est inscrit au journal d'audit (le nombre de réseaux, jamais leurs adresses).
+pub fn set_trusted_proxies(
+    server_dir: &Path,
+    list: Option<&[String]>,
+    who: &Who,
+) -> Result<Vec<String>> {
     let parsed = match list {
         Some(list) => TrustedProxies::parse_list(list)?,
         None => TrustedProxies::default(),
     };
     let mut file = load_for_write(server_dir)?;
+    let before = match &file.trusted_proxies {
+        Some(l) => TrustedProxies::parse_list(l)?.list(),
+        None => TrustedProxies::default().list(),
+    };
     file.trusted_proxies = parsed_list(list, &parsed);
     save(server_dir, file)?;
+    if before != parsed.list() {
+        AuditLog::open(server_dir).record(
+            Entry::new(Action::NetworkSettings, who)
+                .detail(format!("trusted:{}", parsed.list().len())),
+        );
+    }
     Ok(parsed.list())
 }
 
@@ -520,6 +551,11 @@ mod tests {
         s.parse().unwrap()
     }
 
+    /// Un relais configuré : le réseau 10.7.7.0/24 et la boucle locale.
+    fn relay() -> TrustedProxies {
+        TrustedProxies::parse_list(&["10.7.7.0/24", "127.0.0.1/32", "::1/128"]).unwrap()
+    }
+
     fn headers(lines: &[&str]) -> HeaderMap {
         let mut h = HeaderMap::new();
         for l in lines {
@@ -530,12 +566,12 @@ mod tests {
 
     #[test]
     fn cidr_parses_masks_and_matches() {
-        let c = Cidr::parse("192.168.5.77/24").unwrap();
-        assert_eq!(c.to_string(), "192.168.5.0/24");
-        assert!(c.contains(ip("192.168.5.2")));
+        let c = Cidr::parse("10.7.7.77/24").unwrap();
+        assert_eq!(c.to_string(), "10.7.7.0/24");
+        assert!(c.contains(ip("10.7.7.2")));
         assert!(!c.contains(ip("192.168.6.2")));
         // IPv4 vue sur une socket IPv6.
-        assert!(c.contains(ip("::ffff:192.168.5.2")));
+        assert!(c.contains(ip("::ffff:10.7.7.2")));
         assert!(Cidr::parse("10.0.0.1").unwrap().contains(ip("10.0.0.1")));
         assert!(!Cidr::parse("10.0.0.1").unwrap().contains(ip("10.0.0.2")));
         assert!(Cidr::parse("0.0.0.0/0").unwrap().contains(ip("8.8.8.8")));
@@ -558,10 +594,30 @@ mod tests {
     }
 
     #[test]
-    fn the_default_trusts_the_colima_gateway_and_loopback_only() {
+    fn the_default_trusts_nobody_not_even_the_loopback() {
         let t = TrustedProxies::default();
-        assert_eq!(t.list(), ["192.168.5.0/24", "127.0.0.1/32", "::1/128"]);
-        assert!(t.contains(ip("192.168.5.2")));
+        assert!(t.list().is_empty());
+        assert_eq!(t, TrustedProxies::none());
+        for peer in [
+            "127.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "10.7.7.2",
+            "192.168.1.20",
+        ] {
+            assert!(!t.contains(ip(peer)), "{peer}");
+            // Sans proxy de confiance, X-Forwarded-For est ignoré : le pair est le client.
+            assert_eq!(
+                client_ip(ip(peer), &headers(&["100.101.102.103"]), &t),
+                ip(peer).to_canonical()
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_relay_is_trusted() {
+        let t = relay();
+        assert!(t.contains(ip("10.7.7.2")));
         assert!(t.contains(ip("127.0.0.1")));
         assert!(t.contains(ip("::1")));
         assert!(t.contains(ip("::ffff:127.0.0.1")));
@@ -571,9 +627,9 @@ mod tests {
 
     #[test]
     fn a_trusted_peer_gives_the_forwarded_client() {
-        let t = TrustedProxies::default();
+        let t = relay();
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["100.101.102.103"]), &t),
+            client_ip(ip("10.7.7.2"), &headers(&["100.101.102.103"]), &t),
             ip("100.101.102.103")
         );
         assert_eq!(
@@ -582,26 +638,26 @@ mod tests {
         );
         assert_eq!(
             client_ip(
-                ip("::ffff:192.168.5.2"),
+                ip("::ffff:10.7.7.2"),
                 &headers(&["[fd7a:115c:a1e0::1]"]),
                 &t
             ),
             ip("fd7a:115c:a1e0::1")
         );
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["100.64.0.9:51000"]), &t),
+            client_ip(ip("10.7.7.2"), &headers(&["100.64.0.9:51000"]), &t),
             ip("100.64.0.9")
         );
         // Pas d'en-tête : le pair.
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &HeaderMap::new(), &t),
-            ip("192.168.5.2")
+            client_ip(ip("10.7.7.2"), &HeaderMap::new(), &t),
+            ip("10.7.7.2")
         );
     }
 
     #[test]
     fn an_untrusted_peer_cannot_forge_a_client() {
-        let t = TrustedProxies::default();
+        let t = relay();
         // Un appareil de la maison qui prétend venir d'ailleurs : ignoré.
         assert_eq!(
             client_ip(ip("192.168.1.20"), &headers(&["100.64.0.1"]), &t),
@@ -615,7 +671,7 @@ mod tests {
             ),
             ip("203.0.113.9")
         );
-        // Sans aucun proxy de confiance, même la boucle locale est crue sur parole : elle ne l'est pas.
+        // Sans aucun proxy de confiance, même la boucle locale n'est pas crue sur parole.
         let none = TrustedProxies::none();
         assert_eq!(
             client_ip(ip("127.0.0.1"), &headers(&["100.64.0.1"]), &none),
@@ -625,52 +681,52 @@ mod tests {
 
     #[test]
     fn several_values_are_read_from_the_right_and_the_left_is_never_trusted() {
-        let t = TrustedProxies::default();
+        let t = relay();
         // Le client a ajouté « 1.1.1.1 » ; le relais a ajouté la vraie adresse à droite.
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["1.1.1.1, 100.64.0.7"]), &t),
+            client_ip(ip("10.7.7.2"), &headers(&["1.1.1.1, 100.64.0.7"]), &t),
             ip("100.64.0.7")
         );
         // Deux lignes d'en-tête : la dernière est celle du relais.
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["1.1.1.1", "100.64.0.7"]), &t),
+            client_ip(ip("10.7.7.2"), &headers(&["1.1.1.1", "100.64.0.7"]), &t),
             ip("100.64.0.7")
         );
         // Un autre proxy de confiance à droite est sauté.
         assert_eq!(
             client_ip(
-                ip("192.168.5.2"),
-                &headers(&["1.1.1.1, 100.64.0.7, 192.168.5.9"]),
+                ip("10.7.7.2"),
+                &headers(&["1.1.1.1, 100.64.0.7, 10.7.7.9"]),
                 &t
             ),
             ip("100.64.0.7")
         );
         // Que des proxys : le pair.
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["192.168.5.9, 127.0.0.1"]), &t),
-            ip("192.168.5.2")
+            client_ip(ip("10.7.7.2"), &headers(&["10.7.7.9, 127.0.0.1"]), &t),
+            ip("10.7.7.2")
         );
     }
 
     #[test]
     fn an_unreadable_value_stops_the_walk() {
-        let t = TrustedProxies::default();
+        let t = relay();
         // La valeur de droite est illisible : on ne remonte pas vers la gauche (forgeable).
         assert_eq!(
             client_ip(
-                ip("192.168.5.2"),
+                ip("10.7.7.2"),
                 &headers(&["100.64.0.1, n'importe quoi"]),
                 &t
             ),
-            ip("192.168.5.2")
+            ip("10.7.7.2")
         );
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["unknown"]), &t),
-            ip("192.168.5.2")
+            client_ip(ip("10.7.7.2"), &headers(&["unknown"]), &t),
+            ip("10.7.7.2")
         );
         // Une virgule en trop n'est pas une valeur.
         assert_eq!(
-            client_ip(ip("192.168.5.2"), &headers(&["100.64.0.1,"]), &t),
+            client_ip(ip("10.7.7.2"), &headers(&["100.64.0.1,"]), &t),
             ip("100.64.0.1")
         );
         // Un en-tête qui n'est pas du texte est ignoré.
@@ -679,28 +735,42 @@ mod tests {
             "x-forwarded-for",
             HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
         );
-        assert_eq!(client_ip(ip("192.168.5.2"), &h, &t), ip("192.168.5.2"));
+        assert_eq!(client_ip(ip("10.7.7.2"), &h, &t), ip("10.7.7.2"));
     }
 
     #[test]
     fn public_address_is_a_bare_https_name() {
-        let a = PublicAddress::parse("  https://Ostal.Klbr.H4md1.fr/ ").unwrap();
-        assert_eq!(a.origin(), "https://ostal.klbr.h4md1.fr");
+        let a = PublicAddress::parse("  https://Maison.Exemple.Fr/ ").unwrap();
+        assert_eq!(a.origin(), "https://maison.exemple.fr");
         for bad in [
             "",
-            "ostal.klbr.h4md1.fr",
-            "http://ostal.klbr.h4md1.fr",
+            "maison.exemple.fr",
+            "http://maison.exemple.fr",
             "https://",
-            "https://ostal.klbr.h4md1.fr/app/",
-            "https://ostal.klbr.h4md1.fr:8443",
-            "https://user@ostal.klbr.h4md1.fr",
-            "https://ostal.klbr.h4md1.fr?x=1",
+            "https://maison.exemple.fr/app/",
+            "https://maison.exemple.fr:8443",
+            "https://user@maison.exemple.fr",
+            "https://maison.exemple.fr?x=1",
             "https://localhost",
             "https://100.101.102.103",
             "https://192.168.1.2",
             "https://-a.b.fr",
             "https://a..fr",
             "https://exemple.fr\"<",
+            // Les mêmes fins de nom que l'app refuse : réseau local et usages réservés.
+            "https://nas.local",
+            "https://mac.lan",
+            "https://mac.internal",
+            "https://mac.home.arpa",
+            "https://maison.corp",
+            "https://maison.test",
+            "https://maison.intranet",
+            "https://maison.localhost",
+            "https://maison.private",
+            "https://maison.invalid",
+            "https://maison.home",
+            "https://maison.123",
+            "https://mac",
         ] {
             assert!(PublicAddress::parse(bad).is_err(), "{bad}");
         }
@@ -708,15 +778,19 @@ mod tests {
 
     #[test]
     fn host_matching_stops_at_a_label_boundary() {
-        let a = PublicAddress::parse("https://ostal.klbr.h4md1.fr").unwrap();
-        assert!(a.matches_host("ostal.klbr.h4md1.fr"));
-        assert!(a.matches_host("OSTAL.klbr.h4md1.fr:443"));
-        assert!(a.matches_host("x.ostal.klbr.h4md1.fr"));
-        assert!(!a.matches_host("evilostal.klbr.h4md1.fr"));
-        assert!(!a.matches_host("ostal.klbr.h4md1.fr.evil.com"));
-        assert!(!a.matches_host("klbr.h4md1.fr"));
+        let a = PublicAddress::parse("https://maison.exemple.fr").unwrap();
+        assert!(a.matches_host("maison.exemple.fr"));
+        assert!(a.matches_host("MAISON.exemple.fr:443"));
+        assert!(a.matches_host("x.maison.exemple.fr"));
+        assert!(!a.matches_host("evilmaison.exemple.fr"));
+        assert!(!a.matches_host("maison.exemple.fr.evil.com"));
+        assert!(!a.matches_host("exemple.fr"));
         assert!(!a.matches_host("mac.tailnet-1.ts.net"));
         assert!(!a.matches_host(""));
+    }
+
+    fn who() -> Who {
+        Who::command_line()
     }
 
     fn temp(tag: &str) -> PathBuf {
@@ -729,6 +803,7 @@ mod tests {
     #[test]
     fn a_missing_file_is_the_default_and_a_broken_one_trusts_nothing() {
         let dir = temp("file");
+        let who = who();
         let s = read(&dir);
         assert_eq!(s.trusted, TrustedProxies::default());
         assert!(s.public.is_none() && !s.unreadable);
@@ -737,8 +812,8 @@ mod tests {
         assert!(s.unreadable && s.public.is_none());
         assert!(!s.trusted.contains(ip("127.0.0.1")));
         // Jamais écrasé.
-        assert!(set_public_address(&dir, Some("https://ostal.exemple.fr")).is_err());
-        assert!(set_trusted_proxies(&dir, None).is_err());
+        assert!(set_public_address(&dir, Some("https://maison.exemple.fr"), &who).is_err());
+        assert!(set_trusted_proxies(&dir, None, &who).is_err());
         assert_eq!(
             std::fs::read_to_string(dir.join(FILE)).unwrap(),
             "{ pas du json"
@@ -752,10 +827,11 @@ mod tests {
     #[test]
     fn settings_are_written_reloaded_and_the_file_is_private() {
         let dir = temp("write");
+        let who = who();
         let store = NetworkStore::open(&dir);
         assert!(store.current().public.is_none());
-        let got = set_public_address(&dir, Some("https://Ostal.exemple.fr/")).unwrap();
-        assert_eq!(got.as_deref(), Some("https://ostal.exemple.fr"));
+        let got = set_public_address(&dir, Some("https://Maison.exemple.fr/"), &who).unwrap();
+        assert_eq!(got.as_deref(), Some("https://maison.exemple.fr"));
         assert_eq!(
             store
                 .current()
@@ -763,24 +839,27 @@ mod tests {
                 .as_ref()
                 .map(|p| p.origin().to_string())
                 .as_deref(),
-            Some("https://ostal.exemple.fr")
+            Some("https://maison.exemple.fr")
         );
-        // Le défaut est gardé tant qu'on n'a rien dit des proxys.
-        assert!(store.is_trusted_proxy(ip("192.168.5.2")));
+        // Aucun proxy de confiance tant qu'on n'a rien dit des proxys.
+        assert!(!store.is_trusted_proxy(ip("10.7.7.2")));
+        assert!(!store.is_trusted_proxy(ip("127.0.0.1")));
         let list = vec!["10.1.2.0/24".to_string()];
         assert_eq!(
-            set_trusted_proxies(&dir, Some(&list)).unwrap(),
+            set_trusted_proxies(&dir, Some(&list), &who).unwrap(),
             ["10.1.2.0/24"]
         );
-        assert!(!store.is_trusted_proxy(ip("192.168.5.2")));
+        assert!(!store.is_trusted_proxy(ip("10.7.7.2")));
         assert!(store.is_trusted_proxy(ip("10.1.2.3")));
         // L'adresse publique a survécu à ce changement ; liste vide : aucun proxy.
         assert!(store.current().public.is_some());
-        set_trusted_proxies(&dir, Some(&[])).unwrap();
+        set_trusted_proxies(&dir, Some(&[]), &who).unwrap();
         assert!(!store.is_trusted_proxy(ip("127.0.0.1")));
-        set_trusted_proxies(&dir, None).unwrap();
+        set_trusted_proxies(&dir, Some(&["127.0.0.1".to_string()]), &who).unwrap();
         assert!(store.is_trusted_proxy(ip("127.0.0.1")));
-        set_public_address(&dir, None).unwrap();
+        set_trusted_proxies(&dir, None, &who).unwrap();
+        assert!(!store.is_trusted_proxy(ip("127.0.0.1")));
+        set_public_address(&dir, None, &who).unwrap();
         assert!(store.current().public.is_none());
         #[cfg(unix)]
         {
@@ -791,7 +870,30 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        assert!(set_public_address(&dir, Some("n'importe quoi")).is_err());
+        assert!(set_public_address(&dir, Some("n'importe quoi"), &who).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_is_audited_without_any_value_and_a_repeat_is_not() {
+        let dir = temp("audit");
+        let who = who();
+        set_public_address(&dir, Some("https://maison.exemple.fr"), &who).unwrap();
+        set_public_address(&dir, Some("https://maison.exemple.fr"), &who).unwrap();
+        set_trusted_proxies(&dir, Some(&["10.7.7.0/24".to_string()]), &who).unwrap();
+        set_trusted_proxies(&dir, Some(&["10.7.7.0/24".to_string()]), &who).unwrap();
+        set_public_address(&dir, None, &who).unwrap();
+        let text: String = std::fs::read_dir(dir.join(crate::audit::DIR))
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert!(text.contains("public:set") && text.contains("trusted:1"));
+        assert!(text.contains("public:cleared"));
+        assert!(
+            !text.contains("exemple") && !text.contains("10.7.7"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

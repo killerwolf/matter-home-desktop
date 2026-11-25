@@ -42,7 +42,7 @@ const MAX_CONNECTIONS: usize = 128;
 /// Connexions simultanées au plus pour une même adresse : une machine du réseau ne peut pas
 /// occuper à elle seule toutes les places.
 const MAX_CONNECTIONS_PER_IP: usize = 16;
-/// Même plafond pour un proxy de confiance (Caddy, `tailscale serve`) : il relaie tous les clients.
+/// Même plafond pour un proxy de confiance (reverse proxy, `tailscale serve`) : il relaie tous les clients.
 const MAX_CONNECTIONS_PER_PROXY: usize = 64;
 /// Délai sans recevoir d'octet du corps d'une requête avant de l'abandonner (`request_timeout`).
 pub const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
