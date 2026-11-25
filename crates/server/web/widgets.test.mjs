@@ -17,6 +17,26 @@ test("seule l'adresse en .ts.net convient ; sinon, un conseil", () => {
   assert.equal(originInfo(undefined).origin, "");
 });
 
+test("l'adresse publique réglée sur le serveur convient aussi, exactement et seulement elle", () => {
+  const pub = "https://ostal.klbr.h4md1.fr";
+  const ok = originInfo({ origin: pub }, pub);
+  assert.equal(ok.usable, true);
+  assert.equal(ok.warning, "");
+  // Casse ignorée ; le .ts.net marche toujours à côté.
+  assert.equal(originInfo({ origin: "https://OSTAL.klbr.h4md1.fr" }, pub).usable, true);
+  assert.equal(originInfo({ origin: "https://mac.tailnet-1234.ts.net" }, pub).usable, true);
+  // Sans adresse réglée, ce nom ne convient pas ; un nom voisin, un port, un autre schéma non plus.
+  assert.equal(originInfo({ origin: pub }, undefined).usable, false);
+  assert.equal(originInfo({ origin: pub }, "").usable, false);
+  for (const origin of ["https://evilostal.klbr.h4md1.fr", "https://x.ostal.klbr.h4md1.fr", `${pub}:8443`, "http://ostal.klbr.h4md1.fr", "https://autre.klbr.h4md1.fr"]) {
+    const info = originInfo({ origin }, pub);
+    assert.equal(info.usable, false, origin);
+    assert.match(info.warning, /ostal\.klbr\.h4md1\.fr/);
+  }
+  // Une valeur du serveur qui n'est pas un simple https://nom ne rend rien utilisable.
+  assert.equal(originInfo({ origin: "https://a.fr/x" }, "https://a.fr/x").usable, false);
+});
+
 test("les noms des raccourcis sont sans accent et les mêmes dans le widget", () => {
   assert.deepEqual(SHORTCUT_NAMES, ["Je pars", "Je rentre", "Mode nuit", "Mode vacances"]);
   for (const name of SHORTCUT_NAMES) assert.match(name, /^[\x20-\x7e]+$/);

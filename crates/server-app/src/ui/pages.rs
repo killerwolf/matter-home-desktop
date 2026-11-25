@@ -127,6 +127,67 @@ impl App {
     }
 
     /// Une valeur à recopier ailleurs, avec son bouton « Copier ».
+    /// Relit l'adresse publique réglée (`serveur/reseau.json`) si on ne l'a pas déjà lue.
+    fn refresh_public(&mut self, st: &State) {
+        if self.public_loaded {
+            return;
+        }
+        let dir = st.data_dir.join(ostal_server::persistence::SERVER_DIR);
+        self.public = ostal_server::security::network::read(&dir)
+            .public
+            .map(|p| p.origin().to_string());
+        self.public_input = self.public.clone().unwrap_or_default();
+        self.public_loaded = true;
+    }
+
+    /// Enregistre (ou efface, si la case est vide) l'adresse publique. Le serveur qui tourne la
+    /// relit tout seul.
+    fn save_public(&mut self, st: &State) {
+        let result = ostal_server::security::server_dir(&st.data_dir).and_then(|dir| {
+            ostal_server::security::network::set_public_address(&dir, Some(&self.public_input))
+        });
+        match result {
+            Ok(Some(address)) => {
+                self.public_message =
+                    Some((true, format!("Adresse publique enregistrée : {address}")));
+            }
+            Ok(None) => {
+                self.public_message = Some((true, "Adresse publique effacée.".to_string()));
+            }
+            Err(e) => self.public_message = Some((false, format!("{e:#}"))),
+        }
+        self.public_loaded = false;
+        self.refresh_public(st);
+    }
+
+    /// Réglages › Adresse publique : le nom en https sous lequel la maison se joint de loin.
+    fn public_section(&mut self, ui: &mut egui::Ui, st: &State) {
+        self.refresh_public(st);
+        let p = theme::palette(ui);
+        widgets::section(ui, "Adresse publique", |ui| {
+            ui.label("C'est le nom (par exemple https://ostal.exemple.fr) que l'iPhone et les autres appareils utilisent pour joindre la maison quand ils n'y sont pas, si vous avez installé un relais avec un certificat officiel devant ce Mac. Laissez la case vide si vous passez par l'adresse Tailscale habituelle.");
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.public_input)
+                    .hint_text("https://ostal.exemple.fr")
+                    .desired_width(320.0),
+            );
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, "Enregistrer").clicked() {
+                    self.save_public(st);
+                }
+                if self.public.is_some() && ui.button("Effacer").clicked() {
+                    self.public_input.clear();
+                    self.save_public(st);
+                }
+            });
+            if let Some((ok, text)) = &self.public_message {
+                ui.colored_label(if *ok { p.text_secondary } else { p.error }, text);
+            }
+            widgets::hint(ui, "Seulement le nom, sans chemin ni numéro de port. Les Raccourcis et le widget de l'iPhone, qui exigent un certificat officiel, savent joindre cette adresse. Le changement est pris en compte tout de suite, sans redémarrer.");
+        });
+    }
+
     fn copy_field(&mut self, ui: &mut egui::Ui, key: &'static str, value: &str) {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1040,9 +1101,11 @@ impl App {
         let (Phase::Running, Some(hub)) = (&st.phase, st.hub.as_ref().map(|h| h.0.clone())) else {
             return self.needs_server(ui);
         };
+        self.refresh_public(st);
         let summaries = [
             Some("Adresse et code de vérification".to_string()),
             Some(match &self.web {
+                _ if self.public.is_some() => "Adresse publique réglée".to_string(),
                 WebAccess::On { .. } => "Activé".to_string(),
                 WebAccess::Checking => "vérification…".to_string(),
                 _ => "pas activé".to_string(),
@@ -1108,6 +1171,10 @@ impl App {
     fn remote_steps(&mut self, ui: &mut egui::Ui, st: &State) {
         let p = theme::palette(ui);
         ui.label("Ostal s'ouvre dans Safari sur l'iPhone, à la maison comme ailleurs. Rien n'est ouvert sur Internet : l'iPhone et ce Mac se retrouvent par Tailscale, un réseau privé gratuit pour un usage personnel.");
+        if let Some(public) = &self.public {
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("Une adresse publique est réglée ({public}) : c'est elle qu'il faut ouvrir sur l'iPhone, à l'étape 4. Elle se change dans Réglages.")).color(p.text_secondary));
+        }
         ui.add_space(6.0);
         let web = self.web.clone();
         let busy = self.web_job.as_ref().is_some_and(|(toggled, _)| *toggled);
@@ -1115,7 +1182,8 @@ impl App {
             web,
             WebAccess::NotInstalled | WebAccess::Disconnected | WebAccess::Checking
         );
-        let on = matches!(web, WebAccess::On { .. });
+        // Une adresse publique réglée suffit pour la suite (étapes 3 et 4) : le relais est ailleurs.
+        let on = matches!(web, WebAccess::On { .. }) || self.public.is_some();
         let mut recheck = false;
         let mut toggle = false;
 
@@ -1219,13 +1287,20 @@ impl App {
         });
         widgets::step(ui, 4, phone, |ui| {
             ui.label(RichText::new("Ouvrir Ostal dans Safari").strong());
-            match self.web.web_url() {
-                Some(url) => {
+            let shown = match &self.public {
+                Some(public) => Some((format!("{public}/app/"), true)),
+                None => self.web.web_url().map(|u| (u, false)),
+            };
+            match shown {
+                Some((url, is_public)) => {
                     ui.label("Sur l'iPhone, ouvrez cette adresse dans Safari, puis entrez l'identifiant et le mot de passe de votre compte :");
                     self.copy_field(ui, "web-url", &url);
                     ui.horizontal(|ui| {
                         if ui.button("Essayer sur ce Mac").clicked() {
-                            system::open_url(&url);
+                            match (is_public, &self.public) {
+                                (true, Some(public)) => system::open_public_url(&url, public),
+                                _ => system::open_url(&url),
+                            }
                         }
                     });
                     widgets::hint(ui, "Pour l'avoir comme une app : dans Safari, bouton Partager → « Sur l'écran d'accueil ». Astuce : copiez l'adresse ici, elle arrive sur l'iPhone par le presse-papiers universel, ou envoyez-la-vous par message.");
@@ -1311,7 +1386,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
-        let remote = matches!(self.web, WebAccess::On { .. });
+        let remote = matches!(self.web, WebAccess::On { .. }) || self.public.is_some();
         let has = hub.window_has_mode_token();
         widgets::step(
             ui,
@@ -1379,7 +1454,7 @@ impl App {
                     }
                 } else {
                     // Sans accès à distance, le code ne servirait à rien : la raison est écrite.
-                    let ready = matches!(self.web, WebAccess::On { .. });
+                    let ready = matches!(self.web, WebAccess::On { .. }) || self.public.is_some();
                     let button = egui::Button::new(
                         RichText::new("Créer le code secret")
                             .color(if ready { p.on_accent } else { p.text_secondary })
@@ -1398,8 +1473,9 @@ impl App {
         widgets::step(ui, 3, StepState::Todo, |ui| {
             ui.label(RichText::new("Créer l'automatisation dans Raccourcis").strong());
             ui.label("Sur l'iPhone : Raccourcis → Automatisation → « + » → par exemple « Quitter » la maison → action « Obtenir le contenu de l'URL », avec :");
-            let url = match &self.web {
-                WebAccess::On { dns } => format!("https://{dns}/api/mode"),
+            let url = match (&self.public, &self.web) {
+                (Some(public), _) => format!("{public}/api/mode"),
+                (None, WebAccess::On { dns }) => format!("https://{dns}/api/mode"),
                 _ => "https://(l'adresse de l'étape 4 ci-dessus)/api/mode".to_string(),
             };
             egui::Grid::new("shortcut_fields")
@@ -1513,6 +1589,9 @@ impl App {
                     self.agents.open();
                 }
             });
+        }
+        if st.phase == Phase::Running {
+            self.public_section(ui, st);
         }
         widgets::section(ui, "Démarrage et veille", |ui| {
             if self.login_available() {

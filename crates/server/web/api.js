@@ -53,12 +53,36 @@ export const HOUSE_SILENT = "La maison ne répond pas.";
 export const HOUSE_HINT = "Le Mac est peut-être en veille : vérifiez qu'il est allumé et que Tailscale est actif.";
 export const HOUSE_HINT_LOCAL = "Le Mac serveur est éteint, en veille, ou n'est plus sur le Wi-Fi de la maison.";
 
-/** Joint-on la maison de loin ? Oui par une adresse Tailscale (`.ts.net` ou 100.64.0.0/10) : la piste
- *  est Tailscale. Sinon (adresse du réseau local, `.local`), c'est le Mac et le Wi-Fi de la maison. */
+const PUBLIC_HOST_KEY = "ostal.public-host";
+let knownPublicHost = "";
+
+/** Retient l'adresse publique du serveur (`https://nom`, donnée par `GET /api/tokens`) : par ce nom
+ *  on joint la maison de loin, et la piste d'une panne est Tailscale, pas le Wi-Fi de la maison.
+ *  Gardée dans le navigateur pour le jour où le serveur ne répond plus. */
+export function rememberPublicOrigin(origin) {
+  const host = /^https:\/\/([a-z0-9.-]+)$/i.exec(String(origin ?? ""))?.[1]?.toLowerCase() ?? "";
+  knownPublicHost = host;
+  try {
+    if (host) localStorage.setItem(PUBLIC_HOST_KEY, host);
+    else localStorage.removeItem(PUBLIC_HOST_KEY);
+  } catch { /* stockage refusé : l'indice reste celui de cette page */ }
+}
+
+function publicHost() {
+  if (knownPublicHost) return knownPublicHost;
+  try { return localStorage.getItem(PUBLIC_HOST_KEY) ?? ""; } catch { return ""; }
+}
+
+/** Joint-on la maison de loin ? Oui par une adresse Tailscale (`.ts.net` ou 100.64.0.0/10) ou par
+ *  l'adresse publique réglée sur le serveur : la piste est Tailscale. Sinon (adresse du réseau
+ *  local, `.local`), c'est le Mac et le Wi-Fi de la maison. */
 export function houseHint(hostname = globalThis.location?.hostname ?? "") {
   const host = String(hostname).toLowerCase();
   const m = /^100\.(\d+)\.\d+\.\d+$/.exec(host);
-  const remote = host.endsWith(".ts.net") || (m !== null && Number(m[1]) >= 64 && Number(m[1]) <= 127);
+  const known = publicHost();
+  const remote = host.endsWith(".ts.net")
+    || (m !== null && Number(m[1]) >= 64 && Number(m[1]) <= 127)
+    || (known !== "" && (host === known || host.endsWith(`.${known}`)));
   return remote ? HOUSE_HINT : HOUSE_HINT_LOCAL;
 }
 

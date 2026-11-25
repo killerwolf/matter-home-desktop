@@ -105,7 +105,7 @@ export function pushSupport(env) {
     };
   }
   if (!env.hasServiceWorker || !env.hasPushManager || !env.hasNotification) {
-    return { ok: false, reason: "unsupported", text: "Ce navigateur ne sait pas recevoir de notifications (ou la page n'est pas servie en HTTPS avec un certificat reconnu : utilisez l'adresse .ts.net)." };
+    return { ok: false, reason: "unsupported", text: "Ce navigateur ne sait pas recevoir de notifications (ou la page n'est pas servie en HTTPS avec un certificat reconnu : utilisez l'adresse .ts.net ou l'adresse publique)." };
   }
   if (env.permission === "denied") {
     return { ok: false, reason: "denied", text: "Les notifications sont refusées pour cette app. Réautorisez-les dans Réglages › Notifications › Ostal, puis revenez ici." };

@@ -422,10 +422,17 @@ mod tests {
             protocol_version: 3,
             server_version: "x".into(),
             tailnet_urls: Vec::new(),
+            public_url: None,
         };
-        assert!(!serde_json::to_string(&response)
-            .unwrap()
-            .contains("tailnet_urls"));
+        let text = serde_json::to_string(&response).unwrap();
+        assert!(!text.contains("tailnet_urls") && !text.contains("public_url"));
+        // Un client plus ancien ne connaît pas `public_url` ; un serveur plus ancien ne l'envoie pas.
+        let with: LoginResponse = serde_json::from_str(
+            r#"{"token":"t","expires_at":1.0,"max_expires_at":2.0,"protocol_version":4,"server_version":"x","public_url":"https://a.exemple.fr"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.public_url.as_deref(), Some("https://a.exemple.fr"));
+        assert!(with.tailnet_urls.is_empty());
         const { assert!(MIN_PROTOCOL_VERSION <= PROTOCOL_VERSION) };
     }
 

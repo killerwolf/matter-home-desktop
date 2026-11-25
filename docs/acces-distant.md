@@ -57,10 +57,58 @@ n'est qu'une alternative.
 - Une adresse en `.ts.net` sur le port 443 est vérifiée par le **nom** et une autorité publique,
   **pas par l'empreinte du serveur** : un autre nœud du tailnet qui porte le nom saisi serait
   accepté. Le formulaire le rappelle ; vérifiez le nom de votre Mac.
-- **Limiteur de tentatives** : derrière `tailscale serve`, le serveur voit toutes les connexions
-  venir de 127.0.0.1. Les essais de mot de passe partagent donc **un seul compteur pour tout le
-  monde** : quelqu'un du tailnet qui multiplie les essais peut bloquer aussi les connexions
-  légitimes pendant la durée du blocage.
+- **Limiteur de tentatives** : derrière `tailscale serve` **sans** relais qui transmet l'adresse du
+  client, le serveur voit toutes les connexions venir de 127.0.0.1. Les essais de mot de passe
+  partagent donc **un seul compteur pour tout le monde** : quelqu'un du tailnet qui multiplie les
+  essais peut bloquer aussi les connexions légitimes pendant la durée du blocage. Avec un relais
+  qui écrit `X-Forwarded-For` (Caddy, voir ci-dessous), le compteur est par client.
+
+## Derrière un relais (Caddy) : proxys de confiance et adresse publique
+
+Montage visé : `tailscale serve --tcp=443 --proxy-protocol=2` envoie vers Caddy (dans Docker, sur
+ce Mac), qui présente un certificat officiel pour un nom à vous (`https://ostal.exemple.fr`,
+joignable seulement depuis le tailnet), garde l'en-tête `Host`, ajoute `X-Forwarded-For` avec
+l'adresse réelle du client (`100.x` pour un appareil du tailnet) et joint Ostal. Ostal voit alors
+la connexion venir de la passerelle de Docker, pas du client. Deux réglages (dans
+`serveur/reseau.json`, relus sans redémarrage) :
+
+**Proxys de confiance.** La liste des réseaux (CIDR) dont `X-Forwarded-For` est cru. Par défaut :
+`192.168.5.0/24`, `127.0.0.1/32` et `::1/128`.
+
+- `192.168.5.0/24` est le réseau de la machine virtuelle Colima/Lima : c'est par sa passerelle
+  qu'un conteneur Docker de ce Mac joint Ostal. Ce réseau n'existe que dans le Mac.
+- La boucle locale est celle d'un relais lancé sur le Mac lui-même (`tailscale serve` en mode
+  HTTP) : un programme du Mac qui y écrit un faux en-tête ne gagne rien qu'il ne puisse déjà faire.
+- **Règle de lecture** (une seule fonction, `security::network::client_ip`, pour le classement
+  « sur place / à distance », le limiteur d'essais, le journal d'audit et le serveur MCP) :
+  si le pair TCP est de confiance et qu'il y a un `X-Forwarded-For`, le client est l'adresse **la plus à
+  droite qui n'est pas elle-même un proxy de confiance** (toutes les lignes de l'en-tête sont lues) ;
+  ce qui est à gauche vient du client et n'est jamais lu. Une valeur illisible arrête la lecture : on
+  garde le pair. Un pair qui n'est pas de confiance : l'en-tête est ignoré.
+- **Attention** : si le réseau de votre maison est lui-même en `192.168.5.x`, n'importe quel appareil
+  de la maison pourrait forger l'en-tête (échapper au limiteur d'essais, brouiller le journal).
+  Changez alors la liste : `ostal-server network trusted-proxies 192.168.7.0/24 127.0.0.1/32`
+  (`--default` revient au défaut, `--none` n'en fait confiance à aucun).
+- Les connexions d'un proxy de confiance ont un plafond plus large (64 au lieu de 16) : il porte
+  celles de tous ses clients.
+
+**Adresse publique.** Le nom en https, sans chemin ni port : `ostal-server network public-address
+https://ostal.exemple.fr` (ou Ostal Server › Réglages › Adresse publique ; `--clear` l'efface).
+Quand elle est réglée :
+
+- une requête dont `Host` est cette adresse (ou un sous-nom) compte « à distance » dans le
+  journal et dans « Mes connexions » ; `evilostal.exemple.fr` n'en est pas un ;
+- le serveur l'annonce au client après la connexion (`public_url` dans la réponse de
+  `POST /api/login`, version 4 et plus) **à la place** des adresses `100.x` (`tailnet_urls`) ;
+- l'app web, Raccourcis et le widget de l'iPhone l'acceptent comme le nom en `.ts.net` (ils ont
+  besoin d'un certificat officiel, ce qu'elle a) : `GET /api/tokens` donne `public_origin`, et la
+  préparation des raccourcis n'accepte que **exactement** cette adresse ;
+- les pages d'Ostal Server (Connexion, raccourcis) montrent cette adresse au lieu de celle de
+  `tailscale serve`.
+
+Sans adresse publique réglée, rien ne change. `ostal-server network show` affiche les deux
+réglages. Un fichier `reseau.json` illisible vaut « aucun proxy de confiance, aucune adresse
+publique » et n'est jamais écrasé.
 
 ## Ce qui ne se vérifie qu'avec un vrai Tailscale
 

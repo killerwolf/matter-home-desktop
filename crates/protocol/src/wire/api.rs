@@ -128,6 +128,11 @@ pub struct LoginResponse {
     /// maison de loin avec le même certificat. Absent chez un serveur plus ancien.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tailnet_urls: Vec<String>,
+    /// L'adresse publique réglée sur le serveur (`https://nom`, sans chemin ni port) : un nom au
+    /// certificat officiel, derrière lequel la maison se joint de loin. Quand elle est donnée,
+    /// `tailnet_urls` est vide. Absente si rien n'est réglé (et chez un serveur plus ancien).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
 }
 
 impl std::fmt::Debug for LoginResponse {

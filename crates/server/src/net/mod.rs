@@ -33,6 +33,7 @@ use tower::ServiceExt;
 use crate::hub::Hub;
 use crate::security::account::AccountStore;
 use crate::security::limiter::LoginLimiter;
+pub use crate::security::network::ClientIp;
 use crate::security::sessions::{SessionInfo, SessionStore};
 use protocol::wire::Via;
 
@@ -41,6 +42,8 @@ const MAX_CONNECTIONS: usize = 128;
 /// Connexions simultanées au plus pour une même adresse : une machine du réseau ne peut pas
 /// occuper à elle seule toutes les places.
 const MAX_CONNECTIONS_PER_IP: usize = 16;
+/// Même plafond pour un proxy de confiance (Caddy, `tailscale serve`) : il relaie tous les clients.
+const MAX_CONNECTIONS_PER_PROXY: usize = 64;
 /// Délai sans recevoir d'octet du corps d'une requête avant de l'abandonner (`request_timeout`).
 pub const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 /// WebSockets ouverts en même temps au plus.
@@ -83,6 +86,8 @@ pub struct Auth {
     pub limiter: LoginLimiter,
     /// Les agents d'IA du serveur MCP (`/mcp`) : `agents.json`, relu à chaque changement.
     pub agents: crate::security::agent_tokens::AgentStore,
+    /// Proxys de confiance et adresse publique (`serveur/reseau.json`, relu à chaque changement).
+    pub network: crate::security::network::NetworkStore,
     /// Les lectures des agents, regroupées avant d'être écrites au journal (`agent_audit`).
     pub agent_reads: crate::agent_audit::ReadGroups,
     /// Les demandes d'agent qui attendent l'accord d'une personne (en mémoire seulement).
@@ -101,11 +106,13 @@ impl Auth {
             log::info!("{cut} session(s) coupée(s) depuis le dernier démarrage retirée(s)");
         }
         let agents = crate::security::agent_tokens::AgentStore::open(accounts.dir());
+        let network = crate::security::network::NetworkStore::open(accounts.dir());
         Self {
             accounts,
             sessions,
             limiter: LoginLimiter::new(),
             agents,
+            network,
             agent_reads: crate::agent_audit::ReadGroups::default(),
             confirmations: crate::confirmations::Confirmations::default(),
             hash_slots: Semaphore::new(1),
@@ -254,6 +261,7 @@ pub fn start(
         shutdown_rx,
         connections.clone(),
         Arc::new(PerIp::default()),
+        auth_kept.clone(),
     ));
     Ok(NetServer {
         addr,
@@ -311,6 +319,7 @@ async fn accept_loop(
     mut shutdown: watch::Receiver<bool>,
     connections: Arc<Semaphore>,
     per_ip: Arc<PerIp>,
+    auth: Arc<Auth>,
 ) {
     loop {
         let (stream, peer) = tokio::select! {
@@ -329,13 +338,21 @@ async fn accept_loop(
             drop(stream);
             continue;
         };
-        // Plafond par adresse, avant même la poignée de main TLS.
-        let Some(ip_guard) = per_ip.try_acquire(peer.ip()) else {
+        // Plafond par adresse, avant même la poignée de main TLS. Un proxy de confiance porte les
+        // connexions de tous les clients qu'il relaie : sa place est plus large (le plafond total
+        // de `MAX_CONNECTIONS` reste le garde-fou).
+        let limit = if auth.network.is_trusted_proxy(peer.ip()) {
+            MAX_CONNECTIONS_PER_PROXY
+        } else {
+            MAX_CONNECTIONS_PER_IP
+        };
+        let Some(ip_guard) = per_ip.try_acquire(peer.ip(), limit) else {
             drop(stream);
             continue;
         };
         let acceptor = acceptor.clone();
         let router = router.clone();
+        let auth = auth.clone();
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -349,7 +366,11 @@ async fn accept_loop(
             };
             let service = TowerToHyperService::new(tower::service_fn(
                 move |mut request: axum::extract::Request<hyper::body::Incoming>| {
+                    // L'adresse du client est décidée ici, une fois pour toute la requête (voir
+                    // `security::network::client_ip`) ; `ConnectInfo` reste le pair TCP.
+                    let client = auth.network.client_ip(peer.ip(), request.headers());
                     request.extensions_mut().insert(ConnectInfo(peer));
+                    request.extensions_mut().insert(ClientIp(client));
                     router.clone().oneshot(request)
                 },
             ));
@@ -383,12 +404,12 @@ struct IpGuard {
 }
 
 impl PerIp {
-    fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<IpGuard> {
+    fn try_acquire(self: &Arc<Self>, ip: IpAddr, limit: usize) -> Option<IpGuard> {
         // Une adresse IPv4 reçue sur une socket IPv6 est la même machine.
         let ip = ip.to_canonical();
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         let count = counts.entry(ip).or_insert(0);
-        if *count >= MAX_CONNECTIONS_PER_IP {
+        if *count >= limit {
             return None;
         }
         *count += 1;
@@ -490,16 +511,23 @@ mod tests {
         let a: IpAddr = "192.168.1.10".parse().unwrap();
         let b: IpAddr = "192.168.1.11".parse().unwrap();
         let mut held: Vec<_> = (0..MAX_CONNECTIONS_PER_IP)
-            .map(|_| per_ip.try_acquire(a).expect("sous le plafond"))
+            .map(|_| {
+                per_ip
+                    .try_acquire(a, MAX_CONNECTIONS_PER_IP)
+                    .expect("sous le plafond")
+            })
             .collect();
-        assert!(per_ip.try_acquire(a).is_none(), "17e connexion refusée");
+        assert!(
+            per_ip.try_acquire(a, MAX_CONNECTIONS_PER_IP).is_none(),
+            "17e connexion refusée"
+        );
         // Une autre adresse n'est pas touchée, ni la même adresse écrite en IPv6.
-        assert!(per_ip.try_acquire(b).is_some());
+        assert!(per_ip.try_acquire(b, MAX_CONNECTIONS_PER_IP).is_some());
         let mapped: IpAddr = "::ffff:192.168.1.10".parse().unwrap();
-        assert!(per_ip.try_acquire(mapped).is_none());
+        assert!(per_ip.try_acquire(mapped, MAX_CONNECTIONS_PER_IP).is_none());
         // Une place rendue est réutilisable ; à zéro l'entrée disparaît.
         held.pop();
-        assert!(per_ip.try_acquire(a).is_some());
+        assert!(per_ip.try_acquire(a, MAX_CONNECTIONS_PER_IP).is_some());
         held.clear();
         assert!(per_ip.counts.lock().unwrap().get(&a).is_none());
     }

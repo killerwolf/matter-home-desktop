@@ -490,6 +490,13 @@ struct App {
     /// Le menu a été ouvert ou refermé depuis la dernière lecture : relire l'état.
     web_stale: bool,
     menu_was_open: bool,
+    /// L'adresse publique réglée sur le serveur (`serveur/reseau.json`), `None` si aucune. Relue à
+    /// chaque changement d'onglet et après chaque enregistrement.
+    public: Option<String>,
+    public_loaded: bool,
+    /// Ce qui est tapé dans la case de l'adresse publique, et le dernier message (vrai : réussi).
+    public_input: String,
+    public_message: Option<(bool, String)>,
     /// Le lien d'autorisation de Serve, gardé jusqu'à la prochaine tentative d'activation.
     web_auth_url: Option<String>,
     /// Le jeton de mode qui vient d'être généré, en clair : montré une seule fois (il disparaît
@@ -551,6 +558,10 @@ impl App {
             web_job: None,
             web_stale: true,
             menu_was_open: false,
+            public: None,
+            public_loaded: false,
+            public_input: String::new(),
+            public_message: None,
             web_auth_url: None,
             mode_token_shown: None,
             mode_token_confirm: false,
@@ -718,6 +729,8 @@ impl App {
             self.form = AccountForm::default();
         }
         self.tab = tab;
+        self.public_loaded = false;
+        self.public_message = None;
         // L'onglet Connexion montre l'état de Tailscale : on le relit.
         if tab == Tab::Connect {
             self.web_stale = true;

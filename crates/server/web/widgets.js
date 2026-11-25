@@ -38,17 +38,23 @@ export function tokenHere(tokens, kind) {
   return myTokens(tokens, kind).find((t) => String(t.label ?? "").trim().toLowerCase() === label) ?? null;
 }
 
-/** Raccourcis et widget ne savent joindre que l'adresse en .ts.net : sur une autre (le port 8443,
- *  au certificat auto-signé), on le dit avant d'essayer. */
-export function originInfo(loc) {
+/** Raccourcis et widget ne savent joindre que l'adresse en .ts.net ou l'adresse publique réglée sur
+ *  le serveur (`publicOrigin`, au certificat officiel) : sur une autre (le port 8443, au certificat
+ *  auto-signé), on le dit avant d'essayer. Pas de `.ts.net` ni d'adresse publique collés au bout
+ *  d'un autre nom : l'adresse publique doit être exactement celle de la page. */
+export function originInfo(loc, publicOrigin) {
   const origin = String(loc?.origin ?? "");
-  const usable = /^https:\/\/[a-z0-9.-]+\.ts\.net$/i.test(origin);
+  const wanted = String(publicOrigin ?? "").trim().toLowerCase();
+  const isPublic = wanted !== "" && /^https:\/\/[a-z0-9.-]+$/.test(wanted) && origin.toLowerCase() === wanted;
+  const usable = isPublic || /^https:\/\/[a-z0-9.-]+\.ts\.net$/i.test(origin);
   return {
     origin,
     usable,
     warning: usable
       ? ""
-      : "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci.",
+      : wanted !== ""
+        ? `Ouvrez l'app par son adresse publique (${wanted.replace(/^https:\/\//, "")}) ou en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci.`
+        : "Ouvrez l'app par son adresse en .ts.net (Tailscale) : les raccourcis et le widget ne savent pas joindre celle-ci.",
   };
 }
 

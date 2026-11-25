@@ -136,6 +136,24 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// Ouvre l'adresse publique **réglée sur ce serveur** (`https://nom/app/`) : seulement si elle
+/// commence exactement par cette adresse, jamais une adresse reçue d'ailleurs.
+pub fn open_public_url(url: &str, public: &str) {
+    if is_under_public(url, public) {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+}
+
+/// `url` est l'adresse publique réglée ou un chemin sous elle (`public` : `https://nom`).
+pub fn is_under_public(url: &str, public: &str) -> bool {
+    url.bytes().all(|b| b.is_ascii_graphic())
+        && !public.is_empty()
+        && (url == public
+            || url
+                .strip_prefix(public)
+                .is_some_and(|rest| rest.starts_with('/')))
+}
+
 /// Les pages d'aide que la fenêtre propose d'ouvrir : des adresses fixes, écrites ici, jamais
 /// reçues d'ailleurs (contrairement à `open_url`, qui ne laisse passer que Tailscale).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +214,25 @@ mod tests {
             assert!(url.bytes().all(|b| b.is_ascii_graphic()), "{url}");
             assert!(!page.shown().contains("://"));
         }
+    }
+
+    #[test]
+    fn only_the_configured_public_address_is_opened() {
+        let public = "https://ostal.klbr.h4md1.fr";
+        assert!(is_under_public("https://ostal.klbr.h4md1.fr/app/", public));
+        assert!(is_under_public(public, public));
+        for bad in [
+            "https://evilostal.klbr.h4md1.fr/app/",
+            "https://ostal.klbr.h4md1.fr.evil.com/app/",
+            "https://ostal.klbr.h4md1.fr@evil.com/app/",
+            "http://ostal.klbr.h4md1.fr/app/",
+            "https://ostal.klbr.h4md1.fr/app/ x",
+            "https://autre.exemple.fr/",
+        ] {
+            assert!(!is_under_public(bad, public), "{bad}");
+        }
+        // Rien de réglé : rien ne s'ouvre.
+        assert!(!is_under_public("https://ostal.klbr.h4md1.fr/", ""));
     }
 
     #[test]
