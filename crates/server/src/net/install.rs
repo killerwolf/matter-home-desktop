@@ -41,6 +41,7 @@ use protocol::wire::{ApiError, ErrorCode};
 
 use super::routes::{ApiErr, ApiJson};
 use super::AppState;
+use crate::security::network::PublicAddress;
 use crate::security::sessions::SessionInfo;
 use crate::security::user_tokens::{clean_label, Kind, TokenInfo};
 use crate::shortcuts::{self, HomeShortcut, LINK_TTL};
@@ -89,6 +90,11 @@ struct TokensResponse {
     items: Vec<TokenView>,
     /// Le libellé que prendra un nouveau jeton demandé depuis cette connexion.
     label: String,
+    /// L'adresse publique réglée sur le serveur (`https://nom`), que les raccourcis et le widget de
+    /// l'iPhone savent joindre (certificat officiel) en plus des noms en .ts.net. Absente si rien
+    /// n'est réglé.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_origin: Option<String>,
 }
 
 fn kind_word(kind: Kind) -> &'static str {
@@ -158,6 +164,13 @@ async fn status(
             })
             .collect(),
         label: label_for(&state, &session, None),
+        public_origin: state
+            .auth
+            .network
+            .current()
+            .public
+            .as_ref()
+            .map(|p| p.origin().to_string()),
     })
 }
 
@@ -223,37 +236,53 @@ struct OriginRequest {
     label: Option<String>,
 }
 
-/// L'adresse publique à écrire dans les fichiers : celle de la page (`origin`), en .ts.net
-/// (`shortcuts::public_address`), et **celle de ce Mac** :
+/// L'adresse de la page, si c'est une adresse que l'iPhone sait joindre : l'adresse publique réglée
+/// sur le serveur (même nom exactement), ou un nom en .ts.net (`shortcuts::public_address`).
+fn page_address(origin: &str, public: Option<&PublicAddress>) -> Result<String, ApiError> {
+    if let (Some(public), Ok(asked)) = (public, PublicAddress::parse(origin)) {
+        if &asked == public {
+            return Ok(public.origin().to_string());
+        }
+    }
+    shortcuts::public_address(origin)
+}
+
+/// L'adresse publique à écrire dans les fichiers : celle de la page (`origin`), l'adresse publique
+/// réglée ou un nom en .ts.net (`page_address`), et **celle de ce Mac** :
 /// - le navigateur envoie `Origin` avec un `POST` : elle doit être la même que `origin` ;
-/// - `tailscale serve` transmet l'en-tête `Host` d'origine (le nom en .ts.net), comme le prouve le
-///   contrôle `Origin`/`Host` des WebSocket, qui passe derrière lui. `X-Forwarded-Host` est lu
-///   aussi, au cas où. Si l'un des deux est un nom en .ts.net, l'adresse doit être ce nom-là ;
-///   sinon (relais qui réécrit `Host`, par exemple en `localhost:8443`), on garde l'adresse validée.
-fn this_mac(headers: &HeaderMap, origin: &str) -> Result<String, ApiError> {
-    let address = shortcuts::public_address(origin)?;
+/// - `tailscale serve` et le relais inverse transmettent l'en-tête `Host` d'origine (le nom en
+///   .ts.net, ou l'adresse publique), comme le prouve le contrôle `Origin`/`Host` des WebSocket, qui
+///   passe derrière eux. `X-Forwarded-Host` est lu aussi, au cas où. Si l'un des deux est un nom en
+///   .ts.net ou l'adresse publique, l'adresse doit être ce nom-là ; sinon (relais qui réécrit
+///   `Host`, par exemple en `localhost:8443`), on garde l'adresse validée.
+fn this_mac(
+    headers: &HeaderMap,
+    origin: &str,
+    public: Option<&PublicAddress>,
+) -> Result<String, ApiError> {
+    let address = page_address(origin, public)?;
     let refuse = || {
         ApiError::with_detail(
             ErrorCode::BadRequest,
-            "Cette adresse n'est pas celle de ce Mac : ouvre l'app par son adresse en .ts.net.",
+            "Cette adresse n'est pas celle de ce Mac : ouvre l'app par son adresse en .ts.net ou par l'adresse publique réglée sur le serveur.",
         )
     };
     if let Some(sent) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if shortcuts::public_address(sent).ok().as_deref() != Some(address.as_str()) {
+        if page_address(sent, public).ok().as_deref() != Some(address.as_str()) {
             return Err(refuse());
         }
     }
     let host = address.trim_start_matches("https://");
-    let ts_names: Vec<String> = [headers.get(header::HOST), headers.get("x-forwarded-host")]
+    let names: Vec<String> = [headers.get(header::HOST), headers.get("x-forwarded-host")]
         .into_iter()
         .flatten()
         .filter_map(|v| v.to_str().ok())
         .filter_map(|v| v.split(',').next())
         .map(|v| v.trim().to_ascii_lowercase())
         .map(|v| v.strip_suffix(":443").map(str::to_string).unwrap_or(v))
-        .filter(|v| v.ends_with(".ts.net"))
+        .filter(|v| v.ends_with(".ts.net") || public.is_some_and(|p| p.matches_host(v)))
         .collect();
-    if !ts_names.is_empty() && !ts_names.iter().any(|name| name == host) {
+    if !names.is_empty() && !names.iter().any(|name| name == host) {
         return Err(refuse());
     }
     Ok(address)
@@ -320,7 +349,11 @@ async fn mode_shortcuts(
     headers: HeaderMap,
     ApiJson(request): ApiJson<OriginRequest>,
 ) -> Result<Json<ShortcutsResponse>, ApiErr> {
-    let address = this_mac(&headers, &request.origin)?;
+    let address = this_mac(
+        &headers,
+        &request.origin,
+        state.auth.network.current().public.as_ref(),
+    )?;
     let (hub, signer) = (state.hub.clone(), state.signer);
     let label = label_for(&state, &session, request.label.as_deref());
     let installation = installation_of(&state, &session);
@@ -376,7 +409,11 @@ async fn widget(
     headers: HeaderMap,
     ApiJson(request): ApiJson<OriginRequest>,
 ) -> Result<Json<WidgetResponse>, ApiErr> {
-    let address = this_mac(&headers, &request.origin)?;
+    let address = this_mac(
+        &headers,
+        &request.origin,
+        state.auth.network.current().public.as_ref(),
+    )?;
     let hub = state.hub.clone();
     let label = label_for(&state, &session, request.label.as_deref());
     let installation = installation_of(&state, &session);
@@ -461,9 +498,14 @@ mod tests {
         let ok = "https://maison.tailnet-1.ts.net";
         // `tailscale serve` : Host est le nom en .ts.net, Origin la page.
         let h = headers(&[("host", "maison.tailnet-1.ts.net"), ("origin", ok)]);
-        assert_eq!(this_mac(&h, ok).unwrap(), ok);
+        assert_eq!(this_mac(&h, ok, None).unwrap(), ok);
         assert_eq!(
-            this_mac(&headers(&[("host", "Maison.tailnet-1.ts.net:443")]), ok).unwrap(),
+            this_mac(
+                &headers(&[("host", "Maison.tailnet-1.ts.net:443")]),
+                ok,
+                None
+            )
+            .unwrap(),
             ok
         );
         // Un autre Mac du tailnet, par Host ou par X-Forwarded-Host : refusé.
@@ -478,20 +520,65 @@ mod tests {
                 ("origin", "https://autre.tailnet-1.ts.net"),
             ]),
         ] {
-            let e = this_mac(&h, ok).unwrap_err();
+            let e = this_mac(&h, ok, None).unwrap_err();
             assert!(e.detail.unwrap().contains("ce Mac"));
         }
         // Un relais qui réécrit Host (pas de nom en .ts.net) : l'adresse validée est gardée.
         assert_eq!(
-            this_mac(&headers(&[("host", "localhost:8443")]), ok).unwrap(),
+            this_mac(&headers(&[("host", "localhost:8443")]), ok, None).unwrap(),
             ok
         );
         // L'adresse elle-même reste contrôlée.
         assert!(this_mac(
             &headers(&[("host", "192.168.1.20:8443")]),
-            "https://192.168.1.20:8443"
+            "https://192.168.1.20:8443",
+            None
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_configured_public_address_is_accepted_and_nothing_else_looks_like_it() {
+        let public = PublicAddress::parse("https://maison.exemple.fr").unwrap();
+        let p = Some(&public);
+        let ok = "https://maison.exemple.fr";
+        // Le relais garde Host et la page envoie Origin.
+        let h = headers(&[("host", "maison.exemple.fr"), ("origin", ok)]);
+        assert_eq!(this_mac(&h, ok, p).unwrap(), ok);
+        // Host réécrit par un relais : l'adresse validée est gardée.
+        assert_eq!(
+            this_mac(&headers(&[("host", "localhost:8443")]), ok, p).unwrap(),
+            ok
+        );
+        // Sans adresse publique réglée, ce nom est refusé.
+        assert!(this_mac(&h, ok, None).is_err());
+        // Un autre nom ressemblant, ou un port, n'est pas l'adresse réglée.
+        for bad in [
+            "https://evilmaison.exemple.fr",
+            "https://x.maison.exemple.fr",
+            "https://maison.exemple.fr:8443",
+            "https://autre.exemple.fr",
+        ] {
+            assert!(this_mac(&headers(&[]), bad, p).is_err(), "{bad}");
+        }
+        // Origin d'une autre adresse, Host d'un autre nom : refusé.
+        assert!(this_mac(
+            &headers(&[
+                ("host", "maison.exemple.fr"),
+                ("origin", "https://m.tailnet-1.ts.net")
+            ]),
+            ok,
+            p
+        )
+        .is_err());
+        assert!(this_mac(&headers(&[("host", "m.tailnet-1.ts.net")]), ok, p).is_err());
+        // Et l'adresse en .ts.net marche toujours à côté, mais pas si Host est l'adresse publique.
+        let ts = "https://m.tailnet-1.ts.net";
+        assert_eq!(
+            this_mac(&headers(&[("host", "m.tailnet-1.ts.net")]), ts, p).unwrap(),
+            ts
+        );
+        assert!(this_mac(&headers(&[("host", "maison.exemple.fr")]), ts, p).is_err());
     }
 
     #[test]

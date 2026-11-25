@@ -2057,6 +2057,7 @@ async function refreshTokens() {
   try {
     widgetsUi.tokens = await api.request("GET", "/api/tokens");
     state.tokens = widgetsUi.tokens; // la carte « Installer sur l'iPhone » suit les jetons
+    api.rememberPublicOrigin(widgetsUi.tokens?.public_origin);
     scheduleRender(false);
   } catch (error) {
     widgetsUi.tokens = null;
@@ -2185,7 +2186,7 @@ function renderWidgets(manualText = "") {
     note(ANDROID_NOTE, "ev-note");
     return;
   }
-  const info = originInfo(location);
+  const info = originInfo(location, widgetsUi.tokens?.public_origin);
   const busy = widgetsUi.busy !== "";
 
   // Les révocations : un seul jeton, un seul bouton ; plusieurs téléphones, une ligne chacun.
@@ -2219,7 +2220,7 @@ function renderWidgets(manualText = "") {
   const here = tokenHere(widgetsUi.tokens, "mode");
   if (here) status(modes, `Installés ${sinceText(here.created)}`.trim() + ".");
   modes.appendChild(act(widgetsUi.busy === "shortcuts" ? "Préparation…" : "Installer mes raccourcis", "primary", installShortcuts, busy || !info.usable));
-  // Hors adresse .ts.net : le bouton est grisé et la raison est dite juste à côté.
+  // Hors adresse .ts.net ou publique : le bouton est grisé et la raison est dite juste à côté.
   if (!info.usable) modes.appendChild(make("p", "w-note", info.warning));
   modes.appendChild(make("p", "w-note", "Réinstaller ne touche que vos raccourcis, jamais ceux des autres."));
   const list = make("ol", "steps");
@@ -2523,6 +2524,7 @@ function start() {
 async function loadTokens() {
   try {
     state.tokens = await api.request("GET", "/api/tokens");
+    api.rememberPublicOrigin(state.tokens?.public_origin);
   } catch { state.tokens = null; }
   scheduleRender(false);
 }

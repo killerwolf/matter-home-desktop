@@ -30,10 +30,10 @@ mod occupation;
 mod reads;
 mod tools;
 
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -47,6 +47,7 @@ use super::AppState;
 use crate::agent_audit;
 use crate::audit::Entry;
 use crate::security::agent_tokens::AgentInfo;
+use crate::security::network::ClientIp;
 
 /// Taille maximale d'un corps.
 const BODY_LIMIT: usize = 64 * 1024;
@@ -143,7 +144,7 @@ fn not_found() -> Response {
 
 async fn handle(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ClientIp(peer): ClientIp,
     request: Request,
 ) -> Response {
     // 1. Interrupteur général : sans lui, `/mcp` n'existe pas. Éteint en ligne de commande, il
@@ -206,11 +207,7 @@ async fn handle(
 
 /// Le jeton d'agent de la requête, son compte actif. Un échec est retardé de 250 ms et ne bloque
 /// jamais personne par adresse ; jamais le jeton dans le journal.
-async fn authenticate(
-    state: &AppState,
-    peer: SocketAddr,
-    headers: &HeaderMap,
-) -> Option<AgentInfo> {
+async fn authenticate(state: &AppState, peer: IpAddr, headers: &HeaderMap) -> Option<AgentInfo> {
     let agent = bearer(headers)
         .and_then(|token| state.auth.agents.verify(token))
         // Un compte désactivé coupe ses agents.
@@ -218,7 +215,7 @@ async fn authenticate(
     if agent.is_none() {
         log::info!(
             "mcp : accès refusé pour {} (jeton absent, inconnu ou expiré)",
-            peer.ip()
+            peer
         );
         tokio::time::sleep(FAILURE_PAUSE).await;
     }
@@ -248,7 +245,7 @@ fn decode_name(raw: &str) -> Option<String> {
 
 async fn dispatch(
     state: &AppState,
-    peer: SocketAddr,
+    peer: IpAddr,
     agent: &AgentInfo,
     headers: &HeaderMap,
     message: Value,
@@ -429,7 +426,7 @@ async fn record_denied(state: &AppState, key: String, entry: Entry) {
 
 async fn call_tool(
     state: &AppState,
-    peer: SocketAddr,
+    peer: IpAddr,
     headers: &HeaderMap,
     agent: &AgentInfo,
     id: &Value,
@@ -453,8 +450,8 @@ async fn call_tool(
     let who = agent_audit::who_of(
         agent,
         state.auth.accounts.display_name(&agent.user_id),
-        Some(peer.ip().to_string()),
-        Some(via_of(peer.ip(), headers)),
+        Some(peer.to_string()),
+        Some(via_of(state, peer, headers)),
     );
     // La spec exige de limiter les appels d'outil. Par jeton, jamais par adresse.
     if let Err(wait) = state.auth.agents.check_read(&agent.id) {

@@ -99,6 +99,34 @@ fn alts_for_submit(
     }
 }
 
+/// Phrase sous un champ d'adresses quand l'une d'elles est jugée par un certificat public (nom de
+/// domaine sur le 443) : dit clairement à quel nom l'app se connectera, sans empreinte à
+/// comparer. `None` s'il n'y en a pas.
+fn public_chain_note(text: &str) -> Option<String> {
+    let names: Vec<String> = ServerAddr::parse_list(text)
+        .ok()?
+        .iter()
+        .filter(|a| a.is_public_chain())
+        .map(|a| a.host.clone())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Vérifiée par un certificat public, sans empreinte : l'app se connectera à {} et refusera \
+         tout autre nom. Vérifiez qu'il s'agit bien de votre serveur.",
+        names.join(", ")
+    ))
+}
+
+/// Texte de l'écran d'approbation quand le certificat est public et valable pour le nom.
+fn public_confirm_text() -> &'static str {
+    "Le certificat de ce nom a été vérifié : il est délivré par une autorité publique pour \
+     exactement ce nom, et encore valable. Il n'y a aucune empreinte à comparer. Approuvez \
+     seulement si ce nom est bien celui de votre serveur : l'app refusera ensuite tout autre \
+     nom ou tout certificat qui ne serait pas valable pour lui."
+}
+
 /// Le champ concerné par une erreur, d'après sa nature (jamais d'après son texte).
 pub fn field_of(error: &NetError) -> Field {
     match error {
@@ -404,14 +432,15 @@ impl ConnectScreen {
                 ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.url)
-                        .hint_text("192.168.1.20:8443 ou mac-mini.local")
+                        .hint_text("192.168.1.20:8443, mac-mini.local ou https://maison.exemple.fr")
                         .desired_width(full),
                 );
             });
             error(ui, Field::Server);
             ui.label(
                 RichText::new(
-                    "Elle s'affiche sur le Mac serveur : menu › Connecter un Mac ou un iPhone…",
+                    "Elle s'affiche sur le Mac serveur : menu › Connecter un Mac ou un iPhone… Un nom \
+                     de domaine (https://nom) est vérifié par son certificat public, sans empreinte.",
                 )
                 .size(12.0)
                 .color(p.text_secondary),
@@ -424,7 +453,9 @@ impl ConnectScreen {
                 ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.remote)
-                        .hint_text("mac-mini.exemple.ts.net ou 100.x.y.z")
+                        .hint_text(
+                            "https://maison.exemple.fr, mac-mini.exemple.ts.net ou 100.x.y.z",
+                        )
                         .desired_width(full),
                 );
             });
@@ -437,17 +468,8 @@ impl ConnectScreen {
                 .size(12.0)
                 .color(p.text_secondary),
             );
-            if ServerAddr::parse_list(&self.remote)
-                .is_ok_and(|l| l.iter().any(ServerAddr::is_tailscale_serve))
-            {
-                ui.label(
-                    RichText::new(
-                        "Vérifiée par le certificat public de Tailscale : vérifiez bien le nom de \
-                         votre Mac.",
-                    )
-                    .small()
-                    .color(p.text_secondary),
-                );
+            if let Some(note) = public_chain_note(&self.remote) {
+                ui.label(RichText::new(note).small().color(p.text_secondary));
             }
             ui.add_space(theme::tokens().space.md);
         } else {
@@ -660,6 +682,7 @@ impl ConnectScreen {
 
     fn confirm(&mut self, ui: &mut egui::Ui, backend: &Backend, url: &str, fingerprint: &str) {
         let h = theme::tokens().font.size.heading;
+        let public = ServerAddr::parse(url).is_ok_and(|a| a.is_public_chain());
         ui.label(RichText::new("Approuver ce serveur ?").size(h).strong());
         ui.label(
             RichText::new(format!(
@@ -668,31 +691,40 @@ impl ConnectScreen {
             ))
             .color(theme::palette(ui).text_secondary),
         );
-        ui.label(
-            "Le serveur présente un certificat qu'il a fabriqué lui-même. Comparez son empreinte \
-             avec celle affichée au lancement du serveur (ou par la commande \
-             « ostal-server fingerprint »). Si elles sont identiques, approuvez : seul ce \
-             certificat sera accepté ensuite.",
-        );
-        ui.add_space(8.0);
-        ui.label(RichText::new("Empreinte SHA-256 reçue :").strong());
-        ui.add(
-            egui::Label::new(RichText::new(fingerprint).monospace())
-                .wrap_mode(egui::TextWrapMode::Wrap),
-        );
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Empreinte attendue (facultatif) :");
-            ui.add(egui::TextEdit::singleline(&mut self.expected).desired_width(240.0));
-        });
-        let mismatch = !self.expected.trim().is_empty()
+        if public {
+            // Certificat public valide pour ce nom : rien à comparer, mais le nom est bien visible.
+            if let Some(host) = ServerAddr::parse(url).ok().map(|a| a.host) {
+                ui.label(RichText::new(host).strong().size(h));
+            }
+            ui.label(public_confirm_text());
+        } else {
+            ui.label(
+                "Le serveur présente un certificat qu'il a fabriqué lui-même. Comparez son \
+                 empreinte avec celle affichée au lancement du serveur (ou par la commande \
+                 « ostal-server fingerprint »). Si elles sont identiques, approuvez : seul ce \
+                 certificat sera accepté ensuite.",
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("Empreinte SHA-256 reçue :").strong());
+            ui.add(
+                egui::Label::new(RichText::new(fingerprint).monospace())
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Empreinte attendue (facultatif) :");
+                ui.add(egui::TextEdit::singleline(&mut self.expected).desired_width(240.0));
+            });
+        }
+        let mismatch = !public
+            && !self.expected.trim().is_empty()
             && normalize_fingerprint(&self.expected).as_deref() != Some(fingerprint);
         if mismatch {
             ui.colored_label(
                 theme::palette(ui).error,
                 "Cette empreinte est différente de celle que vous avez saisie : n'approuvez pas.",
             );
-        } else if !self.expected.trim().is_empty() {
+        } else if !public && !self.expected.trim().is_empty() {
             ui.colored_label(theme::palette(ui).ok, "Identique à l'empreinte saisie.");
         }
         ui.add_space(10.0);
@@ -788,6 +820,27 @@ impl ConnectScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_user_is_told_which_name_a_public_certificate_will_check() {
+        let note = public_chain_note("https://maison.exemple.fr 100.64.0.5").unwrap();
+        assert!(note.contains("maison.exemple.fr") && !note.contains("100.64.0.5"));
+        let two = public_chain_note("a.exemple.fr:443, b.exemple.fr:443").unwrap();
+        assert!(two.contains("a.exemple.fr, b.exemple.fr"));
+        // Rien à dire pour une IP, un nom .local, un autre port, une liste illisible ou vide.
+        for none in [
+            "",
+            "192.168.1.20:443",
+            "mac.local:443",
+            "maison.exemple.fr:8443",
+            "maison.exemple.fr",
+            "http://x",
+        ] {
+            assert_eq!(public_chain_note(none), None, "{none:?}");
+        }
+        // L'écran d'approbation d'un nom public ne demande aucune empreinte.
+        assert!(public_confirm_text().contains("aucune empreinte"));
+    }
 
     #[test]
     fn changing_the_primary_address_does_not_keep_the_old_alternatives() {

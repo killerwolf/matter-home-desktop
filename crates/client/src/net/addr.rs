@@ -13,7 +13,9 @@ pub struct ServerAddr {
 }
 
 impl ServerAddr {
-    /// Sans port : 8443, sauf `https://nom.ts.net/` (443, voir [`Self::is_tailscale_serve`]).
+    /// Sans port : 8443, sauf `https://nom/` pour un nom de domaine public (443, voir
+    /// [`is_public_name`] et [`Self::is_public_chain`]) : `https://` sans port veut dire 443, mais
+    /// seulement pour un vrai nom ; une IP ou un nom `.local` gardent 8443.
     /// Accepte `192.168.1.20`, `mac-mini.local:8443`, `https://mac-mini.local:8443/`,
     /// `[fe80::1]:8443`. Le schéma `http://` est refusé : la connexion est toujours chiffrée.
     pub fn parse(text: &str) -> Result<ServerAddr, NetError> {
@@ -58,9 +60,10 @@ impl ServerAddr {
             return Err(bad("nom ou adresse du serveur manquant"));
         }
         let port = match port {
-            // `https://nom.ts.net/` sans port : l'adresse publiée par `tailscale serve` (443). Sans
-            // le schéma, `nom.ts.net` reste l'accès direct au serveur (8443).
-            None if explicit_https && host.to_ascii_lowercase().ends_with(".ts.net") => 443,
+            // `https://nom/` sans port : l'adresse publiée par `tailscale serve` ou par un relais
+            // (443), pour tout nom de domaine public. Sans le schéma, `nom` reste l'accès direct
+            // au serveur (8443), comme une IP ou un nom `.local`.
+            None if explicit_https && is_public_name(host) => 443,
             None => DEFAULT_PORT,
             Some(p) => p
                 .parse::<u16>()
@@ -109,10 +112,17 @@ impl ServerAddr {
         }
     }
 
-    /// Adresse publiée par `tailscale serve` : un nom MagicDNS `….ts.net` sur le port 443. Le
-    /// certificat présenté est alors celui, public, de Tailscale (voir `tls.rs`).
+    /// Adresse publiée par `tailscale serve` : un nom MagicDNS `….ts.net` sur le port 443 (cas
+    /// particulier de [`Self::is_public_chain`], gardé pour les messages qui parlent de Tailscale).
     pub fn is_tailscale_serve(&self) -> bool {
         self.port == 443 && self.host.to_ascii_lowercase().ends_with(".ts.net")
+    }
+
+    /// Adresse jugée par la **chaîne de certificats publique** et non par l'empreinte du serveur :
+    /// un nom de domaine public (voir [`is_public_name`]) sur le port 443. C'est une décision sur
+    /// l'adresse seule : ni une IP, ni un nom `.local`, ni un autre port n'y ont droit.
+    pub fn is_public_chain(&self) -> bool {
+        self.port == 443 && is_public_name(&self.host)
     }
 
     /// Forme canonique, celle qui est conservée : `https://hôte:port`.
@@ -133,6 +143,8 @@ impl ServerAddr {
         }
     }
 }
+
+pub use protocol::domain::is_public_name;
 
 #[cfg(test)]
 mod tests {
@@ -214,5 +226,76 @@ mod tests {
             ServerAddr::parse("https://192.168.1.20").unwrap().port,
             8443
         );
+    }
+
+    #[test]
+    fn https_without_a_port_is_443_for_any_public_name_only() {
+        let port = |t: &str| ServerAddr::parse(t).unwrap().port;
+        assert_eq!(port("https://maison.exemple.fr"), 443);
+        assert_eq!(port("https://maison.exemple.fr/"), 443);
+        assert_eq!(port("https://mon-mac.tailnet-xxxx.ts.net"), 443);
+        // Sans le schéma : toujours l'accès direct.
+        assert_eq!(port("maison.exemple.fr"), 8443);
+        // Ni IP, ni nom local, ni nom sans point : 8443.
+        assert_eq!(port("https://192.168.1.20"), 8443);
+        assert_eq!(port("https://[fe80::1]"), 8443);
+        assert_eq!(port("https://mac-mini.local"), 8443);
+        assert_eq!(port("https://mac-mini"), 8443);
+        assert_eq!(port("https://nas.lan"), 8443);
+        // Un port écrit est toujours respecté.
+        assert_eq!(port("https://maison.exemple.fr:8443"), 8443);
+        assert_eq!(port("maison.exemple.fr:443"), 443);
+    }
+
+    #[test]
+    fn only_a_public_name_on_443_is_judged_by_the_public_chain() {
+        let public = |t: &str| ServerAddr::parse(t).unwrap().is_public_chain();
+        assert!(public("https://maison.exemple.fr"));
+        assert!(public("maison.exemple.fr:443"));
+        assert!(public("https://mon-mac.tailnet-xxxx.ts.net/"));
+        assert!(public("EXEMPLE.FR:443"));
+        // Autre port : épinglé sur l'empreinte.
+        assert!(!public("maison.exemple.fr"));
+        assert!(!public("maison.exemple.fr:8443"));
+        // IP, .local et consorts : épinglés, même sur 443.
+        assert!(!public("192.168.1.20:443"));
+        assert!(!public("100.64.0.1:443"));
+        assert!(!public("[fd7a:115c:a1e0::1]:443"));
+        assert!(!public("mac-mini.local:443"));
+        assert!(!public("mac-mini:443"));
+        assert!(!public("localhost:443"));
+        assert!(!public("nas.home.arpa:443"));
+        assert!(!public("1.2.3:443"));
+    }
+
+    #[test]
+    fn what_counts_as_a_public_name() {
+        for yes in [
+            "a.fr",
+            "maison.exemple.fr",
+            "xn--bcher-kva.example",
+            "A-b.C-d.io",
+        ] {
+            assert!(is_public_name(yes), "{yes}");
+        }
+        for no in [
+            "",
+            "mac",
+            "mac.local",
+            "192.168.1.1",
+            "::1",
+            "a..fr",
+            "-a.fr",
+            "a-.fr",
+            "a b.fr",
+            "a_b.fr",
+            "exemple.fr.",
+            "x.123",
+            "x.internal",
+            "x.lan",
+            "x.localhost",
+        ] {
+            assert!(!is_public_name(no), "{no:?}");
+        }
     }
 }

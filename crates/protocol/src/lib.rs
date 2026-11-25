@@ -6,6 +6,7 @@
 
 pub mod automation;
 pub mod discovery;
+pub mod domain;
 pub mod downsample;
 pub mod events;
 pub mod format;

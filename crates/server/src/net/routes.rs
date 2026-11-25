@@ -3,12 +3,8 @@
 //! une seule porte : le jeton de mode `PUT /api/mode`, le jeton de lecture `GET /api/state` et
 //! `GET /api/events` (le widget de l'iPhone).
 
-use std::net::SocketAddr;
-
 use axum::body::{Body, Bytes};
-use axum::extract::{
-    ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Path, Query, Request, State,
-};
+use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -30,6 +26,7 @@ use super::AppState;
 use crate::audit::{Action, ConnRef, Entry, ModeCause, Origin, Outcome, Who};
 use crate::rights::Capability;
 use crate::security::account::Verdict;
+use crate::security::network::ClientIp;
 use crate::security::sessions::{clean_installation, ConnectionRecord, SessionInfo};
 use crate::security::user_tokens::TokenInfo;
 
@@ -300,7 +297,7 @@ fn session_who(
         .find(|c| c.session_id == session.id)
         .map(conn_ref);
     who.ip = peer.map(|p| p.to_string());
-    who.via = peer.map(|p| via_of(p, headers));
+    who.via = peer.map(|p| via_of(state, p, headers));
     who
 }
 
@@ -314,10 +311,7 @@ impl FromRequestParts<AppState> for Ctx {
         parts: &mut axum::http::request::Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let peer = parts
-            .extensions
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|c| c.0.ip());
+        let peer = parts.extensions.get::<ClientIp>().map(|c| c.0);
         Ok(Ctx(match parts.extensions.get::<SessionInfo>() {
             Some(session) => session_who(state, session, peer, &parts.headers),
             None => Who::default(),
@@ -403,35 +397,28 @@ async fn version(
     })
 }
 
-/// D'où vient la requête : par Tailscale (adresse du tailnet, ou `tailscale serve` qui relaie
-/// depuis cette machine en laissant son nom `….ts.net` et ses en-têtes d'identité), sinon sur place.
-/// Une indication pour s'y retrouver, jamais une décision de sécurité.
-pub(super) fn via_of(peer: std::net::IpAddr, headers: &HeaderMap) -> Via {
-    let host_is_tailnet = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|h| {
-            h.rsplit_once(':')
-                .map_or(h, |(name, port)| {
-                    if port.chars().all(|c| c.is_ascii_digit()) {
-                        name
-                    } else {
-                        h
-                    }
-                })
-                .to_ascii_lowercase()
-                .ends_with(".ts.net")
-        });
+/// D'où vient la requête : par Tailscale (adresse du tailnet, `tailscale serve` qui relaie depuis
+/// cette machine en laissant son nom `….ts.net` et ses en-têtes d'identité, ou l'adresse publique
+/// réglée : un relais inverse l'atteint depuis le tailnet), sinon sur place. `client` est
+/// l'adresse décidée par `security::network::client_ip` (derrière un proxy de confiance, celle de
+/// l'`X-Forwarded-For`). Une indication pour s'y retrouver, jamais une décision de sécurité.
+pub(super) fn via_of(state: &AppState, client: std::net::IpAddr, headers: &HeaderMap) -> Via {
+    let settings = state.auth.network.current();
+    let host = crate::security::network::request_host(headers);
+    let host_is_tailnet = host.as_deref().is_some_and(|h| h.ends_with(".ts.net"));
+    let host_is_public = match (&settings.public, headers.get(header::HOST)) {
+        (Some(public), Some(h)) => h.to_str().ok().is_some_and(|h| public.matches_host(h)),
+        _ => false,
+    };
     let serve_headers = headers.contains_key("tailscale-user-login");
-    let peer = peer.to_canonical();
-    let in_tailnet = match peer {
+    let in_tailnet = match client.to_canonical() {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
             o[0] == 100 && (o[1] & 0xc0) == 64
         }
         std::net::IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
     };
-    if in_tailnet || host_is_tailnet || serve_headers {
+    if in_tailnet || host_is_tailnet || host_is_public || serve_headers {
         Via::Tailscale
     } else {
         Via::Local
@@ -440,7 +427,7 @@ pub(super) fn via_of(peer: std::net::IpAddr, headers: &HeaderMap) -> Via {
 
 async fn login(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
@@ -459,7 +446,6 @@ async fn login(
     if request.username.len() > 256 || request.password.len() > 1024 {
         return Err(ApiError::new(ErrorCode::InvalidCredentials).into());
     }
-    let ip = peer.ip();
     if let Err(e) = check_not_locked(&state, ip, &request.username) {
         audit_lockout(&state, ip, &headers, &request.username).await;
         return Err(e);
@@ -503,7 +489,7 @@ async fn login(
                     .iter()
                     .any(|c| !c.unknown && c.id == i.id)
             });
-            let via = via_of(ip, &headers);
+            let via = via_of(&state, ip, &headers);
             let mut who = Who::user(
                 &granted.user_id,
                 state.auth.accounts.display_name(&granted.user_id),
@@ -524,17 +510,24 @@ async fn login(
                 audit(&state, Entry::new(Action::NewConnection, &who)).await;
             }
             log::info!("connexion acceptée pour {ip}");
+            let public_url = (version >= 4)
+                .then(|| state.auth.network.current().public.clone())
+                .flatten()
+                .map(|p| p.origin().to_string());
             Ok(Json(LoginResponse {
                 token: session.token,
                 expires_at: session.expires_at,
                 max_expires_at: session.max_expires_at,
                 protocol_version: version,
                 server_version: SERVER_VERSION.to_string(),
+                // Les adresses du tailnet sont annoncées comme avant, adresse publique réglée ou non :
+                // le client range l'adresse publique **après** elles (voir `merge_public_url`).
                 tailnet_urls: if version >= 4 {
                     super::tailnet_urls(state.listen)
                 } else {
                     Vec::new()
                 },
+                public_url,
             }))
         }
         Verdict::Invalid => {
@@ -552,7 +545,7 @@ async fn login(
             who.connection = clean_installation(request.installation)
                 .map(|i| ConnRef::new(None, &i.name, ConnRef::of_kind(i.kind)));
             who.ip = Some(ip.to_string());
-            who.via = Some(via_of(ip, &headers));
+            who.via = Some(via_of(&state, ip, &headers));
             let who_key = known.map_or_else(String::new, |(id, _)| id);
             audit_throttled(
                 &state,
@@ -588,7 +581,7 @@ async fn audit_lockout(
         None => Who::default(),
     };
     who.ip = Some(ip.to_string());
-    who.via = Some(via_of(ip, headers));
+    who.via = Some(via_of(state, ip, headers));
     audit_throttled(
         state,
         format!("lockout:{ip}"),
@@ -719,8 +712,8 @@ async fn require_session(
     }
     let via = request
         .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| via_of(c.0.ip(), request.headers()));
+        .get::<ClientIp>()
+        .map(|c| via_of(&state, c.0, request.headers()));
     let session = bearer(request.headers())
         .or_else(|| ws_subprotocol_token(request.method(), request.uri().path(), request.headers()))
         .and_then(|token| state.auth.authenticate_from(token, via));
@@ -748,8 +741,8 @@ async fn require_session(
             if state.hub.any_read_token() {
                 let ip = request
                     .extensions()
-                    .get::<ConnectInfo<SocketAddr>>()
-                    .map(|c| c.0.ip().to_string())
+                    .get::<ClientIp>()
+                    .map(|c| c.0.to_string())
                     .unwrap_or_default();
                 log::info!(
                     "lecture refusée pour {ip} : session expirée ou jeton de lecture inconnu"
@@ -787,7 +780,7 @@ fn actor_who(state: &AppState, actor: &Actor, ip: std::net::IpAddr, headers: &He
         state.auth.accounts.display_name(&actor.user_id),
     );
     who.ip = Some(ip.to_string());
-    who.via = Some(via_of(ip, headers));
+    who.via = Some(via_of(state, ip, headers));
     if let Some(token) = &actor.token {
         // Le téléphone d'où le raccourci a été préparé, sinon le libellé du jeton.
         who.connection = token
@@ -855,10 +848,9 @@ async fn authenticate_mode_request(
 /// toute la maison ; le journal technique dit quelle personne l'a demandé.
 async fn put_mode(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ClientIp(ip): ClientIp,
     request: Request,
 ) -> ApiResult<Json<ModeResponse>> {
-    let ip = peer.ip();
     let actor =
         authenticate_mode_request(&state, ip, "changement de mode", request.headers()).await?;
     require(&state, &actor.user_id, Capability::ChangeMode)?;
@@ -909,10 +901,9 @@ async fn put_mode(
 /// déclarer.
 async fn put_presence(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ClientIp(ip): ClientIp,
     request: Request,
 ) -> ApiResult<Json<PresenceResponse>> {
-    let ip = peer.ip();
     let actor = authenticate_mode_request(&state, ip, "présence", request.headers()).await?;
     require(&state, &actor.user_id, Capability::ChangeMode)?;
     let who = actor_who(&state, &actor, ip, request.headers());

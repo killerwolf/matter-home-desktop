@@ -70,9 +70,10 @@ impl Creds {
         format!("{}#{}", self.primary.url(), self.fingerprint)
     }
 
-    /// Joint « à distance » : une autre adresse que la principale, ou une adresse Tailscale.
+    /// Joint « à distance » : une autre adresse que la principale, une adresse Tailscale, ou un
+    /// nom public (derrière un relais : ce n'est pas le réseau de la maison).
     pub(super) fn is_remote(&self) -> bool {
-        self.addr != self.primary || self.addr.is_tailscale()
+        self.addr != self.primary || self.addr.is_tailscale() || self.addr.is_public_chain()
     }
 }
 
@@ -92,8 +93,8 @@ fn parse_alts(primary: &ServerAddr, alt_urls: &[String]) -> Vec<ServerAddr> {
 const PICK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// La première adresse qui répond, dans l'ordre : avec **le certificat épinglé** pour une adresse
-/// directe ou, pour `https://nom.ts.net/` (port 443), avec un certificat public valable pour ce
-/// nom (là, pas d'empreinte du serveur). Une adresse qui répond avec un autre certificat (autre
+/// directe ou, pour un nom de domaine public sur le port 443 (`https://nom/`), avec un certificat
+/// public valable pour ce nom (là, pas d'empreinte du serveur). Une adresse qui répond avec un autre certificat (autre
 /// appareil, autre réseau local) est ignorée. `None` si
 /// aucune ne répond : l'appelant garde alors sa tentative habituelle et son message d'erreur.
 pub(super) fn pick_address(candidates: &[ServerAddr], fingerprint: &str) -> Option<ServerAddr> {
@@ -868,6 +869,16 @@ fn try_login(
         .alt_urls
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = alts.clone();
+    // Et l'adresse publique, seulement si on vient de parler au serveur par une connexion épinglée.
+    let alts = merge_public_url(
+        &alts,
+        response.public_url.as_deref(),
+        !addr.is_public_chain(),
+    );
+    *shared
+        .alt_urls
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = alts.clone();
     creds.alts = parse_alts(&creds.primary, &alts);
     Ok(creds)
 }
@@ -904,6 +915,49 @@ pub(super) fn merge_tailnet_urls(known: &[String], announced: &[String]) -> Vec<
             out.push(canonical);
             added += 1;
         }
+    }
+    out
+}
+
+/// Au plus ce nombre d'adresses publiques (nom de domaine sur le 443) dans la liste.
+const MAX_PUBLIC_URLS: usize = 3;
+
+/// Ajoute aux autres adresses **l'adresse publique** annoncée par le serveur, sous quatre
+/// conditions, car elle fait confiance à une autorité publique et non à l'empreinte :
+/// - l'annonce est arrivée par une connexion **épinglée** (`via_pinned`) : un serveur joint par
+///   une chaîne publique ne peut pas envoyer le client vers d'autres noms ;
+/// - c'est écrit `https://nom` (le schéma est obligatoire), un nom de domaine public sur le port
+///   443 ([`ServerAddr::is_public_chain`]) : jamais une IP, un nom `.local` ni un autre port ;
+/// - elle n'y est pas déjà, et la liste ne porte pas déjà [`MAX_PUBLIC_URLS`] adresses publiques ;
+/// - elle est ajoutée **après** les autres : l'adresse principale reste essayée la première, et
+///   cette adresse ne sert que quand les précédentes ne répondent pas.
+pub(super) fn merge_public_url(
+    known: &[String],
+    announced: Option<&str>,
+    via_pinned: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = known.to_vec();
+    let Some(text) = announced.map(str::trim) else {
+        return out;
+    };
+    if !via_pinned || !text.starts_with("https://") {
+        return out;
+    }
+    let Ok(addr) = ServerAddr::parse(text) else {
+        return out;
+    };
+    if !addr.is_public_chain() {
+        return out;
+    }
+    let publics = out
+        .iter()
+        .filter(|u| ServerAddr::parse(u).is_ok_and(|a| a.is_public_chain()))
+        .count();
+    let already = out
+        .iter()
+        .any(|u| ServerAddr::parse(u).is_ok_and(|a| a == addr));
+    if !already && publics < MAX_PUBLIC_URLS {
+        out.push(addr.url());
     }
     out
 }
@@ -1184,5 +1238,69 @@ mod tests {
         );
         // Rien à ajouter : la liste ne bouge pas.
         assert_eq!(merge_tailnet_urls(&merged, &[]), merged);
+    }
+
+    #[test]
+    fn the_announced_public_address_is_kept_only_when_it_is_safe() {
+        let known = vec!["https://100.64.0.5:8443".to_string()];
+        let url = "https://maison.exemple.fr";
+        let kept = merge_public_url(&known, Some(url), true);
+        assert_eq!(
+            kept,
+            vec![
+                known[0].clone(),
+                "https://maison.exemple.fr:443".to_string()
+            ]
+        );
+        // Deux fois la même : une seule entrée ; sans annonce : rien ne change.
+        assert_eq!(merge_public_url(&kept, Some(url), true), kept);
+        assert_eq!(merge_public_url(&known, None, true), known);
+        // Annonce reçue par une chaîne publique (pas épinglée) : ignorée.
+        assert_eq!(merge_public_url(&known, Some(url), false), known);
+        // Pas de schéma, IP, .local, autre port, chemin, http : ignorés.
+        for bad in [
+            "maison.exemple.fr",
+            "maison.exemple.fr:443",
+            "https://192.168.1.20",
+            "https://192.168.1.20:443",
+            "https://mac.local",
+            "https://mac.local:443",
+            "https://maison.exemple.fr:8443",
+            "https://maison.exemple.fr/chemin",
+            "http://maison.exemple.fr",
+            "https://",
+            "",
+        ] {
+            assert_eq!(merge_public_url(&known, Some(bad), true), known, "{bad:?}");
+        }
+        // Plafond : jamais plus de MAX_PUBLIC_URLS adresses publiques.
+        let mut list = known.clone();
+        for n in 0..10 {
+            list = merge_public_url(&list, Some(&format!("https://a{n}.exemple.fr")), true);
+        }
+        let publics = list
+            .iter()
+            .filter(|u| ServerAddr::parse(u).is_ok_and(|a| a.is_public_chain()))
+            .count();
+        assert_eq!(publics, MAX_PUBLIC_URLS);
+    }
+
+    #[test]
+    fn a_public_name_is_remote_and_the_primary_stays_first() {
+        let primary = ServerAddr::parse("https://192.168.1.20:8443").unwrap();
+        let alts = vec!["https://maison.exemple.fr".to_string()];
+        let mut creds = Creds::new(primary.clone(), &alts, "AA".into(), "t".into());
+        assert_eq!(creds.candidates()[0], primary);
+        assert!(!creds.is_remote());
+        creds.addr = creds.alts[0].clone();
+        assert!(creds.is_remote());
+        // Un nom public en adresse principale : à distance aussi (derrière un relais).
+        let direct = Creds::new(
+            ServerAddr::parse("https://maison.exemple.fr").unwrap(),
+            &[],
+            "AA".into(),
+            "t".into(),
+        );
+        assert!(direct.is_remote());
     }
 }

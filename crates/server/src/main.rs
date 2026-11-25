@@ -79,6 +79,19 @@ Usage :
                                  L'accès est ÉTEINT tant qu'on ne l'allume pas (« enable ») :
                                  /mcp n'existe alors pas. Ces commandes agissent aussi sur un
                                  serveur qui tourne, sans redémarrage. Voir docs/agents-ia.md
+  ostal-server network show [--data-dir DOSSIER]
+  ostal-server network public-address https://NOM | --clear [--data-dir DOSSIER]
+  ostal-server network trusted-proxies RÉSEAU... | --default | --none [--data-dir DOSSIER]
+                                 réglages réseau (serveur/reseau.json), pris en compte sans
+                                 redémarrage. L'adresse publique est le nom en https, sans chemin
+                                 ni port, sous lequel la maison se joint de loin derrière un relais
+                                 au certificat officiel (https://maison.exemple.fr) ; les Raccourcis
+                                 et le widget de l'iPhone la savent joindre. Les proxys de
+                                 confiance sont les réseaux (CIDR) dont l'en-tête X-Forwarded-For
+                                 est cru pour connaître l'adresse du vrai client. Aucun par défaut :
+                                 n'ajoutez que l'adresse de votre relais (--default et --none
+                                 reviennent à aucun). Les changements sont inscrits au journal
+                                 d'audit. Voir docs/acces-distant.md
   ostal-server audit [--user COMPTE] [--days N] [--data-dir DOSSIER]
                                  lit le journal d'audit (qui a fait quoi, depuis quel téléphone
                                  ou ordinateur), la ligne la plus récente d'abord : date, qui,
@@ -165,6 +178,9 @@ fn main() -> ExitCode {
             .map_or_else(|c| c, |()| run_create_account(&args[1..])),
         Some("user") => refuse_root("« user »").map_or_else(|c| c, |()| run_user(&args[1..])),
         Some("agent") => refuse_root("« agent »").map_or_else(|c| c, |()| run_agent(&args[1..])),
+        Some("network") => {
+            refuse_root("« network »").map_or_else(|c| c, |()| run_network(&args[1..]))
+        }
         Some("fingerprint") => run_fingerprint(&args[1..]),
         Some("audit") => run_audit(&args[1..]),
         Some("init") => refuse_root("« init »").map_or_else(|c| c, |()| run_init(&args[1..])),
@@ -713,6 +729,109 @@ fn run_user(args: &[String]) -> ExitCode {
             eprintln!("{e:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `network show|public-address|trusted-proxies` : les réglages réseau (`serveur/reseau.json`,
+/// `docs/acces-distant.md`). Prise en compte sans redémarrage ; chaque changement est inscrit au
+/// journal d'audit, sans autre valeur que les noms réglés.
+fn run_network(args: &[String]) -> ExitCode {
+    use ostal_server::security::network as net;
+    let Some((action, rest)) = args.split_first() else {
+        return usage_error("network attend show, public-address ou trusted-proxies");
+    };
+    let mut args = rest.to_vec();
+    let clear = take_flag(&mut args, "--clear");
+    let default = take_flag(&mut args, "--default");
+    let none = take_flag(&mut args, "--none");
+    let data_dir = match data_dir_for_command(&mut args) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    if args.iter().any(|a| a.starts_with("--")) {
+        return usage_error(&format!("option inconnue : {}", args.join(" ")));
+    }
+    let dir = data_dir.join(persistence::SERVER_DIR);
+    let fail = |e: anyhow::Error| {
+        eprintln!("{e:#}");
+        ExitCode::FAILURE
+    };
+    match action.as_str() {
+        "show" => {
+            if !args.is_empty() || clear || default || none {
+                return usage_error("show n'a pas d'argument");
+            }
+            let settings = net::read(&dir);
+            if settings.unreadable {
+                eprintln!(
+                    "{} est illisible : aucun proxy de confiance, aucune adresse publique.",
+                    net::FILE
+                );
+            }
+            match &settings.public {
+                Some(p) => println!("Adresse publique : {}", p.origin()),
+                None => println!("Adresse publique : aucune"),
+            }
+            let list = settings.trusted.list();
+            if list.is_empty() {
+                println!("Proxys de confiance : aucun");
+            } else {
+                println!("Proxys de confiance : {}", list.join(", "));
+            }
+            ExitCode::SUCCESS
+        }
+        "public-address" => {
+            let address = match (args.as_slice(), clear) {
+                ([one], false) => Some(one.as_str()),
+                ([], true) => None,
+                _ => {
+                    return usage_error("public-address attend une adresse https://NOM, ou --clear")
+                }
+            };
+            let dir = match security::server_dir(&data_dir) {
+                Ok(d) => d,
+                Err(e) => return fail(e),
+            };
+            match net::set_public_address(&dir, address, &Who::command_line()) {
+                Ok(Some(a)) => {
+                    println!("Adresse publique réglée : {a}");
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    println!("Adresse publique effacée.");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(e),
+            }
+        }
+        "trusted-proxies" => {
+            let list: Option<Vec<String>> = match (args.is_empty(), default, none) {
+                (false, false, false) => Some(args.clone()),
+                (true, true, false) => None,
+                (true, false, true) => Some(Vec::new()),
+                _ => {
+                    return usage_error(
+                        "trusted-proxies attend des réseaux (10.0.0.0/24 …), ou --none",
+                    )
+                }
+            };
+            let dir = match security::server_dir(&data_dir) {
+                Ok(d) => d,
+                Err(e) => return fail(e),
+            };
+            match net::set_trusted_proxies(&dir, list.as_deref(), &Who::command_line()) {
+                Ok(done) if done.is_empty() => {
+                    println!("Aucun proxy de confiance : X-Forwarded-For est toujours ignoré.");
+                    ExitCode::SUCCESS
+                }
+                Ok(done) => {
+                    println!("Proxys de confiance : {}", done.join(", "));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(e),
+            }
+        }
+        _ => usage_error("network attend show, public-address ou trusted-proxies"),
     }
 }
 

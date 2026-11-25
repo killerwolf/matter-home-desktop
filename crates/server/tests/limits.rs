@@ -166,6 +166,8 @@ fn stalled_request_body_times_out_but_slow_progress_does_not() {
 fn connections_per_address_are_capped() {
     use tokio::io::AsyncReadExt;
     let dir = temp_dir("perip");
+    // Aucun proxy de confiance par défaut : le pair des essais (127.0.0.1) a le plafond d'une
+    // adresse ordinaire (le test suivant le déclare proxy de confiance, au plafond plus large).
     let server = Server::start(&dir);
     let client = server.client();
     runtime().block_on(async {
@@ -201,5 +203,35 @@ fn connections_per_address_are_capped() {
         // Tout relâché : une requête complète passe.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(client.login_as(USER, PASSWORD, PROTOCOL).await.status, 200);
+    });
+}
+
+/// Un proxy de confiance (ici la boucle locale, le pair des essais, réglée dans `reseau.json`) relaie tous ses
+/// clients : son plafond est de 64 connexions et non 16, et la 65e est fermée.
+#[test]
+fn a_trusted_proxy_has_a_wider_connection_cap() {
+    use tokio::io::AsyncReadExt;
+    let dir = temp_dir("perip-proxy");
+    std::fs::create_dir_all(dir.join("serveur")).unwrap();
+    std::fs::write(
+        dir.join("serveur/reseau.json"),
+        r#"{"trusted_proxies":["127.0.0.1/32"]}"#,
+    )
+    .unwrap();
+    let server = Server::start(&dir);
+    runtime().block_on(async {
+        let mut held = Vec::new();
+        for _ in 0..64 {
+            held.push(tokio::net::TcpStream::connect(server.addr).await.unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // 64 connexions tenues : c'est la 65e qui est refusée.
+        let mut next = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let mut byte = [0u8; 1];
+        let closed = tokio::time::timeout(Duration::from_secs(5), next.read(&mut byte))
+            .await
+            .expect("la 65e connexion doit être fermée aussitôt");
+        assert!(matches!(closed, Ok(0) | Err(_)), "{closed:?}");
+        drop(held);
     });
 }
