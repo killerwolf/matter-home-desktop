@@ -9,12 +9,16 @@
 //!   poignée de main est vérifiée pour de bon (rejouer le certificat public ne suffit pas).
 //!   Le **nom** du certificat n'est pas contrôlé : le certificat auto-signé du serveur ne contient
 //!   ni son nom MagicDNS ni son IP Tailscale, et l'empreinte exacte prouve déjà qui répond ;
-//! - **chaîne publique**, seulement pour une adresse `*.ts.net` sur le port 443
-//!   ([`ServerAddr::is_tailscale_serve`]) : derrière `tailscale serve`, c'est Tailscale qui
-//!   présente un certificat Let's Encrypt, d'empreinte changeante. Il est alors validé comme dans
-//!   un navigateur (chaîne jusqu'à une autorité publique, nom, dates), sans épinglage : ce n'est
-//!   pas « le certificat du serveur ». Aucune autre adresse n'y a droit, et une erreur de ce mode
-//!   n'est jamais présentée comme un « certificat changé ».
+//! - **chaîne publique**, seulement pour un nom de domaine public sur le port 443
+//!   ([`ServerAddr::is_public_chain`] : `*.ts.net` derrière `tailscale serve`, ou le nom d'un
+//!   relais comme Caddy) : le certificat présenté est un certificat Let's Encrypt, d'empreinte
+//!   changeante. Il est alors validé comme dans un navigateur (chaîne jusqu'à une autorité
+//!   publique, nom, dates), sans épinglage : ce n'est pas « le certificat du serveur ». Une IP, un
+//!   nom `.local` ou un autre port n'y ont jamais droit, une chaîne invalide ou un nom qui ne
+//!   correspond pas est toujours refusé (sans repli sur l'empreinte), et une erreur de ce mode
+//!   n'est jamais présentée comme un « certificat changé ». Le mode se décide sur l'adresse seule
+//!   ([`mode_for`]), y compris pour la première lecture ([`Trust::Probe`]) : l'utilisateur n'a
+//!   alors aucune empreinte à comparer, il voit le nom vérifié.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -177,6 +181,30 @@ pub enum Trust {
     Pinned(String),
 }
 
+/// Façon de juger le certificat d'une adresse : décision pure, sans réseau (voir [`mode_for`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Lit l'empreinte présentée, sans rien juger.
+    ReadFingerprint,
+    /// Empreinte exacte, nom ignoré.
+    Pinned,
+    /// Chaîne de confiance publique et nom vérifiés, sans empreinte.
+    PublicChain,
+}
+
+/// Quel mode pour quelle adresse : un nom de domaine public sur le 443 est toujours jugé par la
+/// chaîne publique (même pour une première lecture, même si une empreinte est connue : elle ne
+/// sert alors à rien) ; tout le reste (IP, `.local`, autre port) est épinglé ou lu.
+pub fn mode_for(addr: &ServerAddr, trust: &Trust) -> Mode {
+    if addr.is_public_chain() {
+        return Mode::PublicChain;
+    }
+    match trust {
+        Trust::Probe => Mode::ReadFingerprint,
+        Trust::Pinned(_) => Mode::Pinned,
+    }
+}
+
 /// Comment le certificat est jugé (voir l'en-tête du module).
 enum Verify {
     Probe,
@@ -314,13 +342,10 @@ pub fn connect_until(
     deadline: Instant,
 ) -> Result<Connected, NetError> {
     let provider = Arc::new(ring::default_provider());
-    let verify = match trust {
-        Trust::Probe => Verify::Probe,
-        // `tailscale serve` : certificat public de Tailscale, jugé par la chaîne de confiance.
-        Trust::Pinned(_) if addr.is_tailscale_serve() => {
-            Verify::Public(public_verifier(public_roots(), &provider)?)
-        }
-        Trust::Pinned(fp) => Verify::Pinned(fp.clone()),
+    let verify = match (mode_for(addr, trust), trust) {
+        (Mode::PublicChain, _) => Verify::Public(public_verifier(public_roots(), &provider)?),
+        (Mode::Pinned, Trust::Pinned(fp)) => Verify::Pinned(fp.clone()),
+        _ => Verify::Probe,
     };
     connect_with(addr, trust, verify, provider, None, deadline)
 }
@@ -726,6 +751,36 @@ mod tests {
             "{:?}",
             selfsigned.err()
         );
+    }
+
+    #[test]
+    fn the_verification_mode_depends_on_the_address_alone() {
+        let mode = |t: &str, trust: &Trust| mode_for(&ServerAddr::parse(t).unwrap(), trust);
+        let pinned = Trust::Pinned(fingerprint_of(b"x"));
+        // Nom public sur 443 : chaîne publique, en première lecture comme en connexion épinglée.
+        for t in [
+            "https://ostal.klbr.h4md1.fr",
+            "ostal.klbr.h4md1.fr:443",
+            "https://mon-mac.tailnet-xxxx.ts.net/",
+        ] {
+            assert_eq!(mode(t, &Trust::Probe), Mode::PublicChain, "{t}");
+            assert_eq!(mode(t, &pinned), Mode::PublicChain, "{t}");
+        }
+        // Tout le reste reste épinglé (ou lu pour approbation).
+        for t in [
+            "192.168.1.20",
+            "192.168.1.20:443",
+            "https://mac-mini.local",
+            "mac-mini.local:443",
+            "100.64.0.1:443",
+            "[fd7a:115c:a1e0::1]:443",
+            "ostal.klbr.h4md1.fr",
+            "ostal.klbr.h4md1.fr:8443",
+            "mon-mac.tailnet-xxxx.ts.net:8443",
+        ] {
+            assert_eq!(mode(t, &Trust::Probe), Mode::ReadFingerprint, "{t}");
+            assert_eq!(mode(t, &pinned), Mode::Pinned, "{t}");
+        }
     }
 
     #[test]
