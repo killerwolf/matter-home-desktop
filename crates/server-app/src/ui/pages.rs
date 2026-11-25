@@ -191,6 +191,66 @@ impl App {
         });
     }
 
+    /// Relit les relais de confiance réglés (`serveur/reseau.json`) si on ne les a pas déjà lus.
+    fn refresh_relays(&mut self, st: &State) {
+        if self.relays_loaded {
+            return;
+        }
+        let dir = st.data_dir.join(ostal_server::persistence::SERVER_DIR);
+        self.relays = ostal_server_app::relays::current(&dir);
+        self.relays_input = ostal_server_app::relays::to_input(&self.relays);
+        self.relays_loaded = true;
+    }
+
+    /// Enregistre la liste tapée (vide : aucun relais). Le serveur qui tourne la relit tout seul.
+    fn save_relays(&mut self, st: &State) {
+        let result = ostal_server::security::server_dir(&st.data_dir)
+            .and_then(|dir| ostal_server_app::relays::save(&dir, &self.relays_input));
+        self.relays_message = Some(match result {
+            Ok(list) => (true, ostal_server_app::relays::saved_message(&list)),
+            Err(e) => (false, format!("{e:#}")),
+        });
+        self.relays_loaded = false;
+        self.refresh_relays(st);
+    }
+
+    /// Réglages › Relais de confiance : l'adresse du relais placé devant Ostal, pour lire la vraie
+    /// adresse de chaque appareil.
+    fn relays_section(&mut self, ui: &mut egui::Ui, st: &State) {
+        self.refresh_relays(st);
+        let p = theme::palette(ui);
+        widgets::section(ui, "Relais de confiance", |ui| {
+            ui.label("Si vous avez placé un relais (un reverse proxy) devant Ostal, il joint le serveur à la place des appareils : Ostal croit alors que tous viennent de lui. Déclarez ici l'adresse du relais, et Ostal lira la vraie adresse de chaque appareil (essais de mot de passe comptés par appareil, journal exact). C'est vide par défaut : sans relais, ne touchez à rien.");
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.relays_input)
+                    .hint_text("10.0.0.5")
+                    .desired_width(320.0),
+            );
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, "Enregistrer").clicked() {
+                    self.save_relays(st);
+                }
+                if !self.relays.is_empty() && ui.button("Aucun relais").clicked() {
+                    self.relays_input.clear();
+                    self.save_relays(st);
+                }
+            });
+            if self.relays.is_empty() {
+                ui.colored_label(p.text_secondary, "Actuellement : aucun relais.");
+            } else {
+                ui.colored_label(
+                    p.text_secondary,
+                    format!("Actuellement : {}", self.relays.join(", ")),
+                );
+            }
+            if let Some((ok, text)) = &self.relays_message {
+                ui.colored_label(if *ok { p.text_secondary } else { p.error }, text);
+            }
+            widgets::hint(ui, "Une adresse (10.0.0.5) ou un réseau (10.0.0.0/24), séparés par une virgule ou un espace. N'ajoutez que l'adresse du relais, la plus étroite possible, et jamais le réseau de la maison : tout appareil de cette liste peut se faire passer pour un autre, échapper au compte des essais de mot de passe et brouiller le journal. Le changement est pris en compte tout de suite, sans redémarrer.");
+        });
+    }
+
     /// Une valeur à recopier ailleurs, avec son bouton « Copier ».
     fn copy_field(&mut self, ui: &mut egui::Ui, key: &'static str, value: &str) {
         ui.horizontal(|ui| {
@@ -1596,6 +1656,7 @@ impl App {
         }
         if st.phase == Phase::Running {
             self.public_section(ui, st);
+            self.relays_section(ui, st);
         }
         widgets::section(ui, "Démarrage et veille", |ui| {
             if self.login_available() {

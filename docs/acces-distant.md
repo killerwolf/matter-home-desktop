@@ -110,6 +110,9 @@ ostal-server network trusted-proxies 10.0.0.5/32   # l'adresse du proxy, vue par
 ostal-server network trusted-proxies --none         # n'en croire aucun (le défaut)
 ```
 
+Ou dans **Ostal Server › Réglages › Relais de confiance** : une case pour les réseaux, « Enregistrer »
+et « Aucun relais ». Mêmes règles et même écriture que la commande, prise en compte sans redémarrer.
+
 - **N'ajoutez que l'adresse de votre relais**, la plus étroite possible (`/32` pour une machine). Tout
   appareil qui joint Ostal depuis un réseau de cette liste peut écrire un faux `X-Forwarded-For`,
   échapper au limiteur d'essais de connexion et brouiller le journal d'audit : n'y mettez jamais

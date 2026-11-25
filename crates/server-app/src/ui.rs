@@ -497,6 +497,12 @@ struct App {
     /// Ce qui est tapé dans la case de l'adresse publique, et le dernier message (vrai : réussi).
     public_input: String,
     public_message: Option<(bool, String)>,
+    /// Les relais de confiance réglés (réseaux, forme normale), relus comme l'adresse publique, et
+    /// ce qui est tapé dans leur case avec le dernier message (vrai : réussi).
+    relays: Vec<String>,
+    relays_loaded: bool,
+    relays_input: String,
+    relays_message: Option<(bool, String)>,
     /// Le lien d'autorisation de Serve, gardé jusqu'à la prochaine tentative d'activation.
     web_auth_url: Option<String>,
     /// Le jeton de mode qui vient d'être généré, en clair : montré une seule fois (il disparaît
@@ -562,6 +568,10 @@ impl App {
             public_loaded: false,
             public_input: String::new(),
             public_message: None,
+            relays: Vec::new(),
+            relays_loaded: false,
+            relays_input: String::new(),
+            relays_message: None,
             web_auth_url: None,
             mode_token_shown: None,
             mode_token_confirm: false,
@@ -731,6 +741,8 @@ impl App {
         self.tab = tab;
         self.public_loaded = false;
         self.public_message = None;
+        self.relays_loaded = false;
+        self.relays_message = None;
         // L'onglet Connexion montre l'état de Tailscale : on le relit.
         if tab == Tab::Connect {
             self.web_stale = true;
