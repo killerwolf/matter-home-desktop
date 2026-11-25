@@ -253,7 +253,8 @@ fn the_public_address_counts_as_remote_and_is_announced_to_the_client() {
         &dir,
         &format!(r#"{{"version":1,"public_address":"{PUBLIC}"}}"#),
     );
-    let server = Server::start(&dir);
+    // Raccourcis non signés : le test ne dépend ni d'iCloud ni de `/usr/bin/shortcuts` (CI).
+    let server = Server::start_with(&dir, &[("OSTAL_TEST_UNSIGNED_SHORTCUTS", "1")]);
     let client = server.client();
     runtime().block_on(async {
         // Le relais garde Host : « à distance », même sans X-Forwarded-For.
