@@ -15,6 +15,7 @@ import * as push from "./push.js";
 import { kindLabel, lastSeenLabel, sortConnections, viaLabel } from "./connections.js";
 import * as presence from "./presence.js";
 import * as agents from "./agents.js";
+import * as ext from "./extensions.js";
 import { ANDROID_NOTE, SHORTCUT_NAMES, copyLater, copyText, isAndroid, myTokens, originInfo, prepareShortcuts, prepareWidget, sinceText, tokenHere } from "./widgets.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -35,6 +36,7 @@ const state = {
   lostAt: null, // la liaison perdue après avoir été établie : le bandeau « La maison ne répond pas »
   notice: "", // un changement de mode venu d'ailleurs, à la place de la carte d'état
   presence: null, // GET /api/presence/people : { people, auto_mode, box_link, updated_at } ; null : rien à montrer (pas de box, serveur plus ancien)
+  weather: null, // GET /api/weather : { enabled, place, reading: { temperature, humidity, pressure, at }, failing } ; null : rien à montrer (extension éteinte ou serveur plus ancien)
   phones: null, // GET /api/wifi/phones : { linked, box_link, mine, free } (noms seulement)
   requests: [], // GET /api/agent-requests : les demandes d'agents d'IA qui attendent mon accord (cartes de agents.js)
   tokens: null, // GET /api/tokens : mes jetons { mode: { exists, created }, read: { … }, items: [{ id, kind, label, created }], label } (carte « Installer »)
@@ -382,13 +384,44 @@ async function loadPresence() {
 function startPresence() {
   clearInterval(presenceTimer);
   loadPresence();
-  presenceTimer = setInterval(() => { if (!document.hidden) loadPresence(); }, 60_000);
+  loadWeather();
+  presenceTimer = setInterval(() => { if (!document.hidden) { loadPresence(); loadWeather(); } }, 60_000);
+}
+
+/** La carte « Dehors » de l'accueil : la météo de l'extension (Open-Meteo), absente tant que
+ *  l'extension est éteinte ou sans relevé. Hors ligne, la dernière valeur reste avec son heure. */
+function patchWeather() {
+  const slot = $("#weather-slot");
+  if (!slot) return;
+  const card = state.loaded ? ext.weatherCard(state.weather) : null;
+  slot.hidden = !card;
+  if (!card) { slot._key = ""; return; }
+  const key = JSON.stringify(card);
+  if (slot._key === key) return;
+  slot._key = key;
+  const section = make("section", `card weather${card.stale ? " stale" : ""}`);
+  section.setAttribute("aria-label", card.aria);
+  section.append(make("div", "weather-title", card.place ? `Dehors · ${card.place}` : "Dehors"), make("div", "weather-line", card.line), make("div", "weather-note", card.note));
+  slot.replaceChildren(section);
+}
+
+/** La météo extérieure (GET /api/weather) : en même temps que la présence. */
+async function loadWeather() {
+  if (!api.hasToken()) return;
+  try {
+    state.weather = await api.request("GET", "/api/weather");
+  } catch (error) {
+    if (ext.isMissingRoute(error)) state.weather = null;
+    // Autre échec (réseau coupé) : on garde ce qu'on savait.
+  }
+  scheduleRender(false);
 }
 
 function stopPresence() {
   clearInterval(presenceTimer);
   presenceTimer = null;
   state.presence = null;
+  state.weather = null;
   state.phones = null;
   closePhonePick();
 }
@@ -743,13 +776,16 @@ function renderDevices() {
     const presenceSlot = make("div");
     presenceSlot.id = "presence-slot";
     presenceSlot.hidden = true;
+    const weatherSlot = make("div");
+    weatherSlot.id = "weather-slot";
+    weatherSlot.hidden = true;
     const install = make("div");
     install.id = "install-slot";
     install.hidden = true;
     const note = make("p", "view-note");
     note.id = "rooms-note";
     note.hidden = true;
-    view.append(requestsSlot, status, presenceSlot, install, make("h2", "view-title", "Pièces"), note);
+    view.append(requestsSlot, status, presenceSlot, weatherSlot, install, make("h2", "view-title", "Pièces"), note);
     if (state.devices.size === 0) view.appendChild(make("p", "empty", state.loaded ? "Aucun appareil sur ce serveur. Ajoutez-en depuis l'app Ostal sur le Mac (« + Ajouter ») ; l'onglet Appareils d'Ostal Server explique comment." : "Chargement…"));
     const rooms = make("div", "rooms");
     rooms.id = "rooms";
@@ -780,9 +816,11 @@ function renderDevices() {
       myPhone.hidden = !state.phones?.linked;
       const widgets = make("button", "ghost", "Widgets et raccourcis");
       widgets.id = "widgets";
+      const extensions = make("button", "ghost", "Extensions");
+      extensions.id = "extensions";
       const logout = make("button", "ghost", "Se déconnecter");
       logout.id = "logout";
-      out.append(notif, connections, myAgents, myPhone, widgets, logout);
+      out.append(notif, connections, myAgents, myPhone, widgets, extensions, logout);
       view.appendChild(out);
     }
     structureDirty = false;
@@ -817,6 +855,7 @@ function renderDevices() {
   patchRequests();
   patchStatus();
   patchPresence();
+  patchWeather();
   patchInstall();
   if (sheetId) renderSheet();
 }
@@ -898,6 +937,7 @@ function renderPlan() {
       getPlan: () => state.plan,
       getDevices: () => state.devices,
       getCameras: () => state.cameras,
+      getWeather: () => (state.loaded ? ext.weatherCard(state.weather) : null),
       getExpect: (id) => expects.get(id) ?? null,
       get loaded() { return state.loaded; },
       onOpenDevice: (id) => openDetail(id, "half"),
@@ -1330,6 +1370,7 @@ function closeSheet() {
   pushUi.open = false;
   modeUi.open = false;
   connUi.open = false;
+  extUi.open = false;
   closeAgents();
   if (wasOpen) {
     const target = sheetOpener;
@@ -1632,6 +1673,232 @@ function renderConnections() {
     ul.appendChild(li);
   }
   body.appendChild(ul);
+}
+
+// ---------------------------------------------------------------------------
+// Extensions : fonctions facultatives du serveur, toutes éteintes par défaut (GET /api/extensions,
+// PUT /api/extensions/{id}). La liste avec un interrupteur par extension, puis une page de réglages
+// par extension. Un secret n'est jamais relu : le serveur dit seulement « défini » ; le champ reste
+// vide et n'envoie que ce qu'on y tape. Tout est écrit en `textContent`.
+// ---------------------------------------------------------------------------
+const extUi = { open: false, list: null, error: "", busy: false, page: null, q: "", places: null, searching: false, message: "" };
+
+async function openExtensions() {
+  closeSheet();
+  extUi.open = true;
+  extUi.list = null;
+  extUi.error = "";
+  extUi.page = null;
+  extUi.places = null;
+  extUi.q = "";
+  extUi.message = "";
+  renderExtensions();
+  showSheet("tall");
+  await loadExtensions();
+}
+
+async function loadExtensions() {
+  try {
+    extUi.list = (await api.request("GET", "/api/extensions")).extensions;
+    extUi.error = "";
+  } catch (error) {
+    extUi.error = ext.errorText(error);
+  }
+  if (extUi.open) renderExtensions();
+}
+
+/** Envoie une modification, remplace l'extension par la réponse du serveur et la météo de l'accueil. */
+async function updateExtension(id, body) {
+  if (extUi.busy) return false;
+  extUi.busy = true;
+  extUi.error = "";
+  extUi.message = "";
+  renderExtensions();
+  let done = false;
+  try {
+    const view = await api.request("PUT", `/api/extensions/${encodeURIComponent(id)}`, body);
+    extUi.list = (extUi.list ?? []).map((e) => (e.id === id ? view : e));
+    done = true;
+    if (id === "weather") loadWeather();
+  } catch (error) {
+    extUi.error = ext.errorText(error);
+  } finally {
+    extUi.busy = false;
+    if (extUi.open) renderExtensions();
+  }
+  return done;
+}
+
+async function switchExtension(view, on) {
+  if (on) {
+    const ok = await askConfirm({ title: `Activer « ${view.name} » ?`, text: view.disclosure, action: "Activer", plain: true });
+    if (!ok) { renderExtensions(); return; }
+  }
+  await updateExtension(view.id, { enabled: on });
+}
+
+async function searchPlaces() {
+  if (!ext.searchable(extUi.q)) { extUi.error = "Tapez au moins deux caractères : une ville ou un code postal."; renderExtensions(); return; }
+  extUi.searching = true;
+  extUi.error = "";
+  extUi.places = null;
+  renderExtensions();
+  try {
+    extUi.places = (await api.request("GET", `/api/extensions/weather/search?q=${encodeURIComponent(extUi.q.trim())}`)).places;
+  } catch (error) {
+    extUi.error = ext.errorText(error);
+  } finally {
+    extUi.searching = false;
+    if (extUi.open) renderExtensions();
+  }
+}
+
+async function choosePlace(place) {
+  if (await updateExtension("weather", { config: ext.placeConfig(place) })) { extUi.places = null; extUi.q = ""; extUi.message = `Lieu enregistré : ${place.name}.`; renderExtensions(); }
+}
+
+function extensionSwitch(view, labelId) {
+  const toggle = make("button", "switch");
+  toggle.type = "button";
+  toggle.setAttribute("role", "switch");
+  toggle.setAttribute("aria-checked", String(view.enabled));
+  toggle.setAttribute("aria-labelledby", labelId);
+  toggle.disabled = extUi.busy;
+  toggle.addEventListener("click", () => switchExtension(view, !view.enabled));
+  return toggle;
+}
+
+/** Les champs secrets d'une extension (mot de passe, clé) : jamais préremplis, « défini » seulement.
+ *  Chaque champ a son libellé et son aide (donnés par le serveur) ; « Effacer » retire un secret. */
+function secretFields(view) {
+  const fields = view.secrets ?? [];
+  if (!fields.length) return null;
+  const box = make("div", "ext-secrets");
+  const inputs = new Map();
+  for (const field of fields) {
+    const name = field.label || field.key;
+    const label = make("label", "ext-field");
+    label.appendChild(make("span", "", name));
+    const input = make("input");
+    input.type = "password";
+    input.autocomplete = "new-password"; // jamais proposé ni rempli par le navigateur
+    input.spellcheck = false;
+    input.placeholder = field.set ? "Défini : laissez vide pour le garder" : "Pas encore défini";
+    label.appendChild(input);
+    if (field.help) label.appendChild(make("small", "w-note", field.help));
+    inputs.set(field.key, input);
+    box.appendChild(label);
+    if (field.set) {
+      const clear = make("button", "btn danger-btn", "Effacer");
+      clear.type = "button";
+      clear.setAttribute("aria-label", `Effacer : ${name}`);
+      clear.disabled = extUi.busy;
+      clear.addEventListener("click", async () => {
+        const ok = await askConfirm({ title: "Effacer ce secret ?", text: `« ${name} » sera retiré d'Ostal. L'extension ne pourra plus s'en servir.`, action: "Effacer" });
+        if (ok && await updateExtension(view.id, { secrets: { [field.key]: null } })) { extUi.message = "Secret effacé."; renderExtensions(); }
+      });
+      box.appendChild(clear);
+    }
+  }
+  const save = make("button", "btn", "Enregistrer");
+  save.type = "button";
+  save.disabled = extUi.busy;
+  save.addEventListener("click", async () => {
+    const secrets = {};
+    for (const [key, input] of inputs) if (input.value) secrets[key] = input.value;
+    if (!Object.keys(secrets).length) return;
+    if (await updateExtension(view.id, { secrets })) extUi.message = "Enregistré.";
+    for (const input of inputs.values()) input.value = "";
+    if (extUi.open) renderExtensions();
+  });
+  box.appendChild(save);
+  return box;
+}
+
+function renderWeatherPage(body, view) {
+  const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
+  const place = view.config?.place;
+  body.appendChild(make("h3", "", "Lieu"));
+  note(place ? place.name : "Aucun lieu choisi.", place ? "ext-place" : "w-note");
+  note(ext.weatherStatusText(view));
+  if (!view.enabled) { note("Activez l'extension pour chercher un lieu."); return; }
+  const row = make("div", "ext-search");
+  const input = make("input");
+  input.type = "search";
+  input.placeholder = "Ville ou code postal";
+  input.setAttribute("aria-label", "Ville ou code postal");
+  input.autocomplete = "off";
+  input.maxLength = 100;
+  input.value = extUi.q;
+  input.addEventListener("input", () => { extUi.q = input.value; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); searchPlaces(); } });
+  const go = make("button", "btn", extUi.searching ? "Recherche…" : "Chercher");
+  go.type = "button";
+  go.disabled = extUi.busy || extUi.searching;
+  go.addEventListener("click", searchPlaces);
+  row.append(input, go);
+  body.appendChild(row);
+  note("Le texte tapé part chez Open-Meteo (géocodage) pour trouver les lieux. Une ville ou un code postal : une adresse précise n'est pas reconnue.");
+  if (extUi.places) {
+    if (!extUi.places.length) note("Aucun lieu trouvé : essayez le code postal ou l'orthographe complète.");
+    const ul = make("ul", "ext-places");
+    for (const p of extUi.places) {
+      const li = make("li");
+      const choose = make("button", "btn", p.name);
+      choose.type = "button";
+      choose.disabled = extUi.busy;
+      choose.addEventListener("click", () => choosePlace(p));
+      li.appendChild(choose);
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  }
+}
+
+function renderExtensions() {
+  const body = $("#sheet-body");
+  body.dataset.id = "extensions";
+  body.replaceChildren();
+  const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
+  const page = extUi.page ? (extUi.list ?? []).find((e) => e.id === extUi.page) : null;
+  if (extUi.page && !page && extUi.list) extUi.page = null;
+  $("#sheet-title").textContent = page ? page.name : "Extensions";
+  if (extUi.error) note(extUi.error, "error");
+  if (!extUi.list) { if (!extUi.error) note("Chargement…"); return; }
+
+  if (!page) {
+    note("Des fonctions en plus, intégrées à Ostal Server. Toutes sont éteintes tant que vous ne les activez pas, et certaines sortent sur Internet : leur page le dit.", "ev-note");
+    const ul = make("ul", "ext-list");
+    for (const view of extUi.list) {
+      const li = make("li", "ext-item");
+      const open = make("button", "ext-open");
+      open.type = "button";
+      open.id = `ext-${view.id}`;
+      open.append(make("strong", "", view.name), make("span", "w-note", view.description));
+      open.addEventListener("click", () => { extUi.page = view.id; extUi.error = ""; extUi.message = ""; extUi.places = null; extUi.q = ""; renderExtensions(); });
+      li.append(open, extensionSwitch(view, open.id));
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+    return;
+  }
+
+  const back = make("button", "ghost", "‹ Extensions");
+  back.type = "button";
+  back.addEventListener("click", () => { extUi.page = null; extUi.error = ""; extUi.message = ""; renderExtensions(); });
+  body.appendChild(back);
+  const callout = make("div", "callout");
+  callout.appendChild(make("p", "", page.disclosure));
+  body.appendChild(callout);
+  const row = make("div", "switch-row");
+  const label = make("span", "", `${page.name} activée`);
+  label.id = "ext-page-switch";
+  row.append(label, extensionSwitch(page, label.id));
+  body.appendChild(row);
+  if (extUi.message) note(extUi.message);
+  if (page.id === "weather") renderWeatherPage(body, page);
+  const secrets = secretFields(page);
+  if (secrets) body.appendChild(secrets);
 }
 
 // ---------------------------------------------------------------------------
@@ -2630,6 +2897,7 @@ view.addEventListener("click", (e) => {
   if (e.target.closest("#agents")) { openAgents(); return; }
   if (e.target.closest("#my-phone")) { loadPhones().then(() => openPhonePick(false)); return; }
   if (e.target.closest("#widgets")) { openWidgets(); return; }
+  if (e.target.closest("#extensions")) { openExtensions(); return; }
   const cam = e.target.closest(".cam");
   if (cam) {
     if (fullCam) { if (e.target.closest(".cam-fs")) exitFull(); } else if (cam.classList.contains("ok")) enterFull(cam.dataset.camera);
@@ -2650,6 +2918,7 @@ function wake() {
   if (!api.hasToken()) return;
   events?.restart();
   loadPresence();
+  loadWeather();
   loadRequests();
   if (tab === "cameras") renderCameras();
 }

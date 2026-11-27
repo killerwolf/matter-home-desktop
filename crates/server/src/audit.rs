@@ -103,6 +103,9 @@ pub enum Action {
     /// d'Ostal Server ou la ligne de commande. Détail : `trusted:N` (nombre de réseaux, jamais
     /// leurs adresses), `public:set` ou `public:cleared` (jamais le nom lui-même).
     NetworkSettings,
+    /// Une extension a été activée, désactivée ou réglée. Cible : son identifiant ; détail : `on`,
+    /// `off`, `config` ou `secret` (un secret a été changé ou effacé). Jamais une valeur.
+    ExtensionSetting,
     /// Une action d'une version plus récente.
     #[serde(other)]
     Other,
@@ -858,6 +861,15 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
         Action::AgentSwitch => "Accès des agents d'IA désactivé".to_string(),
         Action::AgentLists => agent_lists_text(detail),
         Action::NetworkSettings => network_settings_text(detail),
+        Action::ExtensionSetting => {
+            let name = crate::extensions::name_of(target).unwrap_or(target);
+            match detail {
+                "on" => format!("Extension « {name} » activée"),
+                "off" => format!("Extension « {name} » désactivée"),
+                "secret" => format!("Secret de l'extension « {name} » modifié"),
+                _ => format!("Extension « {name} » réglée"),
+            }
+        }
         Action::AgentRead => agent_read_text(target, detail),
         Action::AgentOccupation => {
             let what = match detail {

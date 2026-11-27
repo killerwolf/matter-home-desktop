@@ -1797,6 +1797,43 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    /// Les extensions (`serveur/extensions.json`, avec leurs secrets) et le dernier relevé météo
+    /// (`serveur/meteo.json`) ne partent jamais dans un export, et un import les laisse tels quels.
+    #[test]
+    fn extension_secrets_and_weather_are_neither_exported_nor_lost_by_an_import() {
+        let base = temp("extensions");
+        let dir = sample_dir(&base);
+        add_server_dir(&dir);
+        let server = dir.join(SERVER_DIR);
+        crate::security::write_secret(
+            &server.join("extensions.json"),
+            br#"{"version":1,"extensions":{"somfy":{"enabled":true,"config":{"email":"EMAIL-DU-COMPTE"},"secrets":{"password":"MOT-DE-PASSE-SOMFY"}}}}"#,
+        )
+        .unwrap();
+        crate::security::write_secret(
+            &server.join("meteo.json"),
+            br#"{"reading":{"temperature":7.4,"humidity":80.0,"pressure":1013.0,"at":1.0},"place":{"name":"LIEU-DE-LA-MAISON","latitude":45.75,"longitude":4.85}}"#,
+        )
+        .unwrap();
+        let before = tree(&server);
+
+        let (text, _) = export_to_string(&dir).unwrap();
+        for secret in [
+            "MOT-DE-PASSE-SOMFY",
+            "EMAIL-DU-COMPTE",
+            "LIEU-DE-LA-MAISON",
+            "extensions.json",
+            "meteo",
+        ] {
+            assert!(!text.contains(secret), "{secret}");
+        }
+        let other = text.replace("Capteur", "Capteur importé");
+        stage_import_text(&dir, &other).unwrap();
+        apply_pending(&dir).unwrap().unwrap();
+        assert_eq!(tree(&server), before);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     /// Le journal d'audit (`serveur/audit/`) vit dans le dossier du serveur : il ne part pas dans un
     /// export, et un import le laisse tel quel (sous-dossier compris, droits compris).
     #[test]

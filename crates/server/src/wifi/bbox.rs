@@ -14,15 +14,14 @@
 //! vérification du certificat : le mot de passe d'administration ne part jamais vers un serveur
 //! qu'on ne peut pas authentifier.
 
-use std::io::Write as _;
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::Value;
 
-use crate::descriptions::api::{curl_command, quoted};
+use crate::curl::Reply;
+use crate::descriptions::api::quoted;
 
 /// L'adresse de la Bbox, résolue en local par la box elle-même.
 pub const DEFAULT_URL: &str = "https://mabbox.bytel.fr";
@@ -122,53 +121,10 @@ impl Default for CurlBox {
     }
 }
 
-/// Une réponse de la box : statut, cookies posés (`nom=valeur`) et corps.
-struct Reply {
-    status: u16,
-    cookies: Vec<String>,
-    body: Vec<u8>,
-}
-
 impl CurlBox {
     fn run(&self, config: &str) -> Result<Reply, BoxError> {
-        let mut child = curl_command()
-            .args([
-                "-q",
-                "-sS",
-                "-i",
-                "-m",
-                &self.timeout.as_secs().max(1).to_string(),
-                "--proto",
-                "=http,https",
-                "--proto-redir",
-                "=http,https",
-                "-g",
-                "--noproxy",
-                "*",
-                "--max-filesize",
-                &MAX_BYTES.to_string(),
-                "-K",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| BoxError::Unreachable)?;
-        if let Some(mut stdin) = child.stdin.take() {
-            if stdin.write_all(config.as_bytes()).is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(BoxError::Unreachable);
-            }
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|_| BoxError::Unreachable)?;
-        if !output.status.success() {
-            return Err(BoxError::Unreachable);
-        }
-        parse_reply(&output.stdout).ok_or(BoxError::Unreachable)
+        crate::curl::run(config, self.timeout, "=http,https", MAX_BYTES)
+            .map_err(|_| BoxError::Unreachable)
     }
 
     fn config(url: &str, path: &str, cookie: Option<&str>, form: Option<&str>) -> Option<String> {
@@ -244,35 +200,6 @@ impl BoxApi for CurlBox {
 
     fn reset(&self) {
         *self.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-}
-
-/// Sépare la sortie de `curl -i` : statut, cookies et corps (les réponses 1xx sont passées).
-fn parse_reply(output: &[u8]) -> Option<Reply> {
-    let mut rest = output;
-    loop {
-        let end = rest.windows(4).position(|w| w == b"\r\n\r\n")?;
-        let head = String::from_utf8_lossy(&rest[..end]).into_owned();
-        let body = &rest[end + 4..];
-        let mut lines = head.lines();
-        let status: u16 = lines.next()?.split_whitespace().nth(1)?.parse().ok()?;
-        if (100..200).contains(&status) {
-            rest = body;
-            continue;
-        }
-        let cookies = lines
-            .filter_map(|l| l.split_once(':'))
-            .filter(|(k, _)| k.trim().eq_ignore_ascii_case("set-cookie"))
-            .filter_map(|(_, v)| {
-                let pair = v.split(';').next()?.trim();
-                (pair.contains('=') && !pair.starts_with('=')).then(|| pair.to_string())
-            })
-            .collect();
-        return Some(Reply {
-            status,
-            cookies,
-            body: body.to_vec(),
-        });
     }
 }
 
@@ -459,15 +386,5 @@ mod tests {
         for no in ["MacBook-Pro", "LG-webOS-TV", "ESP_3F2A10", "Bbox-4K", "PS5"] {
             assert!(!looks_like_phone(no), "{no}");
         }
-    }
-
-    #[test]
-    fn a_reply_gives_status_cookies_and_body() {
-        let raw = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nSet-Cookie: BBOX_ID=abc123; Path=/; HttpOnly\r\nset-cookie: other=1\r\n\r\n{\"x\":1}";
-        let reply = parse_reply(raw).unwrap();
-        assert_eq!(reply.status, 200);
-        assert_eq!(reply.cookies, vec!["BBOX_ID=abc123", "other=1"]);
-        assert_eq!(reply.body, b"{\"x\":1}");
-        assert!(parse_reply(b"n'importe quoi").is_none());
     }
 }

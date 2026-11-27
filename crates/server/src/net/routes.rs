@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .merge(super::camera_stream::router(state.hub.live().clone()))
         .merge(super::events::router())
         .merge(super::push::router())
+        .merge(super::extensions::router())
         .merge(super::agent_requests::router())
         .merge(super::agents::router())
         .merge(super::install::protected())
@@ -334,7 +335,7 @@ pub(super) fn require(state: &AppState, user_id: &str, capability: Capability) -
 }
 
 /// Écrit une ligne du journal sans bloquer le réseau (c'est une écriture sur disque).
-async fn audit(state: &AppState, entry: Entry) {
+pub(super) async fn audit(state: &AppState, entry: Entry) {
     let log = state.hub.audit().clone();
     let _ = tokio::task::spawn_blocking(move || log.record(entry)).await;
 }

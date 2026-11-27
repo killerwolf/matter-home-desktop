@@ -256,6 +256,7 @@ d'usage. Rien de la maison ne part sans une option que vous activez, ou un servi
 | Notifications push ([détails](docs/notifications.md)) | Si un appareil s'abonne : message chiffré de bout en bout | Service de push d'Apple, Google, Mozilla ou Microsoft, selon l'appareil |
 | Accès à distance ([détails](docs/acces-distant.md)) | Si vous utilisez Tailscale | Votre réseau privé Tailscale |
 | Webhooks | Si une automatisation en contient un | L'adresse que vous avez choisie |
+| Extension « Météo extérieure » | Si vous l'activez (Extensions, éteinte par défaut) : le texte cherché (ville, code postal), puis la latitude et la longitude du lieu choisi, toutes les 15 minutes | Open-Meteo (`open-meteo.com`), sans compte ni clé |
 
 Le reste (appareils, plan, règles, comptes, caméras) ne quitte jamais le Mac du serveur ; l'historique
 des mesures y est gardé **7 jours**.

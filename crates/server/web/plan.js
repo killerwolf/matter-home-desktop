@@ -186,6 +186,11 @@ export function mountPlan(root, ctx) {
   svg.append(world, layer);
   const message = html("p", "empty plan-empty");
   message.hidden = true;
+  // La météo dehors (extension Météo extérieure) : une ligne au-dessus du cadre, donc hors du dessin
+  // du logement (jamais sur une pièce), qui ne bouge pas avec le zoom. Absente tant qu'il n'y a
+  // rien à dire.
+  const outside = html("div", "plan-weather");
+  outside.hidden = true;
   stage.append(svg, message);
   bar.append(floorsBox, tools);
   // La légende : ce que veulent dire les pastilles et les teintes.
@@ -195,7 +200,7 @@ export function mountPlan(root, ctx) {
     item.append(html("i", cls), text);
     legend.appendChild(item);
   }
-  wrap.append(bar, stage, legend);
+  wrap.append(bar, outside, stage, legend);
   root.appendChild(wrap);
 
   let floorIndex = firstFilledFloor(ctx.getPlan());
@@ -498,6 +503,13 @@ export function mountPlan(root, ctx) {
       return;
     }
     bar.hidden = planIsEmpty(plan);
+    const weather = planIsEmpty(plan) ? null : ctx.getWeather?.();
+    outside.hidden = !weather;
+    if (weather) {
+      outside.classList.toggle("stale", weather.stale);
+      outside.setAttribute("aria-label", weather.aria);
+      outside.replaceChildren(html("strong", "", "Dehors"), html("span", "", weather.line), html("small", "", weather.note));
+    }
     if (!userChoseFloor) floorIndex = firstFilledFloor(plan);
     else if (floorIndex >= plan.floors.length) floorIndex = 0;
     const next = JSON.stringify([floorIndex, plan.floors.map((f) => [f.id, f.name, f.rooms, f.items])]);
