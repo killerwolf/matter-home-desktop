@@ -1768,23 +1768,37 @@ function extensionSwitch(view, labelId) {
   return toggle;
 }
 
-/** Les champs secrets d'une extension (mot de passe, clé) : jamais préremplis, « défini » seulement. */
+/** Les champs secrets d'une extension (mot de passe, clé) : jamais préremplis, « défini » seulement.
+ *  Chaque champ a son libellé et son aide (donnés par le serveur) ; « Effacer » retire un secret. */
 function secretFields(view) {
-  const keys = Object.keys(view.secrets ?? {});
-  if (!keys.length) return null;
+  const fields = view.secrets ?? [];
+  if (!fields.length) return null;
   const box = make("div", "ext-secrets");
   const inputs = new Map();
-  for (const key of keys) {
+  for (const field of fields) {
+    const name = field.label || field.key;
     const label = make("label", "ext-field");
-    label.appendChild(make("span", "", key));
+    label.appendChild(make("span", "", name));
     const input = make("input");
     input.type = "password";
-    input.autocomplete = "off";
+    input.autocomplete = "new-password"; // jamais proposé ni rempli par le navigateur
     input.spellcheck = false;
-    input.placeholder = view.secrets[key] ? "Défini : laissez vide pour le garder" : "Pas encore défini";
+    input.placeholder = field.set ? "Défini : laissez vide pour le garder" : "Pas encore défini";
     label.appendChild(input);
-    inputs.set(key, input);
+    if (field.help) label.appendChild(make("small", "w-note", field.help));
+    inputs.set(field.key, input);
     box.appendChild(label);
+    if (field.set) {
+      const clear = make("button", "btn danger-btn", "Effacer");
+      clear.type = "button";
+      clear.setAttribute("aria-label", `Effacer : ${name}`);
+      clear.disabled = extUi.busy;
+      clear.addEventListener("click", async () => {
+        const ok = await askConfirm({ title: "Effacer ce secret ?", text: `« ${name} » sera retiré d'Ostal. L'extension ne pourra plus s'en servir.`, action: "Effacer" });
+        if (ok && await updateExtension(view.id, { secrets: { [field.key]: null } })) { extUi.message = "Secret effacé."; renderExtensions(); }
+      });
+      box.appendChild(clear);
+    }
   }
   const save = make("button", "btn", "Enregistrer");
   save.type = "button";

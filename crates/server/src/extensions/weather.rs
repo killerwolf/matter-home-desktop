@@ -19,10 +19,9 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::Descriptor;
+use super::{Descriptor, Extension};
 use crate::descriptions::api::quoted;
 use crate::security::write_secret;
-use crate::wifi::bbox::{curl_run, BoxError};
 
 pub const ID: &str = "weather";
 pub const STATE_FILE: &str = "meteo.json";
@@ -33,14 +32,15 @@ pub const RETRY_AFTER_S: f64 = 5.0 * 60.0;
 const MAX_BYTES: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-pub const DESCRIPTOR: Descriptor = Descriptor {
+pub static DESCRIPTOR: Descriptor = Descriptor {
     id: ID,
     name: "Météo extérieure",
     description: "Température, humidité et pression dehors, affichées sur le plan et l'accueil.",
     disclosure: "Une fois activée, Ostal interroge Open-Meteo (sur Internet) pour ce lieu : le \
 texte cherché (ville ou code postal), puis la latitude et la longitude du lieu choisi, toutes \
-les 15 minutes. Rien d'autre ne part. Désactivée, plus aucun appel.",
+les 15 minutes (au kilomètre près). Rien d'autre ne part. Désactivée, plus aucun appel.",
     secrets: &[],
+    private_config: &[],
     normalize,
 };
 
@@ -116,15 +116,15 @@ fn checked_place(name: &str, latitude: f64, longitude: f64) -> Option<Place> {
     }
     Some(Place {
         name,
-        // Quatre décimales : une dizaine de mètres, assez pour la météo, sans plus de précision
-        // que nécessaire.
-        latitude: round4(latitude),
-        longitude: round4(longitude),
+        // Deux décimales : environ un kilomètre, assez pour la météo, sans plus de précision
+        // que nécessaire sur l'endroit où habite la maison.
+        latitude: round2(latitude),
+        longitude: round2(longitude),
     })
 }
 
-fn round4(x: f64) -> f64 {
-    (x * 1e4).round() / 1e4
+fn round2(x: f64) -> f64 {
+    (x * 1e2).round() / 1e2
 }
 
 fn clean(text: &str, max: usize) -> String {
@@ -216,9 +216,8 @@ impl CurlWeather {
             "url = {}\nheader = \"Accept: application/json\"\nheader = \"Expect:\"\n",
             quoted(url).map_err(|_| WeatherError::Unreachable)?
         );
-        let reply = curl_run(&config, TIMEOUT, "=https", MAX_BYTES).map_err(|e| match e {
-            BoxError::Unreachable | BoxError::Refused => WeatherError::Unreachable,
-        })?;
+        let reply = crate::curl::run(&config, TIMEOUT, "=https", MAX_BYTES)
+            .map_err(|_| WeatherError::Unreachable)?;
         if reply.status != 200 {
             return Err(WeatherError::Unreachable);
         }
@@ -241,7 +240,7 @@ impl WeatherApi for CurlWeather {
 
     fn current(&self, latitude: f64, longitude: f64, now: f64) -> Result<Reading, WeatherError> {
         let url = format!(
-            "https://api.open-meteo.com/v1/forecast?latitude={latitude:.4}&longitude={longitude:.4}\
+            "https://api.open-meteo.com/v1/forecast?latitude={latitude:.2}&longitude={longitude:.2}\
 &current=temperature_2m,relative_humidity_2m,surface_pressure&timeformat=unixtime"
         );
         parse_current(&Self::get(&url)?, now).ok_or(WeatherError::BadReply)
@@ -288,6 +287,26 @@ struct Inner {
     /// Le dernier relevé a échoué : la valeur gardée est donc périmée.
     failing: bool,
     last_attempt: Option<f64>,
+    /// Augmente à chaque changement de configuration : un relevé parti avant (lieu changé,
+    /// extension éteinte pendant l'appel) est jeté à son retour.
+    generation: u64,
+}
+
+impl Inner {
+    fn due(&self, now: f64) -> bool {
+        match self.last_attempt {
+            None => true,
+            Some(at) => {
+                let gap = if self.failing {
+                    RETRY_AFTER_S
+                } else {
+                    POLL_EVERY_S
+                };
+                // Une horloge qui recule ne bloque pas le relevé.
+                now < at || now - at >= gap
+            }
+        }
+    }
 }
 
 /// Ce que l'API montre de la météo.
@@ -304,7 +323,7 @@ pub struct Weather {
     api: RwLock<Arc<dyn WeatherApi>>,
     inner: Mutex<Inner>,
     /// Un seul relevé à la fois.
-    pub(super) poll_lock: Mutex<()>,
+    poll_lock: Mutex<()>,
 }
 
 impl Weather {
@@ -338,7 +357,7 @@ impl Weather {
     }
 
     /// Ce que l'API en montre : rien tant que l'extension est éteinte ou sans lieu.
-    pub fn status(&self, enabled: bool, place: Option<&Place>) -> Status {
+    pub fn view(&self, enabled: bool, place: Option<&Place>) -> Status {
         let inner = self.lock();
         let Some(place) = place.filter(|_| enabled) else {
             return Status {
@@ -347,18 +366,16 @@ impl Weather {
                 failing: false,
             };
         };
+        let same = inner.place.as_ref() == Some(place);
         Status {
             place: Some(place.name.clone()),
-            reading: inner
-                .reading
-                .clone()
-                .filter(|_| inner.place.as_ref() == Some(place)),
-            failing: inner.failing,
+            reading: inner.reading.clone().filter(|_| same),
+            failing: inner.failing && same,
         }
     }
 
-    /// La configuration a changé (activée, éteinte, autre lieu) : on oublie ce qui ne vaut plus et
-    /// on relève au prochain tour.
+    /// La configuration a changé (activée, éteinte, autre lieu) : on oublie ce qui ne vaut plus, on
+    /// invalide les relevés en vol et on relève au prochain tour.
     pub fn reset(&self, enabled: bool, place: Option<&Place>) {
         let mut inner = self.lock();
         if !enabled || inner.place.as_ref() != place {
@@ -367,43 +384,75 @@ impl Weather {
         inner.place = place.cloned();
         inner.failing = false;
         inner.last_attempt = None;
-        let saved = Saved {
-            reading: inner.reading.clone(),
-            place: inner.place.clone(),
-        };
-        drop(inner);
-        self.save(&saved);
+        inner.generation += 1;
+        self.save(&inner);
     }
 
-    /// Est-il temps de relever ?
-    pub fn due(&self, now: f64, force: bool) -> bool {
-        let inner = self.lock();
-        match inner.last_attempt {
-            None => true,
-            Some(_) if force => true,
-            Some(at) => {
-                let gap = if inner.failing {
-                    RETRY_AFTER_S
-                } else {
-                    POLL_EVERY_S
-                };
-                // Une horloge qui recule ne bloque pas le relevé.
-                now < at || now - at >= gap
-            }
+    /// Au démarrage : l'état gardé sur disque doit répondre à la configuration, sinon on repart de
+    /// zéro (activée hors ligne, `meteo.json` absent ou d'un autre lieu, extension éteinte).
+    pub fn reconcile(&self, enabled: bool, place: Option<&Place>) {
+        let matches = {
+            let inner = self.lock();
+            enabled && inner.place.as_ref() == place
+        };
+        if !matches {
+            self.reset(enabled, place);
         }
     }
 
-    /// Note le résultat d'une tentative. Une erreur garde la dernière valeur. `None` : le lieu a
-    /// changé pendant l'appel, ce résultat ne vaut plus. `Some(true)` : l'état de santé a changé
-    /// (pour le journal).
+    /// Est-il temps de relever ?
+    pub fn due(&self, now: f64) -> bool {
+        self.lock().due(now)
+    }
+
+    /// Un relevé si l'extension est active, qu'un lieu est choisi et qu'il est temps. Bloquant.
+    /// `true` : un appel est parti. Ne panique jamais.
+    pub fn poll(&self, now: f64, enabled: bool, place: Option<&Place>) -> bool {
+        let _one_at_a_time = match self.poll_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
+        let Some(place) = place.filter(|_| enabled) else {
+            return false;
+        };
+        let generation = {
+            let inner = self.lock();
+            // Pas (encore) accordé à ce lieu (réglage en cours) : on attend le prochain tour.
+            if inner.place.as_ref() != Some(place) || !inner.due(now) {
+                return false;
+            }
+            inner.generation
+        };
+        let result = self.api().current(place.latitude, place.longitude, now);
+        let failed = result.as_ref().err().copied();
+        // Une ligne au journal seulement quand l'état de santé change (jamais le lieu).
+        if self.record(generation, now, result) == Some(true) {
+            match failed {
+                None => log::info!("météo : relevé rétabli"),
+                Some(why) => log::warn!(
+                    "météo : relevé impossible ({}), dernière valeur gardée",
+                    match why {
+                        WeatherError::Unreachable => "pas de réponse d'Open-Meteo",
+                        WeatherError::BadReply => "réponse inattendue",
+                    }
+                ),
+            }
+        }
+        true
+    }
+
+    /// Note le résultat d'une tentative partie à la génération `generation`. Une erreur garde la
+    /// dernière valeur. `None` : la configuration a changé pendant l'appel, ce résultat ne vaut
+    /// plus. `Some(true)` : l'état de santé a changé (pour le journal).
     pub fn record(
         &self,
+        generation: u64,
         now: f64,
-        place: &Place,
         result: Result<Reading, WeatherError>,
     ) -> Option<bool> {
         let mut inner = self.lock();
-        if inner.place.as_ref() != Some(place) {
+        if inner.generation != generation {
             return None;
         }
         inner.last_attempt = Some(now);
@@ -413,32 +462,30 @@ impl Weather {
             Ok(reading) => {
                 inner.reading = Some(reading);
                 inner.failing = false;
+                self.save(&inner);
             }
             Err(_) => inner.failing = true,
-        }
-        let saved = Saved {
-            reading: inner.reading.clone(),
-            place: inner.place.clone(),
-        };
-        drop(inner);
-        if ok {
-            self.save(&saved);
         }
         Some(was_failing == ok)
     }
 
-    fn save(&self, saved: &Saved) {
+    /// Écrit (ou efface) `meteo.json`. Appelé **sous le verrou de l'état** : les écritures ne
+    /// s'entrecroisent pas (elles partagent le même fichier temporaire).
+    fn save(&self, inner: &Inner) {
         let Some(dir) = &self.dir else { return };
         let path = dir.join(STATE_FILE);
-        let result = if saved.reading.is_none() {
+        let result = if inner.reading.is_none() {
             match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
                 _ => Ok(()),
             }
         } else {
-            serde_json::to_vec(saved)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| write_secret(&path, &b))
+            serde_json::to_vec(&Saved {
+                reading: inner.reading.clone(),
+                place: inner.place.clone(),
+            })
+            .map_err(anyhow::Error::from)
+            .and_then(|b| write_secret(&path, &b))
         };
         if let Err(e) = result {
             log::warn!("météo : relevé non gardé sur disque : {e:#}");
@@ -446,9 +493,32 @@ impl Weather {
     }
 }
 
+impl Extension for Weather {
+    fn status(&self, enabled: bool, config: &Value) -> Value {
+        serde_json::to_value(self.view(enabled, place_of(config).as_ref())).unwrap_or(Value::Null)
+    }
+
+    fn start(&self, enabled: bool, config: &Value) {
+        self.reconcile(enabled, place_of(config).as_ref());
+    }
+
+    fn on_change(&self, enabled: bool, config: &Value) {
+        self.reset(enabled, place_of(config).as_ref());
+    }
+
+    fn tick(&self, now: f64, enabled: bool, config: &Value) -> bool {
+        self.poll(now, enabled, place_of(config).as_ref())
+    }
+
+    fn set_weather_api(&self, api: Arc<dyn WeatherApi>) {
+        self.set_api(api);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const FORECAST: &str = include_str!("fixtures/forecast.json");
     const GEOCODING: &str = include_str!("fixtures/geocoding.json");
@@ -485,7 +555,8 @@ mod tests {
         // La 3e ville a une latitude impossible : écartée ; la 1re garde région et pays.
         assert_eq!(places.len(), 2);
         assert_eq!(places[0].name, "Lyon, Auvergne-Rhône-Alpes, France");
-        assert_eq!((places[0].latitude, places[0].longitude), (45.7485, 4.8467));
+        // Deux décimales (environ un kilomètre) : pas plus précis que nécessaire.
+        assert_eq!((places[0].latitude, places[0].longitude), (45.75, 4.85));
         assert_eq!(places[1].name, "Lyon, Géorgie, États-Unis");
     }
 
@@ -503,7 +574,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok["place"]["name"], "Lyon");
-        assert_eq!(ok["place"]["latitude"], 45.7485);
+        assert_eq!(ok["place"]["latitude"], 45.75);
         assert_eq!(normalize(&json!({})).unwrap(), json!({"place": null}));
         for bad in [
             json!({"place": {"name": "X", "latitude": 91, "longitude": 0}}),
@@ -519,67 +590,140 @@ mod tests {
     fn lyon() -> Place {
         Place {
             name: "Lyon".into(),
-            latitude: 45.7485,
-            longitude: 4.8467,
+            latitude: 45.75,
+            longitude: 4.85,
         }
+    }
+
+    /// Compte ses appels ; peut être mis « hors ligne ».
+    #[derive(Default)]
+    struct Fake {
+        reads: AtomicUsize,
+        offline: AtomicBool,
+    }
+    impl WeatherApi for Fake {
+        fn search(&self, q: &str) -> Result<Vec<Place>, WeatherError> {
+            DemoWeather.search(q)
+        }
+        fn current(&self, la: f64, lo: f64, now: f64) -> Result<Reading, WeatherError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.offline.load(Ordering::SeqCst) {
+                return Err(WeatherError::Unreachable);
+            }
+            DemoWeather.current(la, lo, now)
+        }
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ostal-meteo-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
     fn keeps_the_last_value_when_the_call_fails() {
-        let w = Weather::new(None, Arc::new(DemoWeather));
+        let api = Arc::new(Fake::default());
+        let w = Weather::new(None, api.clone());
         w.reset(true, Some(&lyon()));
-        assert!(w.due(0.0, false));
-        let good = parse_current(FORECAST.as_bytes(), 100.0).unwrap();
-        assert_eq!(w.record(100.0, &lyon(), Ok(good.clone())), Some(false));
-        assert!(!w.due(200.0, false));
-        assert!(w.due(100.0 + POLL_EVERY_S, false));
+        assert!(w.poll(100.0, true, Some(&lyon())));
+        let good = w.view(true, Some(&lyon())).reading.unwrap();
+        assert!(!w.poll(200.0, true, Some(&lyon())), "pas avant 15 minutes");
         // Hors ligne : la valeur reste, avec son heure, marquée périmée ; réessai plus tôt.
-        assert_eq!(
-            w.record(1000.0, &lyon(), Err(WeatherError::Unreachable)),
-            Some(true)
-        );
-        let status = w.status(true, Some(&lyon()));
+        api.offline.store(true, Ordering::SeqCst);
+        assert!(w.poll(100.0 + POLL_EVERY_S, true, Some(&lyon())));
+        let status = w.view(true, Some(&lyon()));
         assert!(status.failing);
         assert_eq!(status.reading, Some(good));
-        assert!(!w.due(1000.0 + RETRY_AFTER_S - 1.0, false));
-        assert!(w.due(1000.0 + RETRY_AFTER_S, false));
+        let t = 100.0 + POLL_EVERY_S;
+        assert!(!w.poll(t + RETRY_AFTER_S - 1.0, true, Some(&lyon())));
+        assert!(w.poll(t + RETRY_AFTER_S, true, Some(&lyon())));
         // Une horloge qui recule ne bloque rien.
-        assert!(w.due(500.0, false));
-    }
-
-    #[test]
-    fn a_reading_never_outlives_its_place_or_the_switch() {
-        let w = Weather::new(None, Arc::new(DemoWeather));
-        w.reset(true, Some(&lyon()));
-        let good = parse_current(FORECAST.as_bytes(), 1.0).unwrap();
-        w.record(1.0, &lyon(), Ok(good));
-        assert!(w.status(true, Some(&lyon())).reading.is_some());
-        // Éteinte : rien à montrer, et plus rien en mémoire.
-        assert_eq!(w.status(false, Some(&lyon())).reading, None);
-        w.reset(false, Some(&lyon()));
-        w.reset(true, Some(&lyon()));
-        assert_eq!(w.status(true, Some(&lyon())).reading, None);
-        // Un relevé revenu après un changement de lieu est jeté.
+        assert!(w.due(0.0));
+        // Le « hors ligne » ne s'applique plus à un autre lieu.
         let other = Place {
             name: "Paris".into(),
             ..lyon()
         };
-        w.reset(true, Some(&other));
-        assert_eq!(w.record(2.0, &lyon(), Err(WeatherError::BadReply)), None);
+        assert!(!w.view(true, Some(&other)).failing);
+    }
+
+    #[test]
+    fn a_reading_never_outlives_its_place_or_the_switch() {
+        let w = Weather::new(None, Arc::new(Fake::default()));
+        w.reset(true, Some(&lyon()));
+        assert!(w.poll(1.0, true, Some(&lyon())));
+        assert!(w.view(true, Some(&lyon())).reading.is_some());
+        // Éteinte : rien à montrer, et plus rien en mémoire.
+        assert_eq!(w.view(false, Some(&lyon())).reading, None);
+        w.reset(false, Some(&lyon()));
+        w.reset(true, Some(&lyon()));
+        assert_eq!(w.view(true, Some(&lyon())).reading, None);
+    }
+
+    #[test]
+    fn a_reading_in_flight_is_dropped_when_the_config_changes() {
+        let dir = temp("flight");
+        let w = Weather::new(Some(&dir), Arc::new(Fake::default()));
+        w.reset(true, Some(&lyon()));
+        let generation = w.lock().generation;
+        // L'extension est éteinte pendant l'appel : le résultat revenu est jeté, rien n'est réécrit.
+        w.reset(false, Some(&lyon()));
+        let late = parse_current(FORECAST.as_bytes(), 9.0).unwrap();
+        assert_eq!(w.record(generation, 9.0, Ok(late)), None);
+        assert_eq!(w.view(true, Some(&lyon())).reading, None);
+        assert!(!dir.join(STATE_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_reading_survives_a_restart_in_a_temp_dir() {
-        let dir = std::env::temp_dir().join(format!("ostal-meteo-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let w = Weather::new(Some(&dir), Arc::new(DemoWeather));
+        let dir = temp("restart");
+        let w = Weather::new(Some(&dir), Arc::new(Fake::default()));
         w.reset(true, Some(&lyon()));
-        let good = parse_current(FORECAST.as_bytes(), 5.0).unwrap();
-        w.record(5.0, &lyon(), Ok(good.clone()));
-        let again = Weather::new(Some(&dir), Arc::new(DemoWeather));
-        assert_eq!(again.status(true, Some(&lyon())).reading, Some(good));
+        assert!(w.poll(5.0, true, Some(&lyon())));
+        let good = w.view(true, Some(&lyon())).reading.unwrap();
+        let again = Weather::new(Some(&dir), Arc::new(Fake::default()));
+        again.reconcile(true, Some(&lyon()));
+        assert_eq!(again.view(true, Some(&lyon())).reading, Some(good));
         // Éteindre efface le fichier.
         again.reset(false, Some(&lyon()));
+        assert!(!dir.join(STATE_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restart_after_a_failed_poll_polls_once_then_waits() {
+        // Activée et lieu choisi hors ligne : pas de meteo.json. Au redémarrage, le premier relevé
+        // est gardé, puis aucun appel avant 15 minutes (et jamais un appel à chaque tour).
+        let dir = temp("offline-restart");
+        let api = Arc::new(Fake::default());
+        api.offline.store(true, Ordering::SeqCst);
+        let w = Weather::new(Some(&dir), api.clone());
+        w.reset(true, Some(&lyon()));
+        assert!(w.poll(10.0, true, Some(&lyon())));
+        assert!(w.view(true, Some(&lyon())).failing);
+
+        let again = Weather::new(Some(&dir), api.clone());
+        again.reconcile(true, Some(&lyon()));
+        api.offline.store(false, Ordering::SeqCst);
+        assert!(again.poll(20.0, true, Some(&lyon())));
+        assert!(again.view(true, Some(&lyon())).reading.is_some());
+        let calls = api.reads.load(Ordering::SeqCst);
+        for t in [50.0, 80.0, 400.0, 20.0 + POLL_EVERY_S - 1.0] {
+            assert!(!again.poll(t, true, Some(&lyon())));
+        }
+        assert_eq!(api.reads.load(Ordering::SeqCst), calls);
+
+        // Un meteo.json d'un autre lieu est écarté au démarrage.
+        let paris = Place {
+            name: "Paris".into(),
+            latitude: 48.86,
+            longitude: 2.35,
+        };
+        let third = Weather::new(Some(&dir), api);
+        third.reconcile(true, Some(&paris));
+        assert_eq!(third.view(true, Some(&paris)).reading, None);
         assert!(!dir.join(STATE_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

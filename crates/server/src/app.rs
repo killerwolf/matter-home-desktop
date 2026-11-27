@@ -24,7 +24,7 @@ use crate::{demo, matter, persistence, Backend};
 /// sans balayage du réseau. La démonstration relève plus souvent : sa « box » n'a pas de réseau.
 const WIFI_POLL: Duration = Duration::from_secs(120);
 const WIFI_DEMO_POLL: Duration = Duration::from_secs(20);
-/// Le fil des extensions se réveille toutes les 30 s ; chaque extension décide elle-même si c'est
+/// Le fil des extensions appelle `Extensions::tick` toutes les 30 s ; chaque extension décide elle-même si c'est
 /// l'heure (la météo : toutes les 15 minutes). Éteintes, elles ne font rien.
 const EXTENSIONS_TICK: Duration = Duration::from_secs(30);
 
@@ -351,7 +351,7 @@ impl ExtensionsWatcher {
             .spawn(move || {
                 let tick = Duration::from_millis(200);
                 loop {
-                    hub.extensions().poll(crate::security::now(), false);
+                    hub.extensions().tick(crate::security::now());
                     let mut waited = Duration::ZERO;
                     while waited < every {
                         if flag.load(Ordering::SeqCst) {

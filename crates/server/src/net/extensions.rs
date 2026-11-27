@@ -36,17 +36,33 @@ struct List {
     extensions: Vec<View>,
 }
 
-async fn list(State(state): State<AppState>) -> Json<List> {
+/// La personne peut-elle régler les extensions ? Sinon, les champs de configuration privés (un
+/// identifiant e-mail, par exemple) ne lui sont pas montrés.
+fn may_manage(state: &AppState, session: &SessionInfo) -> bool {
+    state
+        .hub
+        .rights()
+        .can(&session.user_id, Capability::ManageExtensions)
+}
+
+async fn list(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Json<List> {
     Json(List {
-        extensions: state.hub.extensions().list(),
+        extensions: state.hub.extensions().list(may_manage(&state, &session)),
     })
 }
 
-async fn one(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<View>, ApiErr> {
+async fn one(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+    Path(id): Path<String>,
+) -> Result<Json<View>, ApiErr> {
     state
         .hub
         .extensions()
-        .get(&id)
+        .get(&id, may_manage(&state, &session))
         .map(Json)
         .ok_or_else(unknown)
 }
@@ -99,9 +115,9 @@ async fn change(
         let (view, changes) = hub.extensions().update(&id, update)?;
         // Activée ou lieu changé : un premier relevé tout de suite (aucun appel si éteinte).
         if changes.switched.is_some() || changes.config {
-            hub.extensions().poll(crate::security::now(), false);
+            hub.extensions().tick(crate::security::now());
         }
-        let view = hub.extensions().get(view.id).unwrap_or(view);
+        let view = hub.extensions().get(view.id, true).unwrap_or(view);
         Ok::<_, UpdateError>((view, changes))
     })
     .await
