@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use ostal_server::audit::Who;
+use ostal_server::extensions::bbox::DEFAULT_URL;
 use ostal_server::hub::Hub;
 use ostal_server::net::Auth;
 use ostal_server::security::account::User;
-use ostal_server::wifi::bbox::DEFAULT_URL;
 use ostal_server_app::accounts;
 use ostal_server_app::confirm::{self, Confirmation};
 use ostal_server_app::controller::Notice;
@@ -313,7 +313,13 @@ impl PresenceUi {
         self.snapshot = Some(snap.clone());
         ctx.request_repaint_after(RELOAD_EVERY);
         if self.url.is_empty() {
-            self.url = hub.wifi().url().unwrap_or_else(|| DEFAULT_URL.to_string());
+            self.url = hub
+                .extensions()
+                .config(ostal_server::extensions::bbox::ID)
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or(DEFAULT_URL)
+                .to_string();
         }
         let busy = self.job.is_some();
         ui.add_space(4.0);
@@ -355,6 +361,10 @@ impl PresenceUi {
         let (mut submit, mut cancel) = (false, false);
         widgets::section(ui, "Box de la maison", |ui| {
             ui.colored_label(if good { p.ok } else { p.warn }, line);
+            widgets::hint(
+                ui,
+                "La box est l'extension « Bbox » : ses réglages (adresse, mot de passe) sont aussi dans l'app web, Réglages › Extensions › Bbox.",
+            );
             if snap.status.linked && !self.editing {
                 widgets::hint(
                     ui,

@@ -115,3 +115,29 @@ export const somfyConfig = (email, exposed) => ({ email: String(email ?? "").tri
 export function somfySyncedText(choices) {
   return Number.isFinite(choices?.synced_at) ? `Liste lue chez Somfy à ${clock(choices.synced_at)}.` : null;
 }
+
+// ---------------------------------------------------------------------------
+// Bbox (extension « bbox ») : la box de la maison, source de la présence Wi-Fi. Le serveur ne montre
+// à tous que l'état (`status`) ; l'adresse (`config.url`) n'est vue que des comptes qui règlent les
+// extensions, et le mot de passe n'est jamais relu (champ « secret » commun à toutes les extensions).
+// ---------------------------------------------------------------------------
+
+/** La phrase d'état de la page Bbox, d'après `view.status` (jamais d'adresse ni de mot de passe). */
+export function bboxStatusText(view) {
+  const status = view?.status ?? {};
+  const n = status.devices ?? 0;
+  const seen = n === 0 ? "aucun appareil actif" : `${n} appareil${n > 1 ? "s" : ""} actif${n > 1 ? "s" : ""}`;
+  switch (status.state) {
+    case "off": return "Désactivée : Ostal n'interroge pas la box, la présence ne suit que les raccourcis « Je pars » et « Je rentre ».";
+    case "legacy": return "Ancien réglage de la box repris à la volée : enregistrez le mot de passe ci-dessous et activez l'extension pour le garder.";
+    case "unconfigured": return "Saisissez le mot de passe d'administration de la box : Ostal n'interroge pas la box tant qu'il manque.";
+    case "waiting": return "Premier relevé en cours…";
+    case "unreachable": return "La box ne répond pas pour l'instant : la présence est figée, le mode de la maison ne change pas.";
+    case "refused": return "La box refuse le mot de passe. Ostal n'essaiera plus tant qu'il ne change pas (la box pourrait bloquer l'accès).";
+    case "ok": return Number.isFinite(status.last_ok) ? `Box reliée : ${seen} sur le Wi-Fi (relevé à ${clock(status.last_ok)}).` : `Box reliée : ${seen} sur le Wi-Fi.`;
+    default: return "";
+  }
+}
+
+/** La configuration à envoyer (PUT remplace toute la configuration) : l'adresse de la box, vide = celle de la Bbox. */
+export const bboxConfig = (url) => ({ url: String(url ?? "").trim() });

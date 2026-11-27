@@ -1933,6 +1933,33 @@ function renderSomfyPage(body, view) {
   body.appendChild(save);
 }
 
+/** La page de la Bbox : l'état de la box, son adresse (réservée aux comptes qui règlent les extensions ;
+ *  vide = mabbox.bytel.fr), puis (champ commun) son mot de passe. */
+function renderBboxPage(body, view) {
+  const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
+  note(ext.bboxStatusText(view));
+  note("Ostal lit seulement la liste des appareils connectés à la box (leurs noms, jamais leurs adresses) : c'est ce qui dit quels téléphones sont à la maison. Il ne modifie rien sur la box. Chaque personne associe ensuite son téléphone dans « Mon téléphone ».");
+  if (view.config?.url === undefined) return; // sans le droit « extensions », l'adresse n'est pas montrée
+  body.appendChild(make("h3", "", "Adresse de la box"));
+  const label = make("label", "ext-field");
+  label.appendChild(make("span", "", "Adresse (laissez vide pour mabbox.bytel.fr)"));
+  const url = make("input");
+  url.type = "url";
+  url.autocomplete = "off";
+  url.spellcheck = false;
+  url.maxLength = 200;
+  url.value = view.config.url;
+  label.appendChild(url);
+  body.appendChild(label);
+  const save = make("button", "btn", "Enregistrer l'adresse");
+  save.type = "button";
+  save.disabled = extUi.busy;
+  save.addEventListener("click", async () => {
+    if (await updateExtension("bbox", { config: ext.bboxConfig(url.value) })) { extUi.message = "Adresse enregistrée."; renderExtensions(); }
+  });
+  body.appendChild(save);
+}
+
 function renderSomfyDevices(body, view) {
   if (!view.enabled || !["ok", "offline"].includes(view.status?.state)) return;
   body.appendChild(make("h3", "", "Appareils à montrer dans Ostal"));
@@ -2009,6 +2036,7 @@ function renderExtensions() {
   if (extUi.message) note(extUi.message);
   if (page.id === "weather") renderWeatherPage(body, page);
   if (page.id === "somfy") renderSomfyPage(body, page);
+  if (page.id === "bbox") renderBboxPage(body, page);
   const secrets = secretFields(page);
   if (secrets) body.appendChild(secrets);
   if (page.id === "somfy") renderSomfyDevices(body, page);

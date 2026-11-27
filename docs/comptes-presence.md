@@ -1,8 +1,30 @@
 # Présence par le Wi-Fi de la box et mode automatique
 
-Ostal Server se relie à la box de la maison (Bbox) avec son mot de passe d'administration, relève
+Ostal Server se relie à la box de la maison avec son mot de passe d'administration, relève
 toutes les 2 minutes les appareils actifs, et en tire qui est à la maison. Lecture seule : rien n'est
 jamais écrit sur la box, et aucun balayage du réseau n'est fait.
+
+## Le connecteur de box et l'extension Bbox
+
+La box est une **extension** (Réglages › Extensions › **Bbox** de l'app web, désactivée par défaut) : son
+adresse, son mot de passe d'administration (secret, jamais renvoyé ni journalisé) et son état (« box
+reliée », « ne répond pas », « mot de passe refusé »…) y sont réglés ; l'adresse n'est vue que des
+comptes qui ont le droit « extensions ». Ce qui concerne la présence (quel téléphone est à qui, le
+vote, le délai avant de compter un départ, l'interrupteur « Changer le mode de la maison selon la
+présence ») reste dans le cœur d'Ostal Server, qui lit la box par une interface commune
+(`wifi/connector.rs`, le trait `BoxConnector` : la liste des appareils, leur nom et leur état) et ne
+connaît aucune marque. Une SFR Box ou une Freebox s'ajouteront en écrivant leur extension, sans
+toucher au cœur. **Sans extension de box activée**, aucun relevé ne part, la présence ne suit que les
+raccourcis « Je pars » et « Je rentre », et `serveur.log` le dit (« aucune extension de box activée »).
+La Bbox reste sur le réseau de la maison : rien ne sort vers Internet.
+
+**Reprise des anciens réglages** (première version avec les extensions) : l'adresse et le mot de
+passe qui étaient dans `serveur/box.json` sont repris, au premier démarrage, dans l'extension Bbox
+(activée si la box était reliée). Un réglage de présence ne change pas (téléphones, interrupteur,
+délai). `box.json` ne garde que l'interrupteur et le délai ; une copie de l'ancien fichier reste
+dans `serveur/box.json.avant-extension` (0600, jamais exportée : pour revenir à la version précédente,
+la remettre sous le nom `box.json`). Si la reprise échoue (extensions illisibles, disque plein), rien
+n'est modifié, la box reste lue comme avant et le journal dit pourquoi.
 
 ## La box
 
@@ -13,7 +35,8 @@ jamais écrit sur la box, et aucun balayage du réseau n'est fait.
   système, environnement vide, mot de passe par l'entrée standard (jamais en argument).
 - Seuls le nom (`hostname`) et l'état (`active`) sont gardés : jamais l'adresse MAC ni l'IP. Un
   téléphone se reconnaît à son nom (insensible à la casse), pas à son adresse MAC (privée par réseau).
-- Le mot de passe est dans `serveur/box.json` (0600) : jamais affiché, journalisé ni exporté.
+- Le mot de passe est dans `serveur/extensions.json` (0600, extension Bbox) : jamais affiché,
+  journalisé ni exporté.
 - **Box injoignable, mot de passe refusé, ou liste sans aucun appareil actif : rien n'est conclu**, le
   mode est figé (jamais lu comme « personne à la maison »), et les absences en cours de comptage
   repartent de zéro. Un mot de passe refusé n'est plus rejoué (la box pourrait bloquer l'accès) avant

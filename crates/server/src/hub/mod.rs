@@ -275,21 +275,9 @@ impl Hub {
             Ok(dir) => crate::presence::Presence::open(dir),
             Err(_) => crate::presence::Presence::in_memory(),
         };
-        // La démonstration ne sort jamais de la boucle locale : sa « box » est fictive (sans réseau),
-        // mais elle lit les mêmes fichiers (`box.json`, `telephones.json`) que le vrai serveur.
-        let box_api = || -> Box<dyn crate::wifi::bbox::BoxApi> {
-            if config.demo {
-                Box::new(crate::wifi::DemoBox)
-            } else {
-                Box::new(crate::wifi::bbox::CurlBox::default())
-            }
-        };
-        let wifi = match &server_dir {
-            Ok(dir) => crate::wifi::Wifi::open(dir, box_api()),
-            Err(_) => crate::wifi::Wifi::in_memory(box_api()),
-        };
-        // Open-Meteo et le cloud Somfy sont les seules sorties vers Internet des extensions : la
-        // démonstration n'y va jamais.
+        // Open-Meteo et le cloud Somfy sont les seules sorties vers Internet des extensions (la
+        // Bbox, elle, est sur le réseau local) : la démonstration n'appelle jamais rien, sa « box »
+        // est fictive.
         let apis = || {
             if config.demo {
                 crate::extensions::Apis::demo()
@@ -301,6 +289,26 @@ impl Hub {
             Ok(dir) => crate::extensions::Extensions::open(dir, apis()),
             Err(_) => crate::extensions::Extensions::in_memory(apis()),
         };
+        // La box de la maison est une extension (Bbox) : les anciens réglages de `box.json` (adresse,
+        // mot de passe) y sont repris, avant que `Wifi` n'ouvre `box.json`. Voir `wifi/migration.rs`.
+        let migration = match &server_dir {
+            Ok(dir) => Some(crate::wifi::migration::run(dir, &extensions)),
+            Err(_) => None,
+        };
+        let wifi = match &server_dir {
+            Ok(dir) => crate::wifi::Wifi::open(dir, extensions.box_connectors()),
+            Err(_) => crate::wifi::Wifi::in_memory(extensions.box_connectors()),
+        };
+        if let Some(crate::wifi::migration::Outcome::Failed(why)) = &migration {
+            // Jamais une maison qui perd sa présence en silence : la box reste lue comme avant, avec
+            // les réglages de `box.json` (intact), et le journal le dit.
+            if let Some((url, password)) = wifi.legacy_box() {
+                extensions.bbox().use_legacy(&url, &password);
+            }
+            wifi.set_notice(Some(format!(
+                "la reprise des réglages de la box dans l'extension Bbox a échoué ({why})"
+            )));
+        }
         let audit = match &server_dir {
             Ok(dir) => crate::audit::AuditLog::open(dir),
             Err(_) => crate::audit::AuditLog::disabled(),

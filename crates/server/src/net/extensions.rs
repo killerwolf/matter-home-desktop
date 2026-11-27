@@ -117,12 +117,19 @@ async fn change(
 ) -> Result<Json<View>, ApiErr> {
     require(&state, &session.user_id, Capability::ManageExtensions)?;
     let hub = state.hub.clone();
+    let people = state.auth.clone();
     let done = tokio::task::spawn_blocking(move || {
         let (view, changes) = hub.extensions().update(&id, update)?;
         // Activée, lieu ou compte changé : un premier relevé tout de suite, de **cette**
         // extension seulement (aucun appel si éteinte).
         if changes.switched.is_some() || changes.config || changes.secrets {
             hub.extensions().tick_one(view.id, crate::security::now());
+            // Une box (Bbox…) : la présence relève la liste des appareils aussitôt (et l'état de
+            // l'extension dit si le mot de passe est bon), sans attendre le prochain tour de 2
+            // minutes.
+            if hub.extensions().is_box(view.id) {
+                hub.wifi_poll(&people.accounts, true);
+            }
         }
         // Les volets d'extension suivent (ajoutés, retirés, injoignables).
         hub.sync_extension_devices();

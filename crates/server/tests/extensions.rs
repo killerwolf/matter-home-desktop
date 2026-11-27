@@ -402,3 +402,84 @@ fn somfy_shutters_follow_the_extension_in_demo() {
     assert!(!server.log().contains("sam@example.org"));
     assert!(!server.log().contains("rts://"));
 }
+
+#[test]
+fn the_bbox_is_an_extension_whose_password_is_never_shown_and_that_feeds_the_presence() {
+    let dir = temp_dir("extensions-bbox");
+    let server = Server::start(&dir);
+    let client = server.client();
+    common::runtime().block_on(async {
+        let token = client.login().await;
+        let bbox = |list: &serde_json::Value| {
+            list["extensions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == "bbox")
+                .unwrap()
+                .clone()
+        };
+        // Éteinte par défaut ; elle dit que rien ne sort vers Internet et a son champ secret.
+        let list = client.get("/api/extensions", &token).await.json();
+        let off = bbox(&list);
+        assert_eq!(off["enabled"], false);
+        assert_eq!(off["status"]["state"], "off");
+        assert!(off["disclosure"].as_str().unwrap().contains("Internet"));
+        assert_eq!(off["secrets"][0]["key"], "password");
+        assert_eq!(off["secrets"][0]["set"], false);
+        // Sans extension de box, la présence voit « pas de box ».
+        let phones = client.get("/api/wifi/phones", &token).await.json();
+        assert_eq!(phones["box_link"], "none");
+
+        // Activée avec un mot de passe (box de démonstration : aucun réseau).
+        let on = client
+            .send_json(
+                "PUT",
+                "/api/extensions/bbox",
+                &token,
+                &json!({"enabled": true, "secrets": {"password": "MOT-DE-PASSE-DE-LA-BOX"}}),
+            )
+            .await;
+        assert_eq!(on.status, 200, "{}", on.text());
+        assert!(!on.text().contains("MOT-DE-PASSE"), "{}", on.text());
+        assert_eq!(on.json()["secrets"][0]["set"], true);
+        assert_eq!(on.json()["status"]["state"], "ok", "{}", on.text());
+        assert!(on.json()["status"]["devices"].as_u64().unwrap() > 0);
+        // La liste ne montre jamais le mot de passe, et la présence voit la box.
+        let list = client.get("/api/extensions", &token).await;
+        assert!(!list.text().contains("MOT-DE-PASSE"));
+        let phones = client.get("/api/wifi/phones", &token).await.json();
+        assert_eq!(phones["box_link"], "ok", "{phones}");
+        assert_eq!(phones["linked"], true);
+        // Une adresse refusée ne change rien.
+        let bad = client
+            .send_json(
+                "PUT",
+                "/api/extensions/bbox",
+                &token,
+                &json!({"config": {"url": "ftp://box"}}),
+            )
+            .await;
+        assert_eq!(bad.status, 400, "{}", bad.text());
+
+        // Éteinte : plus de box pour la présence.
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/extensions/bbox",
+                &token,
+                &json!({"enabled": false}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let phones = client.get("/api/wifi/phones", &token).await.json();
+        assert_eq!(phones["box_link"], "none", "{phones}");
+    });
+    // Le mot de passe n'est que dans le fichier privé des extensions : ni au journal d'audit ni à
+    // celui du serveur.
+    assert!(std::fs::read_to_string(dir.join("serveur/extensions.json"))
+        .unwrap()
+        .contains("MOT-DE-PASSE-DE-LA-BOX"));
+    assert!(!audit_text(&dir).contains("MOT-DE-PASSE"));
+    assert!(!server.log().contains("MOT-DE-PASSE"));
+}
