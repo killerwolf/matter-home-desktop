@@ -24,6 +24,9 @@ use crate::{demo, matter, persistence, Backend};
 /// sans balayage du réseau. La démonstration relève plus souvent : sa « box » n'a pas de réseau.
 const WIFI_POLL: Duration = Duration::from_secs(120);
 const WIFI_DEMO_POLL: Duration = Duration::from_secs(20);
+/// Le fil des extensions se réveille toutes les 30 s ; chaque extension décide elle-même si c'est
+/// l'heure (la météo : toutes les 15 minutes). Éteintes, elles ne font rien.
+const EXTENSIONS_TICK: Duration = Duration::from_secs(30);
 
 /// Délai laissé au backend et à l'écriture de l'historique pour s'arrêter.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,6 +48,8 @@ pub struct ServerConfig {
     /// Écart entre deux relevés de la box (présence par le Wi-Fi) ; `None` : pas de relevé
     /// périodique (les essais relèvent à la main).
     pub wifi_poll_interval: Option<Duration>,
+    /// Réveil du fil des extensions ; `None` : aucun relevé périodique (les essais).
+    pub extensions_tick: Option<Duration>,
 }
 
 impl ServerConfig {
@@ -58,6 +63,7 @@ impl ServerConfig {
             body_idle_timeout: crate::net::BODY_IDLE_TIMEOUT,
             shortcut_signer: crate::shortcuts::Signer::Apple,
             wifi_poll_interval: Some(if demo { WIFI_DEMO_POLL } else { WIFI_POLL }),
+            extensions_tick: Some(EXTENSIONS_TICK),
         }
     }
 }
@@ -86,6 +92,8 @@ pub struct Server {
     camera_monitor: Option<CameraMonitor>,
     /// Le fil qui relève la box de la maison.
     wifi_watcher: Option<WifiWatcher>,
+    /// Le fil des extensions (météo…).
+    extensions_watcher: Option<ExtensionsWatcher>,
     stop_pump: Arc<AtomicBool>,
     fatal: Arc<AtomicBool>,
     pub addr: SocketAddr,
@@ -189,6 +197,9 @@ impl Server {
         let wifi_watcher = config
             .wifi_poll_interval
             .map(|every| WifiWatcher::start(hub.clone(), auth.clone(), every));
+        let extensions_watcher = config
+            .extensions_tick
+            .map(|every| ExtensionsWatcher::start(hub.clone(), every));
         Ok(Server {
             announcement,
             addr: net.addr,
@@ -200,6 +211,7 @@ impl Server {
             demo_history_writer,
             camera_monitor,
             wifi_watcher,
+            extensions_watcher,
             stop_pump,
             fatal,
             fingerprint: identity.fingerprint,
@@ -267,6 +279,10 @@ impl Server {
         if let Some(watcher) = self.wifi_watcher.take() {
             clean &= watcher.stop();
         }
+        if let Some(watcher) = self.extensions_watcher.take() {
+            clean &= watcher.stop();
+        }
+        self.hub.extensions().shutdown();
         if let Some(backend) = self.backend.take() {
             clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
         }
@@ -310,6 +326,44 @@ impl WifiWatcher {
             })
             .expect("fil du Wi-Fi");
         WifiWatcher { stop, thread }
+    }
+
+    /// Arrête le fil et attend sa fin. `true` : il s'est arrêté sans panique.
+    pub fn stop(self) -> bool {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread.join().is_ok()
+    }
+}
+
+/// Le fil des extensions : à chaque réveil, chaque extension active relève si c'est l'heure. Il
+/// s'arrête dans la seconde qui suit la demande (sauf pendant un appel réseau, au plus 10 s).
+pub struct ExtensionsWatcher {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+impl ExtensionsWatcher {
+    pub fn start(hub: Arc<Hub>, every: Duration) -> ExtensionsWatcher {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("extensions".into())
+            .spawn(move || {
+                let tick = Duration::from_millis(200);
+                loop {
+                    hub.extensions().poll(crate::security::now(), false);
+                    let mut waited = Duration::ZERO;
+                    while waited < every {
+                        if flag.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(tick);
+                        waited += tick;
+                    }
+                }
+            })
+            .expect("fil des extensions");
+        ExtensionsWatcher { stop, thread }
     }
 
     /// Arrête le fil et attend sa fin. `true` : il s'est arrêté sans panique.

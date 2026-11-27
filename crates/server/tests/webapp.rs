@@ -28,6 +28,7 @@ const ASSETS: &[(&str, &str)] = &[
     ("/app/widgets.js", "text/javascript"),
     ("/app/connections.js", "text/javascript"),
     ("/app/presence.js", "text/javascript"),
+    ("/app/extensions.js", "text/javascript"),
     ("/app/agents.js", "text/javascript"),
     ("/app/sw.js", "text/javascript"),
     ("/app/manifest.webmanifest", "application/manifest+json"),
@@ -183,7 +184,7 @@ fn mode_chip_is_wired_into_the_shell_and_the_service_worker_cache_is_bumped() {
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
         assert!(sw.contains("\"mode.js\""), "mode.js absent du cache");
         assert!(
-            sw.contains("ostal-shell-v19") && sw.contains("\"events.js\""),
+            sw.contains("ostal-shell-v20") && sw.contains("\"events.js\""),
             "le cache du service worker doit changer de version"
         );
         // Le serveur de démonstration envoie bien le mode dans l'état complet.
@@ -800,7 +801,7 @@ fn widgets_page_is_wired_into_the_app_and_never_cached_by_the_service_worker() {
         let js = widgets.text();
         assert!(!js.contains("eval(") && !js.contains("innerHTML"));
         let sw = client.request("GET", "/app/sw.js", None, None).await.text();
-        assert!(sw.contains("\"widgets.js\"") && sw.contains("ostal-shell-v19"));
+        assert!(sw.contains("\"widgets.js\"") && sw.contains("ostal-shell-v20"));
         // Les raccourcis et le script ne sont ni listés ni gardés par le service worker.
         assert!(sw.contains("/app/raccourcis/"));
         assert!(!sw.contains("\"raccourcis/"));

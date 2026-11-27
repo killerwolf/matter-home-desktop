@@ -33,11 +33,13 @@ pub enum Capability {
     ManageAccounts,
     /// Lire le journal d'audit.
     ReadJournal,
+    /// Activer, désactiver et régler les extensions (météo, Somfy…).
+    ManageExtensions,
 }
 
 impl Capability {
     /// Toutes les capacités.
-    pub const ALL: [Capability; 9] = [
+    pub const ALL: [Capability; 10] = [
         Capability::View,
         Capability::ControlDevices,
         Capability::ChangeMode,
@@ -47,6 +49,7 @@ impl Capability {
         Capability::ExportImport,
         Capability::ManageAccounts,
         Capability::ReadJournal,
+        Capability::ManageExtensions,
     ];
 
     fn bit(self) -> u16 {

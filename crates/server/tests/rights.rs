@@ -138,6 +138,22 @@ fn gated() -> Vec<Gated> {
             Some(json!({"enabled": true})),
             EditAutomations,
         ),
+        // Les extensions : activer, régler, chercher un lieu (un appel vers Internet une fois
+        // activée) demandent « extensions » ; la lecture de la liste et de la météo est libre.
+        g(
+            "PUT",
+            "/api/extensions/{id}",
+            "/api/extensions/weather",
+            Some(json!({})),
+            ManageExtensions,
+        ),
+        g(
+            "GET",
+            "/api/extensions/weather/search",
+            "/api/extensions/weather/search?q=Lyon",
+            None,
+            ManageExtensions,
+        ),
         // Créer un agent en lecture : « voir la maison ». Les droits « commandes » et « mode » qu'il
         // peut porter demandent en plus ceux du compte (prouvé par
         // agents_web::the_account_can_only_give_the_rights_it_has_itself).
@@ -162,6 +178,11 @@ fn gated() -> Vec<Gated> {
 /// la personne elle-même (sa session, ses connexions, ses jetons, ses abonnements).
 const EXEMPT: &[(&str, &str)] = &[
     ("/api/version", "lecture, publique"),
+    (
+        "/api/extensions",
+        "lecture (jamais un secret : seulement « défini » ou non)",
+    ),
+    ("/api/weather", "lecture"),
     (
         "/mcp",
         "jeton d'agent, pas une session : can(View), can(ControlDevices) et can(ChangeMode) sont vérifiés outil par outil dans net/mcp/tools.rs::call, prouvé par the_account_right_to_control_is_checked_and_journaled et every_tool_is_refused_when_the_account_loses_the_right_to_read",

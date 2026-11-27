@@ -9,6 +9,7 @@ mod body;
 mod camera_snapshot;
 mod camera_stream;
 mod events;
+mod extensions;
 mod install;
 mod mcp;
 mod push;

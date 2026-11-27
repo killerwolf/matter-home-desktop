@@ -123,52 +123,65 @@ impl Default for CurlBox {
 }
 
 /// Une réponse de la box : statut, cookies posés (`nom=valeur`) et corps.
-struct Reply {
-    status: u16,
-    cookies: Vec<String>,
-    body: Vec<u8>,
+pub(crate) struct Reply {
+    pub(crate) status: u16,
+    pub(crate) cookies: Vec<String>,
+    pub(crate) body: Vec<u8>,
+}
+
+/// Lance le `curl` du système avec cette configuration (entrée standard : l'adresse et les
+/// secrets n'apparaissent jamais dans `ps`) et rend la réponse. `proto` : les schémas permis
+/// (`=http,https` pour la box, `=https` pour Internet), aussi après redirection. Partagé avec les
+/// extensions (`extensions/weather.rs`).
+pub(crate) fn curl_run(
+    config: &str,
+    timeout: Duration,
+    proto: &str,
+    max_bytes: usize,
+) -> Result<Reply, BoxError> {
+    let mut child = curl_command()
+        .args([
+            "-q",
+            "-sS",
+            "-i",
+            "-m",
+            &timeout.as_secs().max(1).to_string(),
+            "--proto",
+            proto,
+            "--proto-redir",
+            proto,
+            "-g",
+            "--noproxy",
+            "*",
+            "--max-filesize",
+            &max_bytes.to_string(),
+            "-K",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| BoxError::Unreachable)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(config.as_bytes()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(BoxError::Unreachable);
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|_| BoxError::Unreachable)?;
+    if !output.status.success() {
+        return Err(BoxError::Unreachable);
+    }
+    parse_reply(&output.stdout).ok_or(BoxError::Unreachable)
 }
 
 impl CurlBox {
     fn run(&self, config: &str) -> Result<Reply, BoxError> {
-        let mut child = curl_command()
-            .args([
-                "-q",
-                "-sS",
-                "-i",
-                "-m",
-                &self.timeout.as_secs().max(1).to_string(),
-                "--proto",
-                "=http,https",
-                "--proto-redir",
-                "=http,https",
-                "-g",
-                "--noproxy",
-                "*",
-                "--max-filesize",
-                &MAX_BYTES.to_string(),
-                "-K",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| BoxError::Unreachable)?;
-        if let Some(mut stdin) = child.stdin.take() {
-            if stdin.write_all(config.as_bytes()).is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(BoxError::Unreachable);
-            }
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|_| BoxError::Unreachable)?;
-        if !output.status.success() {
-            return Err(BoxError::Unreachable);
-        }
-        parse_reply(&output.stdout).ok_or(BoxError::Unreachable)
+        curl_run(config, self.timeout, "=http,https", MAX_BYTES)
     }
 
     fn config(url: &str, path: &str, cookie: Option<&str>, form: Option<&str>) -> Option<String> {

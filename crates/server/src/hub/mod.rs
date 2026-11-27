@@ -150,6 +150,8 @@ pub struct Hub {
     presence: crate::presence::Presence,
     /// La box de la maison et les téléphones des comptes (présence par le Wi-Fi) : `wifi/`.
     wifi: crate::wifi::Wifi,
+    /// Les extensions intégrées, désactivées par défaut (`serveur/extensions.json`).
+    extensions: crate::extensions::Extensions,
     /// Le journal d'audit (`serveur/audit/`) : voir `audit.rs`.
     audit: Arc<crate::audit::AuditLog>,
     /// Ce que chaque compte a le droit de faire : voir `rights.rs`.
@@ -272,6 +274,18 @@ impl Hub {
             Ok(dir) => crate::wifi::Wifi::open(dir, box_api()),
             Err(_) => crate::wifi::Wifi::in_memory(box_api()),
         };
+        // Open-Meteo est la seule sortie vers Internet des extensions : la démonstration n'y va jamais.
+        let weather_api = || -> Arc<dyn crate::extensions::weather::WeatherApi> {
+            if config.demo {
+                Arc::new(crate::extensions::weather::DemoWeather)
+            } else {
+                Arc::new(crate::extensions::weather::CurlWeather)
+            }
+        };
+        let extensions = match &server_dir {
+            Ok(dir) => crate::extensions::Extensions::open(dir, weather_api()),
+            Err(_) => crate::extensions::Extensions::in_memory(weather_api()),
+        };
         let audit = match &server_dir {
             Ok(dir) => crate::audit::AuditLog::open(dir),
             Err(_) => crate::audit::AuditLog::disabled(),
@@ -290,6 +304,7 @@ impl Hub {
             tokens,
             presence,
             wifi,
+            extensions,
             audit: Arc::new(audit),
             rights: crate::rights::Rights::new(),
             shortcut_downloads: Default::default(),
@@ -319,6 +334,11 @@ impl Hub {
     /// Les droits des comptes (V1 : tout le monde peut tout faire).
     pub fn rights(&self) -> &crate::rights::Rights {
         &self.rights
+    }
+
+    /// Les extensions (météo…) : voir `extensions/`.
+    pub fn extensions(&self) -> &crate::extensions::Extensions {
+        &self.extensions
     }
 
     /// Le journal d'audit.

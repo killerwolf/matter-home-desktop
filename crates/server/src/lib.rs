@@ -14,6 +14,7 @@ pub mod descriptions;
 pub mod detection;
 pub mod events;
 pub mod export;
+pub mod extensions;
 pub mod history_store;
 pub mod home_mode;
 pub mod hub;
