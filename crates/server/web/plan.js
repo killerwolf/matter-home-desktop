@@ -5,7 +5,7 @@
 // Les pièces sont dessinées dans un groupe à l'échelle du plan (mètres) ; les objets et les noms
 // restent à taille d'écran constante, posés au bon endroit : ils restent lisibles et touchables.
 import { ICONS, shutterIcon } from "./icons.js";
-import { formatTemperature, roomAverages, symbolOf, tempClass, tileOf } from "./tiles.js";
+import { ASSUMED_NOTE, formatTemperature, isStale, position, roomAverages, symbolOf, tempClass, tileOf } from "./tiles.js";
 
 const NS = "http://www.w3.org/2000/svg";
 export const EMPTY_TEXT = "Le plan se dessine dans l'application de bureau.";
@@ -126,6 +126,23 @@ const html = (tag, className, text) => {
 const textW = (text, px) => text.length * px * 0.55; // largeur estimée d'un texte (px)
 const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 const short = (text, n = 12) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+
+/**
+ * Le volet qui équipe une porte ou une fenêtre du plan (`plan.shutters` : [{ id (l'objet), node_id
+ * (le volet) }], des identifiants en texte), avec son état : « ouvert », « fermé » ou « inconnu »
+ * (extension éteinte, volet injoignable, jamais commandé). Pour un volet RTS (Somfy), l'état est le
+ * dernier ordre donné par Ostal. `null` : pas de volet sur cette ouverture.
+ */
+export function shutterState(plan, devices, itemId) {
+  const link = (plan?.shutters ?? []).find((l) => String(l.id) === String(itemId));
+  if (!link) return null;
+  const id = String(link.node_id);
+  const dev = devices?.get?.(id);
+  const p = dev && !isStale(dev) ? position(dev) : null;
+  const state = p == null ? "unknown" : p > 0 ? "open" : "closed";
+  const text = state === "open" ? "Volet ouvert" : state === "closed" ? "Volet fermé" : "Volet : état inconnu";
+  return { id, name: dev?.info?.name ?? "Volet", state, text, aria: `${text}, ${ASSUMED_NOTE}` };
+}
 
 const DECOR_ICONS = {
   Door: ICONS.doorClosed, Window: ICONS.windowClosed, Light: ICONS.lightOff, Plug: ICONS.plugOff,
@@ -372,27 +389,42 @@ export function mountPlan(root, ctx) {
         const t = tileOf(shown, e && Date.now() - e.at < 5000 ? e : null);
         group.setAttribute("class", `pi${t.lit ? " lit" : ""}${t.iconWarn || t.valueWarn || t.lowBattery ? " warn" : ""}${t.small?.kind === "err" ? " err" : ""}`);
         setIcon(icon, t.icon);
-        const text = t.value ?? t.small?.text ?? "";
+        const shutter = shutterState(ctx.getPlan(), devices(), item.id);
+        const text = shutter ? [t.value, shutter.text].filter(Boolean).join(" · ") : (t.value ?? t.small?.text ?? "");
         value.textContent = text;
         name.textContent = short(dev.info.name);
-        group.setAttribute("aria-label", [dev.info.name, t.value, t.small?.text].filter(Boolean).join(", "));
+        group.setAttribute("aria-label", [dev.info.name, t.value, t.small?.text, shutter?.aria].filter(Boolean).join(", "));
       },
     };
     entry.update();
     return entry;
   }
 
-  function decorItem(item) {
+  function decorItem(item, plan) {
     const k = item.kind;
-    const group = el("g", { role: "img", "aria-label": k.label || "Objet" }, "pi decor");
+    // Une porte ou une fenêtre équipée d'un volet : on peut l'ouvrir (la fiche du volet).
+    const equipped = (plan?.shutters ?? []).find((l) => String(l.id) === String(item.id));
+    const group = el("g", equipped ? { role: "button", tabindex: 0, "aria-label": k.label || "Objet" } : { role: "img", "aria-label": k.label || "Objet" }, "pi decor");
+    if (equipped) group.dataset.id = String(equipped.node_id);
     const icon = el("g", {}, "pico");
     setIcon(icon, decorIcon(k.symbol));
     const name = el("text", { "text-anchor": "middle" }, "pname");
     name.textContent = short(k.label ?? "");
+    const value = el("text", { "text-anchor": "middle" }, "pval");
     const body = el("g", {}, "pbody");
     body.append(el("circle", { r: 14 }, "pbg"), icon);
-    group.append(body, name);
-    return { node: group, x: item.x, y: item.y, body, r: 14, decor: true, texts: [[name, 15]], update() {} };
+    if (equipped) group.append(el("circle", { r: 22 }, "phit"));
+    group.append(body, name, value);
+    return {
+      node: group, x: item.x, y: item.y, body, r: 14, decor: !equipped, texts: equipped ? [[name, 15], [value, 29]] : [[name, 15]],
+      update() {
+        if (!equipped) return;
+        const shutter = shutterState(ctx.getPlan(), devices(), item.id);
+        value.textContent = shutter?.text ?? "";
+        group.setAttribute("class", `pi decor shuttered${shutter?.state === "closed" ? " shut" : ""}${shutter?.state === "unknown" ? " dim" : ""}`);
+        group.setAttribute("aria-label", [k.label || "Objet", shutter?.aria].filter(Boolean).join(", "));
+      },
+    };
   }
 
   function cameraItem(item) {
@@ -450,7 +482,7 @@ export function mountPlan(root, ctx) {
     }
     for (const i of floor.items ?? []) {
       const kind = i.kind?.type;
-      const made = kind === "Device" ? deviceItem(i) : kind === "Decor" ? decorItem(i) : kind === "Camera" ? cameraItem(i) : null;
+      const made = kind === "Device" ? deviceItem(i) : kind === "Decor" ? decorItem(i, plan) : kind === "Camera" ? cameraItem(i) : null;
       if (!made) continue;
       layer.appendChild(made.node);
       items.push(made);
@@ -512,7 +544,7 @@ export function mountPlan(root, ctx) {
     }
     if (!userChoseFloor) floorIndex = firstFilledFloor(plan);
     else if (floorIndex >= plan.floors.length) floorIndex = 0;
-    const next = JSON.stringify([floorIndex, plan.floors.map((f) => [f.id, f.name, f.rooms, f.items])]);
+    const next = JSON.stringify([floorIndex, plan.floors.map((f) => [f.id, f.name, f.rooms, f.items]), plan.shutters ?? null]);
     if (next !== signature) {
       const hadView = view != null;
       signature = next;

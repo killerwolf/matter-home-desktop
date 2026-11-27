@@ -2,7 +2,7 @@
 // La phrase d'état : jumelle de protocol::status (crates/protocol/src/status.rs), mêmes cas, mêmes
 // textes, mot pour mot. L'unité de compte est la catégorie, jamais l'appareil.
 import assert from "node:assert/strict";
-import { droppedTogether, allReachable, clockText, headline, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
+import { ASSUMED_NOTE, droppedTogether, allReachable, clockText, headline, isAssumedCover, isExtensionDevice, tileOf, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
 
 const names = (...list) => list;
 const devices = (...p) => ({ kind: "devices", names: p });

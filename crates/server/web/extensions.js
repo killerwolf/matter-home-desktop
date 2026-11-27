@@ -64,3 +64,54 @@ export const placeConfig = (place) => ({ place: place ? { name: place.name, lati
 
 /** Le texte cherché est-il assez long pour partir chez Open-Meteo ? (2 caractères au moins.) */
 export const searchable = (text) => [...String(text ?? "").trim()].length >= 2;
+
+// ---------------------------------------------------------------------------
+// Volets Somfy (extension « somfy ») : GET /api/extensions/somfy/devices, POST
+// /api/extensions/somfy/refresh. Le serveur ne montre à tous que l'état (`status`) ; l'identifiant
+// (`config.email`) et le choix des appareils (`config.exposed`) ne vont qu'aux comptes qui règlent
+// les extensions.
+// ---------------------------------------------------------------------------
+
+/** La phrase d'état de la page Somfy, d'après `view.status` (jamais d'identifiant ni d'adresse). */
+export function somfyStatusText(view) {
+  const status = view?.status ?? {};
+  const n = status.devices ?? 0;
+  const shutters = `${n} volet${n > 1 ? "s" : ""}`;
+  switch (status.state) {
+    case "off": return "Désactivée : Ostal n'appelle pas le cloud de Somfy.";
+    case "unconfigured": return "Saisissez l'identifiant et le mot de passe du compte TaHoma : Ostal n'appelle pas Somfy tant qu'ils manquent.";
+    case "waiting": return "Connexion à Somfy en cours…";
+    case "offline": return n ? `Somfy ne répond pas pour l'instant : ${shutters} dans Ostal, d'après la dernière liste connue.` : "Somfy ne répond pas pour l'instant : nouvel essai dans quelques minutes.";
+    case "rejected": return "Somfy refuse l'identifiant ou le mot de passe. Ostal n'essaiera plus tant qu'ils ne changent pas (réessayer trop souvent risque de bloquer le compte).";
+    case "ok": return n ? `Connecté à Somfy : ${shutters} dans Ostal.` : "Connecté à Somfy, mais aucun volet n'est coché : cochez-en dans la liste ci-dessous.";
+    default: return "";
+  }
+}
+
+/** La dernière erreur d'ordre, ou `null`. */
+export const somfyLastError = (view) => view?.status?.last_error ?? null;
+
+const KIND_LABELS = { RollerShutter: "volet roulant", Shutter: "volet", Light: "lumière", Pod: "Kit", ExteriorScreen: "store extérieur", Awning: "store banne", GarageDoor: "porte de garage", Window: "fenêtre" };
+/** Le type d'un appareil du compte, en français (la classe Overkiz sinon). */
+export const somfyKindLabel = (kind) => KIND_LABELS[kind] ?? (kind ? kind : "appareil");
+
+/** La liste des appareils du compte, dans l'ordre d'affichage : ceux qui s'ouvrent et se ferment d'abord. */
+export function somfyChoices(choices) {
+  const devices = [...(choices?.devices ?? [])];
+  return devices.sort((a, b) => Number(b.commandable) - Number(a.commandable) || a.name.localeCompare(b.name, "fr"));
+}
+
+/** Les clés cochées après un clic sur la case de `key` : la nouvelle liste à envoyer (`config.exposed`). */
+export function somfyExposedAfter(choices, key, checked) {
+  const selected = (choices?.devices ?? []).filter((d) => d.selected && d.commandable).map((d) => d.key);
+  const rest = selected.filter((k) => k !== key);
+  return checked ? [...rest, key] : rest;
+}
+
+/** La configuration à envoyer (PUT remplace toute la configuration) : l'identifiant et le choix. */
+export const somfyConfig = (email, exposed) => ({ email: String(email ?? "").trim(), exposed: exposed ?? null });
+
+/** « Liste lue chez Somfy à 14:30. », ou `null` (liste jamais lue). */
+export function somfySyncedText(choices) {
+  return Number.isFinite(choices?.synced_at) ? `Liste lue chez Somfy à ${clock(choices.synced_at)}.` : null;
+}
