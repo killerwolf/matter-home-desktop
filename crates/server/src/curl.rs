@@ -35,6 +35,8 @@ pub(crate) fn run(
             "-i",
             "-m",
             &timeout.as_secs().max(1).to_string(),
+            "--connect-timeout",
+            "5",
             "--proto",
             proto,
             "--proto-redir",

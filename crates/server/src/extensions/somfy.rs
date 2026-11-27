@@ -45,6 +45,8 @@ const SHUTTER_KIND: &str = "RollerShutter";
 const ORDER_GAP: Duration = Duration::from_millis(700);
 /// Ordres en attente au plus (au-delà : « occupé »).
 const MAX_QUEUE: usize = 16;
+/// Attente de l'arrêt pour un ordre en cours, au plus.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 /// Écart minimal entre deux lectures de la liste demandées à la main.
 const MIN_REFRESH_GAP_S: f64 = 20.0;
 const RETRY_MIN_S: f64 = 60.0;
@@ -132,7 +134,7 @@ fn exposed_of(config: &Value) -> Option<Vec<String>> {
 
 // ---- ce qui est gardé sur disque -------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Cached {
     oid: String,
     url: String,
@@ -141,6 +143,18 @@ struct Cached {
     kind: String,
     #[serde(default)]
     commandable: bool,
+}
+
+impl std::fmt::Debug for Cached {
+    /// Jamais l'adresse (`url`) : elle contient le code du Kit.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cached")
+            .field("oid", &self.oid)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("commandable", &self.commandable)
+            .finish_non_exhaustive()
+    }
 }
 
 impl From<RemoteDevice> for Cached {
@@ -164,7 +178,7 @@ struct LastOrder {
 /// `somfy.json` : les identifiants d'Ostal (jamais réutilisés), la dernière liste connue du compte
 /// et le dernier ordre de chaque volet. Les adresses des appareils contiennent le code du Kit :
 /// fichier privé (0600), hors de l'export, jamais montré.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Saved {
     #[serde(default)]
     version: u32,
@@ -177,6 +191,31 @@ struct Saved {
     synced_at: Option<f64>,
     #[serde(default)]
     orders: BTreeMap<String, LastOrder>,
+    /// Empreinte (SHA-256) du compte et du mot de passe que Somfy a refusés : au redémarrage, on
+    /// ne réessaie pas le même couple. Jamais le mot de passe lui-même.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rejected: Option<String>,
+}
+
+impl std::fmt::Debug for Saved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Saved")
+            .field("ids", &self.ids.len())
+            .field("devices", &self.devices)
+            .field("orders", &self.orders.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// L'empreinte d'un couple identifiant et mot de passe.
+fn fingerprint(creds: &Credentials) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"ostal-somfy\0");
+    hash.update(creds.user.as_bytes());
+    hash.update(b"\0");
+    hash.update(creds.password.as_bytes());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---- ce que voit le reste du serveur ---------------------------------------------------------
@@ -230,6 +269,8 @@ pub enum OrderError {
     Rejected,
     /// Trop d'ordres en attente.
     Busy,
+    /// Somfy ne répond pas : pas de nouvel ordre avant le prochain essai (même attente que la liste).
+    Offline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +386,7 @@ impl Somfy {
             devices: inner.saved.devices.clone(),
             synced_at: inner.saved.synced_at,
             orders: inner.saved.orders.clone(),
+            rejected: inner.saved.rejected.clone(),
         };
         let result = serde_json::to_vec(&saved)
             .map_err(anyhow::Error::from)
@@ -483,8 +525,13 @@ impl Somfy {
             inner.forget_session |= was_live;
         } else if changes.is_none() {
             // Démarrage du serveur : la dernière liste connue suffit, aucun appel ; sans liste
-            // (jamais lue), on la lit.
+            // (jamais lue), on la lit. Un couple déjà refusé par Somfy n'est pas réessayé.
             inner.sync_due = inner.saved.devices.is_empty();
+            let refused = inner.creds.as_ref().map(fingerprint) == inner.saved.rejected;
+            if refused && inner.saved.rejected.is_some() {
+                inner.health = Health::Rejected;
+                inner.sync_due = false;
+            }
         } else if account_changed || changes.is_some_and(|c| c.switched.is_some()) || !was_live {
             inner.health = Health::Unknown;
             inner.failures = 0;
@@ -493,6 +540,10 @@ impl Somfy {
             inner.sync_due = true;
             // Une ancienne session ne sert plus : on repart d'une connexion.
             inner.forget_session |= account_changed && was_live;
+            // Un autre compte, ou un nouvel allumage : on peut réessayer.
+            if inner.saved.rejected.take().is_some() {
+                self.save(&inner);
+            }
         } else if inner.saved.devices.is_empty() && inner.health != Health::Rejected {
             inner.sync_due = true;
         }
@@ -575,6 +626,8 @@ impl Somfy {
                 inner.sync_due = false;
                 inner.queue.clear();
                 inner.pending.clear();
+                inner.saved.rejected = Some(fingerprint(creds));
+                self.save(&inner);
                 log::warn!(
                     "somfy : identifiant ou mot de passe refusés par Somfy, plus aucun appel"
                 );
@@ -627,6 +680,10 @@ impl Somfy {
         if inner.health == Health::Rejected {
             return Err(OrderError::Rejected);
         }
+        // Somfy ne répond pas : même attente que pour la liste (jamais d'ordre en rafale).
+        if now < inner.retry_at {
+            return Err(OrderError::Offline);
+        }
         let device = inner
             .saved
             .devices
@@ -660,11 +717,11 @@ impl Somfy {
                 .spawn(move || me.work())
             {
                 Ok(handle) => {
-                    drop(inner);
+                    // L'ancien fil a déjà rendu `worker_running` : il finit sans rien attendre.
                     if let Some(old) = old {
                         let _ = old.join();
                     }
-                    this.lock().worker = Some(handle);
+                    inner.worker = Some(handle);
                 }
                 Err(_) => {
                     inner.worker_running = false;
@@ -730,6 +787,8 @@ impl Somfy {
                 self.save(&inner);
                 inner.health = Health::Ok;
                 inner.last_error = None;
+                inner.failures = 0;
+                inner.retry_at = 0.0;
             }
             Err(e) => {
                 // L'ordre n'est pas parti : l'état d'avant revient (le dernier ordre réussi), et on
@@ -739,6 +798,8 @@ impl Somfy {
                         inner.health = Health::Rejected;
                         inner.queue.clear();
                         inner.pending.clear();
+                        inner.saved.rejected = Some(fingerprint(creds));
+                        self.save(&inner);
                         (
                             "Somfy refuse l'identifiant ou le mot de passe.",
                             "Somfy refuse l'identifiant ou le mot de passe : plus aucun ordre ne part.",
@@ -753,6 +814,12 @@ impl Somfy {
                         "Somfy ne répond pas, l'ordre n'est pas parti.",
                     ),
                 };
+                if e != OverkizError::Rejected {
+                    inner.failures = inner.failures.saturating_add(1);
+                    let wait =
+                        (RETRY_MIN_S * 2f64.powi(inner.failures as i32 - 1)).min(RETRY_MAX_S);
+                    inner.retry_at = job.state.at + wait;
+                }
                 inner.last_error = Some(why);
                 inner.notices.push(format!("{} : {line}", job.name));
                 log::warn!("somfy : ordre non transmis ({why})");
@@ -826,7 +893,15 @@ impl Extension for Somfy {
             inner.worker.take()
         };
         if let Some(worker) = worker {
-            let _ = worker.join();
+            // Un appel en cours finit tout seul (son résultat est jeté) : on attend quelques
+            // secondes au plus, puis on le laisse.
+            let started = std::time::Instant::now();
+            while !worker.is_finished() && started.elapsed() < SHUTDOWN_WAIT {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
         }
         self.api.forget_session();
     }
@@ -1085,10 +1160,15 @@ mod tests {
         assert!(!somfy.tick(70.0, &setup.settings()));
         assert_eq!(fake.orders.lock().unwrap().len(), 1);
         // Un ordre qui réussit efface l'erreur.
-        Somfy::order(&somfy, porte, Order::Close, 80.0).unwrap();
+        // Somfy vient de ne pas répondre : pas d'ordre avant l'attente (60 s), jamais en rafale.
+        assert_eq!(
+            Somfy::order(&somfy, porte, Order::Close, 80.0),
+            Err(OrderError::Offline)
+        );
+        Somfy::order(&somfy, porte, Order::Close, 130.0).unwrap();
         wait_idle(&somfy);
         assert_eq!(somfy.status(true, &setup.config)["last_error"], Value::Null);
-        assert_eq!(somfy.exposed()[0].last_order, Some((false, 80.0)));
+        assert_eq!(somfy.exposed()[0].last_order, Some((false, 130.0)));
     }
 
     #[test]
@@ -1233,6 +1313,53 @@ mod tests {
         assert_eq!(
             Somfy::order(&somfy, ids[1], Order::Open, 51.0),
             Err(OrderError::Disabled)
+        );
+    }
+
+    #[test]
+    fn a_refused_account_is_not_retried_after_a_restart_until_it_changes() {
+        let dir = temp("rejected");
+        let fake = Arc::new(Fake::default());
+        *fake.fail.lock().unwrap() = Some(OverkizError::Rejected);
+        let (somfy, setup) = enabled(&fake, Some(&dir));
+        assert!(somfy.tick(10.0, &setup.settings()));
+        // Le fichier garde une empreinte, jamais le mot de passe.
+        let file = std::fs::read_to_string(dir.join(STATE_FILE)).unwrap();
+        assert!(
+            file.contains("rejected") && !file.contains("pa\\\"ss"),
+            "{file}"
+        );
+        // Redémarrage, même compte : aucun appel, état « refusé ».
+        let again_fake = Arc::new(Fake::default());
+        let (again, again_setup) = enabled(&again_fake, Some(&dir));
+        assert!(!again.tick(20.0, &again_setup.settings()));
+        assert_eq!(again_fake.lists.load(Ordering::SeqCst), 0);
+        assert!(again.rejected());
+        // Un autre mot de passe : on réessaie.
+        let mut other = Setup::on();
+        other.secrets.insert(PASSWORD.into(), "autre".into());
+        again.on_change(
+            &other.settings(),
+            &Changes {
+                secrets: true,
+                ..Changes::default()
+            },
+        );
+        assert!(again.tick(30.0, &other.settings()));
+        assert_eq!(again_fake.lists.load(Ordering::SeqCst), 1);
+        assert!(!again.rejected());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn debug_never_shows_a_device_address() {
+        let somfy = Arc::new(Somfy::new(None, Arc::new(Fake::default())));
+        let setup = Setup::on();
+        somfy.start(&setup.settings());
+        somfy.tick(1.0, &setup.settings());
+        let shown = format!("{:?}", somfy.lock().saved);
+        assert!(
+            shown.contains("Porte") && !shown.contains("rts://") && !shown.contains("1234-5678")
         );
     }
 

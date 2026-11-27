@@ -194,6 +194,13 @@ pub fn parse_execution(body: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// La réponse de Somfy dit « trop de requêtes » (panne passagère, pas un refus du compte).
+fn too_many_requests(body: &[u8]) -> bool {
+    String::from_utf8_lossy(body)
+        .to_ascii_lowercase()
+        .contains("too many")
+}
+
 /// Le corps du formulaire de connexion : les deux valeurs en pourcentage, de sorte qu'un mot de
 /// passe avec `"`, `\`, `&` ou un accent passe tel quel.
 pub fn login_body(creds: &Credentials) -> String {
@@ -213,7 +220,8 @@ pub struct CurlOverkiz {
     proto: &'static str,
     /// Le cookie de session, en mémoire seulement ; le verrou sérialise aussi les appels (jamais
     /// deux connexions en même temps).
-    session: Mutex<Option<String>>,
+    /// Avec l'identifiant qui l'a obtenu : un autre compte ne s'en sert jamais.
+    session: Mutex<Option<(String, String)>>,
 }
 
 impl Default for CurlOverkiz {
@@ -271,8 +279,10 @@ impl CurlOverkiz {
                 .find(|c| c.starts_with("JSESSIONID="))
                 .cloned()
                 .ok_or(OverkizError::BadReply),
-            // Trop de requêtes : une panne passagère, pas un mauvais mot de passe.
+            // Trop de requêtes : une panne passagère, pas un mauvais mot de passe. (Le texte exact
+            // de Somfy n'est pas dans `overkiz-client` : on cherche « too many » sans casse.)
             429 => Err(OverkizError::Unreachable),
+            400..=499 if too_many_requests(&reply.body) => Err(OverkizError::Unreachable),
             400..=499 => Err(OverkizError::Rejected),
             _ => Err(OverkizError::Unreachable),
         }
@@ -287,11 +297,18 @@ impl CurlOverkiz {
         body: Option<&str>,
     ) -> Result<Vec<u8>, OverkizError> {
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        // Le cookie d'un ancien compte est jeté tout de suite.
+        if session
+            .as_ref()
+            .is_some_and(|(user, _)| *user != creds.user)
+        {
+            *session = None;
+        }
         for attempt in 0..2 {
             if session.is_none() {
-                *session = Some(self.login(creds)?);
+                *session = Some((creds.user.clone(), self.login(creds)?));
             }
-            let cookie = session.clone().unwrap_or_default();
+            let cookie = session.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
             let headers = [
                 "Accept: application/json".to_string(),
                 "Content-Type: application/json".to_string(),
@@ -448,8 +465,20 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
+            listener.set_nonblocking(true).unwrap();
             for reply in replies {
-                let (mut stream, _) = listener.accept().unwrap();
+                // Jamais d'attente sans fin : 10 s au plus pour qu'un client se présente.
+                let started = std::time::Instant::now();
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((s, _)) => break s,
+                        Err(_) if started.elapsed() < Duration::from_secs(10) => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => return seen,
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -536,6 +565,38 @@ mod tests {
         api.order(&creds, "rts://x/1", "Ostal", Order::Close)
             .unwrap();
         assert_eq!(server.join().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn too_many_requests_at_login_is_an_outage_not_a_refusal() {
+        let (base, server) = serve(vec![
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: 40\r\nConnection: close\r\n\r\n{\"error\":\"Too many requests, try later\"}",
+        ]);
+        let api = CurlOverkiz::local(base);
+        let creds = Credentials {
+            user: "a".into(),
+            password: "b".into(),
+        };
+        assert_eq!(api.devices(&creds), Err(OverkizError::Unreachable));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_session_is_never_used_for_another_account() {
+        // Deux comptes à la suite : la seconde commande se reconnecte avec son propre compte.
+        let (base, server) = serve(vec![LOGIN_OK, EXEC_OK, LOGIN_OK, EXEC_OK]);
+        let api = CurlOverkiz::local(base);
+        let account = |user: &str| Credentials {
+            user: user.into(),
+            password: "b".into(),
+        };
+        api.order(&account("ancien"), "rts://x/1", "Ostal", Order::Open)
+            .unwrap();
+        api.order(&account("nouveau"), "rts://x/1", "Ostal", Order::Open)
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert!(seen[2].starts_with("POST /login "), "{}", seen[2]);
+        assert!(seen[2].contains("userId=nouveau"), "{}", seen[2]);
     }
 
     #[test]

@@ -1271,6 +1271,10 @@ impl Hub {
                 ErrorCode::Unavailable,
                 "Somfy refuse l'identifiant ou le mot de passe : corrigez-les dans Réglages › Extensions",
             ),
+            OrderError::Offline => ApiError::with_detail(
+                ErrorCode::Unavailable,
+                "Somfy ne répond pas : réessayez dans une minute ou deux",
+            ),
             OrderError::Busy => ApiError::with_detail(
                 ErrorCode::Busy,
                 "trop d'ordres en attente pour Somfy : réessayez dans un instant",
