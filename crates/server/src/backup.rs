@@ -1815,6 +1815,12 @@ mod tests {
             br#"{"reading":{"temperature":7.4,"humidity":80.0,"pressure":1013.0,"at":1.0},"place":{"name":"LIEU-DE-LA-MAISON","latitude":45.75,"longitude":4.85}}"#,
         )
         .unwrap();
+        // Les volets Somfy : leur liste contient le code du Kit dans chaque adresse.
+        crate::security::write_secret(
+            &server.join("somfy.json"),
+            br#"{"version":1,"ids":{"OID-SOMFY":18446744000695107585},"devices":[{"oid":"OID-SOMFY","url":"rts://CODE-DU-KIT/16756321","name":"NOM-DU-VOLET","kind":"RollerShutter","commandable":true}],"orders":{}}"#,
+        )
+        .unwrap();
         let before = tree(&server);
 
         let (text, _) = export_to_string(&dir).unwrap();
@@ -1824,6 +1830,9 @@ mod tests {
             "LIEU-DE-LA-MAISON",
             "extensions.json",
             "meteo",
+            "somfy",
+            "CODE-DU-KIT",
+            "NOM-DU-VOLET",
         ] {
             assert!(!text.contains(secret), "{secret}");
         }

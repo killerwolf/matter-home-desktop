@@ -44,6 +44,25 @@ export function symbolOf(d) {
   return null;
 }
 
+// Les appareils d'une extension (volets Somfy…) ont des identifiants dans cette plage
+// (protocol::events::EXTENSION_ID_MIN..=MAX) ; ils sont en texte, car ils dépassent 2^53.
+const EXTENSION_MIN = 0xffffffef00000000n;
+const EXTENSION_MAX = 0xffffffefffffffffn;
+export function isExtensionDevice(d) {
+  try {
+    const n = BigInt(d.id);
+    return n >= EXTENSION_MIN && n <= EXTENSION_MAX;
+  } catch {
+    return false;
+  }
+}
+
+/** Un volet d'extension sans retour d'état (RTS) : ce qu'on affiche est le dernier ordre donné par
+ *  Ostal, pas l'état réel ; il ne sait qu'ouvrir et fermer (ni arrêt, ni mouvement en cours). */
+export const isAssumedCover = (d) => Boolean(d.info.caps.cover) && !d.info.caps.cover_position && isExtensionDevice(d);
+
+export const ASSUMED_NOTE = "d'après le dernier ordre d'Ostal";
+
 const coverIsOpen = (d) => {
   const p = position(d);
   return p != null ? p > 0 : d.cover_motion === "opening";
@@ -52,6 +71,10 @@ const coverIsMoving = (d, expect) =>
   (expect && expect.motion) || d.cover_motion === "opening" || d.cover_motion === "closing";
 
 function coverValue(d, expectedMotion) {
+  if (isAssumedCover(d)) {
+    const p = position(d);
+    return p == null ? "Inconnu" : p > 0 ? "Ouvert" : "Fermé";
+  }
   const motion = expectedMotion ?? d.cover_motion;
   const arrow = motion === "opening" ? " ▲" : motion === "closing" ? " ▼" : "";
   const p = position(d);
@@ -106,6 +129,7 @@ export function tileOf(d, expect) {
     if (open != null) { value = openLabel(open); valueWarn = open; }
   } else if (caps.cover) {
     value = coverValue(d, expect?.motion);
+    if (isAssumedCover(d) && position(d) != null) small = { kind: "", text: ASSUMED_NOTE };
   } else if (caps.on_off) {
     if (on === true) value = metric(d, "power") ? watts(metric(d, "power").value) : "Allumée";
     else value = on === false ? "Éteinte" : NO_VALUE;
@@ -120,7 +144,9 @@ export function tileOf(d, expect) {
   let action = "detail";
   if (!stale) {
     if (caps.cover) {
-      action = coverIsMoving(d, expect) ? "cover-stop" : coverIsOpen(d) ? "cover-close" : "cover-open";
+      // Un volet sans retour d'état ne s'arrête pas : le tap l'ouvre ou le ferme, d'après son
+      // dernier ordre.
+      action = !isAssumedCover(d) && coverIsMoving(d, expect) ? "cover-stop" : coverIsOpen(d) ? "cover-close" : "cover-open";
     } else if (symbol === "Light" && caps.on_off) {
       action = "toggle"; // seules les lumières se basculent d'un tap : une prise peut alimenter un frigo
     }
@@ -141,16 +167,30 @@ function bridgeIds(devices) {
 
 /** Pièce d'un appareil : la première pose qui tombe dans une pièce (HomePlan::room_of). */
 export function roomOf(plan, id) {
+  const inRoom = (floor, item) => {
+    const rooms = floor.rooms ?? [];
+    for (let i = rooms.length - 1; i >= 0; i--) {
+      const r = rooms[i];
+      if (item.x >= r.x && item.x <= r.x + r.w && item.y >= r.y && item.y <= r.y + r.h) {
+        return { floor, room: r };
+      }
+    }
+    return null;
+  };
   for (const floor of plan?.floors ?? []) {
     for (const item of floor.items ?? []) {
       if (item.kind?.type !== "Device" || item.kind.node_id !== id) continue;
-      const rooms = floor.rooms ?? [];
-      for (let i = rooms.length - 1; i >= 0; i--) {
-        const r = rooms[i];
-        if (item.x >= r.x && item.x <= r.x + r.w && item.y >= r.y && item.y <= r.y + r.h) {
-          return { floor, room: r };
-        }
-      }
+      const hit = inRoom(floor, item);
+      if (hit) return hit;
+    }
+  }
+  // Un volet qui équipe une porte ou une fenêtre est dans la pièce de cette ouverture.
+  const link = (plan?.shutters ?? []).find((l) => String(l.node_id) === String(id));
+  if (link) {
+    for (const floor of plan?.floors ?? []) {
+      const item = (floor.items ?? []).find((i) => String(i.id) === String(link.id));
+      const hit = item && inRoom(floor, item);
+      if (hit) return hit;
     }
   }
   return null;

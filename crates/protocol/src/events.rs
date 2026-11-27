@@ -11,6 +11,17 @@ use crate::automation::{CoverCommand, OnOffCommand, Rule};
 use crate::home::Symbol;
 use crate::mode::{HomeMode, ModeSource};
 
+/// Plage des identifiants des appareils qu'une **extension** apporte (volets Somfy…) : en haut de
+/// l'espace des nœuds opérationnels de Matter, juste sous les appareils pontés. L'appairage Matter
+/// n'y tire jamais d'identifiant. Tous dépassent 2^53 : en JSON ils sont du texte.
+pub const EXTENSION_ID_MIN: u64 = 0xFFFF_FFEF_0000_0000;
+pub const EXTENSION_ID_MAX: u64 = 0xFFFF_FFEF_FFFF_FFFF;
+
+/// `true` si `id` est dans la plage des appareils d'extension (un simple contrôle de plage).
+pub fn is_extension_id(id: u64) -> bool {
+    (EXTENSION_ID_MIN..=EXTENSION_ID_MAX).contains(&id)
+}
+
 /// Commandes envoyées par l'interface.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -153,7 +164,7 @@ pub struct BridgeLink {
     pub endpoint: u16,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NodeInfo {
     pub node_id: u64,
     /// Nom affiché : celui choisi par l'utilisateur, sinon celui de l'appareil.
@@ -205,6 +216,12 @@ pub enum Event {
     CoverMotion {
         node_id: u64,
         motion: CoverMotion,
+    },
+    /// Une règle demande une commande de volet à un appareil d'**extension** (volet Somfy) : le
+    /// serveur la passe à l'extension, comme une demande d'API (`app::pump_events`).
+    CoverRequested {
+        node_id: u64,
+        command: CoverCommand,
     },
     /// Une règle s'est exécutée (ou a échoué).
     RuleRun {

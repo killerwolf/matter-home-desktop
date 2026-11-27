@@ -1,0 +1,99 @@
+[
+  {
+    "creationTime": 1700000000000,
+    "lastUpdateTime": 1700000000000,
+    "label": "Porte",
+    "deviceURL": "rts://1234-5678-9012/16756321",
+    "shortcut": false,
+    "controllableName": "rts:RollerShutterRTSComponent",
+    "definition": {
+      "commands": [
+        {"commandName": "close", "nparams": 0},
+        {"commandName": "down", "nparams": 0},
+        {"commandName": "my", "nparams": 0},
+        {"commandName": "open", "nparams": 0},
+        {"commandName": "stop", "nparams": 0},
+        {"commandName": "up", "nparams": 0}
+      ],
+      "states": [],
+      "dataProperties": [],
+      "widgetName": "RTSGeneric",
+      "uiClass": "RollerShutter",
+      "qualifiedName": "rts:RollerShutterRTSComponent",
+      "type": "ACTUATOR"
+    },
+    "states": [],
+    "attributes": [],
+    "available": true,
+    "enabled": true,
+    "placeOID": "00000000-0000-4000-8000-0000000000a1",
+    "type": 1,
+    "oid": "5a1ae8c2-0000-4000-8000-000000000001"
+  },
+  {
+    "label": "Gara\u0007ge",
+    "deviceURL": "rts://1234-5678-9012/16756322",
+    "controllableName": "rts:RollerShutterRTSComponent",
+    "definition": {
+      "commands": [
+        {"commandName": "close", "nparams": 0},
+        {"commandName": "open", "nparams": 0},
+        {"commandName": "stop", "nparams": 0}
+      ],
+      "widgetName": "RTSGeneric",
+      "uiClass": "RollerShutter",
+      "type": "ACTUATOR"
+    },
+    "states": [],
+    "type": 1,
+    "oid": "5a1ae8c2-0000-4000-8000-000000000002"
+  },
+  {
+    "label": "Porte (capteur)",
+    "deviceURL": "rts://1234-5678-9012/16756321#2",
+    "controllableName": "rts:RollerShutterRTSComponent",
+    "definition": {
+      "commands": [
+        {"commandName": "close", "nparams": 0},
+        {"commandName": "open", "nparams": 0}
+      ],
+      "uiClass": "RollerShutter",
+      "type": "SENSOR"
+    },
+    "states": [],
+    "type": 1,
+    "oid": "5a1ae8c2-0000-4000-8000-000000000003"
+  },
+  {
+    "label": "Voyant du Kit",
+    "deviceURL": "internal://1234-5678-9012/led/0",
+    "controllableName": "internal:LightComponent",
+    "definition": {
+      "commands": [
+        {"commandName": "off", "nparams": 0},
+        {"commandName": "on", "nparams": 0}
+      ],
+      "widgetName": "Light",
+      "uiClass": "Light",
+      "type": "ACTUATOR"
+    },
+    "states": [],
+    "type": 1,
+    "oid": "5a1ae8c2-0000-4000-8000-000000000004"
+  },
+  {
+    "label": "Kit Somfy",
+    "deviceURL": "internal://1234-5678-9012/pod/0",
+    "controllableName": "internal:PodMiniComponent",
+    "definition": {
+      "commands": [
+        {"commandName": "refreshAllStates", "nparams": 0}
+      ],
+      "widgetName": "Pod",
+      "uiClass": "Pod",
+      "type": "PROTOCOL_GATEWAY"
+    },
+    "states": [],
+    "type": 1
+  }
+]

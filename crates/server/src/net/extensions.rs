@@ -6,10 +6,13 @@
 //!   les secrets ne reviennent jamais : la réponse dit seulement « défini » ou non ;
 //! - `GET /api/extensions/weather/search?q=…` : les lieux qui correspondent (droit « extensions »),
 //!   refusé tant que la météo est éteinte (aucun appel ne part) ;
-//! - `GET /api/weather` : ce que montrent le plan et l'accueil, pour toute personne connectée.
+//! - `GET /api/weather` : ce que montrent le plan et l'accueil, pour toute personne connectée ;
+//! - `GET /api/extensions/somfy/devices` : les appareils du compte Somfy (droit « extensions ») ;
+//! - `POST /api/extensions/somfy/refresh` : relire cette liste chez Somfy (droit « extensions »,
+//!   au plus une fois toutes les 20 s, refusé tant que l'extension est éteinte).
 
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +21,7 @@ use protocol::wire::{ApiError, ErrorCode};
 use super::routes::{audit, require, ApiErr, ApiJson, Ctx};
 use super::AppState;
 use crate::audit::{Action, Entry};
+use crate::extensions::somfy::{Choices, RefreshError};
 use crate::extensions::weather::{Place, Status};
 use crate::extensions::{Changes, SearchError, Update, UpdateError, View};
 use crate::rights::Capability;
@@ -28,6 +32,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/extensions", get(list))
         .route("/api/extensions/{id}", get(one).put(change))
         .route("/api/extensions/weather/search", get(search))
+        .route("/api/extensions/somfy/devices", get(somfy_devices))
+        .route("/api/extensions/somfy/refresh", post(somfy_refresh))
         .route("/api/weather", get(weather))
 }
 
@@ -113,10 +119,13 @@ async fn change(
     let hub = state.hub.clone();
     let done = tokio::task::spawn_blocking(move || {
         let (view, changes) = hub.extensions().update(&id, update)?;
-        // Activée ou lieu changé : un premier relevé tout de suite (aucun appel si éteinte).
-        if changes.switched.is_some() || changes.config {
-            hub.extensions().tick(crate::security::now());
+        // Activée, lieu ou compte changé : un premier relevé tout de suite, de **cette**
+        // extension seulement (aucun appel si éteinte).
+        if changes.switched.is_some() || changes.config || changes.secrets {
+            hub.extensions().tick_one(view.id, crate::security::now());
         }
+        // Les volets d'extension suivent (ajoutés, retirés, injoignables).
+        hub.sync_extension_devices();
         let view = hub.extensions().get(view.id, true).unwrap_or(view);
         Ok::<_, UpdateError>((view, changes))
     })
@@ -174,4 +183,45 @@ struct Weather {
 async fn weather(State(state): State<AppState>) -> Json<Weather> {
     let (enabled, status) = state.hub.extensions().weather_status();
     Json(Weather { enabled, status })
+}
+
+async fn somfy_devices(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Result<Json<Choices>, ApiErr> {
+    require(&state, &session.user_id, Capability::ManageExtensions)?;
+    Ok(Json(state.hub.extensions().somfy().choices()))
+}
+
+async fn somfy_refresh(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionInfo>,
+) -> Result<Json<Choices>, ApiErr> {
+    require(&state, &session.user_id, Capability::ManageExtensions)?;
+    let hub = state.hub.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let now = crate::security::now();
+        hub.extensions().somfy().request_refresh(now)?;
+        hub.extensions().tick_one(crate::extensions::somfy::ID, now);
+        hub.sync_extension_devices();
+        Ok::<_, RefreshError>(hub.extensions().somfy().choices())
+    })
+    .await
+    .map_err(|_| ApiErr(ApiError::new(ErrorCode::Internal)))?;
+    result.map(Json).map_err(|e| {
+        ApiErr(match e {
+            RefreshError::Disabled => ApiError::with_detail(
+                ErrorCode::BadRequest,
+                "activez l'extension Volets Somfy et saisissez le compte d'abord",
+            ),
+            RefreshError::Rejected => ApiError::with_detail(
+                ErrorCode::BadRequest,
+                "Somfy a refusé l'identifiant ou le mot de passe : corrigez-les d'abord",
+            ),
+            RefreshError::TooSoon => ApiError::with_detail(
+                ErrorCode::Busy,
+                "patientez quelques secondes avant d'actualiser",
+            ),
+        })
+    })
 }

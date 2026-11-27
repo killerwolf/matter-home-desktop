@@ -811,8 +811,9 @@ async fn pair(
     let node_id = {
         let mut rng = rand::thread_rng();
         loop {
-            // Plage des identifiants opérationnels : 0x1 à 0xFFFF_FFEF_FFFF_FFFF.
-            let id = rng.gen_range(1..=0xFFFF_FFEF_FFFF_FFFFu64);
+            // Plage des identifiants opérationnels (0x1 à 0xFFFF_FFEF_FFFF_FFFF), moins le haut,
+            // réservé aux appareils des extensions (volets Somfy…).
+            let id = rng.gen_range(1..protocol::events::EXTENSION_ID_MIN);
             if ctx.node(id).is_none() {
                 break id;
             }

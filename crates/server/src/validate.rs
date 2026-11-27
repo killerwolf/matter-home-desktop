@@ -118,6 +118,18 @@ pub fn rules(set: &RuleSet) -> Result<(), ApiError> {
                 Action::Delay { seconds } if *seconds > MAX_DELAY_S => {
                     return Err(bad("attente trop longue (une heure au plus)"));
                 }
+                // Un volet d'extension (Somfy RTS) n'a ni arrêt ni position : refusé ici plutôt
+                // que « réussi » par la règle et rejeté plus tard.
+                Action::SetCover { node_id, command }
+                    if protocol::events::is_extension_id(*node_id)
+                        && !matches!(
+                            command,
+                            protocol::automation::CoverCommand::Open
+                                | protocol::automation::CoverCommand::Close
+                        ) =>
+                {
+                    return Err(bad("un volet Somfy (RTS) ne sait qu'ouvrir et fermer"));
+                }
                 Action::SetCover {
                     command: protocol::automation::CoverCommand::Position(p),
                     ..
@@ -203,6 +215,20 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
             }
         }
     }
+    // Les volets rattachés à une ouverture : seulement des appareils d'extension (plage de
+    // tirage, pas l'existence : une extension éteinte ne doit pas faire refuser le plan). Un lien
+    // dont l'objet n'existe pas, ou en double, est retiré par `Hub::set_plan`.
+    if let Some(links) = &plan.shutters {
+        if links.len() > MAX_ITEMS {
+            return Err(bad("trop de volets sur le plan"));
+        }
+        if links
+            .iter()
+            .any(|l| !protocol::events::is_extension_id(l.node_id))
+        {
+            return Err(bad("volet invalide"));
+        }
+    }
     Ok(())
 }
 
@@ -261,6 +287,32 @@ mod tests {
         assert_eq!(plan(&none).unwrap_err().code, ErrorCode::PlanWithoutFloor);
         p.floors[0].name = "x".repeat(MAX_NAME + 1);
         assert!(plan(&p).is_err());
+    }
+
+    #[test]
+    fn an_extension_shutter_only_opens_and_closes_in_a_rule() {
+        use protocol::automation::CoverCommand;
+        let shutter = protocol::events::EXTENSION_ID_MIN + 1;
+        let mut set = RuleSet::default();
+        set.rules.push(Rule::new(1));
+        for (command, ok) in [
+            (CoverCommand::Open, true),
+            (CoverCommand::Close, true),
+            (CoverCommand::Stop, false),
+            (CoverCommand::Position(40), false),
+        ] {
+            set.rules[0].actions = vec![Action::SetCover {
+                node_id: shutter,
+                command,
+            }];
+            assert_eq!(rules(&set).is_ok(), ok, "{command:?}");
+        }
+        // Un volet Matter ordinaire garde toutes ses commandes.
+        set.rules[0].actions = vec![Action::SetCover {
+            node_id: 42,
+            command: CoverCommand::Stop,
+        }];
+        assert!(rules(&set).is_ok());
     }
 
     #[test]

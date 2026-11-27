@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -142,6 +142,9 @@ impl Server {
 
         // Le fil des notifications web push : il surveille aussi les appareils injoignables.
         hub.push().start();
+        // Les volets des extensions (Somfy) reviennent depuis leur dernier état connu, sans appel
+        // réseau.
+        hub.sync_extension_devices();
 
         let stop_pump = Arc::new(AtomicBool::new(false));
         let fatal = Arc::new(AtomicBool::new(false));
@@ -279,13 +282,15 @@ impl Server {
         if let Some(watcher) = self.wifi_watcher.take() {
             clean &= watcher.stop();
         }
+        // Le backend Matter s'arrête avant les extensions : un appel cloud en cours (Somfy,
+        // météo) ne doit jamais retarder son arrêt propre.
+        if let Some(backend) = self.backend.take() {
+            clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
+        }
         if let Some(watcher) = self.extensions_watcher.take() {
             clean &= watcher.stop();
         }
         self.hub.extensions().shutdown();
-        if let Some(backend) = self.backend.take() {
-            clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
-        }
         if let Some(pump) = self.pump.take() {
             clean &= pump.join().is_ok();
         }
@@ -352,6 +357,7 @@ impl ExtensionsWatcher {
                 let tick = Duration::from_millis(200);
                 loop {
                     hub.extensions().tick(crate::security::now());
+                    hub.sync_extension_devices();
                     let mut waited = Duration::ZERO;
                     while waited < every {
                         if flag.load(Ordering::SeqCst) {
@@ -359,6 +365,11 @@ impl ExtensionsWatcher {
                         }
                         std::thread::sleep(tick);
                         waited += tick;
+                        // Un volet a changé (ordre parti ou raté, compte refusé) : Ostal le montre
+                        // sans attendre le prochain tour.
+                        if hub.extensions().somfy().take_changed() {
+                            hub.sync_extension_devices();
+                        }
                     }
                 }
             })
@@ -367,11 +378,25 @@ impl ExtensionsWatcher {
     }
 
     /// Arrête le fil et attend sa fin. `true` : il s'est arrêté sans panique.
+    /// Demande l'arrêt et attend le fil quelques secondes au plus : un tour en plein appel
+    /// cloud est laissé finir seul (son résultat ne sert plus).
     pub fn stop(self) -> bool {
         self.stop.store(true, Ordering::SeqCst);
-        self.thread.join().is_ok()
+        let deadline = Instant::now() + EXTENSIONS_STOP_WAIT;
+        while !self.thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if self.thread.is_finished() {
+            self.thread.join().is_ok()
+        } else {
+            log::warn!("extensions : un appel en cours finira après l'arrêt");
+            true
+        }
     }
 }
+
+/// Attente maximale du fil des extensions à l'arrêt.
+const EXTENSIONS_STOP_WAIT: Duration = Duration::from_secs(3);
 
 /// Lit les événements du backend, les journalise et les donne au hub.
 fn pump_events(rx: mpsc::Receiver<Event>, hub: &Hub, stop: &AtomicBool, fatal: &AtomicBool) {
@@ -385,6 +410,20 @@ fn pump_events(rx: mpsc::Receiver<Event>, hub: &Hub, stop: &AtomicBool, fatal: &
             let source = protocol::mode::ModeSource::Rule { name: rule.clone() };
             if let Err(e) = hub.set_mode(*mode, source) {
                 log::warn!("mode demandé par une règle non appliqué : {e:?}");
+            }
+            return;
+        }
+        // Une règle commande un volet d'extension (Somfy) : même chemin qu'une demande d'API
+        // (`Hub::set_cover` met l'ordre en file ; rien de long ici).
+        if let Event::CoverRequested { node_id, command } = &event {
+            if let Err(e) = hub.set_cover(*node_id, *command) {
+                let name = hub
+                    .device_name(*node_id)
+                    .unwrap_or_else(|| format!("{node_id:#x}"));
+                hub.apply(&Event::Info(format!(
+                    "{name} : ordre d'une règle non transmis ({})",
+                    e.detail.as_deref().unwrap_or("refusé")
+                )));
             }
             return;
         }

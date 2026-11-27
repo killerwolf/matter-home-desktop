@@ -204,7 +204,9 @@ impl WireEvent {
                 source: source.clone(),
             },
             Event::Info(text) => WireEvent::Notice { text: clean(text) },
-            Event::Fatal(_) | Event::HomeModeRequested { .. } => return None,
+            Event::Fatal(_) | Event::HomeModeRequested { .. } | Event::CoverRequested { .. } => {
+                return None
+            }
         })
     }
 

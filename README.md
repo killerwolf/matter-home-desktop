@@ -257,6 +257,7 @@ d'usage. Rien de la maison ne part sans une option que vous activez, ou un servi
 | Accès à distance ([détails](docs/acces-distant.md)) | Si vous utilisez Tailscale | Votre réseau privé Tailscale |
 | Webhooks | Si une automatisation en contient un | L'adresse que vous avez choisie |
 | Extension « Météo extérieure » | Si vous l'activez (Extensions, éteinte par défaut) : le texte cherché (ville, code postal), puis la latitude et la longitude du lieu choisi, toutes les 15 minutes | Open-Meteo (`open-meteo.com`), sans compte ni clé |
+| Extension « Volets Somfy » | Si vous l'activez (Extensions, éteinte par défaut) : l'identifiant et le mot de passe de votre compte TaHoma à chaque connexion, la liste de vos appareils quand vous l'activez ou l'actualisez, et chaque ordre (ouvrir, fermer) | Le cloud de Somfy (`ha101-1.overkiz.com`, l'API de l'app TaHoma) : le Kit n'a pas d'API locale |
 
 Le reste (appareils, plan, règles, comptes, caméras) ne quitte jamais le Mac du serveur ; l'historique
 des mesures y est gardé **7 jours**.

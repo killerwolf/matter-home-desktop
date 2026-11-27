@@ -1,7 +1,7 @@
 // Essai à la main (non embarqué dans le serveur) : node crates/server/web/plan.test.mjs
 // La géométrie de la page Plan : ajustement, bornes de zoom, pincement, étage à montrer d'abord.
 import assert from "node:assert/strict";
-import { boundsOf, clampView, firstFilledFloor, fitView, initialView, limitsFor, pinchView, planIsEmpty, stageHeightFor, zoomAt } from "./plan.js";
+import { boundsOf, clampView, firstFilledFloor, fitView, initialView, limitsFor, pinchView, planIsEmpty, shutterState, stageHeightFor, zoomAt } from "./plan.js";
 
 const floor = {
   id: 1,

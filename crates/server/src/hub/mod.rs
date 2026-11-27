@@ -163,6 +163,9 @@ pub struct Hub {
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// Sérialise les modifications du plan, des règles et des caméras (mémoire + disque + diffusion).
     write_lock: Mutex<()>,
+    /// Une mise d'accord des volets d'extension à la fois (le fil des extensions, les requêtes et
+    /// la pompe l'appellent) : sinon un calcul fait avant une extinction pourrait s'appliquer après.
+    extension_sync: Mutex<()>,
     /// Réveille le surveillant des caméras (voir `cameras::start_monitor`) ; absent en démo et
     /// avant son démarrage.
     camera_wake: Mutex<Option<mpsc::UnboundedSender<Wake>>>,
@@ -199,6 +202,17 @@ fn try_change(store: &UserTokens) -> ApiResult<Change<'_>> {
             "Une préparation (raccourcis ou widget) est déjà en cours : réessaie dans un instant.",
         )
     })
+}
+
+/// Un volet d'extension se règle dans l'extension (nom du compte Somfy, choix des appareils).
+fn refuse_extension_device(node_id: u64) -> ApiResult<()> {
+    if protocol::events::is_extension_id(node_id) {
+        return Err(ApiError::with_detail(
+            ErrorCode::BadRequest,
+            "cet appareil vient d'une extension : réglez-le dans Réglages › Extensions",
+        ));
+    }
+    Ok(())
 }
 
 fn install_error(error: InstallError) -> ApiError {
@@ -274,17 +288,18 @@ impl Hub {
             Ok(dir) => crate::wifi::Wifi::open(dir, box_api()),
             Err(_) => crate::wifi::Wifi::in_memory(box_api()),
         };
-        // Open-Meteo est la seule sortie vers Internet des extensions : la démonstration n'y va jamais.
-        let weather_api = || -> Arc<dyn crate::extensions::weather::WeatherApi> {
+        // Open-Meteo et le cloud Somfy sont les seules sorties vers Internet des extensions : la
+        // démonstration n'y va jamais.
+        let apis = || {
             if config.demo {
-                Arc::new(crate::extensions::weather::DemoWeather)
+                crate::extensions::Apis::demo()
             } else {
-                Arc::new(crate::extensions::weather::CurlWeather)
+                crate::extensions::Apis::real()
             }
         };
         let extensions = match &server_dir {
-            Ok(dir) => crate::extensions::Extensions::open(dir, weather_api()),
-            Err(_) => crate::extensions::Extensions::in_memory(weather_api()),
+            Ok(dir) => crate::extensions::Extensions::open(dir, apis()),
+            Err(_) => crate::extensions::Extensions::in_memory(apis()),
         };
         let audit = match &server_dir {
             Ok(dir) => crate::audit::AuditLog::open(dir),
@@ -311,6 +326,7 @@ impl Hub {
             tx,
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
+            extension_sync: Mutex::new(()),
             camera_wake: Mutex::new(None),
             viewers: Arc::new(ViewerRegistry::default()),
             live: crate::cameras::live::LiveRegistry::new(Default::default()),
@@ -421,6 +437,13 @@ impl Hub {
 
     /// Applique un événement du backend à l'état et le diffuse. Ne bloque sur aucun client.
     pub fn apply(&self, event: &Event) {
+        self.apply_with(event, false);
+    }
+
+    /// `internal` : l'événement vient d'une extension qui retire un appareil (éteinte) : le plan
+    /// garde ses liens et ses objets (rallumée, tout revient), et le retrait ne fait pas de push
+    /// « appareil oublié ».
+    fn apply_with(&self, event: &Event, internal: bool) {
         if let Some(history) = self
             .demo_history
             .lock()
@@ -458,11 +481,13 @@ impl Hub {
                     None,
                 ),
             );
-        } else if crate::push::concerns(event) {
+        } else if crate::push::concerns(event)
+            && !(internal && matches!(event, Event::NodeRemoved(_)))
+        {
             let name = name.map(|n| self.push_cleaner()(&n));
             self.push.observe(event, name.as_deref(), retained);
         }
-        if let Event::NodeRemoved(id) = event {
+        if let (false, Event::NodeRemoved(id)) = (internal, event) {
             // Le plan ne garde pas un appareil oublié (c'est l'interface qui le faisait).
             self.update_document(
                 |st| st.plan.remove_device(*id).then_some(()),
@@ -552,8 +577,10 @@ impl Hub {
             }
             Event::PairingDone { .. } | Event::PairingFailed(_) => st.pairing_busy = false,
             // Le hub le publie lui-même (`set_mode`) : un événement venu du backend ne change rien.
+            // (`CoverRequested` est traité par la pompe d'événements avant d'arriver ici.)
             Event::HomeModeChanged { .. }
             | Event::HomeModeRequested { .. }
+            | Event::CoverRequested { .. }
             | Event::PairingProgress(_)
             | Event::Notification { .. }
             | Event::Info(_)
@@ -1133,16 +1160,22 @@ impl Hub {
 
     pub fn retry(&self, node_id: u64) -> ApiResult<()> {
         self.device_info(node_id)?;
+        refuse_extension_device(node_id)?;
         self.send(Command::Retry(node_id))
     }
 
     pub fn forget(&self, node_id: u64) -> ApiResult<()> {
         self.device_info(node_id)?;
+        refuse_extension_device(node_id)?;
         self.send(Command::Forget(node_id))
     }
 
     pub fn clear_history(&self, node_id: u64) -> ApiResult<()> {
         self.device_info(node_id)?;
+        if protocol::events::is_extension_id(node_id) {
+            // Un appareil d'extension n'a pas d'historique : rien à effacer.
+            return Ok(());
+        }
         if self.demo {
             // En démo, l'historique est tenu ici (le faux backend n'enregistre rien).
             if let Some(history) = self
@@ -1160,6 +1193,7 @@ impl Hub {
 
     pub fn customize(&self, node_id: u64, request: CustomizeRequest) -> ApiResult<()> {
         self.device_info(node_id)?;
+        refuse_extension_device(node_id)?;
         if request
             .name
             .as_ref()
@@ -1189,6 +1223,9 @@ impl Hub {
 
     pub fn set_cover(&self, node_id: u64, command: CoverCommand) -> ApiResult<()> {
         let info = self.device_info(node_id)?;
+        if protocol::events::is_extension_id(node_id) {
+            return self.extension_cover(node_id, command);
+        }
         if !info.caps.cover {
             return Err(ApiError::with_detail(
                 ErrorCode::BadRequest,
@@ -1202,6 +1239,154 @@ impl Hub {
             ));
         }
         self.send(Command::SetCover { node_id, command })
+    }
+
+    /// Un ordre à un volet d'extension (Somfy) : mis en file (jamais d'appel réseau ici), montré
+    /// aussitôt comme « dernier ordre ». Un volet RTS ne sait qu'ouvrir et fermer.
+    fn extension_cover(&self, node_id: u64, command: CoverCommand) -> ApiResult<()> {
+        use crate::extensions::overkiz::Order;
+        use crate::extensions::somfy::{OrderError, Somfy};
+        let order = match command {
+            CoverCommand::Open => Order::Open,
+            CoverCommand::Close => Order::Close,
+            CoverCommand::Stop | CoverCommand::Position(_) => {
+                return Err(ApiError::with_detail(
+                    ErrorCode::BadRequest,
+                    "ce volet Somfy (RTS) ne sait qu'ouvrir et fermer",
+                ))
+            }
+        };
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(ErrorCode::Unavailable));
+        }
+        let queued = Somfy::order(self.extensions.somfy(), node_id, order, now_unix());
+        self.sync_extension_devices();
+        queued.map_err(|e| match e {
+            OrderError::Disabled => ApiError::with_detail(
+                ErrorCode::Unavailable,
+                "l'extension Somfy est éteinte ou sans mot de passe",
+            ),
+            OrderError::Unknown => ApiError::new(ErrorCode::NotFound),
+            OrderError::Rejected => ApiError::with_detail(
+                ErrorCode::Unavailable,
+                "Somfy refuse l'identifiant ou le mot de passe : corrigez-les dans Réglages › Extensions",
+            ),
+            OrderError::Offline => ApiError::with_detail(
+                ErrorCode::Unavailable,
+                "Somfy ne répond pas : réessayez dans une minute ou deux",
+            ),
+            OrderError::Busy => ApiError::with_detail(
+                ErrorCode::Busy,
+                "trop d'ordres en attente pour Somfy : réessayez dans un instant",
+            ),
+        })
+    }
+
+    /// Met les volets que les extensions apportent (Somfy) d'accord avec l'état de l'extension :
+    /// appareils ajoutés, retirés (extension éteinte, mot de passe effacé, volet décoché), état
+    /// « dernier ordre », volets injoignables (compte refusé), phrases pour le journal. À rappeler
+    /// après tout ce qui change l'extension (réglage, ordre, tour du fil des extensions) ; ne fait
+    /// aucun appel réseau.
+    pub fn sync_extension_devices(&self) {
+        use protocol::events::is_extension_id;
+        let _one_at_a_time = self
+            .extension_sync
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let somfy = self.extensions.somfy();
+        for line in somfy.take_notices() {
+            self.apply(&Event::Info(line));
+        }
+        // Le drapeau d'abord : un changement pendant le calcul qui suit le remettra.
+        somfy.take_changed();
+        let wanted = somfy.exposed();
+        let rejected = somfy.rejected();
+        let now = now_unix();
+        // Ce que le hub montre aujourd'hui : (info, statut, dernière position).
+        type Shown = (NodeInfo, NodeStatus, Option<(f64, f64)>);
+        let shown: BTreeMap<u64, Shown> = {
+            let st = self.lock();
+            st.devices
+                .iter()
+                .filter(|(id, _)| is_extension_id(**id))
+                .map(|(id, d)| {
+                    (
+                        *id,
+                        (
+                            d.info.clone(),
+                            d.status.clone(),
+                            d.latest.get(&Metric::Position).copied(),
+                        ),
+                    )
+                })
+                .collect()
+        };
+        let mut events: Vec<Event> = Vec::new();
+        for id in shown.keys() {
+            if !wanted.iter().any(|w| w.id == *id) {
+                events.push(Event::NodeRemoved(*id));
+            }
+        }
+        for w in &wanted {
+            let info = NodeInfo {
+                node_id: w.id,
+                name: w.name.clone(),
+                device_name: w.name.clone(),
+                custom_name: None,
+                icon: None,
+                vendor: Some("Somfy".into()),
+                product: Some("Volet roulant".into()),
+                device_types: vec!["Volet roulant".into()],
+                caps: crate::events::Capabilities {
+                    cover: true,
+                    cover_position: false,
+                    ..Default::default()
+                },
+                bridge: None,
+            };
+            let status = if rejected {
+                NodeStatus::Unreachable {
+                    error: "Somfy refuse l'identifiant ou le mot de passe".into(),
+                    retry_in_s: 0,
+                }
+            } else {
+                NodeStatus::Online
+            };
+            let current = shown.get(&w.id);
+            // Une valeur ne s'efface pas d'un appareil : pour revenir à « inconnu » (premier ordre
+            // raté), on le retire et on le recrée.
+            let reset = w.last_order.is_none() && current.is_some_and(|c| c.2.is_some());
+            if reset {
+                events.push(Event::NodeRemoved(w.id));
+            }
+            let current = current.filter(|_| !reset);
+            if current.is_none_or(|(i, _, _)| *i != info) {
+                events.push(Event::Node(info));
+            }
+            if current.is_none_or(|(_, s, _)| *s != status) {
+                events.push(Event::Status {
+                    node_id: w.id,
+                    status,
+                });
+            }
+            if let Some((open, at)) = w.last_order {
+                let value = if open { 100.0 } else { 0.0 };
+                let latest = current.and_then(|c| c.2);
+                if latest.is_none_or(|(v, _)| v != value) {
+                    // Jamais plus ancienne que la valeur montrée : sinon le hub la jetterait.
+                    let at = latest.map_or(at, |(_, shown_at)| now.max(shown_at + 0.001));
+                    events.push(Event::Measurement {
+                        node_id: w.id,
+                        kind: crate::events::MeasureKind::Position,
+                        value,
+                        at,
+                    });
+                }
+            }
+        }
+        for event in &events {
+            self.apply_with(event, true);
+        }
     }
 
     pub fn test_rule(&self, rule_id: u64) -> ApiResult<()> {
@@ -1221,6 +1406,8 @@ impl Hub {
             // Un client plus ancien efface `opening` sans le savoir : on garde le réglage connu.
             let mut plan = plan;
             plan.keep_openings_from(&st.plan);
+            plan.keep_shutters_from(&st.plan);
+            plan.prune_shutters();
             st.plan = plan;
         })
     }

@@ -151,3 +151,254 @@ fn weather_is_off_by_default_and_follows_the_switch() {
     }
     assert!(!audit.contains("latitude"), "aucune valeur au journal");
 }
+
+/// Les volets Somfy de bout en bout en démonstration (cloud fictif : **aucun appel réseau**) :
+/// éteinte par défaut, le compte, les volets dans Ostal, un ordre, le plan, puis tout disparaît.
+#[test]
+fn somfy_shutters_follow_the_extension_in_demo() {
+    let dir = temp_dir("extensions-somfy");
+    let server = Server::start(&dir);
+    let client = server.client();
+    common::runtime().block_on(async {
+        let token = client.login().await;
+        let somfy_devices = |state: &serde_json::Value| -> Vec<serde_json::Value> {
+            state["devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["device"]["vendor"] == "Somfy")
+                .cloned()
+                .collect()
+        };
+
+        // Éteinte par défaut, avec son mot de passe déclaré, et aucun volet.
+        let list = client.get("/api/extensions", &token).await.json();
+        let somfy = list["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "somfy")
+            .unwrap()
+            .clone();
+        assert_eq!(somfy["enabled"], false);
+        assert_eq!(somfy["secrets"][0]["key"], "password");
+        assert_eq!(somfy["secrets"][0]["set"], false);
+        assert!(somfy["secrets"][0]["help"]
+            .as_str()
+            .unwrap()
+            .contains("TaHoma"));
+        assert!(somfy["disclosure"].as_str().unwrap().contains("Somfy"));
+        assert!(somfy_devices(&client.get("/api/state", &token).await.json()).is_empty());
+
+        // Allumée sans compte : rien ne part, rien n'apparaît.
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/extensions/somfy",
+                &token,
+                &json!({"enabled": true}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json()["status"]["state"], "unconfigured");
+
+        // Le compte (mot de passe avec des guillemets) : la liste est lue, les volets arrivent.
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/extensions/somfy",
+                &token,
+                &json!({"config": {"email": "sam@example.org", "exposed": null},
+                        "secrets": {"password": "a\"b\\c"}}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert!(
+            !r.text().contains("a\\\"b"),
+            "le mot de passe ne revient jamais"
+        );
+        assert_eq!(r.json()["status"]["state"], "ok");
+        assert_eq!(r.json()["status"]["devices"], 2);
+        let state = client.get("/api/state", &token).await.json();
+        common::assert_no_big_numbers(&state);
+        let shutters = somfy_devices(&state);
+        let names: Vec<_> = shutters
+            .iter()
+            .map(|d| d["device"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["Volet de la véranda", "Volet du garage"]);
+        let first = &shutters[0];
+        assert_eq!(first["device"]["caps"]["cover"], true);
+        assert_eq!(first["device"]["caps"]["cover_position"], false);
+        assert_eq!(first["status"]["state"], "online");
+        assert!(
+            first["latest"].as_array().unwrap().is_empty(),
+            "jamais commandé"
+        );
+        let id = first["device"]["node_id"].as_str().unwrap().to_string();
+        let id_num: u64 = id.parse().unwrap();
+        assert!(protocol::events::is_extension_id(id_num));
+
+        // Le choix des appareils (droit « extensions ») : trois appareils, le voyant non coché.
+        let choices = client
+            .get("/api/extensions/somfy/devices", &token)
+            .await
+            .json();
+        assert_eq!(choices["devices"].as_array().unwrap().len(), 3);
+        assert_eq!(choices["devices"][2]["commandable"], false);
+        assert_eq!(choices["devices"][2]["selected"], false);
+        // Le statut visible de tous ne contient ni l'identifiant ni une adresse.
+        let shown = client.get("/api/extensions/somfy", &token).await.text();
+        assert!(!shown.contains("rts://"), "{shown}");
+
+        // Un ordre : fermer ; l'état montré est ce dernier ordre. Ni arrêt ni pourcentage.
+        let r = client
+            .send_json(
+                "POST",
+                &format!("/api/devices/{id}/cover"),
+                &token,
+                &json!({"command": "Close"}),
+            )
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        for bad in [json!("Stop"), json!({"Position": 40})] {
+            let r = client
+                .send_json(
+                    "POST",
+                    &format!("/api/devices/{id}/cover"),
+                    &token,
+                    &json!({"command": bad}),
+                )
+                .await;
+            assert_eq!(r.status, 400, "{}", r.text());
+        }
+        let state = client.get("/api/state", &token).await.json();
+        let after = &somfy_devices(&state)[0];
+        assert_eq!(after["latest"][0]["metric"], "position");
+        assert_eq!(after["latest"][0]["value"], 0.0);
+        // Un volet d'extension ne s'oublie pas : il se règle dans l'extension.
+        let r = client
+            .send_json("DELETE", &format!("/api/devices/{id}"), &token, &json!({}))
+            .await;
+        assert_eq!(r.status, 400, "{}", r.text());
+
+        // Une automatisation commande le volet (« Tester » la règle) : l'ordre passe par le hub.
+        let mut rules = client.get("/api/rules", &token).await.json();
+        let rule_id = rules["rules"][0]["id"].clone();
+        rules["rules"][0]["actions"] =
+            json!([{"type": "SetCover", "node_id": id, "command": "Open"}]);
+        let r = client.send_json("PUT", "/api/rules", &token, &rules).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let r = client
+            .request(
+                "POST",
+                &format!("/api/rules/{}/test", rule_id.as_str().unwrap()),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        let mut opened = false;
+        for _ in 0..100 {
+            let state = client.get("/api/state", &token).await.json();
+            if somfy_devices(&state)[0]["latest"][0]["value"] == 100.0 {
+                opened = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(opened, "la règle n'a pas ouvert le volet");
+
+        // Le plan : une fenêtre équipée du volet.
+        let mut plan = client.get("/api/plan", &token).await.json();
+        plan["floors"][0]["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": "900", "kind": {"type": "Decor", "symbol": "Window", "label": "Fenêtre"},
+                "x": 1.0, "y": 1.0, "rotation": 0.0
+            }));
+        plan["shutters"] = json!([{"id": "900", "node_id": id}]);
+        let r = client.send_json("PUT", "/api/plan", &token, &plan).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let plan = client.get("/api/plan", &token).await.json();
+        assert_eq!(plan["shutters"], json!([{"id": "900", "node_id": id}]));
+        // Un lien vers un volet hors plage est refusé.
+        let mut bad = plan.clone();
+        bad["shutters"] = json!([{"id": "900", "node_id": "5"}]);
+        let r = client.send_json("PUT", "/api/plan", &token, &bad).await;
+        assert_eq!(r.status, 400, "{}", r.text());
+
+        // Mot de passe effacé : mêmes effets que l'extinction, les volets quittent Ostal.
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/extensions/somfy",
+                &token,
+                &json!({"secrets": {"password": null}}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json()["status"]["state"], "unconfigured");
+        assert!(somfy_devices(&client.get("/api/state", &token).await.json()).is_empty());
+        let r = client
+            .send_json(
+                "POST",
+                &format!("/api/devices/{id}/cover"),
+                &token,
+                &json!({"command": "Open"}),
+            )
+            .await;
+        assert_eq!(r.status, 404, "{}", r.text());
+        // Le plan, lui, garde le lien : rallumée, tout revient.
+        let plan = client.get("/api/plan", &token).await.json();
+        assert_eq!(plan["shutters"], json!([{"id": "900", "node_id": id}]));
+
+        // Mot de passe remis puis extension éteinte : les volets reviennent, puis repartent.
+        client
+            .send_json(
+                "PUT",
+                "/api/extensions/somfy",
+                &token,
+                &json!({"secrets": {"password": "autre"}}),
+            )
+            .await;
+        let state = client.get("/api/state", &token).await.json();
+        let again = somfy_devices(&state);
+        assert_eq!(again.len(), 2);
+        assert_eq!(
+            again[0]["device"]["node_id"],
+            id.as_str(),
+            "même identifiant"
+        );
+        let r = client
+            .send_json(
+                "PUT",
+                "/api/extensions/somfy",
+                &token,
+                &json!({"enabled": false}),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json()["status"]["state"], "off");
+        assert!(somfy_devices(&client.get("/api/state", &token).await.json()).is_empty());
+    });
+
+    // Fichiers privés ; le journal d'audit ne dit aucune valeur.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("serveur/somfy.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let audit = audit_text(&dir);
+    assert!(audit.contains("extension_setting"));
+    for value in ["sam@example.org", "a\\\"b", "autre", "rts://"] {
+        assert!(!audit.contains(value), "{value} au journal :\n{audit}");
+    }
+    assert!(!server.log().contains("sam@example.org"));
+    assert!(!server.log().contains("rts://"));
+}

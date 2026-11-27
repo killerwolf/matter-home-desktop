@@ -35,6 +35,8 @@ pub(crate) fn run(
             "-i",
             "-m",
             &timeout.as_secs().max(1).to_string(),
+            "--connect-timeout",
+            "5",
             "--proto",
             proto,
             "--proto-redir",
@@ -64,6 +66,54 @@ pub(crate) fn run(
         return Err(CurlError);
     }
     parse_reply(&output.stdout).ok_or(CurlError)
+}
+
+/// Une valeur entre guillemets pour un fichier de configuration de `curl`, **avec** échappement
+/// de `"` et de `\` (ce que `descriptions::api::quoted` refuse) : pour un corps JSON ou un
+/// formulaire. `None` : caractère de contrôle (hors tabulation, saut de ligne et retour chariot,
+/// qui s'écrivent `\t`, `\n`, `\r`), jamais envoyé à `curl`.
+pub(crate) fn quote(value: &str) -> Option<String> {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => return None,
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// Un en-tête ou un corps ne doit pas pouvoir ajouter une ligne à la configuration : `quote`
+/// écrit tout sur une seule ligne, mais un nom d'en-tête ou une méthode viennent de ce code.
+pub(crate) struct Call<'a> {
+    pub(crate) method: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) headers: &'a [String],
+    /// Le corps, envoyé tel quel (`data-raw` : jamais lu comme un nom de fichier).
+    pub(crate) body: Option<&'a str>,
+}
+
+impl Call<'_> {
+    /// La configuration `-K` de l'appel. `None` : une valeur refusée par [`quote`].
+    pub(crate) fn config(&self) -> Option<String> {
+        let mut text = format!("url = {}\n", quote(self.url)?);
+        text.push_str(&format!("request = {}\n", quote(self.method)?));
+        for header in self.headers {
+            text.push_str(&format!("header = {}\n", quote(header)?));
+        }
+        text.push_str("header = \"Expect:\"\n");
+        if let Some(body) = self.body {
+            text.push_str(&format!("data-raw = {}\n", quote(body)?));
+        }
+        Some(text)
+    }
 }
 
 /// Sépare la sortie de `curl -i` : statut, cookies et corps (les réponses 1xx sont passées).

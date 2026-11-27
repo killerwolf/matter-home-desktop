@@ -2,7 +2,7 @@
 // La phrase d'état : jumelle de protocol::status (crates/protocol/src/status.rs), mêmes cas, mêmes
 // textes, mot pour mot. L'unité de compte est la catégorie, jamais l'appareil.
 import assert from "node:assert/strict";
-import { droppedTogether, allReachable, clockText, headline, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
+import { ASSUMED_NOTE, droppedTogether, allReachable, clockText, headline, isAssumedCover, isExtensionDevice, roomOf, tileOf, unreachableSince, statusSummary, summarize, unreachablePhrase } from "./tiles.js";
 
 const names = (...list) => list;
 const devices = (...p) => ({ kind: "devices", names: p });
@@ -147,4 +147,15 @@ console.log("tiles.test.mjs : ok");
   assert.equal(unreachableSince({ last_seen: at }), "depuis 18:02");
   assert.equal(unreachableSince({ last_seen: null }), null);
   assert.equal(unreachableSince({}), null);
+}
+
+// Un volet qui équipe une ouverture est dans la pièce de cette ouverture.
+{
+  const plan = {
+    floors: [{ id: 1, rooms: [{ id: 2, name: "Salon", x: 0, y: 0, w: 4, h: 3 }], items: [{ id: "7", kind: { type: "Decor", symbol: "Window", label: "Baie" }, x: 1, y: 1 }] }],
+    shutters: [{ id: "7", node_id: "18446744000695107585" }],
+  };
+  assert.equal(roomOf(plan, "18446744000695107585").room.name, "Salon");
+  assert.equal(roomOf({ ...plan, shutters: [] }, "18446744000695107585"), null);
+  assert.equal(roomOf(plan, "42"), null);
 }

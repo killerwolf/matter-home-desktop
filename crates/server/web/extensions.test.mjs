@@ -1,7 +1,10 @@
 // Essai à la main (non embarqué dans le serveur) : node crates/server/web/extensions.test.mjs
 // Les phrases de la météo extérieure et des extensions.
 import assert from "node:assert/strict";
-import { errorText, placeConfig, readingParts, searchable, weatherCard, weatherStatusText } from "./extensions.js";
+import {
+  errorText, placeConfig, readingParts, searchable, somfyChoices, somfyConfig, somfyExposedAfter, somfyKindLabel,
+  somfyLastError, somfyStatusText, somfySyncedText, weatherCard, weatherStatusText,
+} from "./extensions.js";
 
 const at = Date.UTC(2026, 10, 27, 13, 30) / 1000;
 const reading = { temperature: 7.4, humidity: 82, pressure: 1013.6, at };
@@ -54,3 +57,38 @@ const reading = { temperature: 7.4, humidity: 82, pressure: 1013.6, at };
 }
 
 console.log("extensions.test.mjs : ok");
+
+// Somfy : les phrases d'état, le choix des appareils, la configuration envoyée.
+{
+  const view = (state, devices = 2) => ({ status: { state, devices } });
+  assert.match(somfyStatusText(view("off")), /^Désactivée/);
+  assert.match(somfyStatusText(view("unconfigured")), /identifiant et le mot de passe/);
+  assert.match(somfyStatusText(view("ok", 2)), /^Connecté à Somfy : 2 volets dans Ostal\.$/);
+  assert.match(somfyStatusText(view("ok", 1)), /1 volet dans Ostal/);
+  assert.match(somfyStatusText(view("ok", 0)), /aucun volet n'est coché/);
+  assert.match(somfyStatusText(view("offline", 2)), /dernière liste connue/);
+  assert.match(somfyStatusText(view("rejected")), /n'essaiera plus/);
+  assert.equal(somfyStatusText(null), "");
+  assert.equal(somfyLastError({ status: { last_error: "Somfy ne répond pas." } }), "Somfy ne répond pas.");
+
+  assert.equal(somfyKindLabel("RollerShutter"), "volet roulant");
+  assert.equal(somfyKindLabel("Truc"), "Truc");
+  assert.equal(somfyKindLabel(""), "appareil");
+
+  const choices = {
+    devices: [
+      { key: "led", name: "Voyant du Kit", kind: "Light", commandable: false, selected: false },
+      { key: "b", name: "Garage", kind: "RollerShutter", commandable: true, selected: true },
+      { key: "a", name: "Porte", kind: "RollerShutter", commandable: true, selected: false },
+    ],
+    synced_at: at,
+  };
+  assert.deepEqual(somfyChoices(choices).map((d) => d.key), ["b", "a", "led"], "les commandables d'abord");
+  assert.deepEqual(somfyExposedAfter(choices, "a", true), ["b", "a"]);
+  assert.deepEqual(somfyExposedAfter(choices, "b", false), []);
+  assert.deepEqual(somfyExposedAfter(choices, "b", true), ["b"], "pas de doublon");
+  assert.deepEqual(somfyConfig("  sam@example.org ", ["a"]), { email: "sam@example.org", exposed: ["a"] });
+  assert.deepEqual(somfyConfig(undefined, undefined), { email: "", exposed: null });
+  assert.match(somfySyncedText(choices), /^Liste lue chez Somfy à \d\d:\d\d\.$/);
+  assert.equal(somfySyncedText({ devices: [] }), null);
+}

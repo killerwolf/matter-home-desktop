@@ -170,6 +170,15 @@ fn watts(w: f64) -> String {
 /// quand il bouge. Un volet sans retour de position (RTS) montre son dernier mouvement connu,
 /// ou « ▲ ▼ » (les deux commandes possibles) : jamais un « — » en grand.
 fn cover_value(d: &Device, expected: Option<CoverMotion>) -> String {
+    if is_assumed_cover(d) {
+        // Le dernier ordre d'Ostal, pas un mouvement : ni flèche ni pourcentage.
+        return match d.position() {
+            Some(p) if p.value > 0.0 => "Ouvert",
+            Some(_) => "Fermé",
+            None => "Inconnu",
+        }
+        .to_string();
+    }
     let motion = expected.or(d.cover_motion);
     let arrow = match motion {
         Some(CoverMotion::Opening) => " ▲",
@@ -186,6 +195,18 @@ fn cover_value(d: &Device, expected: Option<CoverMotion>) -> String {
     };
     format!("{base}{arrow}").trim().to_string()
 }
+
+/// Un volet apporté par une extension (Somfy RTS) : sans retour d'état, Ostal montre le **dernier
+/// ordre qu'il lui a donné** (ouvrir ou fermer), pas son état réel ; il ne sait ni s'arrêter ni
+/// se mettre à mi-course.
+pub fn is_assumed_cover(d: &Device) -> bool {
+    d.info.caps.cover
+        && !d.info.caps.cover_position
+        && protocol::events::is_extension_id(d.info.node_id)
+}
+
+/// La phrase qui accompagne un état déduit du dernier ordre.
+pub const ASSUMED_NOTE: &str = "d'après le dernier ordre d'Ostal";
 
 /// Ce que l'on attend d'une commande qu'on vient d'envoyer : la tuile le montre aussitôt, sans
 /// attendre le serveur ; l'attente s'arrête à l'événement attendu, au refus de la commande ou
@@ -359,6 +380,9 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
         }
     } else if caps.cover {
         value = Some(cover_value(d, expect.and_then(|e| e.motion)));
+        if is_assumed_cover(d) && d.position().is_some() {
+            small = Some((None, ASSUMED_NOTE.into()));
+        }
     } else if caps.on_off {
         value = Some(match on {
             Some(true) => d
@@ -382,7 +406,7 @@ pub fn tile_of(d: &Device, expect: Option<&Expect>) -> Tile {
     let action = if stale {
         TileAction::Detail
     } else if caps.cover {
-        if cover_is_moving(d, expect) {
+        if !is_assumed_cover(d) && cover_is_moving(d, expect) {
             TileAction::Cover(CoverCommand::Stop)
         } else {
             TileAction::Cover(if cover_is_open(d) {
@@ -1050,6 +1074,7 @@ mod tests {
                     on_plan(13, 4, 30.0, 30.0),
                 ],
             }],
+            shutters: None,
         };
         let layout = groups(&devices, &plan);
         let titles: Vec<&str> = layout.groups.iter().map(|g| g.title.as_str()).collect();
@@ -1094,6 +1119,7 @@ mod tests {
                     items: vec![on_plan(12, 3, 10.0, 10.0), on_plan(13, 2, 500.0, 10.0)],
                 },
             ],
+            shutters: None,
         };
         let layout = groups(&devices, &plan);
         let rooms: Vec<(&str, Option<&str>)> = layout
@@ -1262,6 +1288,46 @@ mod tests {
             tile_of(&r, None).action,
             TileAction::Cover(CoverCommand::Stop)
         );
+    }
+
+    #[test]
+    fn an_extension_shutter_shows_the_last_order_and_only_opens_or_closes() {
+        let caps = Capabilities {
+            cover: true,
+            cover_position: false,
+            ..Default::default()
+        };
+        let mut s = online(device(
+            protocol::events::EXTENSION_ID_MIN + 1,
+            "Porte",
+            caps,
+        ));
+        assert!(is_assumed_cover(&s));
+        // Jamais commandé : inconnu, le clic ouvre, rien ne prétend savoir.
+        let unknown = tile_of(&s, None);
+        assert_eq!(unknown.value.as_deref(), Some("Inconnu"));
+        assert_eq!(unknown.action, TileAction::Cover(CoverCommand::Open));
+        assert_eq!(unknown.small, None);
+        // Dernier ordre : fermer. L'état est dit tel qu'il est : déduit.
+        s.apply_reading(Metric::Position, 0.0, 1.0);
+        let closed = tile_of(&s, None);
+        assert_eq!(closed.value.as_deref(), Some("Fermé"));
+        assert_eq!(closed.action, TileAction::Cover(CoverCommand::Open));
+        assert_eq!(
+            closed.small,
+            Some((None, "d'après le dernier ordre d'Ostal".to_string()))
+        );
+        // Ouvrir : le clic ferme ; jamais d'« arrêt », même avec un mouvement attendu.
+        s.apply_reading(Metric::Position, 100.0, 2.0);
+        let open = tile_of(&s, Some(&Expect::motion(CoverMotion::Closing)));
+        assert_eq!(open.value.as_deref(), Some("Ouvert"));
+        assert_eq!(open.action, TileAction::Cover(CoverCommand::Close));
+        // Un volet Matter à l'identifiant ordinaire garde son comportement.
+        let rts = Capabilities {
+            cover: true,
+            ..Default::default()
+        };
+        assert!(!is_assumed_cover(&online(device(5, "Volet RTS", rts))));
     }
 
     #[test]

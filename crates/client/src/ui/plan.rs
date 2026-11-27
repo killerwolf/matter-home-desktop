@@ -289,6 +289,90 @@ fn look(item: &Item, devices: &BTreeMap<u64, Device>, p: &Palette) -> Look {
     }
 }
 
+/// Ce que dit une porte ou une fenêtre équipée d'un volet : « Volet ouvert », « Volet fermé » ou
+/// « Volet : état inconnu » (extension éteinte, volet injoignable, jamais commandé). L'état d'un
+/// volet RTS est le dernier ordre donné par Ostal. `None` : pas de volet sur cette ouverture.
+pub(super) fn shutter_text(
+    plan: &HomePlan,
+    devices: &BTreeMap<u64, Device>,
+    item_id: u64,
+) -> Option<String> {
+    let node_id = plan.shutter_of(item_id)?;
+    let position = devices
+        .get(&node_id)
+        .filter(|d| {
+            !matches!(&d.status, WireStatus::Unreachable { .. })
+                && !(matches!(&d.status, WireStatus::Connecting) && d.last_seen.is_none())
+        })
+        .and_then(|d| d.position())
+        .map(|p| p.value);
+    Some(
+        match position {
+            Some(p) if p > 0.0 => "Volet ouvert",
+            Some(_) => "Volet fermé",
+            None => "Volet : état inconnu",
+        }
+        .to_string(),
+    )
+}
+
+/// L'objet est une porte ou une fenêtre : un décor « Porte » ou « Fenêtre », ou un capteur
+/// d'ouverture. Seules elles peuvent recevoir un volet.
+fn is_opening_item(item: &Item, devices: &BTreeMap<u64, Device>) -> bool {
+    match &item.kind {
+        ItemKind::Decor { symbol, .. } => matches!(symbol, Symbol::Door | Symbol::Window),
+        ItemKind::Device {
+            node_id, symbol, ..
+        } => {
+            devices.get(node_id).is_some_and(|d| d.info.caps.contact)
+                || matches!(symbol, Some(Symbol::Door | Symbol::Window))
+        }
+        ItemKind::Camera { .. } => false,
+    }
+}
+
+/// Le choix du volet roulant d'une ouverture. `true` : le plan a changé.
+fn shutter_picker(
+    ui: &mut egui::Ui,
+    plan: &mut HomePlan,
+    item_id: u64,
+    devices: &BTreeMap<u64, Device>,
+) -> bool {
+    let shutters: Vec<(u64, String)> = devices
+        .iter()
+        .filter(|(id, d)| protocol::events::is_extension_id(**id) && d.info.caps.cover)
+        .map(|(id, d)| (*id, d.info.name.clone()))
+        .collect();
+    let current = plan.shutter_of(item_id);
+    let mut chosen = current;
+    let shown = match current {
+        None => "Aucun".to_string(),
+        Some(id) => shutters.iter().find(|(n, _)| *n == id).map_or_else(
+            || "Volet absent (extension éteinte ?)".to_string(),
+            |(_, n)| n.clone(),
+        ),
+    };
+    egui::ComboBox::from_label("Volet roulant")
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, None, "Aucun");
+            for (id, name) in &shutters {
+                ui.selectable_value(&mut chosen, Some(*id), name);
+            }
+        });
+    if shutters.is_empty() && current.is_none() {
+        ui.small(
+            "Aucun volet : activez l'extension « Volets Somfy » dans les réglages du serveur \
+             (Extensions).",
+        );
+    }
+    if chosen != current {
+        plan.set_shutter(item_id, chosen);
+        return true;
+    }
+    false
+}
+
 /// Ce que montre une caméra posée : nom du serveur, état en couleur ; une caméra que le serveur
 /// ne connaît plus est grisée et nommée comme telle.
 fn camera_look(item: &Item, cameras: &[CameraView], p: &Palette) -> Look {
@@ -1028,6 +1112,11 @@ impl PlanView {
                                 });
                         }
                     }
+                    // Une porte ou une fenêtre peut être équipée d'un volet roulant (extension Somfy) :
+                    // il n'est pas posé librement, il est rattaché à l'ouverture.
+                    if is_opening_item(&self.plan.floors[floor].items[idx], devices) {
+                        changed |= shutter_picker(ui, &mut self.plan, id, devices);
+                    }
                     self.dirty |= changed;
                     if ui.button("Retirer du plan").clicked() {
                         self.plan.floors[floor].items.remove(idx);
@@ -1573,11 +1662,17 @@ impl PlanView {
         for item in &floor.items {
             let c = self.to_screen(rect, item.x, item.y);
             let is_camera = matches!(item.kind, ItemKind::Camera { .. });
-            let lk = if is_camera {
+            let mut lk = if is_camera {
                 camera_look(item, cameras, pal)
             } else {
                 look(item, devices, pal)
             };
+            if let Some(shutter) = shutter_text(&self.plan, devices, item.id) {
+                lk.value = Some(match lk.value.take() {
+                    Some(v) => format!("{v} · {shutter}"),
+                    None => shutter,
+                });
+            }
             // Caméras et volets : plus petits, sans couleur vive.
             let radius = if lk.discreet {
                 ITEM_RADIUS * 0.7
@@ -1752,6 +1847,90 @@ mod tests {
             })),
             Some(Symbol::Shutter)
         );
+    }
+
+    #[test]
+    fn a_shutter_on_an_opening_says_open_closed_or_unknown() {
+        const SHUTTER: u64 = protocol::events::EXTENSION_ID_MIN + 1;
+        let mut plan = HomePlan::default();
+        plan.floors[0].items.push(Item {
+            id: 7,
+            kind: ItemKind::Decor {
+                symbol: Symbol::Window,
+                label: "Baie".into(),
+            },
+            x: 1.0,
+            y: 1.0,
+            rotation: 0.0,
+        });
+        let opening = |item: &Item| item.clone();
+        assert!(is_opening_item(
+            &opening(&plan.floors[0].items[0]),
+            &BTreeMap::new()
+        ));
+        let mut devices = BTreeMap::new();
+        // Sans lien : rien à dire.
+        assert_eq!(shutter_text(&plan, &devices, 7), None);
+        plan.set_shutter(7, Some(SHUTTER));
+        // Volet absent (extension éteinte) : état inconnu, le lien reste.
+        assert_eq!(
+            shutter_text(&plan, &devices, 7).as_deref(),
+            Some("Volet : état inconnu")
+        );
+        let mut shutter = device(Capabilities {
+            cover: true,
+            cover_position: false,
+            ..Default::default()
+        });
+        shutter.info.node_id = SHUTTER;
+        shutter.status = WireStatus::Online;
+        shutter.last_seen = Some(1.0);
+        devices.insert(SHUTTER, shutter);
+        // Jamais commandé : inconnu ; puis le dernier ordre décide.
+        assert_eq!(
+            shutter_text(&plan, &devices, 7).as_deref(),
+            Some("Volet : état inconnu")
+        );
+        devices
+            .get_mut(&SHUTTER)
+            .unwrap()
+            .apply_reading(Metric::Position, 0.0, 2.0);
+        assert_eq!(
+            shutter_text(&plan, &devices, 7).as_deref(),
+            Some("Volet fermé")
+        );
+        devices
+            .get_mut(&SHUTTER)
+            .unwrap()
+            .apply_reading(Metric::Position, 100.0, 3.0);
+        assert_eq!(
+            shutter_text(&plan, &devices, 7).as_deref(),
+            Some("Volet ouvert")
+        );
+        // Volet injoignable (compte refusé) : on ne prétend rien savoir.
+        devices.get_mut(&SHUTTER).unwrap().status = WireStatus::Unreachable {
+            code: protocol::wire::ErrorCode::Unavailable,
+            detail: Some("refusé".into()),
+            retry_in_s: 0,
+        };
+        assert_eq!(
+            shutter_text(&plan, &devices, 7).as_deref(),
+            Some("Volet : état inconnu")
+        );
+        // Une caméra ne reçoit pas de volet.
+        let camera = Item {
+            id: 8,
+            kind: ItemKind::Camera {
+                camera_id: protocol::wire::CAMERA_ID_MIN,
+                fov: 90.0,
+                range: 3.0,
+                shape: FovShape::Cone,
+            },
+            x: 0.0,
+            y: 0.0,
+            rotation: 0.0,
+        };
+        assert!(!is_opening_item(&camera, &devices));
     }
 
     #[test]

@@ -654,6 +654,8 @@ impl MatterApp {
             CoverCommand::Close => Some(CoverMotion::Closing),
             _ => None,
         };
+        // Un volet d'extension (Somfy RTS) n'annonce jamais de mouvement : rien à attendre.
+        let motion = motion.filter(|_| !protocol::events::is_extension_id(id));
         match motion {
             Some(motion) => {
                 self.expect.insert(id, devices::Expect::motion(motion));

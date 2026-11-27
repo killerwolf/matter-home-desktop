@@ -2,7 +2,7 @@
 import * as api from "./api.js";
 import { ICONS, eventIcon, modeIcon, mountIcons } from "./icons.js";
 import {
-  CLICK_GUARD_MS, EXPECT_TTL_MS, batteryLow, clockText, formatTemperature, groups, isOn, isStale, position,
+  CLICK_GUARD_MS, EXPECT_TTL_MS, batteryLow, clockText, formatTemperature, groups, isAssumedCover, isOn, isStale, position,
   statusSummary, tempClass, temperature, tileOf, unreachableSince, watts,
 } from "./tiles.js";
 import { lineChart, rangeOf } from "./charts.js";
@@ -219,13 +219,17 @@ async function sendCommand(dev, kind, command, expectation) {
   }
 }
 
+/** Ce qu'on attend d'un ordre de volet : un mouvement, sauf pour un volet sans retour d'état
+ *  (Somfy RTS), qui n'en annonce jamais. */
+const coverExpect = (dev, motion) => (isAssumedCover(dev) ? {} : { motion });
+
 function actOn(dev, action) {
   const e = expects.get(dev.id);
   const on = e?.on ?? isOn(dev);
   switch (action) {
     case "toggle": return sendCommand(dev, "on-off", on ? "Off" : "On", { on: !on });
-    case "cover-open": return sendCommand(dev, "cover", "Open", { motion: "opening" });
-    case "cover-close": return sendCommand(dev, "cover", "Close", { motion: "closing" });
+    case "cover-open": return sendCommand(dev, "cover", "Open", coverExpect(dev, "opening"));
+    case "cover-close": return sendCommand(dev, "cover", "Close", coverExpect(dev, "closing"));
     case "cover-stop": return sendCommand(dev, "cover", "Stop", { motion: "stopped" });
     default: return openDetail(dev.id);
   }
@@ -1454,11 +1458,10 @@ function renderSheet(rebuild) {
     controls.append(on, off);
   }
   if (caps.cover && !stale) {
-    controls.append(
-      button("Ouvrir", () => sendCommand(dev, "cover", "Open", { motion: "opening" })),
-      button("Arrêter", () => sendCommand(dev, "cover", "Stop", { motion: "stopped" })),
-      button("Fermer", () => sendCommand(dev, "cover", "Close", { motion: "closing" })),
-    );
+    controls.append(button("Ouvrir", () => sendCommand(dev, "cover", "Open", coverExpect(dev, "opening"))));
+    // Un volet RTS (Somfy) ne s'arrête pas en route : ouvrir et fermer seulement.
+    if (!isAssumedCover(dev)) controls.append(button("Arrêter", () => sendCommand(dev, "cover", "Stop", { motion: "stopped" })));
+    controls.append(button("Fermer", () => sendCommand(dev, "cover", "Close", coverExpect(dev, "closing"))));
   }
   if (controls.children.length) frag.appendChild(controls);
 
@@ -1681,7 +1684,7 @@ function renderConnections() {
 // par extension. Un secret n'est jamais relu : le serveur dit seulement « défini » ; le champ reste
 // vide et n'envoie que ce qu'on y tape. Tout est écrit en `textContent`.
 // ---------------------------------------------------------------------------
-const extUi = { open: false, list: null, error: "", busy: false, page: null, q: "", places: null, searching: false, message: "" };
+const extUi = { open: false, list: null, error: "", busy: false, page: null, q: "", places: null, searching: false, message: "", somfy: null, somfyBusy: false };
 
 async function openExtensions() {
   closeSheet();
@@ -1692,6 +1695,7 @@ async function openExtensions() {
   extUi.places = null;
   extUi.q = "";
   extUi.message = "";
+  extUi.somfy = null;
   renderExtensions();
   showSheet("tall");
   await loadExtensions();
@@ -1707,6 +1711,51 @@ async function loadExtensions() {
   if (extUi.open) renderExtensions();
 }
 
+/** La liste des appareils du compte Somfy (droit « extensions »), lue sans appeler Somfy. */
+async function loadSomfyDevices() {
+  try {
+    extUi.somfy = await api.request("GET", "/api/extensions/somfy/devices");
+  } catch (error) {
+    extUi.somfy = null;
+    if (!ext.isMissingRoute(error)) extUi.error = ext.errorText(error);
+  }
+  if (extUi.open) renderExtensions();
+}
+
+/** « Actualiser » : relire la liste chez Somfy (au plus une fois toutes les 20 s). */
+async function refreshSomfy() {
+  if (extUi.somfyBusy) return;
+  extUi.somfyBusy = true;
+  extUi.error = "";
+  extUi.message = "";
+  renderExtensions();
+  try {
+    extUi.somfy = await api.request("POST", "/api/extensions/somfy/refresh");
+    extUi.message = "Liste actualisée.";
+    await loadExtensions();
+  } catch (error) {
+    extUi.error = ext.errorText(error);
+  } finally {
+    extUi.somfyBusy = false;
+    if (extUi.open) renderExtensions();
+  }
+}
+
+/** Coche ou décoche un appareil : le choix part tout de suite (la configuration est remplacée). */
+async function chooseSomfyDevice(view, key, checked) {
+  const email = view.config?.email ?? "";
+  const exposed = ext.somfyExposedAfter(extUi.somfy, key, checked);
+  await updateExtension("somfy", { config: ext.somfyConfig(email, exposed) });
+}
+
+async function saveSomfyAccount(view, email) {
+  const exposed = view.config?.exposed ?? null;
+  if (await updateExtension("somfy", { config: ext.somfyConfig(email, exposed) })) {
+    extUi.message = "Identifiant enregistré.";
+    renderExtensions();
+  }
+}
+
 /** Envoie une modification, remplace l'extension par la réponse du serveur et la météo de l'accueil. */
 async function updateExtension(id, body) {
   if (extUi.busy) return false;
@@ -1720,6 +1769,10 @@ async function updateExtension(id, body) {
     extUi.list = (extUi.list ?? []).map((e) => (e.id === id ? view : e));
     done = true;
     if (id === "weather") loadWeather();
+    if (id === "somfy") {
+      if (view.enabled) await loadSomfyDevices();
+      else extUi.somfy = null;
+    }
   } catch (error) {
     extUi.error = ext.errorText(error);
   } finally {
@@ -1855,6 +1908,60 @@ function renderWeatherPage(body, view) {
   }
 }
 
+function renderSomfyPage(body, view) {
+  const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
+  note(ext.somfyStatusText(view));
+  const lastError = ext.somfyLastError(view);
+  if (lastError) note(`Dernier ordre non transmis : ${lastError}`, "error");
+  note("Ouvrir et fermer seulement. Un volet RTS ne renvoie pas son état : Ostal affiche le dernier ordre qu'il lui a donné (d'après le dernier ordre d'Ostal), pas l'état réel. Si vous bougez le volet à la télécommande, Ostal ne le sait pas.");
+
+  body.appendChild(make("h3", "", "Compte TaHoma"));
+  const label = make("label", "ext-field");
+  label.appendChild(make("span", "", "Identifiant TaHoma (e-mail)"));
+  const email = make("input");
+  email.type = "email";
+  email.autocomplete = "off";
+  email.spellcheck = false;
+  email.maxLength = 254;
+  email.value = view.config?.email ?? "";
+  label.appendChild(email);
+  body.appendChild(label);
+  const save = make("button", "btn", "Enregistrer l'identifiant");
+  save.type = "button";
+  save.disabled = extUi.busy;
+  save.addEventListener("click", () => saveSomfyAccount(view, email.value));
+  body.appendChild(save);
+}
+
+function renderSomfyDevices(body, view) {
+  if (!view.enabled || !["ok", "offline"].includes(view.status?.state)) return;
+  body.appendChild(make("h3", "", "Appareils à montrer dans Ostal"));
+  const synced = ext.somfySyncedText(extUi.somfy);
+  if (synced) body.appendChild(make("p", "w-note", synced));
+  const refresh = make("button", "btn", extUi.somfyBusy ? "Actualisation…" : "Actualiser");
+  refresh.type = "button";
+  refresh.disabled = extUi.busy || extUi.somfyBusy;
+  refresh.addEventListener("click", refreshSomfy);
+  body.appendChild(refresh);
+  if (!extUi.somfy) { body.appendChild(make("p", "w-note", "Chargement…")); return; }
+  if (!extUi.somfy.devices.length) { body.appendChild(make("p", "w-note", "Aucun appareil dans ce compte pour l'instant.")); return; }
+  body.appendChild(make("p", "w-note", "Les volets roulants sont cochés d'office. Les appareils qui ne savent pas s'ouvrir et se fermer (le voyant du Kit, par exemple) ne peuvent pas être choisis."));
+  const ul = make("ul", "ext-devices");
+  for (const device of ext.somfyChoices(extUi.somfy)) {
+    const li = make("li");
+    const row = make("label", "ext-device");
+    const box = make("input");
+    box.type = "checkbox";
+    box.checked = device.selected;
+    box.disabled = extUi.busy || !device.commandable;
+    box.addEventListener("change", () => chooseSomfyDevice(view, device.key, box.checked));
+    row.append(box, make("span", "", device.name), make("small", "w-note", ext.somfyKindLabel(device.kind)));
+    li.appendChild(row);
+    ul.appendChild(li);
+  }
+  body.appendChild(ul);
+}
+
 function renderExtensions() {
   const body = $("#sheet-body");
   body.dataset.id = "extensions";
@@ -1875,7 +1982,11 @@ function renderExtensions() {
       open.type = "button";
       open.id = `ext-${view.id}`;
       open.append(make("strong", "", view.name), make("span", "w-note", view.description));
-      open.addEventListener("click", () => { extUi.page = view.id; extUi.error = ""; extUi.message = ""; extUi.places = null; extUi.q = ""; renderExtensions(); });
+      open.addEventListener("click", () => {
+        extUi.page = view.id; extUi.error = ""; extUi.message = ""; extUi.places = null; extUi.q = ""; extUi.somfy = null;
+        renderExtensions();
+        if (view.id === "somfy" && view.enabled) loadSomfyDevices();
+      });
       li.append(open, extensionSwitch(view, open.id));
       ul.appendChild(li);
     }
@@ -1897,8 +2008,10 @@ function renderExtensions() {
   body.appendChild(row);
   if (extUi.message) note(extUi.message);
   if (page.id === "weather") renderWeatherPage(body, page);
+  if (page.id === "somfy") renderSomfyPage(body, page);
   const secrets = secretFields(page);
   if (secrets) body.appendChild(secrets);
+  if (page.id === "somfy") renderSomfyDevices(body, page);
 }
 
 // ---------------------------------------------------------------------------
