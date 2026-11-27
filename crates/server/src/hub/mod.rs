@@ -163,6 +163,9 @@ pub struct Hub {
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// Sérialise les modifications du plan, des règles et des caméras (mémoire + disque + diffusion).
     write_lock: Mutex<()>,
+    /// Une mise d'accord des volets d'extension à la fois (le fil des extensions, les requêtes et
+    /// la pompe l'appellent) : sinon un calcul fait avant une extinction pourrait s'appliquer après.
+    extension_sync: Mutex<()>,
     /// Réveille le surveillant des caméras (voir `cameras::start_monitor`) ; absent en démo et
     /// avant son démarrage.
     camera_wake: Mutex<Option<mpsc::UnboundedSender<Wake>>>,
@@ -323,6 +326,7 @@ impl Hub {
             tx,
             commands: Mutex::new(Some(config.commands)),
             write_lock: Mutex::new(()),
+            extension_sync: Mutex::new(()),
             camera_wake: Mutex::new(None),
             viewers: Arc::new(ViewerRegistry::default()),
             live: crate::cameras::live::LiveRegistry::new(Default::default()),
@@ -1281,6 +1285,10 @@ impl Hub {
     /// aucun appel réseau.
     pub fn sync_extension_devices(&self) {
         use protocol::events::is_extension_id;
+        let _one_at_a_time = self
+            .extension_sync
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let somfy = self.extensions.somfy();
         for line in somfy.take_notices() {
             self.apply(&Event::Info(line));

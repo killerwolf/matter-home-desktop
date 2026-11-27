@@ -154,6 +154,22 @@ fn gated() -> Vec<Gated> {
             None,
             ManageExtensions,
         ),
+        // Les appareils du compte Somfy (noms, types) et « Actualiser » (un appel vers le cloud de
+        // Somfy une fois activée) : « extensions » aussi.
+        g(
+            "GET",
+            "/api/extensions/somfy/devices",
+            "/api/extensions/somfy/devices",
+            None,
+            ManageExtensions,
+        ),
+        g(
+            "POST",
+            "/api/extensions/somfy/refresh",
+            "/api/extensions/somfy/refresh",
+            None,
+            ManageExtensions,
+        ),
         // Créer un agent en lecture : « voir la maison ». Les droits « commandes » et « mode » qu'il
         // peut porter demandent en plus ceux du compte (prouvé par
         // agents_web::the_account_can_only_give_the_rights_it_has_itself).
