@@ -15,6 +15,7 @@
 //! l'accès) avant qu'on en donne un autre.
 
 pub mod bbox;
+pub mod journal;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -176,6 +177,8 @@ pub struct Wifi {
     inner: Mutex<Inner>,
     /// Un seul relevé à la fois.
     poll_lock: Mutex<()>,
+    /// Ce que le journal a déjà dit (une ligne seulement quand quelque chose change).
+    journal: Mutex<journal::Journal>,
 }
 
 /// Une vue pour l'administrateur : ce qu'on sait de la liaison.
@@ -231,6 +234,7 @@ impl Wifi {
                 sightings: HashMap::new(),
             }),
             poll_lock: Mutex::new(()),
+            journal: Mutex::new(journal::Journal::default()),
         }
     }
 
@@ -274,6 +278,26 @@ impl Wifi {
             last_ok: st.last_ok,
             away_delay_min: st.config.away_delay_min,
         }
+    }
+
+    /// La mémoire du journal de présence (voir [`journal::Journal`]).
+    pub fn journal(&self) -> MutexGuard<'_, journal::Journal> {
+        self.journal.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Les comptes dont le téléphone associé n'est dans aucun relevé de la box (même inactif) :
+    /// son nom d'hôte a peut-être changé.
+    pub fn unlisted_phones(&self) -> Vec<String> {
+        let st = self.lock();
+        st.phones
+            .iter()
+            .filter(|p| {
+                !st.hosts
+                    .iter()
+                    .any(|h| h.name.eq_ignore_ascii_case(&p.host))
+            })
+            .map(|p| p.user_id.clone())
+            .collect()
     }
 
     /// L'adresse de la box reliée (pour la montrer à l'administrateur ; jamais le mot de passe).
