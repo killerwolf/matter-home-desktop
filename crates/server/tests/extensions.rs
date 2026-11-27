@@ -282,6 +282,33 @@ fn somfy_shutters_follow_the_extension_in_demo() {
             .await;
         assert_eq!(r.status, 400, "{}", r.text());
 
+        // Une automatisation commande le volet (« Tester » la règle) : l'ordre passe par le hub.
+        let mut rules = client.get("/api/rules", &token).await.json();
+        let rule_id = rules["rules"][0]["id"].clone();
+        rules["rules"][0]["actions"] =
+            json!([{"type": "SetCover", "node_id": id, "command": "Open"}]);
+        let r = client.send_json("PUT", "/api/rules", &token, &rules).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let r = client
+            .request(
+                "POST",
+                &format!("/api/rules/{}/test", rule_id.as_str().unwrap()),
+                Some(&token),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        let mut opened = false;
+        for _ in 0..100 {
+            let state = client.get("/api/state", &token).await.json();
+            if somfy_devices(&state)[0]["latest"][0]["value"] == 100.0 {
+                opened = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(opened, "la règle n'a pas ouvert le volet");
+
         // Le plan : une fenêtre équipée du volet.
         let mut plan = client.get("/api/plan", &token).await.json();
         plan["floors"][0]["items"]

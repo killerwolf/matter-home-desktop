@@ -370,13 +370,31 @@ impl HomePlan {
     /// poses dans l'ordre) dont le point tombe dans une pièce. Une pose hors de toute pièce est
     /// ignorée, une seconde pose ne change rien. C'est la seule règle de « pièce d'un
     /// appareil » : l'onglet Appareils et les Températures s'en servent.
+    ///
+    /// Un volet qui équipe une porte ou une fenêtre est dans la pièce de **cette ouverture**
+    /// (il n'a pas de pose à lui) ; une pose propre prime.
     pub fn room_of(&self, node_id: u64) -> Option<(&Floor, &Room)> {
-        self.floors.iter().find_map(|f| {
+        let own = self.floors.iter().find_map(|f| {
             f.items
                 .iter()
                 .filter(|i| matches!(i.kind, ItemKind::Device { node_id: n, .. } if n == node_id))
                 .find_map(|i| f.room_at(i.x, i.y))
                 .map(|r| (f, r))
+        });
+        own.or_else(|| {
+            let item_id = self
+                .shutters
+                .as_ref()?
+                .iter()
+                .find(|l| l.node_id == node_id)?
+                .id;
+            self.floors.iter().find_map(|f| {
+                f.items
+                    .iter()
+                    .find(|i| i.id == item_id)
+                    .and_then(|i| f.room_at(i.x, i.y))
+                    .map(|r| (f, r))
+            })
         })
     }
 
@@ -403,14 +421,18 @@ impl HomePlan {
 
     /// Appareils déjà placés, tous étages confondus.
     pub fn placed_devices(&self) -> HashSet<u64> {
-        self.floors
+        let mut placed: HashSet<u64> = self
+            .floors
             .iter()
             .flat_map(|f| &f.items)
             .filter_map(|i| match i.kind {
                 ItemKind::Device { node_id, .. } => Some(node_id),
                 ItemKind::Decor { .. } | ItemKind::Camera { .. } => None,
             })
-            .collect()
+            .collect();
+        // Un volet rattaché à une ouverture est placé par elle.
+        placed.extend(self.shutters.iter().flatten().map(|l| l.node_id));
+        placed
     }
 
     /// Nom de la pièce où la caméra est posée sur le plan (même règle que [`Self::room_name_of`]).
@@ -778,6 +800,19 @@ mod tests {
         cleared.shutters = Some(Vec::new());
         cleared.keep_shutters_from(&plan);
         assert_eq!(cleared.shutters, Some(Vec::new()));
+        // Le volet est « placé » et rangé dans la pièce de son ouverture.
+        plan.floors[0].rooms.push(Room {
+            id: 2,
+            name: "Salon".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 4.0,
+            h: 3.0,
+        });
+        plan.set_shutter(7, Some(SHUTTER));
+        assert!(plan.placed_devices().contains(&SHUTTER));
+        assert_eq!(plan.room_name_of(SHUTTER), Some("Salon"));
+        plan.set_shutter(8, Some(SHUTTER));
         // Un lien dont l'objet n'existe plus (le 8) est retiré.
         assert!(plan.prune_shutters());
         assert_eq!(plan.shutters, Some(Vec::new()));

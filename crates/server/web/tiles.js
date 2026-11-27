@@ -167,16 +167,30 @@ function bridgeIds(devices) {
 
 /** Pièce d'un appareil : la première pose qui tombe dans une pièce (HomePlan::room_of). */
 export function roomOf(plan, id) {
+  const inRoom = (floor, item) => {
+    const rooms = floor.rooms ?? [];
+    for (let i = rooms.length - 1; i >= 0; i--) {
+      const r = rooms[i];
+      if (item.x >= r.x && item.x <= r.x + r.w && item.y >= r.y && item.y <= r.y + r.h) {
+        return { floor, room: r };
+      }
+    }
+    return null;
+  };
   for (const floor of plan?.floors ?? []) {
     for (const item of floor.items ?? []) {
       if (item.kind?.type !== "Device" || item.kind.node_id !== id) continue;
-      const rooms = floor.rooms ?? [];
-      for (let i = rooms.length - 1; i >= 0; i--) {
-        const r = rooms[i];
-        if (item.x >= r.x && item.x <= r.x + r.w && item.y >= r.y && item.y <= r.y + r.h) {
-          return { floor, room: r };
-        }
-      }
+      const hit = inRoom(floor, item);
+      if (hit) return hit;
+    }
+  }
+  // Un volet qui équipe une porte ou une fenêtre est dans la pièce de cette ouverture.
+  const link = (plan?.shutters ?? []).find((l) => String(l.node_id) === String(id));
+  if (link) {
+    for (const floor of plan?.floors ?? []) {
+      const item = (floor.items ?? []).find((i) => String(i.id) === String(link.id));
+      const hit = item && inRoom(floor, item);
+      if (hit) return hit;
     }
   }
   return null;

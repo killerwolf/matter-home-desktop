@@ -358,7 +358,7 @@ impl Somfy {
     fn is_exposed(inner: &Inner, device: &Cached) -> bool {
         device.commandable
             && match &inner.exposed {
-                Some(list) => list.iter().any(|k| *k == device.oid),
+                Some(list) => list.contains(&device.oid),
                 None => device.kind == SHUTTER_KIND,
             }
     }

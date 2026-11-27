@@ -235,6 +235,7 @@ pub fn cover(
     let empty = Series::default();
     let position = series.get(Metric::Position).unwrap_or(&empty);
     let position_aware = device.info.caps.cover_position;
+    let assumed = super::devices::is_assumed_cover(device);
     let current = device.position().map(|s| s.value);
     let mut command = None;
 
@@ -255,9 +256,13 @@ pub fn cover(
             }
             None => {
                 ui.label(
-                    RichText::new("Position inconnue")
-                        .size(18.0)
-                        .color(pal.text_secondary),
+                    RichText::new(if assumed {
+                        "État inconnu"
+                    } else {
+                        "Position inconnue"
+                    })
+                    .size(18.0)
+                    .color(pal.text_secondary),
                 );
             }
         }
@@ -272,7 +277,13 @@ pub fn cover(
             ui.label(RichText::new(text).size(13.0).color(color));
         }
     });
-    if !position_aware {
+    if assumed {
+        ui.small(
+            "Volet Somfy (RTS) : l'état affiché est le dernier ordre qu'Ostal lui a donné \
+             (d'après le dernier ordre d'Ostal), pas son état réel. Ouvrir et fermer seulement : \
+             si vous le bougez à la télécommande, Ostal ne le sait pas.",
+        );
+    } else if !position_aware {
         ui.small("Moteur sans retour de position (radio à sens unique, type RTS) : seules les commandes sont possibles.");
     }
 
@@ -280,7 +291,7 @@ pub fn cover(
         if ui.button("▲ Ouvrir").clicked() {
             command = Some(CoverCommand::Open);
         }
-        if ui.button("■ Stop").clicked() {
+        if !assumed && ui.button("■ Stop").clicked() {
             command = Some(CoverCommand::Stop);
         }
         if ui.button("▼ Fermer").clicked() {
