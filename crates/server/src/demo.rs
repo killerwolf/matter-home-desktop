@@ -740,6 +740,7 @@ pub fn demo_plan() -> crate::home::HomePlan {
                 ],
             },
         ],
+        shutters: None,
     };
     if house {
         plan.floors[0].items.extend([

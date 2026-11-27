@@ -203,6 +203,20 @@ pub fn plan(plan: &HomePlan) -> Result<(), ApiError> {
             }
         }
     }
+    // Les volets rattachés à une ouverture : seulement des appareils d'extension (plage de
+    // tirage, pas l'existence : une extension éteinte ne doit pas faire refuser le plan). Un lien
+    // dont l'objet n'existe pas, ou en double, est retiré par `Hub::set_plan`.
+    if let Some(links) = &plan.shutters {
+        if links.len() > MAX_ITEMS {
+            return Err(bad("trop de volets sur le plan"));
+        }
+        if links
+            .iter()
+            .any(|l| !protocol::events::is_extension_id(l.node_id))
+        {
+            return Err(bad("volet invalide"));
+        }
+    }
     Ok(())
 }
 

@@ -672,6 +672,25 @@ async fn run(
                     .map(|_| format!("{} : {}", name, command.label().to_lowercase()))
                     .with_context(|| format!("{} : {}", name, command.label().to_lowercase()))
             }
+            // Un volet d'extension (Somfy) : le hub le pilote (la pompe d'événements met l'ordre en
+            // file) ; le moteur ne sait que « demandé », pas « arrivé ».
+            Action::SetCover { node_id, command }
+                if protocol::events::is_extension_id(*node_id) =>
+            {
+                let name = device_names
+                    .get(node_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{node_id:016X}"));
+                ui.send(Event::CoverRequested {
+                    node_id: *node_id,
+                    command: *command,
+                });
+                Ok(format!(
+                    "{} : {} (demandé)",
+                    name,
+                    command.label().to_lowercase()
+                ))
+            }
             Action::SetCover { node_id, command } => {
                 let name = device_names
                     .get(node_id)

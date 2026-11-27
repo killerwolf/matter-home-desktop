@@ -229,10 +229,26 @@ impl Floor {
     }
 }
 
+/// Un volet (appareil d'extension, par exemple Somfy) qui équipe une porte ou une fenêtre du plan :
+/// il n'est pas posé librement, il est **rattaché à l'ouverture**. Écrit à plat, avec les clés
+/// `id` (l'objet du plan) et `node_id` (le volet), que le fil passe en texte comme les autres.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShutterLink {
+    /// L'objet du plan (`Item::id`) : une porte ou une fenêtre.
+    pub id: u64,
+    /// Le volet (`NodeInfo::node_id`, dans la plage des appareils d'extension).
+    pub node_id: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HomePlan {
     pub version: u32,
     pub floors: Vec<Floor>,
+    /// Les volets rattachés à une ouverture. Absent d'un plan écrit avant les volets, ou envoyé
+    /// par un client plus ancien (qui l'efface sans le savoir) : voir [`Self::keep_shutters_from`] ;
+    /// un client à jour l'envoie toujours (même vide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutters: Option<Vec<ShutterLink>>,
 }
 
 impl Default for HomePlan {
@@ -245,11 +261,72 @@ impl Default for HomePlan {
                 rooms: Vec::new(),
                 items: Vec::new(),
             }],
+            shutters: None,
         }
     }
 }
 
 impl HomePlan {
+    /// Le volet qui équipe cette ouverture, s'il y en a un.
+    pub fn shutter_of(&self, item_id: u64) -> Option<u64> {
+        self.shutters
+            .as_ref()?
+            .iter()
+            .find(|l| l.id == item_id)
+            .map(|l| l.node_id)
+    }
+
+    /// Équipe l'ouverture `item_id` du volet `node_id` (`None` : le retire). Un volet n'équipe
+    /// qu'une ouverture : s'il en équipait une autre, il la quitte.
+    pub fn set_shutter(&mut self, item_id: u64, node_id: Option<u64>) {
+        let links = self.shutters.get_or_insert_with(Vec::new);
+        links.retain(|l| l.id != item_id && Some(l.node_id) != node_id);
+        if let Some(node_id) = node_id {
+            links.push(ShutterLink {
+                id: item_id,
+                node_id,
+            });
+        }
+    }
+
+    /// Un client plus ancien (qui ignore les volets) a renvoyé le plan sans ce champ : on garde
+    /// les liens connus. Un champ présent, même vide, est un choix explicite.
+    pub fn keep_shutters_from(&mut self, old: &HomePlan) {
+        if self.shutters.is_none() {
+            self.shutters = old.shutters.clone();
+        }
+    }
+
+    /// Retire les liens dont l'objet n'existe plus (ou est une caméra) et les doublons ; `true` si
+    /// le plan a changé. Les volets eux-mêmes ne sont pas vérifiés : une extension éteinte ne doit
+    /// pas défaire le plan.
+    pub fn prune_shutters(&mut self) -> bool {
+        let Some(links) = self.shutters.take() else {
+            return false;
+        };
+        let openings: HashSet<u64> = self
+            .floors
+            .iter()
+            .flat_map(|f| &f.items)
+            .filter(|i| !matches!(i.kind, ItemKind::Camera { .. }))
+            .map(|i| i.id)
+            .collect();
+        let mut seen_items = HashSet::new();
+        let mut seen_shutters = HashSet::new();
+        let kept: Vec<ShutterLink> = links
+            .iter()
+            .copied()
+            .filter(|l| {
+                openings.contains(&l.id)
+                    && seen_items.insert(l.id)
+                    && seen_shutters.insert(l.node_id)
+            })
+            .collect();
+        let changed = kept.len() != links.len();
+        self.shutters = Some(kept);
+        changed
+    }
+
     /// Reprend de `old` le réglage `opening` des appareils que le nouveau plan (envoyé par un
     /// client plus ancien, qui ne connaît pas ce champ et l'efface) ne porte pas : même objet
     /// (identifiant) et même appareil.
@@ -665,6 +742,46 @@ mod tests {
         let json = serde_json::to_string(&window).unwrap();
         assert!(json.contains(r#""opening":"Window""#), "{json}");
         assert_eq!(serde_json::from_str::<Item>(&json).unwrap(), window);
+    }
+
+    #[test]
+    fn a_shutter_equips_an_opening_and_an_old_client_save_keeps_it() {
+        const SHUTTER: u64 = 0xFFFF_FFEF_0000_0001;
+        let mut plan = HomePlan::default();
+        plan.floors[0].items.push(Item {
+            id: 7,
+            kind: ItemKind::Decor {
+                symbol: Symbol::Window,
+                label: "Fenêtre".into(),
+            },
+            x: 1.0,
+            y: 1.0,
+            rotation: 0.0,
+        });
+        // Sans volet : rien n'est écrit, le plan reste lisible par un client plus ancien.
+        assert!(!serde_json::to_string(&plan).unwrap().contains("shutters"));
+        plan.set_shutter(7, Some(SHUTTER));
+        assert_eq!(plan.shutter_of(7), Some(SHUTTER));
+        let json = serde_json::to_string(&plan).unwrap();
+        assert_eq!(serde_json::from_str::<HomePlan>(&json).unwrap(), plan);
+        // Un volet n'équipe qu'une ouverture ; une ouverture n'a qu'un volet.
+        plan.set_shutter(8, Some(SHUTTER));
+        assert_eq!(plan.shutter_of(7), None);
+        assert_eq!(plan.shutter_of(8), Some(SHUTTER));
+        // Un client plus ancien renvoie le plan sans le champ : on garde les liens ; un champ vide
+        // explicite les efface.
+        let mut stripped = plan.clone();
+        stripped.shutters = None;
+        stripped.keep_shutters_from(&plan);
+        assert_eq!(stripped.shutters, plan.shutters);
+        let mut cleared = plan.clone();
+        cleared.shutters = Some(Vec::new());
+        cleared.keep_shutters_from(&plan);
+        assert_eq!(cleared.shutters, Some(Vec::new()));
+        // Un lien dont l'objet n'existe plus (le 8) est retiré.
+        assert!(plan.prune_shutters());
+        assert_eq!(plan.shutters, Some(Vec::new()));
+        assert!(!plan.prune_shutters());
     }
 
     #[test]

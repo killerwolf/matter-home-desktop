@@ -12,14 +12,14 @@
 //! avec son heure : jamais de panique, jamais de valeur inventée.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{Descriptor, Extension};
+use super::{Changes, Descriptor, Extension, Settings};
 use crate::descriptions::api::quoted;
 use crate::security::write_secret;
 
@@ -320,7 +320,7 @@ pub struct Status {
 
 pub struct Weather {
     dir: Option<PathBuf>,
-    api: RwLock<Arc<dyn WeatherApi>>,
+    api: Arc<dyn WeatherApi>,
     inner: Mutex<Inner>,
     /// Un seul relevé à la fois.
     poll_lock: Mutex<()>,
@@ -334,7 +334,7 @@ impl Weather {
             .unwrap_or_default();
         Self {
             dir: dir.map(Path::to_path_buf),
-            api: RwLock::new(api),
+            api,
             inner: Mutex::new(Inner {
                 reading: saved.reading,
                 place: saved.place,
@@ -349,11 +349,7 @@ impl Weather {
     }
 
     pub fn api(&self) -> Arc<dyn WeatherApi> {
-        self.api.read().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    pub fn set_api(&self, api: Arc<dyn WeatherApi>) {
-        *self.api.write().unwrap_or_else(|e| e.into_inner()) = api;
+        self.api.clone()
     }
 
     /// Ce que l'API en montre : rien tant que l'extension est éteinte ou sans lieu.
@@ -498,20 +494,16 @@ impl Extension for Weather {
         serde_json::to_value(self.view(enabled, place_of(config).as_ref())).unwrap_or(Value::Null)
     }
 
-    fn start(&self, enabled: bool, config: &Value) {
-        self.reconcile(enabled, place_of(config).as_ref());
+    fn start(&self, settings: &Settings) {
+        self.reconcile(settings.enabled, place_of(settings.config).as_ref());
     }
 
-    fn on_change(&self, enabled: bool, config: &Value) {
-        self.reset(enabled, place_of(config).as_ref());
+    fn on_change(&self, settings: &Settings, _changes: &Changes) {
+        self.reset(settings.enabled, place_of(settings.config).as_ref());
     }
 
-    fn tick(&self, now: f64, enabled: bool, config: &Value) -> bool {
-        self.poll(now, enabled, place_of(config).as_ref())
-    }
-
-    fn set_weather_api(&self, api: Arc<dyn WeatherApi>) {
-        self.set_api(api);
+    fn tick(&self, now: f64, settings: &Settings) -> bool {
+        self.poll(now, settings.enabled, place_of(settings.config).as_ref())
     }
 }
 

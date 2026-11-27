@@ -31,6 +31,8 @@
 //! échoue, les écritures sont refusées plutôt que d'écraser les secrets. Les champs inconnus
 //! (d'une version plus récente) sont conservés à la réécriture.
 
+pub mod overkiz;
+pub mod somfy;
 pub mod weather;
 
 use std::collections::BTreeMap;
@@ -75,31 +77,87 @@ pub struct Descriptor {
 }
 
 /// Les extensions que cette version connaît.
-pub static CATALOG: &[&Descriptor] = &[&weather::DESCRIPTOR];
+pub static CATALOG: &[&Descriptor] = &[&weather::DESCRIPTOR, &somfy::DESCRIPTOR];
 
-/// Le comportement d'une extension. Les méthodes reçoivent l'interrupteur et la configuration
-/// courants ; les secrets se lisent par `Extensions::secret`. Aucune ne doit paniquer.
+/// Les réglages d'une extension à un instant : l'interrupteur, la configuration et les secrets
+/// (lus côté serveur seulement, jamais montrés). Une copie : l'extension n'en garde rien sans le
+/// vouloir.
+pub struct Settings<'a> {
+    pub enabled: bool,
+    pub config: &'a Value,
+    secrets: &'a BTreeMap<String, String>,
+}
+
+impl<'a> Settings<'a> {
+    pub fn new(
+        enabled: bool,
+        config: &'a Value,
+        secrets: &'a BTreeMap<String, String>,
+    ) -> Settings<'a> {
+        Settings {
+            enabled,
+            config,
+            secrets,
+        }
+    }
+
+    /// Un secret déclaré, non vide.
+    pub fn secret(&self, key: &str) -> Option<&str> {
+        self.secrets
+            .get(key)
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
+    }
+}
+
+/// Le comportement d'une extension. Aucune méthode ne doit paniquer.
 pub trait Extension: Send + Sync {
-    /// L'état propre à l'extension, montré dans `View::status` (`null` si rien).
+    /// L'état propre à l'extension, montré dans `View::status` (`null` si rien). **Visible de tous
+    /// les comptes** : jamais d'identifiant, de secret ni d'adresse (la configuration est celle
+    /// qui n'est pas filtrée ; les secrets n'arrivent pas ici).
     fn status(&self, _enabled: bool, _config: &Value) -> Value {
         Value::Null
     }
-    /// Au démarrage du serveur, avant tout tour : remettre l'état d'accord avec la configuration
-    /// gardée (et, pour une extension à sous-processus, le lancer si elle est active).
-    fn start(&self, _enabled: bool, _config: &Value) {}
-    /// Après un changement d'interrupteur, de configuration ou de secret (sous le verrou des
-    /// modifications : deux changements ne s'entrecroisent pas). Pas d'appel réseau long ici.
-    fn on_change(&self, _enabled: bool, _config: &Value) {}
+    /// Au démarrage du serveur, dès `Hub::new` et avant tout tour : remettre l'état d'accord avec
+    /// la configuration gardée. Ne rien lancer qui survive sans `shutdown`.
+    fn start(&self, _settings: &Settings) {}
+    /// Après un changement d'interrupteur, de configuration ou de secret, **sous le verrou des
+    /// modifications** : deux changements ne s'entrecroisent pas, et tout le monde attend. Rien de
+    /// long ici (aucun appel réseau, pas d'attente de fil) : noter, et laisser le prochain `tick`
+    /// (que l'appelant déclenche aussitôt) travailler.
+    fn on_change(&self, _settings: &Settings, _changes: &Changes) {}
     /// Un tour périodique (toutes les 30 s environ, fil dédié) : relever si c'est l'heure. Peut
     /// bloquer quelques secondes. `true` : un appel est parti.
-    fn tick(&self, _now: f64, _enabled: bool, _config: &Value) -> bool {
+    fn tick(&self, _now: f64, _settings: &Settings) -> bool {
         false
     }
-    /// L'arrêt du serveur : arrêter ce qu'elle a lancé (sous-processus).
+    /// L'arrêt du serveur : arrêter ce qu'elle a lancé (fils, sous-processus).
     fn shutdown(&self) {}
-    /// Pour les essais : remplace le client réseau de la météo. Sans effet ailleurs.
-    #[doc(hidden)]
-    fn set_weather_api(&self, _api: Arc<dyn WeatherApi>) {}
+}
+
+/// Les clients réseau des extensions : les vrais (`curl`), ceux de la démonstration (jamais de
+/// réseau) ou, pour les essais, des faux.
+pub struct Apis {
+    pub weather: Arc<dyn WeatherApi>,
+    pub somfy: Arc<dyn overkiz::OverkizApi>,
+}
+
+impl Apis {
+    /// Le vrai Internet : Open-Meteo et le cloud Somfy.
+    pub fn real() -> Self {
+        Self {
+            weather: Arc::new(weather::CurlWeather),
+            somfy: Arc::new(overkiz::CurlOverkiz::default()),
+        }
+    }
+
+    /// La démonstration : aucun appel ne sort de la machine.
+    pub fn demo() -> Self {
+        Self {
+            weather: Arc::new(weather::DemoWeather),
+            somfy: Arc::new(overkiz::DemoOverkiz),
+        }
+    }
 }
 
 fn descriptor(id: &str) -> Option<&'static Descriptor> {
@@ -224,6 +282,7 @@ pub struct Extensions {
     update_lock: Mutex<()>,
     registry: Vec<(&'static Descriptor, Arc<dyn Extension>)>,
     weather: Arc<weather::Weather>,
+    somfy: Arc<somfy::Somfy>,
 }
 
 /// Lit `dir/extensions.json`. Absent : vide. Illisible : journalisé, mis de côté, vide ; si même
@@ -271,25 +330,23 @@ fn load(dir: &std::path::Path) -> (File, bool) {
 impl Extensions {
     /// Ouvre `dir/extensions.json`. Absent ou illisible : tout est éteint (jamais une extension
     /// allumée par erreur).
-    pub fn open(dir: &std::path::Path, weather_api: Arc<dyn WeatherApi>) -> Self {
+    pub fn open(dir: &std::path::Path, apis: Apis) -> Self {
         let (file, read_only) = load(dir);
-        Self::build(Some(dir), file, read_only, weather_api)
+        Self::build(Some(dir), file, read_only, apis)
     }
 
     /// Sans fichier (démonstration, dossier inutilisable).
-    pub fn in_memory(weather_api: Arc<dyn WeatherApi>) -> Self {
-        Self::build(None, File::default(), false, weather_api)
+    pub fn in_memory(apis: Apis) -> Self {
+        Self::build(None, File::default(), false, apis)
     }
 
-    fn build(
-        dir: Option<&std::path::Path>,
-        file: File,
-        read_only: bool,
-        weather_api: Arc<dyn WeatherApi>,
-    ) -> Self {
-        let weather = Arc::new(weather::Weather::new(dir, weather_api));
-        let registry: Vec<(&'static Descriptor, Arc<dyn Extension>)> =
-            vec![(&weather::DESCRIPTOR, weather.clone())];
+    fn build(dir: Option<&std::path::Path>, file: File, read_only: bool, apis: Apis) -> Self {
+        let weather = Arc::new(weather::Weather::new(dir, apis.weather));
+        let somfy = Arc::new(somfy::Somfy::new(dir, apis.somfy));
+        let registry: Vec<(&'static Descriptor, Arc<dyn Extension>)> = vec![
+            (&weather::DESCRIPTOR, weather.clone()),
+            (&somfy::DESCRIPTOR, somfy.clone()),
+        ];
         let this = Self {
             dir: dir.map(PathBuf::from),
             inner: Mutex::new(file),
@@ -297,13 +354,26 @@ impl Extensions {
             update_lock: Mutex::new(()),
             registry,
             weather,
+            somfy,
         };
         // Chaque extension remet son état d'accord avec la configuration gardée.
         for (d, ext) in &this.registry {
-            let (enabled, config) = this.snapshot(d.id);
-            ext.start(enabled, &config);
+            let (enabled, config, secrets) = this.settings_of(d.id);
+            ext.start(&Settings::new(enabled, &config, &secrets));
         }
         this
+    }
+
+    /// L'interrupteur, la configuration et les secrets d'une extension (copie).
+    fn settings_of(&self, id: &str) -> (bool, Value, BTreeMap<String, String>) {
+        let (enabled, config) = self.snapshot(id);
+        let secrets = self
+            .lock()
+            .extensions
+            .get(id)
+            .map(|e| e.secrets.clone())
+            .unwrap_or_default();
+        (enabled, config, secrets)
     }
 
     fn lock(&self) -> MutexGuard<'_, File> {
@@ -480,7 +550,10 @@ impl Extensions {
         // Toujours sous `update_lock` : la configuration et l'état de l'extension restent d'accord.
         if changes != Changes::default() {
             if let Some(ext) = self.instance(id) {
-                ext.on_change(entry.enabled, &entry.config);
+                ext.on_change(
+                    &Settings::new(entry.enabled, &entry.config, &entry.secrets),
+                    &changes,
+                );
             }
         }
         Ok((self.view_of(d, &entry, true), changes))
@@ -491,10 +564,21 @@ impl Extensions {
     pub fn tick(&self, now: f64) -> bool {
         let mut called = false;
         for (d, ext) in &self.registry {
-            let (enabled, config) = self.snapshot(d.id);
-            called |= ext.tick(now, enabled, &config);
+            called |= self.tick_instance(d.id, ext, now);
         }
         called
+    }
+
+    /// Un tour de **cette** extension seulement (après un changement de ses réglages : les autres
+    /// n'ont pas à relever). `false` aussi pour une extension inconnue.
+    pub fn tick_one(&self, id: &str, now: f64) -> bool {
+        self.instance(id)
+            .is_some_and(|ext| self.tick_instance(id, ext, now))
+    }
+
+    fn tick_instance(&self, id: &str, ext: &Arc<dyn Extension>, now: f64) -> bool {
+        let (enabled, config, secrets) = self.settings_of(id);
+        ext.tick(now, &Settings::new(enabled, &config, &secrets))
     }
 
     /// L'arrêt du serveur : chaque extension arrête ce qu'elle a lancé. Appelé après l'arrêt du fil
@@ -530,10 +614,11 @@ impl Extensions {
         (enabled, self.weather.view(enabled, place.as_ref()))
     }
 
-    /// Pour les essais : remplace le client d'Open-Meteo.
-    #[doc(hidden)]
-    pub fn set_weather_api(&self, api: Arc<dyn WeatherApi>) {
-        self.weather.set_api(api);
+    // ---- Somfy -------------------------------------------------------------------------------
+
+    /// L'extension Somfy : ses volets, ses ordres, la liste des appareils du compte.
+    pub fn somfy(&self) -> &Arc<somfy::Somfy> {
+        &self.somfy
     }
 }
 
@@ -570,6 +655,14 @@ mod tests {
         }
     }
 
+    /// Les clients des essais : Somfy est celui de la démonstration (aucun réseau).
+    fn apis(weather: Arc<dyn WeatherApi>) -> Apis {
+        Apis {
+            weather,
+            somfy: Arc::new(overkiz::DemoOverkiz),
+        }
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ostal-ext-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -602,7 +695,7 @@ mod tests {
     #[test]
     fn everything_is_off_by_default_and_calls_nothing() {
         let api = Arc::new(Counting::default());
-        let ext = Extensions::in_memory(api.clone());
+        let ext = Extensions::in_memory(apis(api.clone()));
         let list = ext.list(true);
         assert_eq!(list.len(), CATALOG.len());
         assert!(list.iter().all(|v| !v.enabled));
@@ -624,7 +717,7 @@ mod tests {
     fn enable_configure_poll_then_disable_stops_everything() {
         let dir = temp("cycle");
         let api = Arc::new(Counting::default());
-        let ext = Extensions::open(&dir, api.clone());
+        let ext = Extensions::open(&dir, apis(api.clone()));
         ext.update(weather::ID, on()).unwrap();
         // Sans lieu : rien à relever.
         assert!(!ext.tick(10.0));
@@ -637,7 +730,7 @@ mod tests {
         assert_eq!(status.reading.unwrap().temperature, Some(12.5));
         assert_eq!(api.reads.load(Ordering::SeqCst), 1);
         // Tout survit à un redémarrage, sans nouvel appel.
-        let again = Extensions::open(&dir, api.clone());
+        let again = Extensions::open(&dir, apis(api.clone()));
         assert!(again.is_enabled(weather::ID));
         assert_eq!(again.weather_status().1.reading.unwrap().at, 100.0);
         // Éteindre : le relevé s'efface, plus aucun appel.
@@ -665,13 +758,13 @@ mod tests {
         let dir = temp("offline");
         let api = Arc::new(Counting::default());
         api.offline.store(true, Ordering::SeqCst);
-        let ext = Extensions::open(&dir, api.clone());
+        let ext = Extensions::open(&dir, apis(api.clone()));
         ext.update(weather::ID, on()).unwrap();
         set_place(&ext);
         assert!(ext.tick(10.0));
         assert!(ext.weather_status().1.failing);
 
-        let again = Extensions::open(&dir, api.clone());
+        let again = Extensions::open(&dir, apis(api.clone()));
         api.offline.store(false, Ordering::SeqCst);
         assert!(again.tick(20.0), "un relevé aussitôt");
         assert!(again.weather_status().1.reading.is_some());
@@ -687,7 +780,7 @@ mod tests {
     #[test]
     fn offline_keeps_the_last_value() {
         let api = Arc::new(Counting::default());
-        let ext = Extensions::in_memory(api.clone());
+        let ext = Extensions::in_memory(apis(api.clone()));
         ext.update(weather::ID, on()).unwrap();
         set_place(&ext);
         assert!(ext.tick(0.0));
@@ -704,7 +797,7 @@ mod tests {
 
     #[test]
     fn refused_updates_change_nothing() {
-        let ext = Extensions::in_memory(Arc::new(DemoWeather));
+        let ext = Extensions::in_memory(apis(Arc::new(DemoWeather)));
         let bad = Update {
             enabled: Some(true),
             config: Some(json!({"place": {"name": "X", "latitude": 200, "longitude": 0}})),
@@ -747,7 +840,7 @@ mod tests {
     #[test]
     fn secrets_are_stored_but_never_shown() {
         let dir = temp("secret");
-        let ext = Extensions::open(&dir, Arc::new(DemoWeather));
+        let ext = Extensions::open(&dir, apis(Arc::new(DemoWeather)));
         let mut update = Update::default();
         update
             .secrets
@@ -788,7 +881,7 @@ mod tests {
 
     #[test]
     fn private_config_is_hidden_from_accounts_without_the_right() {
-        let ext = Extensions::in_memory(Arc::new(DemoWeather));
+        let ext = Extensions::in_memory(apis(Arc::new(DemoWeather)));
         let entry = Entry {
             config: json!({"email": "sam@example.org", "autre": 1}),
             ..Entry::default()
@@ -818,7 +911,7 @@ mod tests {
     fn an_unreadable_file_is_set_aside_not_overwritten() {
         let dir = temp("garbage");
         std::fs::write(dir.join(FILE), b"{ pas du json AVEC-UN-SECRET").unwrap();
-        let ext = Extensions::open(&dir, Arc::new(DemoWeather));
+        let ext = Extensions::open(&dir, apis(Arc::new(DemoWeather)));
         assert!(ext.list(true).iter().all(|v| !v.enabled));
         // Le contenu est gardé à côté, rien n'est écrasé, et on peut de nouveau régler.
         let aside: Vec<_> = std::fs::read_dir(&dir)
@@ -839,7 +932,12 @@ mod tests {
         // Un dossier à la place du fichier : illisible, et impossible à renommer vers un nom qui
         // existe déjà comme dossier non vide.
         let dir = temp("readonly");
-        let ext = Extensions::build(Some(&dir), File::default(), true, Arc::new(DemoWeather));
+        let ext = Extensions::build(
+            Some(&dir),
+            File::default(),
+            true,
+            apis(Arc::new(DemoWeather)),
+        );
         assert_eq!(
             ext.update(weather::ID, on()).unwrap_err(),
             UpdateError::Storage
@@ -856,7 +954,7 @@ mod tests {
             br#"{"version":2,"futur":{"x":1},"extensions":{"inconnue":{"enabled":true,"secrets":{"k":"v"},"neuf":7},"weather":{"enabled":false,"champ":"nouveau"}}}"#,
         )
         .unwrap();
-        let ext = Extensions::open(&dir, Arc::new(DemoWeather));
+        let ext = Extensions::open(&dir, apis(Arc::new(DemoWeather)));
         ext.update(weather::ID, on()).unwrap();
         let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
         for kept in ["futur", "inconnue", "\"neuf\"", "\"k\"", "\"champ\""] {
@@ -873,7 +971,7 @@ mod tests {
             br#"{"version":1,"extensions":{"inconnue":{"enabled":true},"weather":{"enabled":true,"config":"n'importe quoi"}}}"#,
         )
         .unwrap();
-        let ext = Extensions::open(&dir, Arc::new(DemoWeather));
+        let ext = Extensions::open(&dir, apis(Arc::new(DemoWeather)));
         // Une configuration illisible vaut « pas de lieu » : activée, mais rien à relever.
         assert!(ext.is_enabled(weather::ID));
         assert!(!ext.tick(1.0));
