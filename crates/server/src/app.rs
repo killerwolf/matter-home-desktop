@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -282,13 +282,15 @@ impl Server {
         if let Some(watcher) = self.wifi_watcher.take() {
             clean &= watcher.stop();
         }
+        // Le backend Matter s'arrête avant les extensions : un appel cloud en cours (Somfy,
+        // météo) ne doit jamais retarder son arrêt propre.
+        if let Some(backend) = self.backend.take() {
+            clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
+        }
         if let Some(watcher) = self.extensions_watcher.take() {
             clean &= watcher.stop();
         }
         self.hub.extensions().shutdown();
-        if let Some(backend) = self.backend.take() {
-            clean &= backend.shutdown(SHUTDOWN_TIMEOUT);
-        }
         if let Some(pump) = self.pump.take() {
             clean &= pump.join().is_ok();
         }
@@ -376,11 +378,25 @@ impl ExtensionsWatcher {
     }
 
     /// Arrête le fil et attend sa fin. `true` : il s'est arrêté sans panique.
+    /// Demande l'arrêt et attend le fil quelques secondes au plus : un tour en plein appel
+    /// cloud est laissé finir seul (son résultat ne sert plus).
     pub fn stop(self) -> bool {
         self.stop.store(true, Ordering::SeqCst);
-        self.thread.join().is_ok()
+        let deadline = Instant::now() + EXTENSIONS_STOP_WAIT;
+        while !self.thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if self.thread.is_finished() {
+            self.thread.join().is_ok()
+        } else {
+            log::warn!("extensions : un appel en cours finira après l'arrêt");
+            true
+        }
     }
 }
+
+/// Attente maximale du fil des extensions à l'arrêt.
+const EXTENSIONS_STOP_WAIT: Duration = Duration::from_secs(3);
 
 /// Lit les événements du backend, les journalise et les donne au hub.
 fn pump_events(rx: mpsc::Receiver<Event>, hub: &Hub, stop: &AtomicBool, fatal: &AtomicBool) {
