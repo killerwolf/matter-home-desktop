@@ -77,7 +77,36 @@ impl Hub {
             declared: Vec::new(),
             mode: None,
         };
-        match self.wifi.observe(now, force) {
+        let observed = self.wifi.observe(now, force);
+        let active_phones = self
+            .wifi
+            .phones()
+            .iter()
+            .filter(|p| people.is_active(&p.user_id))
+            .count();
+        let status = self.wifi.status();
+        let name_of = |id: &str| people.name(id).unwrap_or_else(|| "compte inconnu".into());
+        {
+            let mut journal = self.wifi.journal();
+            if let Some(line) = journal.settings(status.auto_mode, status.linked, active_phones) {
+                log::info!("{line}");
+            }
+            let reason = if !status.auto_mode {
+                Some("interrupteur du mode automatique éteint")
+            } else if !status.linked {
+                Some("pas de box reliée")
+            } else if active_phones == 0 {
+                Some("aucun téléphone associé à un compte actif")
+            } else if matches!(observed, Observed::Frozen(_)) || status.link != Link::Ok {
+                Some("la box ne répond pas, mode figé")
+            } else {
+                None
+            };
+            if let Some(line) = journal.condition(reason) {
+                log::info!("{line}");
+            }
+        }
+        match observed {
             Observed::Fresh => {}
             Observed::Skipped | Observed::Frozen(_) => {
                 report.link = self.wifi.status().link;
@@ -85,10 +114,44 @@ impl Hub {
             }
         }
         report.link = Link::Ok;
+        {
+            let unlisted: Vec<String> = self
+                .wifi
+                .unlisted_phones()
+                .into_iter()
+                .filter(|id| people.is_active(id))
+                .collect();
+            let newly = self.wifi.journal().newly_unlisted(&unlisted);
+            for id in newly {
+                log::info!(
+                    "présence Wi-Fi : le téléphone de {} n'apparaît dans aucun relevé alors que la box répond (nom d'appareil peut-être changé)",
+                    name_of(&id)
+                );
+            }
+        }
         let delay = self.wifi.away_delay_s();
         for (user_id, sighting) in self.wifi.sightings() {
             if !people.is_active(&user_id) {
                 continue;
+            }
+            let seen = match (sighting.active_since, sighting.inactive_since) {
+                (Some(_), _) => Some(true),
+                (None, Some(_)) => Some(false),
+                (None, None) => None,
+            };
+            if let Some(seen) = seen {
+                let changed = self.wifi.journal().phone_seen(&user_id, seen);
+                if changed {
+                    if seen {
+                        log::info!("présence Wi-Fi : téléphone de {} vu", name_of(&user_id));
+                    } else {
+                        log::info!(
+                            "présence Wi-Fi : téléphone de {} plus vu (départ compté après {} min sans le voir)",
+                            name_of(&user_id),
+                            (delay / 60.0).round()
+                        );
+                    }
+                }
             }
             let declared = self.presence.get(&user_id);
             let Some(state) = presence::wifi_vote(declared.as_ref(), &sighting, now, delay) else {
@@ -96,6 +159,16 @@ impl Hub {
             };
             match self.presence.declare_at(&user_id, state, Source::Wifi, now) {
                 Ok(true) => {
+                    log::info!(
+                        "présence Wi-Fi : {} {}",
+                        name_of(&user_id),
+                        match state {
+                            Whereabouts::Home => "est arrivé(e) (téléphone vu)",
+                            Whereabouts::Away => {
+                                "est parti(e) (délai écoulé sans voir le téléphone)"
+                            }
+                        }
+                    );
                     self.audit.record(
                         Entry::new(Action::Presence, &wifi_who(people, &user_id))
                             .target(match state {
@@ -152,18 +225,36 @@ impl Hub {
         };
         // Le départ se décide sous le verrou du mode : quelqu'un d'autre déclaré à la maison (par le
         // Wi-Fi, un raccourci ou l'app) au dernier moment, et la maison n'est pas armée.
-        match self.set_mode_if(
+        let ignored = std::cell::Cell::new(None::<String>);
+        let result = self.set_mode_if(
             |current| {
                 if movement == Movement::LastDeparture
                     && self.someone_else_home("", |id| people.is_active(id))
                 {
+                    ignored.set(Some("une autre personne est encore à la maison".into()));
                     return None;
                 }
-                presence::auto_mode(movement, current)
+                let mode = presence::auto_mode(movement, current);
+                if mode.is_none() {
+                    ignored.set(Some(format!(
+                        "mode {} : la règle ne le change pas",
+                        current.label()
+                    )));
+                }
+                mode
             },
             ModeSource::Presence,
             cause,
-        ) {
+        );
+        if let Some(why) = ignored.take() {
+            log::info!(
+                "présence Wi-Fi : {detail} de {} sans effet sur le mode ({why})",
+                people
+                    .name(user_id)
+                    .unwrap_or_else(|| "compte inconnu".into())
+            );
+        }
+        match result {
             Ok(mode) => mode,
             Err(e) => {
                 log::warn!("mode automatique non appliqué : {e:?}");
