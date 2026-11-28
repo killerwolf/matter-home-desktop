@@ -508,8 +508,13 @@ impl Extensions {
 
     /// Applique une modification. Rien n'est changé si une valeur est refusée ou si le disque
     /// refuse d'écrire. Une modification à la fois, `on_change` de l'extension compris.
-    pub fn update(&self, id: &str, update: Update) -> Result<(View, Changes), UpdateError> {
-        self.update_for(descriptor(id).ok_or(UpdateError::Unknown)?, update)
+    pub fn update(&self, id: &str, mut update: Update) -> Result<(View, Changes), UpdateError> {
+        let d = descriptor(id).ok_or(UpdateError::Unknown)?;
+        if id == bbox::ID {
+            // Une autre adresse sans le mot de passe : il est effacé, jamais envoyé ailleurs.
+            bbox::guard_url_change(&mut update, &self.config(id));
+        }
+        self.update_for(d, update)
     }
 
     fn update_for(

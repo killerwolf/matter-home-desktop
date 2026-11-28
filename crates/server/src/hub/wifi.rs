@@ -1250,6 +1250,33 @@ mod tests {
         assert!(std::fs::read_to_string(sdir.join("extensions.json"))
             .unwrap()
             .contains("bon-mdp-secret"));
+        // Changer l'adresse seule n'envoie jamais le mot de passe gardé vers la nouvelle adresse :
+        // il est effacé, aucun relevé ne part, la page redemande le mot de passe.
+        let calls = fake.calls();
+        let (view, changes) = hub
+            .extensions()
+            .update(
+                bbox::ID,
+                crate::extensions::Update {
+                    config: Some(serde_json::json!({"url": "http://autre-adresse.test"})),
+                    ..crate::extensions::Update::default()
+                },
+            )
+            .unwrap();
+        assert!(changes.config && changes.secrets);
+        assert!(!view.secrets[0].set);
+        assert_eq!(view.status["state"], "unconfigured");
+        let crew = Crew::new(&[("sam", "Sam")]);
+        hub.wifi_poll_at(crate::security::now() + 500.0, &crew, true);
+        assert_eq!(fake.calls(), calls, "aucun appel vers la nouvelle adresse");
+        assert!(!hub.wifi().status().linked);
+        assert!(!std::fs::read_to_string(sdir.join("extensions.json"))
+            .unwrap()
+            .contains("bon-mdp-secret"));
+        // Adresse et mot de passe ensemble : accepté.
+        hub.wifi_link("http://box.test", "bon-mdp-secret", &who)
+            .unwrap();
+        assert!(hub.wifi().status().linked);
         // Délier : mot de passe effacé, extension éteinte, plus de box.
         hub.wifi_unlink(&who).unwrap();
         assert!(!hub.wifi().status().linked);

@@ -1951,6 +1951,7 @@ function renderBboxPage(body, view) {
   url.value = view.config.url;
   label.appendChild(url);
   body.appendChild(label);
+  body.appendChild(make("small", "w-note", "Changer l'adresse efface le mot de passe gardé (il ne part jamais vers une autre adresse) : saisissez-le de nouveau juste après."));
   const save = make("button", "btn", "Enregistrer l'adresse");
   save.type = "button";
   save.disabled = extUi.busy;

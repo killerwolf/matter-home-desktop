@@ -16,7 +16,8 @@ présence ») reste dans le cœur d'Ostal Server, qui lit la box par une interfa
 connaît aucune marque. Une SFR Box ou une Freebox s'ajouteront en écrivant leur extension, sans
 toucher au cœur. **Sans extension de box activée**, aucun relevé ne part, la présence ne suit que les
 raccourcis « Je pars » et « Je rentre », et `serveur.log` le dit (« aucune extension de box activée »).
-La Bbox reste sur le réseau de la maison : rien ne sort vers Internet.
+La Bbox reste sur le réseau de la maison : rien ne sort vers Internet. Changer l'adresse de la box
+**efface le mot de passe gardé** (il faut le redonner) : il ne part jamais vers une autre adresse.
 
 **Reprise des anciens réglages** (première version avec les extensions) : l'adresse et le mot de
 passe qui étaient dans `serveur/box.json` sont repris, au premier démarrage, dans l'extension Bbox

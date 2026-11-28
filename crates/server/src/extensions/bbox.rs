@@ -265,6 +265,20 @@ fn normalize(value: &Value) -> Result<Value, &'static str> {
     Ok(json!({ "url": url }))
 }
 
+/// Changer l'adresse de la box **sans redonner le mot de passe** efface le mot de passe : sinon un
+/// compte qui règle les extensions enverrait le mot de passe d'administration gardé vers n'importe
+/// quelle adresse. Appelée par `Extensions::update` avant l'écriture ; sans effet quand l'adresse
+/// ne change pas ou quand le mot de passe est donné avec elle (reprise de `box.json`, `wifi_link`).
+pub fn guard_url_change(update: &mut super::Update, current: &Value) {
+    let Some(new) = update.config.as_ref().and_then(|c| normalize(c).ok()) else {
+        return; // refusée plus loin, rien n'est changé
+    };
+    let old = normalize(current).unwrap_or_else(|_| json!({ "url": DEFAULT_URL }));
+    if new != old && !update.secrets.contains_key(PASSWORD) {
+        update.secrets.insert(PASSWORD.to_string(), None);
+    }
+}
+
 /// L'état de santé du dernier relevé.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Health {
@@ -667,6 +681,42 @@ mod tests {
         ] {
             assert!(normalize(&bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_new_address_without_the_password_wipes_the_stored_password() {
+        use super::super::Update;
+        let current = json!({"url": "http://192.168.1.254"});
+        let url = |u: &str| Update {
+            config: Some(json!({ "url": u })),
+            ..Update::default()
+        };
+        // Même adresse (même écrite autrement) : rien à effacer.
+        let mut same = url(" http://192.168.1.254/ ");
+        guard_url_change(&mut same, &current);
+        assert!(same.secrets.is_empty());
+        // Autre adresse : le mot de passe gardé est effacé.
+        let mut other = url("http://autre.example");
+        guard_url_change(&mut other, &current);
+        assert_eq!(other.secrets.get(PASSWORD), Some(&None));
+        // Adresse par défaut quand rien n'était réglé : même adresse.
+        let mut default = url("");
+        guard_url_change(&mut default, &json!({}));
+        assert!(default.secrets.is_empty());
+        // Avec un mot de passe donné en même temps, on ne touche à rien.
+        let mut both = url("http://autre.example");
+        both.secrets.insert(PASSWORD.into(), Some("nouveau".into()));
+        guard_url_change(&mut both, &current);
+        assert_eq!(
+            both.secrets.get(PASSWORD),
+            Some(&Some("nouveau".to_string()))
+        );
+        // Sans changement de configuration, ou configuration refusée : rien.
+        let mut none = Update::default();
+        guard_url_change(&mut none, &current);
+        let mut bad = url("ftp://box");
+        guard_url_change(&mut bad, &current);
+        assert!(none.secrets.is_empty() && bad.secrets.is_empty());
     }
 
     #[test]
