@@ -19,12 +19,20 @@ pub struct Journal {
 
 impl Journal {
     /// L'état de la fonction : une ligne au premier relevé, puis à chaque changement de réglage.
-    pub fn settings(&mut self, auto_mode: bool, linked: bool, phones: usize) -> Option<String> {
+    pub fn settings(
+        &mut self,
+        auto_mode: bool,
+        connector: Option<&str>,
+        phones: usize,
+    ) -> Option<String> {
         let plural = if phones > 1 { "s" } else { "" };
         let line = format!(
-            "présence Wi-Fi : mode automatique {}, box {}, {phones} téléphone{plural} associé{plural} à un compte actif",
+            "présence Wi-Fi : mode automatique {}, {}, {phones} téléphone{plural} associé{plural} à un compte actif",
             if auto_mode { "allumé" } else { "éteint" },
-            if linked { "reliée" } else { "non reliée" },
+            match connector {
+                Some(name) => format!("box reliée par l'extension {name}"),
+                None => "aucune extension de box activée".to_string(),
+            },
         );
         (self.settings.as_deref() != Some(&line)).then(|| {
             self.settings = Some(line.clone());
@@ -73,15 +81,17 @@ mod tests {
     #[test]
     fn settings_once_until_they_change() {
         let mut j = Journal::default();
-        let first = j.settings(false, true, 2).unwrap();
+        let first = j.settings(false, Some("Bbox"), 2).unwrap();
         assert!(
-            first.contains("éteint") && first.contains("reliée") && first.contains("2 téléphones")
+            first.contains("éteint")
+                && first.contains("reliée par l'extension Bbox")
+                && first.contains("2 téléphones")
         );
-        assert!(j.settings(false, true, 2).is_none());
-        assert!(j.settings(false, true, 2).is_none());
-        let on = j.settings(true, true, 2).unwrap();
+        assert!(j.settings(false, Some("Bbox"), 2).is_none());
+        assert!(j.settings(false, Some("Bbox"), 2).is_none());
+        let on = j.settings(true, Some("Bbox"), 2).unwrap();
         assert!(on.contains("allumé"));
-        assert!(j.settings(true, true, 2).is_none());
+        assert!(j.settings(true, Some("Bbox"), 2).is_none());
     }
 
     #[test]
@@ -91,12 +101,18 @@ mod tests {
         for _ in 0..5 {
             assert!(j.condition(Some("interrupteur éteint")).is_none());
         }
-        let l = j.condition(Some("pas de box reliée")).unwrap();
-        assert!(l.contains("pas de box reliée"));
-        assert!(j.condition(Some("pas de box reliée")).is_none());
+        let l = j
+            .condition(Some("aucune extension de box activée"))
+            .unwrap();
+        assert!(l.contains("aucune extension de box activée"));
+        assert!(j
+            .condition(Some("aucune extension de box activée"))
+            .is_none());
         assert!(j.condition(None).unwrap().contains("s'applique"));
         assert!(j.condition(None).is_none());
-        assert!(j.condition(Some("pas de box reliée")).is_some());
+        assert!(j
+            .condition(Some("aucune extension de box activée"))
+            .is_some());
     }
 
     #[test]

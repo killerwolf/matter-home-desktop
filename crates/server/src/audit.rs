@@ -849,6 +849,7 @@ pub fn describe(entry: &Entry) -> (Tone, String) {
             "linked" => "Box de la maison reliée".to_string(),
             "unlinked" => "Box de la maison déliée".to_string(),
             "password" => "Mot de passe de la box changé".to_string(),
+            "refused" => "La box a refusé le mot de passe".to_string(),
             "auto_on" => "Mode automatique selon la présence activé".to_string(),
             "auto_off" => "Mode automatique selon la présence désactivé".to_string(),
             "delay" => format!("Délai avant de compter un départ réglé sur {target} min"),

@@ -2,7 +2,7 @@
 // Les phrases de la météo extérieure et des extensions.
 import assert from "node:assert/strict";
 import {
-  errorText, placeConfig, readingParts, searchable, somfyChoices, somfyConfig, somfyExposedAfter, somfyKindLabel,
+  BOX_ON_THE_MAC, bboxStatusText, errorText, placeConfig, readingParts, searchable, somfyChoices, somfyConfig, somfyExposedAfter, somfyKindLabel,
   somfyLastError, somfyStatusText, somfySyncedText, weatherCard, weatherStatusText,
 } from "./extensions.js";
 
@@ -91,4 +91,20 @@ console.log("extensions.test.mjs : ok");
   assert.deepEqual(somfyConfig(undefined, undefined), { email: "", exposed: null });
   assert.match(somfySyncedText(choices), /^Liste lue chez Somfy à \d\d:\d\d\.$/);
   assert.equal(somfySyncedText({ devices: [] }), null);
+}
+
+// Bbox : l'état de la box en une phrase, sans adresse ni mot de passe.
+{
+  const view = (state, extra = {}) => ({ status: { state, ...extra } });
+  assert.match(bboxStatusText(view("off")), /^Désactivée/);
+  assert.match(bboxStatusText(view("unconfigured")), /mot de passe de la box manque/);
+  assert.match(bboxStatusText(view("waiting")), /Premier relevé/);
+  assert.match(bboxStatusText(view("unreachable")), /figée/);
+  assert.match(bboxStatusText(view("refused")), /refuse le mot de passe/);
+  assert.match(bboxStatusText(view("legacy")), /Ancien réglage/);
+  assert.match(bboxStatusText(view("ok", { devices: 0 })), /aucun appareil actif/);
+  assert.match(bboxStatusText(view("ok", { devices: 1 })), /1 appareil actif sur/);
+  assert.match(bboxStatusText(view("ok", { devices: 6, last_ok: at })), /6 appareils actifs sur le Wi-Fi \(relevé à \d\d:\d\d\)/);
+  assert.equal(bboxStatusText(null), "");
+  assert.match(BOX_ON_THE_MAC, /Ostal Server, sur le Mac$/);
 }

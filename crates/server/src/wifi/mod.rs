@@ -1,32 +1,36 @@
-//! La présence par le Wi-Fi de la box : Ostal Server se relie à la Bbox avec son mot de passe
-//! d'administration, relève périodiquement les appareils actifs, et sait quel téléphone appartient
-//! à quel compte. La décision (qui est à la maison, quel mode prendre) est dans `presence.rs` ; le
+//! La présence par le Wi-Fi de la box : Ostal Server relève périodiquement les appareils actifs de
+//! la box de la maison et sait quel téléphone appartient à quel compte. La box elle-même (adresse,
+//! mot de passe, dialogue avec la marque) vient d'une **extension** (aujourd'hui « Bbox »,
+//! `extensions/bbox.rs`) que ce module lit par le trait [`connector::BoxConnector`] ; il ne connaît
+//! aucune marque. La décision (qui est à la maison, quel mode prendre) est dans `presence.rs` ; le
 //! relevé et la règle de combinaison sont dans `hub/wifi.rs`.
 //!
-//! Fichiers, dans `serveur/` (jamais exporté) :
-//! - `box.json` (0600) : l'adresse de la box, **son mot de passe** (jamais affiché, jamais
-//!   journalisé, jamais exporté), l'interrupteur « Changer le mode de la maison selon la présence »
-//!   (**désactivé** par défaut) et le délai avant de compter un départ ;
+//! Fichiers, dans `serveur/` (jamais exportés) :
+//! - `box.json` (0600) : l'interrupteur « Changer le mode de la maison selon la présence »
+//!   (**désactivé** par défaut) et le délai avant de compter un départ. Les anciennes versions y
+//!   gardaient aussi l'adresse et le mot de passe de la box : `migration.rs` les reprend dans
+//!   `extensions.json` au premier démarrage ;
 //! - `telephones.json` (0600) : quel compte a quel téléphone (le **nom** de l'appareil, jamais son
 //!   adresse MAC ni son IP).
 //!
-//! Sûreté : tant que la box ne répond pas, ou refuse le mot de passe, rien n'est conclu : le mode
-//! de la maison est figé, et un mot de passe refusé n'est plus rejoué (la box pourrait bloquer
-//! l'accès) avant qu'on en donne un autre.
+//! Sûreté : sans extension de box activée, ou tant que la box ne répond pas ou refuse le mot de
+//! passe, rien n'est conclu : le mode de la maison est figé, et un mot de passe refusé n'est plus
+//! rejoué (la box pourrait bloquer l'accès) avant qu'on en donne un autre.
 
-pub mod bbox;
+pub mod connector;
 pub mod journal;
+pub mod migration;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::presence::Sighting;
 use crate::security::write_secret;
-use bbox::{BoxApi, BoxError, Host};
+use connector::{BoxConnector, BoxError, Host};
 
 pub const CONFIG_FILE: &str = "box.json";
 pub const PHONES_FILE: &str = "telephones.json";
@@ -50,14 +54,17 @@ pub enum Link {
     Refused,
 }
 
-/// Les réglages de la box. `Debug` n'en montre jamais le mot de passe.
+/// Les réglages de la présence (`box.json`). `Debug` n'en montre jamais le mot de passe.
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
     #[serde(default)]
     version: u32,
-    #[serde(default)]
+    /// Ancien réglage de la box (avant les extensions), repris par `migration.rs`. Gardé tel quel à
+    /// la réécriture tant que la reprise n'a pas réussi : changer l'interrupteur ne doit jamais
+    /// faire perdre le mot de passe.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     password: String,
     /// « Changer le mode de la maison selon la présence » : désactivé tant qu'on ne l'a pas dit.
     #[serde(default)]
@@ -85,16 +92,43 @@ impl Default for Config {
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
-            .field("url", &self.url)
             .field("password", &"<secret>")
             .field("auto_mode", &self.auto_mode)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
-impl Config {
-    fn linked(&self) -> bool {
-        !self.url.is_empty() && !self.password.is_empty()
+/// La phrase qui dit qu'un réglage n'a pas pu être enregistré.
+pub const STORAGE_ERROR: &str = "Le réglage n'a pas pu être enregistré.";
+
+/// Pourquoi la box n'a pas pu être reliée (`Hub::wifi_link`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkError {
+    BadUrl,
+    /// Mot de passe vide, trop long ou invalide : la box n'a pas été appelée.
+    BadPassword,
+    /// Trop d'essais après un refus : la box n'a pas été appelée.
+    TooSoon(&'static str),
+    Refused,
+    Unreachable,
+    Storage,
+}
+
+impl LinkError {
+    /// La phrase qui le dit à l'administrateur.
+    pub fn message(self) -> &'static str {
+        match self {
+            LinkError::BadUrl => "Adresse de la box invalide.",
+            LinkError::BadPassword => {
+                "Mot de passe trop long ou invalide (la box n'a pas été appelée)."
+            }
+            LinkError::TooSoon(why) => why,
+            LinkError::Refused => "La box a refusé ce mot de passe.",
+            LinkError::Unreachable => {
+                "La box ne répond pas. Vérifiez que ce Mac est sur le Wi-Fi de la maison."
+            }
+            LinkError::Storage => STORAGE_ERROR,
+        }
     }
 }
 
@@ -112,29 +146,6 @@ struct PhonesFile {
     version: u32,
     #[serde(default)]
     phones: Vec<PhoneLink>,
-}
-
-/// Pourquoi la box n'a pas pu être reliée.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkError {
-    BadUrl,
-    Refused,
-    Unreachable,
-    Storage,
-}
-
-impl LinkError {
-    /// La phrase qui le dit à l'administrateur.
-    pub fn message(self) -> &'static str {
-        match self {
-            LinkError::BadUrl => "Adresse de la box invalide.",
-            LinkError::Refused => "La box a refusé ce mot de passe.",
-            LinkError::Unreachable => {
-                "La box ne répond pas. Vérifiez que ce Mac est sur le Wi-Fi de la maison."
-            }
-            LinkError::Storage => "Le réglage n'a pas pu être enregistré.",
-        }
-    }
 }
 
 /// Pourquoi un téléphone n'a pas pu être attribué.
@@ -159,11 +170,17 @@ struct Inner {
     last_poll: Option<f64>,
     /// Ce qu'on a vu de chaque téléphone relié (clé : nom en minuscules).
     sightings: HashMap<String, Sighting>,
+    /// Le connecteur (identifiant, génération) dont viennent `hosts` et `sightings` : s'il change
+    /// (autre box, autre mot de passe, extension éteinte), on repart de zéro.
+    bound: Option<(&'static str, u64)>,
+    /// La reprise des anciens réglages de la box a échoué au démarrage : dit dans le journal.
+    notice: Option<String>,
 }
 
 /// Ce que le relevé a rendu.
 pub enum Observed {
-    /// Pas de box reliée, un relevé trop rapproché, ou un mot de passe refusé qu'on ne rejoue pas.
+    /// Pas d'extension de box activée, un relevé trop rapproché, ou un mot de passe refusé qu'on ne
+    /// rejoue pas.
     Skipped,
     /// La box n'a pas répondu comme il faut : **rien n'est conclu**, le mode est figé.
     Frozen(Link),
@@ -173,10 +190,14 @@ pub enum Observed {
 
 pub struct Wifi {
     dir: Option<PathBuf>,
-    api: Box<dyn BoxApi>,
+    /// Les connecteurs de box que cette version connaît (`Extensions::box_connectors`) : le
+    /// premier qui est prêt (extension activée et complète) sert.
+    connectors: Vec<Arc<dyn BoxConnector>>,
     inner: Mutex<Inner>,
     /// Un seul relevé à la fois.
     poll_lock: Mutex<()>,
+    /// Les copies de l'ancien `box.json` ont déjà été supprimées (ou cherchées) depuis le démarrage.
+    copies_checked: std::sync::atomic::AtomicBool,
     /// Ce que le journal a déjà dit (une ligne seulement quand quelque chose change).
     journal: Mutex<journal::Journal>,
 }
@@ -184,7 +205,10 @@ pub struct Wifi {
 /// Une vue pour l'administrateur : ce qu'on sait de la liaison.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Status {
+    /// Une extension de box est activée et complète.
     pub linked: bool,
+    /// Le nom de cette box (« Bbox »), quand `linked`.
+    pub connector: Option<&'static str>,
     pub link: Link,
     pub auto_mode: bool,
     /// Appareils vus actifs au dernier relevé (tous types).
@@ -194,46 +218,44 @@ pub struct Status {
 }
 
 impl Wifi {
-    /// Ouvre `dir/box.json` et `dir/telephones.json` (absents : pas de box, aucun téléphone,
-    /// interrupteur désactivé). Un fichier illisible est mis de côté : on repart sans box, jamais
-    /// avec le mode automatique.
-    pub fn open(dir: &Path, api: Box<dyn BoxApi>) -> Self {
+    /// Ouvre `dir/box.json` et `dir/telephones.json` (absents : aucun téléphone, interrupteur
+    /// désactivé). Un fichier illisible est mis de côté : on repart avec l'interrupteur éteint,
+    /// jamais avec le mode automatique. À ouvrir **après** `migration::run` (voir `Hub::new`).
+    pub fn open(dir: &Path, connectors: Vec<Arc<dyn BoxConnector>>) -> Self {
         let config = load::<Config>(&dir.join(CONFIG_FILE)).unwrap_or_default();
         let phones = load::<PhonesFile>(&dir.join(PHONES_FILE))
             .map(|f| f.phones)
             .unwrap_or_default();
-        Self::build(Some(dir.to_path_buf()), api, config, phones)
+        Self::build(Some(dir.to_path_buf()), connectors, config, phones)
     }
 
     /// Sans fichier (démonstration, dossier inutilisable).
-    pub fn in_memory(api: Box<dyn BoxApi>) -> Self {
-        Self::build(None, api, Config::default(), Vec::new())
+    pub fn in_memory(connectors: Vec<Arc<dyn BoxConnector>>) -> Self {
+        Self::build(None, connectors, Config::default(), Vec::new())
     }
 
     fn build(
         dir: Option<PathBuf>,
-        api: Box<dyn BoxApi>,
+        connectors: Vec<Arc<dyn BoxConnector>>,
         config: Config,
         phones: Vec<PhoneLink>,
     ) -> Self {
-        let link = if config.linked() {
-            Link::Unreachable
-        } else {
-            Link::None
-        };
         Self {
             dir,
-            api,
+            connectors,
             inner: Mutex::new(Inner {
                 config,
                 phones,
-                link,
+                link: Link::Unreachable,
                 hosts: Vec::new(),
                 last_ok: None,
                 last_poll: None,
                 sightings: HashMap::new(),
+                bound: None,
+                notice: None,
             }),
             poll_lock: Mutex::new(()),
+            copies_checked: std::sync::atomic::AtomicBool::new(false),
             journal: Mutex::new(journal::Journal::default()),
         }
     }
@@ -268,14 +290,37 @@ impl Wifi {
 
     // ---- réglages ------------------------------------------------------------------------------
 
+    /// Le connecteur de box qui sert : le premier dont l'extension est activée et complète.
+    fn active(&self) -> Option<&Arc<dyn BoxConnector>> {
+        self.connectors.iter().find(|c| c.ready())
+    }
+
+    /// Ce qu'on a relevé vient-il bien du connecteur actif, dans ses réglages d'aujourd'hui ?
+    fn fresh(&self, st: &Inner) -> bool {
+        self.active()
+            .is_some_and(|c| st.bound == Some((c.id(), c.generation())))
+    }
+
     pub fn status(&self) -> Status {
         let st = self.lock();
+        let active = self.active();
+        let fresh = self.fresh(&st);
         Status {
-            linked: st.config.linked(),
-            link: st.link,
+            linked: active.is_some(),
+            connector: active.map(|c| c.name()),
+            link: match active {
+                None => Link::None,
+                // Les réglages ont changé depuis le dernier relevé : rien n'est confirmé.
+                Some(_) if !fresh => Link::Unreachable,
+                Some(_) => st.link,
+            },
             auto_mode: st.config.auto_mode,
-            active_hosts: st.hosts.iter().filter(|h| h.active).count(),
-            last_ok: st.last_ok,
+            active_hosts: if fresh {
+                st.hosts.iter().filter(|h| h.active).count()
+            } else {
+                0
+            },
+            last_ok: if fresh { st.last_ok } else { None },
             away_delay_min: st.config.away_delay_min,
         }
     }
@@ -283,6 +328,59 @@ impl Wifi {
     /// La mémoire du journal de présence (voir [`journal::Journal`]).
     pub fn journal(&self) -> MutexGuard<'_, journal::Journal> {
         self.journal.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Retire l'adresse et le mot de passe hérités de `box.json` (la box est déliée) : sans cela, au
+    /// redémarrage, la reprise (ou le secours) rallumerait la box. Le reste du fichier est gardé.
+    pub fn clear_legacy(&self) -> Result<(), &'static str> {
+        let mut st = self.lock();
+        if st.config.url.is_empty() && st.config.password.is_empty() {
+            return Ok(());
+        }
+        let mut config = st.config.clone();
+        config.url.clear();
+        config.password.clear();
+        self.save_config(&config).map_err(|e| {
+            log::error!("réglage non enregistré : {e:#}");
+            STORAGE_ERROR
+        })?;
+        st.config = config;
+        Ok(())
+    }
+
+    /// L'ancienne box de `box.json` (adresse, mot de passe), quand la reprise dans l'extension n'a
+    /// pas pu se faire : la box reste alors lue comme avant (`Bbox::use_legacy`).
+    pub fn legacy_box(&self) -> Option<(String, String)> {
+        let st = self.lock();
+        (!st.config.url.is_empty() && !st.config.password.is_empty())
+            .then(|| (st.config.url.clone(), st.config.password.clone()))
+    }
+
+    /// Un relevé vient de réussir : la reprise des anciens réglages (`migration.rs`) est confirmée,
+    /// les copies de l'ancien `box.json` (qui portent l'ancien mot de passe) sont supprimées. Une
+    /// fois par démarrage, et jamais quand la reprise a échoué (la box est alors lue d'après
+    /// `box.json`, qu'il faut garder).
+    pub fn confirm_takeover(&self) {
+        use std::sync::atomic::Ordering;
+        if self.copies_checked.swap(true, Ordering::SeqCst) || self.legacy_box().is_some() {
+            return;
+        }
+        if let Some(dir) = &self.dir {
+            let n = migration::remove_copies(dir);
+            if n > 0 {
+                log::info!("extension Bbox : reprise confirmée par un relevé, {n} copie(s) de l'ancien box.json supprimée(s)");
+            }
+        }
+    }
+
+    /// Une phrase pour le journal : pourquoi la box n'est pas reliée alors qu'elle devrait l'être
+    /// (la reprise des anciens réglages a échoué).
+    pub fn set_notice(&self, notice: Option<String>) {
+        self.lock().notice = notice;
+    }
+
+    pub fn notice(&self) -> Option<String> {
+        self.lock().notice.clone()
     }
 
     /// Les comptes dont le téléphone associé n'est dans aucun relevé de la box (même inactif) :
@@ -300,64 +398,6 @@ impl Wifi {
             .collect()
     }
 
-    /// L'adresse de la box reliée (pour la montrer à l'administrateur ; jamais le mot de passe).
-    pub fn url(&self) -> Option<String> {
-        let st = self.lock();
-        st.config.linked().then(|| st.config.url.clone())
-    }
-
-    /// Relie la box : l'adresse est contrôlée, le mot de passe est **essayé** (une liste doit
-    /// revenir) avant d'être gardé. Rien n'est enregistré si la box refuse ou ne répond pas.
-    pub fn link(&self, url: &str, password: &str) -> Result<(), LinkError> {
-        let url = bbox::check_url(url).map_err(|_| LinkError::BadUrl)?;
-        if password.is_empty() || password.len() > 200 || password.chars().any(char::is_control) {
-            return Err(LinkError::Refused);
-        }
-        let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.api.reset();
-        let hosts = self.api.hosts(&url, password).map_err(|e| match e {
-            BoxError::Refused => LinkError::Refused,
-            BoxError::Unreachable => LinkError::Unreachable,
-        })?;
-        let mut st = self.lock();
-        let mut config = st.config.clone();
-        config.url = url;
-        config.password = password.to_string();
-        config.version = 1;
-        self.save_config(&config).map_err(|e| {
-            log::error!("réglages de la box non enregistrés : {e:#}");
-            LinkError::Storage
-        })?;
-        st.config = config;
-        st.link = Link::Ok;
-        st.hosts = hosts;
-        st.last_ok = Some(crate::security::now());
-        st.last_poll = st.last_ok;
-        st.sightings.clear();
-        Ok(())
-    }
-
-    /// Délie la box : le mot de passe est effacé. Les téléphones attribués restent, et
-    /// l'interrupteur du mode automatique aussi (il marche avec les seuls raccourcis).
-    pub fn unlink(&self) -> Result<(), LinkError> {
-        let _poll = self.poll_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.api.reset();
-        let mut st = self.lock();
-        let mut config = st.config.clone();
-        config.url.clear();
-        config.password.clear();
-        self.save_config(&config).map_err(|e| {
-            log::error!("réglages de la box non enregistrés : {e:#}");
-            LinkError::Storage
-        })?;
-        st.config = config;
-        st.link = Link::None;
-        st.hosts.clear();
-        st.last_ok = None;
-        st.sightings.clear();
-        Ok(())
-    }
-
     /// L'interrupteur « Changer le mode de la maison selon la présence ». Il peut être allumé sans
     /// box : la règle ne s'appuie alors que sur les raccourcis « Je pars » et « Je rentre ».
     pub fn set_auto_mode(&self, on: bool) -> Result<(), &'static str> {
@@ -366,7 +406,7 @@ impl Wifi {
         config.auto_mode = on;
         self.save_config(&config).map_err(|e| {
             log::error!("réglage non enregistré : {e:#}");
-            LinkError::Storage.message()
+            STORAGE_ERROR
         })?;
         st.config = config;
         Ok(())
@@ -379,7 +419,7 @@ impl Wifi {
         config.away_delay_min = minutes.min(240);
         self.save_config(&config).map_err(|e| {
             log::error!("réglage non enregistré : {e:#}");
-            LinkError::Storage.message()
+            STORAGE_ERROR
         })?;
         st.config = config;
         Ok(())
@@ -395,7 +435,10 @@ impl Wifi {
     /// Relève la box à la date `now` (secondes Unix) et met à jour ce qu'on a vu de chaque
     /// téléphone relié. Bloquant.
     ///
-    /// - Pas de box, ou mot de passe déjà refusé : rien (on ne rejoue pas un mot de passe refusé) ;
+    /// - Aucune extension de box prête, ou mot de passe déjà refusé : rien (on ne rejoue pas un mot
+    ///   de passe refusé) ;
+    /// - les réglages de l'extension ont changé depuis le dernier relevé : on repart de zéro (liste,
+    ///   absences en cours de comptage) ;
     /// - la box ne répond pas, refuse, ou n'annonce aucun appareil actif (une liste vide serait lue
     ///   « personne à la maison ») : `Frozen`, et les absences en cours de comptage repartent de zéro ;
     /// - sinon la liste est gardée.
@@ -405,9 +448,31 @@ impl Wifi {
         let Ok(_poll) = self.poll_lock.try_lock() else {
             return Observed::Skipped;
         };
-        let (url, password) = {
-            let st = self.lock();
-            if !st.config.linked() || st.link == Link::Refused {
+        let Some(connector) = self.active().cloned() else {
+            // Plus d'extension de box : on n'a plus rien de valable en mémoire.
+            let mut st = self.lock();
+            if st.bound.take().is_some() {
+                st.hosts.clear();
+                st.sightings.clear();
+                st.last_ok = None;
+                st.last_poll = None;
+            }
+            st.link = Link::None;
+            return Observed::Skipped;
+        };
+        let key = (connector.id(), connector.generation());
+        {
+            let mut st = self.lock();
+            if st.bound != Some(key) {
+                // Une autre box, un autre mot de passe : l'ancien relevé ne vaut plus.
+                st.bound = Some(key);
+                st.hosts.clear();
+                st.sightings.clear();
+                st.last_ok = None;
+                st.last_poll = None;
+                st.link = Link::Unreachable;
+            }
+            if st.link == Link::Refused {
                 return Observed::Skipped;
             }
             if !force
@@ -417,12 +482,11 @@ impl Wifi {
             {
                 return Observed::Skipped;
             }
-            (st.config.url.clone(), st.config.password.clone())
-        };
-        let result = self.api.hosts(&url, &password);
+        }
+        let result = connector.hosts();
         let mut st = self.lock();
-        // La box a pu être déliée ou son mot de passe changé pendant la requête.
-        if !st.config.linked() || st.config.url != url || st.config.password != password {
+        // Les réglages ont pu changer (extension éteinte, mot de passe changé) pendant la requête.
+        if st.bound != Some(key) || connector.generation() != key.1 {
             return Observed::Skipped;
         }
         st.last_poll = Some(now);
@@ -473,15 +537,6 @@ impl Wifi {
         Observed::Frozen(failure)
     }
 
-    /// Change le mot de passe de la box (et relance les relevés si le précédent était refusé).
-    pub fn change_password(&self, password: &str) -> Result<(), LinkError> {
-        let url = self.lock().config.url.clone();
-        if url.is_empty() {
-            return Err(LinkError::Unreachable);
-        }
-        self.link(&url, password)
-    }
-
     /// Rend, pour chaque téléphone relié, ce qu'on en a vu (clé : identifiant du compte).
     pub fn sightings(&self) -> Vec<(String, Sighting)> {
         let st = self.lock();
@@ -521,10 +576,12 @@ impl Wifi {
 
     /// Ce téléphone est-il vu actif au dernier relevé ?
     pub fn is_seen(&self, host: &str) -> bool {
-        self.lock()
-            .hosts
-            .iter()
-            .any(|h| h.active && h.name.eq_ignore_ascii_case(host))
+        let st = self.lock();
+        self.fresh(&st)
+            && st
+                .hosts
+                .iter()
+                .any(|h| h.active && h.name.eq_ignore_ascii_case(host))
     }
 
     /// Les noms des appareils connus de la box, sans propriétaire : ceux qui sont sur le Wi-Fi en
@@ -533,10 +590,10 @@ impl Wifi {
     /// l'administrateur voit tout).
     pub fn free_hosts(&self, phones_only: bool) -> Vec<String> {
         let st = self.lock();
-        let mut hosts: Vec<&bbox::Host> = st
-            .hosts
+        let known: &[Host] = if self.fresh(&st) { &st.hosts } else { &[] };
+        let mut hosts: Vec<&connector::Host> = known
             .iter()
-            .filter(|h| !phones_only || bbox::looks_like_phone(&h.name))
+            .filter(|h| !phones_only || connector::looks_like_phone(&h.name))
             .filter(|h| {
                 !st.phones
                     .iter()
@@ -563,7 +620,7 @@ impl Wifi {
         match host {
             None => phones.retain(|p| p.user_id != user_id),
             Some(name) => {
-                let name = bbox::clean_name(name);
+                let name = connector::clean_name(name);
                 if current
                     .as_ref()
                     .is_some_and(|p| p.host.eq_ignore_ascii_case(&name))
@@ -573,11 +630,11 @@ impl Wifi {
                 if phones.iter().any(|p| p.host.eq_ignore_ascii_case(&name)) {
                     return Err(AssignError::Taken);
                 }
-                let free = st
-                    .hosts
+                let known: &[Host] = if self.fresh(&st) { &st.hosts } else { &[] };
+                let free = known
                     .iter()
                     .find(|h| h.name.eq_ignore_ascii_case(&name))
-                    .filter(|h| !phones_only || bbox::looks_like_phone(&h.name))
+                    .filter(|h| !phones_only || connector::looks_like_phone(&h.name))
                     .map(|h| h.name.clone())
                     .ok_or(AssignError::NotFree)?;
                 phones.retain(|p| p.user_id != user_id);
@@ -620,27 +677,5 @@ fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
             let _ = std::fs::rename(path, aside);
             None
         }
-    }
-}
-
-/// Une box de démonstration : quelques téléphones, sans réseau (`--demo` ne sort jamais de la boucle
-/// locale).
-pub struct DemoBox;
-
-impl BoxApi for DemoBox {
-    fn hosts(&self, _url: &str, _password: &str) -> Result<Vec<Host>, BoxError> {
-        let host = |name: &str, active: bool| Host {
-            name: name.to_string(),
-            active,
-        };
-        Ok(vec![
-            host("iPhone-de-Hamdi", true),
-            host("iPhone-de-Sam", true),
-            host("Galaxy-de-Lea", false),
-            host("Redmi-de-Adam", true),
-            host("iPhone-7", true),
-            host("android-3f2a", true),
-            host("MacBook-Pro", true),
-        ])
     }
 }

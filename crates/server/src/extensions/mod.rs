@@ -1,6 +1,7 @@
 //! Les extensions : des fonctions facultatives **intégrées** à Ostal Server (pas de marketplace),
 //! chacune **désactivée par défaut**, avec sa propre configuration. Aujourd'hui : la météo
-//! extérieure (`weather.rs`). Pour en ajouter une (Somfy…) :
+//! extérieure (`weather.rs`), les volets Somfy (`somfy.rs`) et la Bbox (`bbox.rs`, premier
+//! « connecteur de box » de la présence Wi-Fi : voir `wifi/connector.rs`). Pour en ajouter une :
 //! 1. écrire un `static DESCRIPTOR: Descriptor` (identifiant, textes français, secrets, champs de
 //!    configuration privés, `normalize`) et l'ajouter à `CATALOG` ;
 //! 2. implémenter le trait [`Extension`] (état, démarrage, changement de réglage, tour périodique,
@@ -31,6 +32,7 @@
 //! échoue, les écritures sont refusées plutôt que d'écraser les secrets. Les champs inconnus
 //! (d'une version plus récente) sont conservés à la réécriture.
 
+pub mod bbox;
 pub mod overkiz;
 pub mod somfy;
 pub mod weather;
@@ -43,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::security::write_secret;
+use crate::wifi::connector::BoxConnector;
 use weather::{Place, WeatherApi};
 
 pub const FILE: &str = "extensions.json";
@@ -77,7 +80,7 @@ pub struct Descriptor {
 }
 
 /// Les extensions que cette version connaît.
-pub static CATALOG: &[&Descriptor] = &[&weather::DESCRIPTOR, &somfy::DESCRIPTOR];
+pub static CATALOG: &[&Descriptor] = &[&weather::DESCRIPTOR, &somfy::DESCRIPTOR, &bbox::DESCRIPTOR];
 
 /// Les réglages d'une extension à un instant : l'interrupteur, la configuration et les secrets
 /// (lus côté serveur seulement, jamais montrés). Une copie : l'extension n'en garde rien sans le
@@ -140,14 +143,17 @@ pub trait Extension: Send + Sync {
 pub struct Apis {
     pub weather: Arc<dyn WeatherApi>,
     pub somfy: Arc<dyn overkiz::OverkizApi>,
+    /// La box de la maison : sur le réseau local seulement (jamais Internet).
+    pub bbox: Arc<dyn bbox::BoxApi>,
 }
 
 impl Apis {
-    /// Le vrai Internet : Open-Meteo et le cloud Somfy.
+    /// Le vrai Internet : Open-Meteo et le cloud Somfy ; et la vraie Bbox, sur le réseau local.
     pub fn real() -> Self {
         Self {
             weather: Arc::new(weather::CurlWeather),
             somfy: Arc::new(overkiz::CurlOverkiz::default()),
+            bbox: Arc::new(bbox::CurlBox::default()),
         }
     }
 
@@ -156,6 +162,7 @@ impl Apis {
         Self {
             weather: Arc::new(weather::DemoWeather),
             somfy: Arc::new(overkiz::DemoOverkiz),
+            bbox: Arc::new(bbox::DemoBox),
         }
     }
 }
@@ -283,25 +290,32 @@ pub struct Extensions {
     registry: Vec<(&'static Descriptor, Arc<dyn Extension>)>,
     weather: Arc<weather::Weather>,
     somfy: Arc<somfy::Somfy>,
+    bbox: Arc<bbox::Bbox>,
+    /// Les extensions qui sont des boîtes internet (présence Wi-Fi), dans l'ordre du catalogue.
+    boxes: Vec<Arc<dyn BoxConnector>>,
+    /// Où `extensions.json` illisible a été mis de côté au démarrage.
+    aside: Option<PathBuf>,
 }
 
 /// Lit `dir/extensions.json`. Absent : vide. Illisible : journalisé, mis de côté, vide ; si même
 /// la mise de côté échoue, `read_only`.
-fn load(dir: &std::path::Path) -> (File, bool) {
+fn load(dir: &std::path::Path) -> (File, bool, Option<PathBuf>) {
     let path = dir.join(FILE);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (File::default(), false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (File::default(), false, None)
+        }
         Err(e) => {
             log::error!(
                 "extensions : {FILE} illisible ({}), réglages en lecture seule",
                 e.kind()
             );
-            return (File::default(), true);
+            return (File::default(), true, None);
         }
     };
     match serde_json::from_slice::<File>(&bytes) {
-        Ok(file) => (file, false),
+        Ok(file) => (file, false, None),
         Err(_) => {
             let aside = dir.join(format!(
                 "{FILE}.illisible-{}",
@@ -313,14 +327,14 @@ fn load(dir: &std::path::Path) -> (File, bool) {
                         "extensions : {FILE} illisible, mis de côté ({}) ; toutes les extensions repartent éteintes",
                         aside.display()
                     );
-                    (File::default(), false)
+                    (File::default(), false, Some(aside))
                 }
                 Err(e) => {
                     log::error!(
                         "extensions : {FILE} illisible et impossible à mettre de côté ({}) : réglages en lecture seule",
                         e.kind()
                     );
-                    (File::default(), true)
+                    (File::default(), true, None)
                 }
             }
         }
@@ -331,8 +345,15 @@ impl Extensions {
     /// Ouvre `dir/extensions.json`. Absent ou illisible : tout est éteint (jamais une extension
     /// allumée par erreur).
     pub fn open(dir: &std::path::Path, apis: Apis) -> Self {
-        let (file, read_only) = load(dir);
-        Self::build(Some(dir), file, read_only, apis)
+        let (file, read_only, aside) = load(dir);
+        let mut this = Self::build(Some(dir), file, read_only, apis);
+        this.aside = aside;
+        this
+    }
+
+    /// Le fichier sous lequel un `extensions.json` illisible a été mis de côté au démarrage.
+    pub fn set_aside(&self) -> Option<&std::path::Path> {
+        self.aside.as_deref()
     }
 
     /// Sans fichier (démonstration, dossier inutilisable).
@@ -343,10 +364,13 @@ impl Extensions {
     fn build(dir: Option<&std::path::Path>, file: File, read_only: bool, apis: Apis) -> Self {
         let weather = Arc::new(weather::Weather::new(dir, apis.weather));
         let somfy = Arc::new(somfy::Somfy::new(dir, apis.somfy));
+        let bbox = Arc::new(bbox::Bbox::new(apis.bbox));
         let registry: Vec<(&'static Descriptor, Arc<dyn Extension>)> = vec![
             (&weather::DESCRIPTOR, weather.clone()),
             (&somfy::DESCRIPTOR, somfy.clone()),
+            (&bbox::DESCRIPTOR, bbox.clone()),
         ];
+        let boxes: Vec<Arc<dyn BoxConnector>> = vec![bbox.clone()];
         let this = Self {
             dir: dir.map(PathBuf::from),
             inner: Mutex::new(file),
@@ -355,6 +379,9 @@ impl Extensions {
             registry,
             weather,
             somfy,
+            bbox,
+            boxes,
+            aside: None,
         };
         // Chaque extension remet son état d'accord avec la configuration gardée.
         for (d, ext) in &this.registry {
@@ -401,6 +428,16 @@ impl Extensions {
 
     pub fn is_enabled(&self, id: &str) -> bool {
         self.snapshot(id).0
+    }
+
+    /// L'extension a-t-elle une entrée dans `extensions.json` (même éteinte) ?
+    pub fn has_entry(&self, id: &str) -> bool {
+        self.lock().extensions.contains_key(id)
+    }
+
+    /// Les réglages ne peuvent pas être écrits (le fichier n'a pu être ni lu ni mis de côté).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Un secret, pour l'extension qui s'en sert (côté serveur seulement : jamais renvoyé).
@@ -483,8 +520,21 @@ impl Extensions {
 
     /// Applique une modification. Rien n'est changé si une valeur est refusée ou si le disque
     /// refuse d'écrire. Une modification à la fois, `on_change` de l'extension compris.
-    pub fn update(&self, id: &str, update: Update) -> Result<(View, Changes), UpdateError> {
-        self.update_for(descriptor(id).ok_or(UpdateError::Unknown)?, update)
+    pub fn update(&self, id: &str, mut update: Update) -> Result<(View, Changes), UpdateError> {
+        let d = descriptor(id).ok_or(UpdateError::Unknown)?;
+        if id == bbox::ID {
+            // Une autre adresse sans le mot de passe : il est effacé, jamais envoyé ailleurs.
+            bbox::guard_url_change(&mut update, &self.config(id));
+        }
+        let result = self.update_for(d, update);
+        // Mot de passe de la box effacé (ou adresse changée) : les copies de l'ancien `box.json`, qui
+        // le portent, n'ont plus de raison d'être.
+        if id == bbox::ID && result.is_ok() && self.secret(id, bbox::PASSWORD).is_none() {
+            if let Some(dir) = &self.dir {
+                crate::wifi::migration::remove_copies(dir);
+            }
+        }
+        result
     }
 
     fn update_for(
@@ -614,6 +664,24 @@ impl Extensions {
         (enabled, self.weather.view(enabled, place.as_ref()))
     }
 
+    // ---- boîtes internet ---------------------------------------------------------------------
+
+    /// Les connecteurs de box que cette version connaît (activés ou non) : le cœur de la présence
+    /// Wi-Fi (`wifi/`) choisit le premier qui est prêt. Une nouvelle marque s'ajoute ici.
+    pub fn box_connectors(&self) -> Vec<Arc<dyn BoxConnector>> {
+        self.boxes.clone()
+    }
+
+    /// Cette extension est-elle un connecteur de box ? (Ses changements relancent un relevé.)
+    pub fn is_box(&self, id: &str) -> bool {
+        self.boxes.iter().any(|b| b.id() == id)
+    }
+
+    /// L'extension Bbox (essai d'un mot de passe, reprise des anciens réglages).
+    pub fn bbox(&self) -> &Arc<bbox::Bbox> {
+        &self.bbox
+    }
+
     // ---- Somfy -------------------------------------------------------------------------------
 
     /// L'extension Somfy : ses volets, ses ordres, la liste des appareils du compte.
@@ -660,6 +728,7 @@ mod tests {
         Apis {
             weather,
             somfy: Arc::new(overkiz::DemoOverkiz),
+            bbox: Arc::new(bbox::DemoBox),
         }
     }
 

@@ -115,3 +115,28 @@ export const somfyConfig = (email, exposed) => ({ email: String(email ?? "").tri
 export function somfySyncedText(choices) {
   return Number.isFinite(choices?.synced_at) ? `Liste lue chez Somfy à ${clock(choices.synced_at)}.` : null;
 }
+
+// ---------------------------------------------------------------------------
+// Bbox (extension « bbox ») : la box de la maison, source de la présence Wi-Fi. Le serveur ne montre
+// à tous que l'état (`status`). L'adresse, le mot de passe et l'interrupteur de la box se règlent
+// seulement dans Ostal Server, sur le Mac : le serveur refuse tout changement par l'API.
+// ---------------------------------------------------------------------------
+
+/** La phrase d'état de la page Bbox, d'après `view.status` (jamais d'adresse ni de mot de passe). */
+export const BOX_ON_THE_MAC = "La box se règle dans Ostal Server, sur le Mac";
+
+export function bboxStatusText(view) {
+  const status = view?.status ?? {};
+  const n = status.devices ?? 0;
+  const seen = n === 0 ? "aucun appareil actif" : `${n} appareil${n > 1 ? "s" : ""} actif${n > 1 ? "s" : ""}`;
+  switch (status.state) {
+    case "off": return "Désactivée : Ostal n'interroge pas la box, la présence ne suit que les raccourcis « Je pars » et « Je rentre ».";
+    case "legacy": return "Ancien réglage de la box encore lu tel quel : la reprise dans l'extension a échoué, voir Ostal Server sur le Mac.";
+    case "unconfigured": return "Le mot de passe de la box manque : Ostal n'interroge pas la box tant qu'il n'est pas saisi dans Ostal Server.";
+    case "waiting": return "Premier relevé en cours…";
+    case "unreachable": return "La box ne répond pas pour l'instant : la présence est figée, le mode de la maison ne change pas.";
+    case "refused": return "La box refuse le mot de passe. Ostal n'essaiera plus tant qu'il ne change pas (la box pourrait bloquer l'accès).";
+    case "ok": return Number.isFinite(status.last_ok) ? `Box reliée : ${seen} sur le Wi-Fi (relevé à ${clock(status.last_ok)}).` : `Box reliée : ${seen} sur le Wi-Fi.`;
+    default: return "";
+  }
+}

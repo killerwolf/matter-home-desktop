@@ -86,15 +86,22 @@ impl Hub {
             .count();
         let status = self.wifi.status();
         let name_of = |id: &str| people.name(id).unwrap_or_else(|| "compte inconnu".into());
+        // Sans extension de box, dire pourquoi (y compris quand la reprise des anciens réglages a
+        // échoué au démarrage).
+        let no_box = match self.wifi.notice() {
+            Some(why) => format!("aucune extension de box activée ; {why}"),
+            None => "aucune extension de box activée".to_string(),
+        };
         {
             let mut journal = self.wifi.journal();
-            if let Some(line) = journal.settings(status.auto_mode, status.linked, active_phones) {
+            if let Some(line) = journal.settings(status.auto_mode, status.connector, active_phones)
+            {
                 log::info!("{line}");
             }
             let reason = if !status.auto_mode {
                 Some("interrupteur du mode automatique éteint")
             } else if !status.linked {
-                Some("pas de box reliée")
+                Some(no_box.as_str())
             } else if active_phones == 0 {
                 Some("aucun téléphone associé à un compte actif")
             } else if matches!(observed, Observed::Frozen(_)) || status.link != Link::Ok {
@@ -114,6 +121,7 @@ impl Hub {
             }
         }
         report.link = Link::Ok;
+        self.wifi.confirm_takeover();
         {
             let unlisted: Vec<String> = self
                 .wifi
@@ -289,10 +297,47 @@ impl Hub {
         Ok(changed)
     }
 
-    /// Relie la box (voir [`crate::wifi::Wifi::link`]) et le note au journal.
+    /// Relie la box : l'adresse est contrôlée, le mot de passe est **essayé** (une liste doit revenir)
+    /// avant d'être gardé, puis l'extension Bbox est réglée et activée : c'est elle qui garde
+    /// l'adresse et le mot de passe (`extensions.json`). Rien n'est enregistré si la box refuse ou ne
+    /// répond pas. Les mêmes réglages se font dans Réglages › Extensions › Bbox de l'app web.
     pub fn wifi_link(&self, url: &str, password: &str, who: &Who) -> Result<(), LinkError> {
+        use crate::extensions::{bbox, Update};
+        use crate::wifi::connector::BoxError;
+        let url = bbox::check_url(url).map_err(|_| LinkError::BadUrl)?;
+        if password.is_empty() || password.len() > 200 || password.chars().any(char::is_control) {
+            return Err(LinkError::BadPassword);
+        }
+        self.extensions
+            .bbox()
+            .allow_attempt(crate::security::now())
+            .map_err(LinkError::TooSoon)?;
         let first = !self.wifi.status().linked;
-        self.wifi.link(url, password)?;
+        self.extensions
+            .bbox()
+            .probe(&url, password)
+            .map_err(|e| match e {
+                BoxError::Refused => {
+                    self.audit
+                        .record(Entry::new(Action::BoxSetting, who).detail("refused"));
+                    LinkError::Refused
+                }
+                BoxError::Unreachable => LinkError::Unreachable,
+            })?;
+        let mut update = Update {
+            enabled: Some(true),
+            config: Some(serde_json::json!({ "url": url })),
+            ..Update::default()
+        };
+        update
+            .secrets
+            .insert(bbox::PASSWORD.to_string(), Some(password.to_string()));
+        self.extensions.update(bbox::ID, update).map_err(|e| {
+            log::error!("réglages de la box non enregistrés : {e:?}");
+            LinkError::Storage
+        })?;
+        // Premier relevé tout de suite : la liste des appareils est là sans attendre 2 minutes.
+        self.wifi.observe(crate::security::now(), true);
         self.audit
             .record(Entry::new(Action::BoxSetting, who).detail(if first {
                 "linked"
@@ -302,9 +347,28 @@ impl Hub {
         Ok(())
     }
 
-    /// Délie la box : mot de passe effacé, mode automatique désactivé.
+    /// Délie la box : mot de passe effacé et extension Bbox désactivée.
     pub fn wifi_unlink(&self, who: &Who) -> Result<(), LinkError> {
-        self.wifi.unlink()?;
+        use crate::extensions::{bbox, Update};
+        let mut update = Update {
+            enabled: Some(false),
+            ..Update::default()
+        };
+        update.secrets.insert(bbox::PASSWORD.to_string(), None);
+        // L'ancien réglage de `box.json` d'abord (reprise échouée ou fichier non nettoyé) : il ne doit
+        // pas rallumer la box au prochain démarrage.
+        self.wifi.clear_legacy().map_err(|_| LinkError::Storage)?;
+        self.extensions.bbox().clear_legacy();
+        match self.extensions.update(bbox::ID, update) {
+            Ok(_) => {}
+            // Extensions illisibles et sans entrée : il n'y a rien à effacer dedans.
+            Err(_) if self.extensions.is_read_only() && !self.extensions.has_entry(bbox::ID) => {}
+            Err(e) => {
+                log::error!("réglages de la box non enregistrés : {e:?}");
+                return Err(LinkError::Storage);
+            }
+        }
+        self.wifi.observe(crate::security::now(), true);
         self.audit
             .record(Entry::new(Action::BoxSetting, who).detail("unlinked"));
         Ok(())
@@ -355,54 +419,14 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::super::tests::{hub_with, temp};
     use super::*;
     use crate::audit::Filter;
-    use crate::wifi::bbox::{BoxApi, BoxError, Host};
+    use crate::wifi::connector::testing::Fake as FakeBox;
+    use crate::wifi::connector::BoxError;
     use crate::wifi::Wifi;
-
-    type Answer = Option<Result<Vec<Host>, BoxError>>;
-
-    /// Une fausse box : la liste (ou l'erreur) qu'on lui donne, et le nombre de relevés.
-    #[derive(Clone, Default)]
-    struct FakeBox {
-        answer: Arc<Mutex<Answer>>,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl FakeBox {
-        fn set(&self, hosts: &[(&str, bool)]) {
-            *self.answer.lock().unwrap() = Some(Ok(hosts
-                .iter()
-                .map(|(n, a)| Host {
-                    name: n.to_string(),
-                    active: *a,
-                })
-                .collect()));
-        }
-
-        fn fail(&self, error: BoxError) {
-            *self.answer.lock().unwrap() = Some(Err(error));
-        }
-
-        fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    impl BoxApi for FakeBox {
-        fn hosts(&self, _url: &str, _password: &str) -> Result<Vec<Host>, BoxError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.answer
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or(Err(BoxError::Unreachable))
-        }
-    }
 
     struct Crew(Mutex<HashMap<String, (String, bool)>>);
 
@@ -455,11 +479,10 @@ mod tests {
         fake.set(&[(SAM, true), (LEA, true), (NAS, true)]);
         hub.wifi = Wifi::open(
             &crate::security::server_dir(&dir).unwrap(),
-            Box::new(fake.clone()),
+            vec![Arc::new(fake.clone())],
         );
-        hub.wifi
-            .link("http://box.test", "mot-de-passe-de-la-box")
-            .unwrap();
+        // Premier relevé : la liste des appareils est connue (les téléphones s'attribuent d'après elle).
+        hub.wifi.observe(crate::security::now(), true);
         let crew = Crew::new(&[("sam", "Sam"), ("lea", "Léa")]);
         let who = Who::server_app();
         assert!(hub
@@ -543,9 +566,10 @@ mod tests {
         assert_eq!(r.state_of("lea"), Some(Whereabouts::Away));
         assert_eq!(r.mode(), HomeMode::Present);
         // L'interrupteur reste éteint dans le fichier, y compris après un redémarrage.
+        r.auto(false);
         let file = std::fs::read_to_string(r.dir.join("serveur/box.json")).unwrap();
         assert!(file.contains("\"auto_mode\": false"), "{file}");
-        let reopened = Wifi::open(&r.dir.join("serveur"), Box::new(r.fake.clone()));
+        let reopened = Wifi::open(&r.dir.join("serveur"), vec![Arc::new(r.fake.clone())]);
         assert!(!reopened.auto_mode());
     }
 
@@ -670,12 +694,9 @@ mod tests {
             assert_eq!(report.link, Link::Refused);
         }
         assert_eq!(r.fake.calls(), before + 1);
-        // Un nouveau mot de passe relance les relevés.
+        // Un nouveau mot de passe (les réglages de l'extension changent) relance les relevés.
         r.fake.set(&[(SAM, true), (LEA, true)]);
-        r.hub
-            .wifi()
-            .change_password("un-autre-mot-de-passe")
-            .unwrap();
+        r.fake.bump();
         assert_eq!(r.poll(4_000.0).link, Link::Ok);
     }
 
@@ -1118,7 +1139,7 @@ mod tests {
             .unwrap());
         assert_eq!(r.hub.wifi().phone_of("lea2").as_deref(), Some("iPhone-7"));
         // Les téléphones se retrouvent après un redémarrage.
-        let reopened = Wifi::open(&r.dir.join("serveur"), Box::new(r.fake.clone()));
+        let reopened = Wifi::open(&r.dir.join("serveur"), vec![Arc::new(r.fake.clone())]);
         assert_eq!(reopened.phone_of("sam").as_deref(), Some(SAM));
         assert_eq!(reopened.phone_of("adam").as_deref(), Some(NAS));
     }
@@ -1145,11 +1166,16 @@ mod tests {
     }
 
     #[test]
-    fn the_box_password_is_a_secret_file_and_never_shown() {
+    fn box_json_keeps_no_box_password_and_phones_are_names_only() {
         let r = rig("wifi-secret");
+        r.auto(true);
         let path = r.dir.join("serveur/box.json");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("mot-de-passe-de-la-box"));
+        assert!(text.contains("\"auto_mode\": true"));
+        assert!(
+            !text.contains("password") && !text.contains("url"),
+            "{text}"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1162,17 +1188,7 @@ mod tests {
         let phones = std::fs::read_to_string(r.dir.join("serveur/telephones.json")).unwrap();
         assert!(phones.contains(SAM));
         assert!(!phones.contains("mot-de-passe"));
-        // Les réglages affichables ne portent pas le mot de passe.
-        let shown = format!("{:?} {:?}", r.hub.wifi().status(), r.hub.wifi().url());
-        assert!(!shown.contains("mot-de-passe-de-la-box"), "{shown}");
-        // Délier efface le mot de passe du fichier ; l'interrupteur, lui, ne dépend pas de la box.
-        r.auto(true);
-        r.hub.wifi_unlink(&Who::server_app()).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("mot-de-passe-de-la-box"), "{text}");
-        assert!(text.contains("\"auto_mode\": true"));
-        assert!(!r.hub.wifi().status().linked);
-        // Le journal des réglages ne dit pas le mot de passe non plus.
+        // Le journal des réglages ne dit rien d'un mot de passe.
         let lines = r.hub.audit().read(&Filter {
             until: Some(r.t0 + 1_000_000.0),
             ..Filter::default()
@@ -1185,35 +1201,295 @@ mod tests {
         assert!(lines.iter().any(|e| e.action == Action::BoxSetting));
     }
 
+    /// L'API de la Bbox des essais : répond ce que dit la fausse box.
+    struct Api(FakeBox);
+
+    impl crate::extensions::bbox::BoxApi for Api {
+        fn hosts(
+            &self,
+            _url: &str,
+            _password: &str,
+        ) -> Result<Vec<crate::wifi::connector::Host>, BoxError> {
+            use crate::wifi::connector::BoxConnector;
+            self.0.hosts()
+        }
+    }
+
     #[test]
-    fn linking_checks_the_password_before_keeping_it() {
+    fn linking_checks_the_password_before_keeping_it_in_the_bbox_extension() {
+        use crate::extensions::{bbox, Apis, Extensions};
         let dir = temp("wifi-link");
         let (mut hub, _rx) = hub_with(&dir, 16);
         let fake = FakeBox::default();
-        hub.wifi = Wifi::open(&dir.join("serveur"), Box::new(fake.clone()));
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        hub.extensions = Extensions::open(
+            &sdir,
+            Apis {
+                bbox: Arc::new(Api(fake.clone())),
+                ..Apis::demo()
+            },
+        );
+        hub.wifi = Wifi::open(&sdir, hub.extensions.box_connectors());
         let who = Who::server_app();
+        // Mot de passe invalide : la box n'est pas appelée, et la phrase le dit.
+        let calls = fake.calls();
+        assert_eq!(
+            hub.wifi_link("http://box.test", &"x".repeat(300), &who),
+            Err(LinkError::BadPassword)
+        );
+        assert_eq!(fake.calls(), calls);
+        assert!(LinkError::BadPassword
+            .message()
+            .contains("trop long ou invalide"));
+        fake.fail(BoxError::Unreachable);
+        assert_eq!(
+            hub.wifi_link("http://box.test", "bon-mdp-secret", &who),
+            Err(LinkError::Unreachable)
+        );
+        assert_eq!(
+            hub.wifi_link("ftp://box", "bon-mdp-secret", &who),
+            Err(LinkError::BadUrl)
+        );
+        // Rien n'a été gardé : l'extension est éteinte, aucun fichier n'est écrit.
+        assert!(!hub.wifi().status().linked);
+        assert!(!hub.extensions().is_enabled(bbox::ID));
+        assert!(!sdir.join("extensions.json").exists());
+        fake.set(&[(SAM, true)]);
+        hub.wifi_link("http://box.test", "bon-mdp-secret", &who)
+            .unwrap();
+        let status = hub.wifi().status();
+        assert!(status.linked && status.link == Link::Ok && !status.auto_mode);
+        assert_eq!(status.connector, Some("Bbox"));
+        // L'extension l'a repris : activée, mot de passe secret et jamais montré.
+        assert!(hub.extensions().is_enabled(bbox::ID));
+        let view = hub.extensions().get(bbox::ID, true).unwrap();
+        assert!(view.secrets[0].set);
+        let shown = format!(
+            "{view:?} {:?} {:?}",
+            hub.wifi().status(),
+            hub.extensions().list(false)
+        );
+        assert!(!shown.contains("bon-mdp-secret"), "{shown}");
+        assert!(std::fs::read_to_string(sdir.join("extensions.json"))
+            .unwrap()
+            .contains("bon-mdp-secret"));
+        // Changer l'adresse seule n'envoie jamais le mot de passe gardé vers la nouvelle adresse :
+        // il est effacé, aucun relevé ne part, la page redemande le mot de passe.
+        let calls = fake.calls();
+        let (view, changes) = hub
+            .extensions()
+            .update(
+                bbox::ID,
+                crate::extensions::Update {
+                    config: Some(serde_json::json!({"url": "http://autre-adresse.test"})),
+                    ..crate::extensions::Update::default()
+                },
+            )
+            .unwrap();
+        assert!(changes.config && changes.secrets);
+        assert!(!view.secrets[0].set);
+        assert_eq!(view.status["state"], "unconfigured");
+        let crew = Crew::new(&[("sam", "Sam")]);
+        hub.wifi_poll_at(crate::security::now() + 500.0, &crew, true);
+        assert_eq!(fake.calls(), calls, "aucun appel vers la nouvelle adresse");
+        assert!(!hub.wifi().status().linked);
+        assert!(!std::fs::read_to_string(sdir.join("extensions.json"))
+            .unwrap()
+            .contains("bon-mdp-secret"));
+        // Adresse et mot de passe ensemble : accepté.
+        hub.wifi_link("http://box.test", "bon-mdp-secret", &who)
+            .unwrap();
+        assert!(hub.wifi().status().linked);
+        // Délier : mot de passe effacé, extension éteinte, plus de box.
+        hub.wifi_unlink(&who).unwrap();
+        assert!(!hub.wifi().status().linked);
+        let text = std::fs::read_to_string(sdir.join("extensions.json")).unwrap();
+        assert!(!text.contains("bon-mdp-secret"), "{text}");
+        // Un mot de passe refusé : une ligne au journal d'audit (sans valeur) ; un nouvel essai tout
+        // de suite est refusé sans appeler la box.
         fake.fail(BoxError::Refused);
         assert_eq!(
             hub.wifi_link("http://box.test", "mauvais", &who),
             Err(LinkError::Refused)
         );
-        fake.fail(BoxError::Unreachable);
+        // Le premier essai qui suit un refus est libre (le nouveau mot de passe), le suivant attend.
         assert_eq!(
-            hub.wifi_link("http://box.test", "bon", &who),
-            Err(LinkError::Unreachable)
+            hub.wifi_link("http://box.test", "encore-mauvais", &who),
+            Err(LinkError::Refused)
         );
+        let calls = fake.calls();
+        assert!(matches!(
+            hub.wifi_link("http://box.test", "toujours-mauvais", &who),
+            Err(LinkError::TooSoon(_))
+        ));
+        assert_eq!(fake.calls(), calls);
+        assert!(hub
+            .extensions()
+            .bbox()
+            .allow_attempt(crate::security::now())
+            .is_err());
+        let refused = hub.audit().read(&Filter {
+            until: Some(crate::security::now() + 1_000.0),
+            ..Filter::default()
+        });
+        assert!(refused
+            .iter()
+            .any(|e| e.action == Action::BoxSetting && e.detail.as_deref() == Some("refused")));
+        assert!(!serde_json::to_string(&refused).unwrap().contains("mauvais"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const OLD_PASSWORD: &str = "ANCIEN-MOT-DE-PASSE-DE-LA-BOX";
+
+    fn write_old_files(dir: &std::path::Path) -> (Vec<u8>, Vec<u8>) {
+        let sdir = crate::security::server_dir(dir).unwrap();
+        let old = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1, "url": "http://box.test", "password": OLD_PASSWORD,
+            "auto_mode": true, "away_delay_min": 30
+        }))
+        .unwrap();
+        let phones =
+            br#"{"version":1,"phones":[{"user_id":"sam","host":"iPhone-de-Sam"}]}"#.to_vec();
+        std::fs::write(sdir.join("box.json"), &old).unwrap();
+        std::fs::write(sdir.join("telephones.json"), &phones).unwrap();
+        (old, phones)
+    }
+
+    #[test]
+    fn a_server_started_on_the_old_box_files_keeps_its_box_its_phones_and_its_rule() {
+        let dir = temp("wifi-old-files");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        let (_old, phones) = write_old_files(&dir);
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            // La box est reprise par l'extension, activée, avec son mot de passe.
+            let status = hub.wifi().status();
+            assert!(status.linked, "{status:?}");
+            assert_eq!(status.connector, Some("Bbox"));
+            assert!(status.auto_mode);
+            assert_eq!(status.away_delay_min, 30);
+            assert!(hub.extensions().is_enabled("bbox"));
+            assert_eq!(
+                hub.extensions().secret("bbox", "password").as_deref(),
+                Some(OLD_PASSWORD)
+            );
+            // Les téléphones et la règle sont tels quels.
+            assert_eq!(hub.wifi().phone_of("sam").as_deref(), Some("iPhone-de-Sam"));
+            assert!(hub.wifi().notice().is_none());
+        }
+        assert!(!std::fs::read_to_string(sdir.join("box.json"))
+            .unwrap()
+            .contains(OLD_PASSWORD));
+        assert_eq!(std::fs::read(sdir.join("telephones.json")).unwrap(), phones);
+        // La copie de l'ancien box.json reste jusqu'au premier relevé réussi, puis part avec le reste.
+        let copy = sdir.join(crate::wifi::migration::BACKUP_FILE);
+        assert!(std::fs::read_to_string(&copy)
+            .unwrap()
+            .contains(OLD_PASSWORD));
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            assert!(copy.exists());
+            let crew = Crew::new(&[("sam", "Sam")]);
+            hub.wifi_poll_at(crate::security::now(), &crew, true);
+            assert!(!copy.exists(), "reprise confirmée : copie supprimée");
+        }
+        // Un second démarrage ne change rien.
+        let extensions = std::fs::read(sdir.join("extensions.json")).unwrap();
+        let box_json = std::fs::read(sdir.join("box.json")).unwrap();
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            assert!(hub.wifi().status().linked && hub.wifi().auto_mode());
+        }
         assert_eq!(
-            hub.wifi_link("ftp://box", "bon", &who),
-            Err(LinkError::BadUrl)
+            std::fs::read(sdir.join("extensions.json")).unwrap(),
+            extensions
         );
-        // Rien n'a été gardé.
+        assert_eq!(std::fs::read(sdir.join("box.json")).unwrap(), box_json);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn when_the_takeover_fails_the_old_box_keeps_working_and_the_journal_says_why() {
+        let dir = temp("wifi-old-files-failed");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        let (old, _) = write_old_files(&dir);
+        // extensions.json est illisible et ne peut pas être mis de côté.
+        std::fs::create_dir(sdir.join("extensions.json")).unwrap();
+        let (hub, _rx) = hub_with(&dir, 16);
+        assert!(hub.wifi().status().linked, "la box reste lue comme avant");
+        assert!(hub.wifi().auto_mode());
+        assert!(hub
+            .wifi()
+            .notice()
+            .unwrap()
+            .contains("reprise des réglages de la box"));
+        assert!(!hub.extensions().is_enabled("bbox"));
+        assert_eq!(std::fs::read(sdir.join("box.json")).unwrap(), old);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unreadable_extensions_file_is_said_in_the_presence_message_and_the_box_is_still_taken_over(
+    ) {
+        let dir = temp("wifi-aside");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        write_old_files(&dir);
+        std::fs::write(sdir.join("extensions.json"), b"{ pas du json").unwrap();
+        let (hub, _rx) = hub_with(&dir, 16);
+        let notice = hub.wifi().notice().unwrap();
+        assert!(
+            notice.contains("mis de côté sous extensions.json.illisible-"),
+            "{notice}"
+        );
+        // L'ancien fichier est gardé à côté, la box est reprise dans un extensions.json neuf.
+        assert!(std::fs::read_dir(&sdir).unwrap().flatten().any(|e| e
+            .file_name()
+            .to_string_lossy()
+            .starts_with("extensions.json.illisible-")));
+        assert!(hub.wifi().status().linked && hub.extensions().is_enabled("bbox"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unlinking_a_box_still_read_from_box_json_keeps_it_unlinked_after_a_restart() {
+        let dir = temp("wifi-unlink-legacy");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        write_old_files(&dir);
+        // La reprise échoue (extensions illisibles) : la box est lue d'après box.json.
+        std::fs::create_dir(sdir.join("extensions.json")).unwrap();
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            assert!(hub.wifi().status().linked);
+            hub.wifi_unlink(&Who::server_app()).unwrap();
+            assert!(!hub.wifi().status().linked);
+            let after = std::fs::read_to_string(sdir.join("box.json")).unwrap();
+            assert!(
+                !after.contains(OLD_PASSWORD) && !after.contains("\"url\""),
+                "{after}"
+            );
+            assert!(after.contains("\"auto_mode\": true"), "{after}");
+        }
+        // Redémarrage, toujours sans extensions lisibles : la box reste déliée.
+        let (hub, _rx) = hub_with(&dir, 16);
         assert!(!hub.wifi().status().linked);
-        assert!(!dir.join("serveur/box.json").exists());
-        fake.set(&[(SAM, true)]);
-        hub.wifi_link("http://box.test", "bon", &who).unwrap();
-        assert!(hub.wifi().status().linked);
-        assert_eq!(hub.wifi().status().link, Link::Ok);
-        assert!(!hub.wifi().auto_mode());
+        assert!(hub.wifi().auto_mode());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_any_box_extension_the_presence_says_so() {
+        let dir = temp("wifi-no-extension");
+        let (hub, _rx) = hub_with(&dir, 16);
+        let status = hub.wifi().status();
+        assert!(!status.linked && status.connector.is_none());
+        assert_eq!(status.link, Link::None);
+        // Aucun relevé ne part, et rien ne change.
+        let crew = Crew::new(&[("sam", "Sam")]);
+        let report = hub.wifi_poll_at(1.0, &crew, true);
+        assert_eq!(report.link, Link::None);
+        assert!(report.declared.is_empty() && report.mode.is_none());
+        // Le journal l'a dit au premier relevé (« aucune extension de box activée ») : pas deux fois.
+        assert!(hub.wifi().journal().settings(false, None, 0).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

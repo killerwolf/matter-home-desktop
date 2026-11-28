@@ -297,31 +297,21 @@ mod tests {
     #[test]
     fn a_silent_box_means_someone_may_be_home_and_the_indoor_camera_asks() {
         use crate::presence::{Declared, Source};
-        use crate::wifi::bbox::{BoxApi, BoxError, Host};
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use crate::wifi::connector::testing::Fake;
+        use crate::wifi::connector::BoxError;
         use std::sync::Arc;
 
-        struct Flaky(Arc<AtomicBool>);
-        impl BoxApi for Flaky {
-            fn hosts(&self, _url: &str, _password: &str) -> Result<Vec<Host>, BoxError> {
-                if self.0.load(Ordering::SeqCst) {
-                    Err(BoxError::Unreachable)
-                } else {
-                    Ok(vec![Host {
-                        name: "iPhone-de-Sam".into(),
-                        active: true,
-                    }])
-                }
-            }
-        }
-        let down = Arc::new(AtomicBool::new(false));
-        let wifi = crate::wifi::Wifi::in_memory(Box::new(Flaky(down.clone())));
-        // Pas de box liée : rien n'est silencieux.
+        let fake = Fake::default();
+        fake.set_ready(false);
+        let wifi = crate::wifi::Wifi::in_memory(vec![Arc::new(fake.clone())]);
+        fake.set(&[("iPhone-de-Sam", true)]);
+        // Pas d'extension de box activée : rien n'est silencieux.
         assert!(!box_is_silent(&wifi));
-        wifi.link("http://box.test", "mot-de-passe").unwrap();
+        fake.set_ready(true);
+        wifi.observe(900.0, true);
         assert!(!box_is_silent(&wifi));
         // La box se tait : le dernier relevé est figé.
-        down.store(true, Ordering::SeqCst);
+        fake.fail(BoxError::Unreachable);
         wifi.observe(1000.0, true);
         assert!(box_is_silent(&wifi));
 

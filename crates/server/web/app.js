@@ -1811,6 +1811,8 @@ async function choosePlace(place) {
 }
 
 function extensionSwitch(view, labelId) {
+  // La box se règle sur le Mac : ici, seulement son état.
+  if (view.id === "bbox") return make("span", "w-note", view.enabled ? "Activée" : "Éteinte");
   const toggle = make("button", "switch");
   toggle.type = "button";
   toggle.setAttribute("role", "switch");
@@ -1933,6 +1935,15 @@ function renderSomfyPage(body, view) {
   body.appendChild(save);
 }
 
+/** La page de la Bbox : en lecture seule. L'adresse, le mot de passe et l'interrupteur de la box se
+ *  règlent seulement dans Ostal Server, sur le Mac (le serveur refuse tout changement par l'API). */
+function renderBboxPage(body, view) {
+  const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
+  note(ext.bboxStatusText(view));
+  note("Ostal lit seulement la liste des appareils connectés à la box (leurs noms, jamais leurs adresses) : c'est ce qui dit quels téléphones sont à la maison. Il ne modifie rien sur la box. Chaque personne associe ensuite son téléphone dans « Mon téléphone ».");
+  note(ext.BOX_ON_THE_MAC + " (Réglages › Présence).", "ev-note");
+}
+
 function renderSomfyDevices(body, view) {
   if (!view.enabled || !["ok", "offline"].includes(view.status?.state)) return;
   body.appendChild(make("h3", "", "Appareils à montrer dans Ostal"));
@@ -2009,7 +2020,8 @@ function renderExtensions() {
   if (extUi.message) note(extUi.message);
   if (page.id === "weather") renderWeatherPage(body, page);
   if (page.id === "somfy") renderSomfyPage(body, page);
-  const secrets = secretFields(page);
+  if (page.id === "bbox") renderBboxPage(body, page);
+  const secrets = page.id === "bbox" ? null : secretFields(page); // jamais de champ de mot de passe pour la box
   if (secrets) body.appendChild(secrets);
   if (page.id === "somfy") renderSomfyDevices(body, page);
 }

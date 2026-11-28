@@ -321,14 +321,9 @@ fn link(env: &Env, fake: &FakeBox) {
 fn the_box_is_linked_with_its_password_read_through_the_login_and_never_exposed() {
     let env = env("wifi-link");
     let fake = FakeBox::start(&[("iPhone-de-Sam", true)]);
-    // Un mauvais mot de passe : refusé, rien n'est gardé, la box a vu un seul essai.
-    let err = env
-        .hub
-        .wifi_link(&fake.url, "pas-le-bon", &Who::server_app())
-        .unwrap_err();
-    assert_eq!(err, ostal_server::wifi::LinkError::Refused);
-    assert_eq!(fake.state.bad_logins.load(Ordering::SeqCst), 1);
+    // Rien n'est gardé tant que la box n'a pas été reliée.
     assert!(!env.dir.join("serveur/box.json").exists());
+    assert!(!env.dir.join("serveur/extensions.json").exists());
     // La box éteinte : « ne répond pas ».
     fake.online(false);
     assert_eq!(
@@ -346,9 +341,16 @@ fn the_box_is_linked_with_its_password_read_through_the_login_and_never_exposed(
     env.poll(0.0);
     env.poll(1.0);
     assert_eq!(fake.state.logins.load(Ordering::SeqCst), logins);
-    // Le mot de passe n'est que dans le fichier secret.
-    let file = std::fs::read_to_string(env.dir.join("serveur/box.json")).unwrap();
+    // Le mot de passe n'est que dans le fichier secret des extensions (extension « Bbox »), plus
+    // dans `box.json` (qui ne garde que les réglages de la présence).
+    let file = std::fs::read_to_string(env.dir.join("serveur/extensions.json")).unwrap();
     assert!(file.contains("%&=ord"));
+    let bbox_entry: Value = serde_json::from_str(&file).unwrap();
+    assert_eq!(bbox_entry["extensions"]["bbox"]["enabled"], true);
+    assert_eq!(bbox_entry["extensions"]["bbox"]["config"]["url"], fake.url);
+    if let Ok(presence) = std::fs::read_to_string(env.dir.join("serveur/box.json")) {
+        assert!(!presence.contains("%&=ord") && !presence.contains("password"));
+    }
     let mut all = String::new();
     for entry in std::fs::read_dir(&env.dir).unwrap().flatten() {
         if entry.path().is_file() {
@@ -356,6 +358,34 @@ fn the_box_is_linked_with_its_password_read_through_the_login_and_never_exposed(
         }
     }
     assert!(!all.contains("%&=ord"));
+    // Un mauvais mot de passe : refusé, la box a vu un seul essai, le bon reste en place, une ligne
+    // au journal ; un nouvel essai tout de suite est refusé sans appeler la box (limite après refus).
+    let err = env
+        .hub
+        .wifi_link(&fake.url, "pas-le-bon", &Who::server_app())
+        .unwrap_err();
+    assert_eq!(err, ostal_server::wifi::LinkError::Refused);
+    assert_eq!(fake.state.bad_logins.load(Ordering::SeqCst), 1);
+    // Le premier essai qui suit un refus est libre ; le suivant attend (limite après refus).
+    let second = env
+        .hub
+        .wifi_link(&fake.url, "pas-le-bon-non-plus", &Who::server_app())
+        .unwrap_err();
+    assert_eq!(second, ostal_server::wifi::LinkError::Refused);
+    let again = env
+        .hub
+        .wifi_link(&fake.url, "pas-le-bon-du-tout", &Who::server_app())
+        .unwrap_err();
+    assert!(
+        matches!(again, ostal_server::wifi::LinkError::TooSoon(_)),
+        "{again:?}"
+    );
+    assert_eq!(fake.state.bad_logins.load(Ordering::SeqCst), 2);
+    assert!(
+        std::fs::read_to_string(env.dir.join("serveur/extensions.json"))
+            .unwrap()
+            .contains("%&=ord")
+    );
 }
 
 #[test]

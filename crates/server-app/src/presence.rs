@@ -11,7 +11,10 @@ use ostal_server::wifi::{Link, Status};
 /// L'état de la liaison, en une phrase, et s'il est bon.
 pub fn link_line(status: &Status) -> (bool, String) {
     match (status.linked, status.link) {
-        (false, _) | (_, Link::None) => (false, "Pas reliée".into()),
+        (false, _) | (_, Link::None) => (
+            false,
+            "Aucune box reliée : reliez-la ci-dessous".into(),
+        ),
         (true, Link::Ok) => (
             true,
             format!(
@@ -127,6 +130,7 @@ mod tests {
     fn status(linked: bool, link: Link, active: usize) -> Status {
         Status {
             linked,
+            connector: linked.then_some("Bbox"),
             link,
             auto_mode: false,
             active_hosts: active,
@@ -139,7 +143,7 @@ mod tests {
     fn the_link_is_told_in_one_sentence() {
         assert_eq!(
             link_line(&status(false, Link::None, 0)),
-            (false, "Pas reliée".into())
+            (false, "Aucune box reliée : reliez-la ci-dessous".into())
         );
         assert_eq!(
             link_line(&status(true, Link::Ok, 6)),
