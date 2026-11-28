@@ -100,11 +100,17 @@ pub fn enable_auto_mode(dir: &Path, username: &str) {
         .as_str()
         .unwrap()
         .to_string();
+    // La box (fictive) est l'extension Bbox, activée ; `box.json` ne garde que la règle de présence.
+    std::fs::write(
+        dir.join("serveur/extensions.json"),
+        serde_json::json!({"version": 1, "extensions": {"bbox": {"enabled": true,
+               "config": {"url": "http://demo.invalid"}, "secrets": {"password": "fictif"}}}})
+        .to_string(),
+    )
+    .unwrap();
     std::fs::write(
         dir.join("serveur/box.json"),
-        serde_json::json!({"version": 1, "url": "http://demo.invalid", "password": "fictif",
-               "auto_mode": true, "away_delay_min": 10})
-        .to_string(),
+        serde_json::json!({"version": 1, "auto_mode": true, "away_delay_min": 10}).to_string(),
     )
     .unwrap();
     std::fs::write(

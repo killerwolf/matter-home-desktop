@@ -27,6 +27,9 @@ use crate::extensions::{Changes, SearchError, Update, UpdateError, View};
 use crate::rights::Capability;
 use crate::security::sessions::SessionInfo;
 
+/// La phrase renvoyée quand un compte tente de régler la box par l'API.
+pub const BOX_ON_THE_MAC: &str = "La box se règle dans Ostal Server, sur le Mac";
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/extensions", get(list))
@@ -116,6 +119,16 @@ async fn change(
     ApiJson(update): ApiJson<Update>,
 ) -> Result<Json<View>, ApiErr> {
     require(&state, &session.user_id, Capability::ManageExtensions)?;
+    // La box (adresse, mot de passe, interrupteur) se règle seulement sur le Mac, dans Ostal Server :
+    // aucun compte, même avec le droit « extensions », ne la change par l'API.
+    if id == crate::extensions::bbox::ID
+        && (update.enabled.is_some() || update.config.is_some() || !update.secrets.is_empty())
+    {
+        return Err(ApiErr(ApiError::with_detail(
+            ErrorCode::Forbidden,
+            BOX_ON_THE_MAC,
+        )));
+    }
     let hub = state.hub.clone();
     let people = state.auth.clone();
     let done = tokio::task::spawn_blocking(move || {
@@ -143,6 +156,7 @@ async fn change(
     for entry in audit_entries(view.id, &changes, &who) {
         audit(&state, entry).await;
     }
+
     Ok(Json(view))
 }
 

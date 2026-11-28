@@ -1779,11 +1779,19 @@ mod tests {
             br#"{"phones":[{"user_id":"u1","host":"TELEPHONE-DE-SAM"}]}"#,
         )
         .unwrap();
+        // La copie de l'ancien box.json gardée par la reprise vers l'extension Bbox.
+        crate::security::write_secret(
+            &server.join("box.json.avant-extension"),
+            br#"{"url":"https://mabbox.bytel.fr","password":"ANCIEN-MOT-DE-PASSE-COPIE"}"#,
+        )
+        .unwrap();
         let before = tree(&server);
 
         let (text, _) = export_to_string(&dir).unwrap();
         for secret in [
             "MOT-DE-PASSE-DE-LA-BOX",
+            "ANCIEN-MOT-DE-PASSE-COPIE",
+            "avant-extension",
             "TELEPHONE-DE-SAM",
             "box.json",
             "telephones",

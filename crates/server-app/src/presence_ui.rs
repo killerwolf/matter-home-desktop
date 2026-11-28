@@ -363,7 +363,7 @@ impl PresenceUi {
             ui.colored_label(if good { p.ok } else { p.warn }, line);
             widgets::hint(
                 ui,
-                "La box est l'extension « Bbox » : ses réglages (adresse, mot de passe) sont aussi dans l'app web, Réglages › Extensions › Bbox.",
+                "La box est l'extension « Bbox » : son adresse et son mot de passe se règlent seulement ici, sur le Mac ; l'app web n'en montre que l'état.",
             );
             if snap.status.linked && !self.editing {
                 widgets::hint(

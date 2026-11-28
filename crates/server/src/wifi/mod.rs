@@ -105,6 +105,10 @@ pub const STORAGE_ERROR: &str = "Le réglage n'a pas pu être enregistré.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkError {
     BadUrl,
+    /// Mot de passe vide, trop long ou invalide : la box n'a pas été appelée.
+    BadPassword,
+    /// Trop d'essais après un refus : la box n'a pas été appelée.
+    TooSoon(&'static str),
     Refused,
     Unreachable,
     Storage,
@@ -115,6 +119,10 @@ impl LinkError {
     pub fn message(self) -> &'static str {
         match self {
             LinkError::BadUrl => "Adresse de la box invalide.",
+            LinkError::BadPassword => {
+                "Mot de passe trop long ou invalide (la box n'a pas été appelée)."
+            }
+            LinkError::TooSoon(why) => why,
             LinkError::Refused => "La box a refusé ce mot de passe.",
             LinkError::Unreachable => {
                 "La box ne répond pas. Vérifiez que ce Mac est sur le Wi-Fi de la maison."
@@ -188,6 +196,8 @@ pub struct Wifi {
     inner: Mutex<Inner>,
     /// Un seul relevé à la fois.
     poll_lock: Mutex<()>,
+    /// Les copies de l'ancien `box.json` ont déjà été supprimées (ou cherchées) depuis le démarrage.
+    copies_checked: std::sync::atomic::AtomicBool,
     /// Ce que le journal a déjà dit (une ligne seulement quand quelque chose change).
     journal: Mutex<journal::Journal>,
 }
@@ -245,6 +255,7 @@ impl Wifi {
                 notice: None,
             }),
             poll_lock: Mutex::new(()),
+            copies_checked: std::sync::atomic::AtomicBool::new(false),
             journal: Mutex::new(journal::Journal::default()),
         }
     }
@@ -325,6 +336,23 @@ impl Wifi {
         let st = self.lock();
         (!st.config.url.is_empty() && !st.config.password.is_empty())
             .then(|| (st.config.url.clone(), st.config.password.clone()))
+    }
+
+    /// Un relevé vient de réussir : la reprise des anciens réglages (`migration.rs`) est confirmée,
+    /// les copies de l'ancien `box.json` (qui portent l'ancien mot de passe) sont supprimées. Une
+    /// fois par démarrage, et jamais quand la reprise a échoué (la box est alors lue d'après
+    /// `box.json`, qu'il faut garder).
+    pub fn confirm_takeover(&self) {
+        use std::sync::atomic::Ordering;
+        if self.copies_checked.swap(true, Ordering::SeqCst) || self.legacy_box().is_some() {
+            return;
+        }
+        if let Some(dir) = &self.dir {
+            let n = migration::remove_copies(dir);
+            if n > 0 {
+                log::info!("extension Bbox : reprise confirmée par un relevé, {n} copie(s) de l'ancien box.json supprimée(s)");
+            }
+        }
     }
 
     /// Une phrase pour le journal : pourquoi la box n'est pas reliée alors qu'elle devrait l'être

@@ -6,22 +6,29 @@
 //! propre à la présence. [`run`] fait la reprise **au premier démarrage**, avant l'ouverture de
 //! `Wifi` (voir `Hub::new`), dans cet ordre :
 //!
-//! 1. s'il n'y a pas encore d'entrée « bbox » dans `extensions.json` : l'adresse, le mot de passe
+//! 1. une copie de `box.json` est gardée à côté (`box.json.avant-extension`, 0600, jamais exportée) ;
+//! 2. s'il n'y a pas encore d'entrée « bbox » dans `extensions.json` : l'adresse, le mot de passe
 //!    et l'activation (activée si la box était reliée, c'est-à-dire adresse **et** mot de passe) y
 //!    sont écrits par le chemin normal des réglages d'extension (`Extensions::update` : un seul
 //!    fichier, écrit en une fois par renommage) ;
-//! 2. une copie de `box.json` est gardée à côté (`box.json.avant-extension`, 0600, jamais exportée,
-//!    jamais effacée) : revenir à la version précédente d'Ostal reste possible en la remettant en
-//!    place ;
 //! 3. seulement alors, `url` et `password` sont retirés de `box.json` (tout le reste du fichier est
 //!    gardé tel quel : interrupteur, délai, champs inconnus). `telephones.json` n'est jamais touché.
 //!
+//! La copie sert à revenir à la version précédente d'Ostal (la remettre sous le nom `box.json`). Elle
+//! porte l'ancien mot de passe : elle est **supprimée** (toutes les copies, [`remove_copies`]) dès
+//! qu'un premier relevé réussi confirme la reprise, et quand la box est déliée ou son mot de passe
+//! effacé.
+//!
 //! - **Idempotente** : une fois `url` et `password` retirés, plus rien à faire, et rien n'est écrit.
-//! - **Reprise après interruption** : si l'entrée « bbox » existe déjà (arrêt entre l'étape 1 et
-//!   l'étape 3), l'extension n'est pas réécrasée ; on termine seulement les étapes 2 et 3.
-//! - **Échec** (extensions illisibles, disque plein, adresse invalide…) : `box.json` n'est pas
-//!   modifié, l'erreur est journalisée, et la box reste lue comme avant (`Bbox::use_legacy`) en
-//!   attendant : une maison ne perd jamais sa présence en silence.
+//! - **Reprise après interruption** : si l'entrée « bbox » existe déjà avec les mêmes réglages
+//!   (arrêt entre l'étape 2 et l'étape 3), l'extension n'est pas réécrite ; on termine seulement
+//!   le retrait.
+//! - **Retour à une ancienne version puis nouvelle montée** : si l'entrée existe mais que `box.json`
+//!   porte de nouveau un mot de passe (ou une adresse) **différent**, il est plus récent : il est
+//!   copié puis repris dans l'extension, et seulement ensuite retiré.
+//! - **Échec** (extensions illisibles, disque plein, adresse invalide, trop de copies…) : `box.json`
+//!   n'est pas modifié, l'erreur est journalisée, et la box reste lue comme avant
+//!   (`Bbox::use_legacy`) en attendant : une maison ne perd jamais sa présence en silence.
 //!
 //! Aucune valeur secrète n'est écrite dans le journal.
 
@@ -30,12 +37,14 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::CONFIG_FILE;
-use crate::extensions::bbox::{ID, PASSWORD};
+use crate::extensions::bbox::{check_url, DEFAULT_URL, ID, PASSWORD};
 use crate::extensions::{Extensions, Update};
 use crate::security::write_secret;
 
 /// La copie de `box.json` d'avant la reprise (puis `.1`, `.2`… si `box.json` a encore changé).
 pub const BACKUP_FILE: &str = "box.json.avant-extension";
+/// Nombre maximal de copies gardées côte à côte.
+const MAX_COPIES: usize = 10;
 
 /// Ce que la reprise a fait.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +66,7 @@ pub fn run(dir: &Path, extensions: &Extensions) -> Outcome {
     match &outcome {
         Outcome::Nothing => {}
         Outcome::Migrated { enabled } => log::info!(
-            "extension Bbox : les réglages de la box ont été repris depuis box.json ({}) ; copie gardée sous {BACKUP_FILE}",
+            "extension Bbox : les réglages de la box ont été repris depuis box.json ({}) ; copie gardée sous {BACKUP_FILE} (supprimée dès que la box répond)",
             if *enabled { "extension activée" } else { "extension laissée éteinte" }
         ),
         Outcome::Cleaned => log::info!(
@@ -92,22 +101,43 @@ fn run_inner(dir: &Path, extensions: &Extensions) -> Outcome {
         return Outcome::Nothing;
     }
 
-    let migrated = if extensions.has_entry(ID) {
-        false
+    let existing = extensions.has_entry(ID);
+    // Une entrée déjà là (reprise interrompue, ou retour à une ancienne version puis nouvelle montée) :
+    // `box.json` ne l'emporte que s'il porte un mot de passe **différent** (il est alors plus récent,
+    // écrit par une version plus ancienne qui ne connaît pas l'extension).
+    let wants_update = if existing {
+        let ext_url = extensions
+            .config(ID)
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_URL)
+            .to_string();
+        !password.is_empty()
+            && (extensions.secret(ID, PASSWORD).as_deref() != Some(&password)
+                || (!url.is_empty() && check_url(&url).ok().as_deref() != Some(&ext_url)))
     } else {
-        if extensions.is_read_only() {
-            return Outcome::Failed(
-                "extensions.json illisible et impossible à mettre de côté".into(),
-            );
-        }
+        true
+    };
+
+    // La copie d'abord, l'écriture dans l'extension ensuite, le retrait de box.json en dernier : si
+    // la copie échoue, rien n'est changé (et la prochaine fois on réessaie).
+    if wants_update && extensions.is_read_only() {
+        return Outcome::Failed("extensions.json illisible et impossible à mettre de côté".into());
+    }
+    if let Err(why) = keep_a_copy(dir, &bytes) {
+        return Outcome::Failed(why);
+    }
+    if wants_update {
         let linked = !url.is_empty() && !password.is_empty();
         let mut update = Update {
             enabled: Some(linked),
-            config: Some(if url.is_empty() {
-                json!({})
+            config: if url.is_empty() && existing {
+                None
+            } else if url.is_empty() {
+                Some(json!({}))
             } else {
-                json!({ "url": url })
-            }),
+                Some(json!({ "url": url }))
+            },
             ..Update::default()
         };
         if !password.is_empty() {
@@ -122,21 +152,8 @@ fn run_inner(dir: &Path, extensions: &Extensions) -> Outcome {
         if !password.is_empty() && extensions.secret(ID, PASSWORD).as_deref() != Some(&password) {
             return Outcome::Failed("le mot de passe n'a pas été enregistré".into());
         }
-        true
-    };
-
-    // La copie d'abord, le retrait ensuite : si la copie échoue, box.json reste tel quel (et la
-    // prochaine fois on réessaie).
-    if let Err(why) = keep_a_copy(dir, &bytes) {
-        log::warn!("extension Bbox : copie de box.json impossible ({why}), restes non retirés");
-        return if migrated {
-            Outcome::Migrated {
-                enabled: !url.is_empty() && !password.is_empty(),
-            }
-        } else {
-            Outcome::Failed(format!("copie de box.json impossible ({why})"))
-        };
     }
+    let migrated = wants_update;
     doc.remove("url");
     doc.remove("password");
     let stripped = serde_json::to_vec_pretty(&Value::Object(doc))
@@ -158,7 +175,7 @@ fn run_inner(dir: &Path, extensions: &Extensions) -> Outcome {
 
 /// Garde une copie privée de `box.json` (sauf si une copie identique existe déjà).
 fn keep_a_copy(dir: &Path, bytes: &[u8]) -> Result<(), String> {
-    for n in 0..10 {
+    for n in 0..MAX_COPIES {
         let name = if n == 0 {
             BACKUP_FILE.to_string()
         } else {
@@ -174,7 +191,27 @@ fn keep_a_copy(dir: &Path, bytes: &[u8]) -> Result<(), String> {
             Err(e) => return Err(format!("{}", e.kind())),
         }
     }
-    Err("trop de copies".into())
+    Err(format!(
+        "{MAX_COPIES} copies de box.json ({BACKUP_FILE}*) existent déjà dans le dossier serveur/ : vérifiez-les, supprimez-les, puis relancez Ostal Server"
+    ))
+}
+
+/// Supprime **toutes** les copies de l'ancien `box.json` (elles portent l'ancien mot de passe) : une
+/// fois la reprise confirmée par un relevé réussi, ou quand la box est déliée ou son mot de passe
+/// effacé. Rend le nombre de copies supprimées.
+pub fn remove_copies(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(BACKUP_FILE)
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -380,7 +417,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("extensions.json"),
-            br#"{"version":1,"extensions":{"bbox":{"enabled":true,"config":{"url":"https://mabbox.bytel.fr"},"secrets":{"password":"deja-dans-l-extension"}}}}"#,
+            br#"{"version":1,"extensions":{"bbox":{"enabled":true,"config":{"url":"https://mabbox.bytel.fr"},"secrets":{"password":"ancien"}}}}"#,
         )
         .unwrap();
         let ext = open(&dir);
@@ -388,7 +425,7 @@ mod tests {
         // L'extension garde ce qu'elle avait.
         assert_eq!(
             ext.secret(bbox::ID, bbox::PASSWORD).as_deref(),
-            Some("deja-dans-l-extension")
+            Some("ancien")
         );
         assert!(ext.is_enabled(bbox::ID));
         // box.json est nettoyé, l'ancien est copié, rien n'est perdu.
@@ -440,9 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_box_json_after_a_first_migration_is_copied_not_lost() {
-        // Retour à l'ancienne version, nouvelle box reliée, puis nouvelle version : l'extension garde
-        // son réglage, mais le mot de passe plus récent de box.json est gardé dans une autre copie.
+    fn a_newer_password_in_box_json_after_going_back_a_version_is_taken_over() {
+        // Reprise, retour à l'ancienne version (nouveau mot de passe dans box.json), nouvelle version :
+        // l'extension a le nouveau mot de passe, l'ancien est copié, rien n'est perdu.
         let dir = temp("recopy");
         std::fs::write(
             dir.join("box.json"),
@@ -453,12 +490,48 @@ mod tests {
         assert!(matches!(run(&dir, &ext), Outcome::Migrated { .. }));
         std::fs::write(
             dir.join("box.json"),
-            old_box("http://192.168.1.254", "second", false, 10),
+            old_box("http://192.168.1.99", "second", true, 15),
         )
         .unwrap();
-        assert_eq!(run(&dir, &ext), Outcome::Cleaned);
+        let ext = open(&dir);
+        assert_eq!(run(&dir, &ext), Outcome::Migrated { enabled: true });
+        assert_eq!(
+            ext.secret(bbox::ID, bbox::PASSWORD).as_deref(),
+            Some("second")
+        );
+        assert_eq!(ext.config(bbox::ID), json!({"url": "http://192.168.1.99"}));
+        assert!(ext.is_enabled(bbox::ID));
+        let after = read(&dir, "box.json");
+        assert!(!after.contains("second") && after.contains("\"away_delay_min\": 15"));
         assert!(read(&dir, BACKUP_FILE).contains("premier"));
         assert!(read(&dir, &format!("{BACKUP_FILE}.1")).contains("second"));
+        assert_eq!(run(&dir, &ext), Outcome::Nothing);
+        // Les copies partent toutes ensemble.
+        assert_eq!(remove_copies(&dir), 2);
+        assert!(!dir.join(BACKUP_FILE).exists());
+        assert_eq!(remove_copies(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn too_many_copies_say_what_to_do_and_change_nothing() {
+        let dir = temp("too-many");
+        let original = old_box("http://192.168.1.254", "mdp", false, 10);
+        std::fs::write(dir.join("box.json"), &original).unwrap();
+        std::fs::write(dir.join(BACKUP_FILE), b"x").unwrap();
+        for n in 1..MAX_COPIES {
+            std::fs::write(dir.join(format!("{BACKUP_FILE}.{n}")), format!("y{n}")).unwrap();
+        }
+        let ext = open(&dir);
+        let Outcome::Failed(why) = run(&dir, &ext) else {
+            panic!("la reprise aurait dû échouer");
+        };
+        assert!(
+            why.contains("supprimez-les") && why.contains(BACKUP_FILE),
+            "{why}"
+        );
+        assert_eq!(std::fs::read(dir.join("box.json")).unwrap(), original);
+        assert!(!ext.has_entry(bbox::ID));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

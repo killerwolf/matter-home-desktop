@@ -1811,6 +1811,8 @@ async function choosePlace(place) {
 }
 
 function extensionSwitch(view, labelId) {
+  // La box se règle sur le Mac : ici, seulement son état.
+  if (view.id === "bbox") return make("span", "w-note", view.enabled ? "Activée" : "Éteinte");
   const toggle = make("button", "switch");
   toggle.type = "button";
   toggle.setAttribute("role", "switch");
@@ -1933,32 +1935,13 @@ function renderSomfyPage(body, view) {
   body.appendChild(save);
 }
 
-/** La page de la Bbox : l'état de la box, son adresse (réservée aux comptes qui règlent les extensions ;
- *  vide = mabbox.bytel.fr), puis (champ commun) son mot de passe. */
+/** La page de la Bbox : en lecture seule. L'adresse, le mot de passe et l'interrupteur de la box se
+ *  règlent seulement dans Ostal Server, sur le Mac (le serveur refuse tout changement par l'API). */
 function renderBboxPage(body, view) {
   const note = (text, cls = "w-note") => body.appendChild(make("p", cls, text));
   note(ext.bboxStatusText(view));
   note("Ostal lit seulement la liste des appareils connectés à la box (leurs noms, jamais leurs adresses) : c'est ce qui dit quels téléphones sont à la maison. Il ne modifie rien sur la box. Chaque personne associe ensuite son téléphone dans « Mon téléphone ».");
-  if (view.config?.url === undefined) return; // sans le droit « extensions », l'adresse n'est pas montrée
-  body.appendChild(make("h3", "", "Adresse de la box"));
-  const label = make("label", "ext-field");
-  label.appendChild(make("span", "", "Adresse (laissez vide pour mabbox.bytel.fr)"));
-  const url = make("input");
-  url.type = "url";
-  url.autocomplete = "off";
-  url.spellcheck = false;
-  url.maxLength = 200;
-  url.value = view.config.url;
-  label.appendChild(url);
-  body.appendChild(label);
-  body.appendChild(make("small", "w-note", "Changer l'adresse efface le mot de passe gardé (il ne part jamais vers une autre adresse) : saisissez-le de nouveau juste après."));
-  const save = make("button", "btn", "Enregistrer l'adresse");
-  save.type = "button";
-  save.disabled = extUi.busy;
-  save.addEventListener("click", async () => {
-    if (await updateExtension("bbox", { config: ext.bboxConfig(url.value) })) { extUi.message = "Adresse enregistrée."; renderExtensions(); }
-  });
-  body.appendChild(save);
+  note(ext.BOX_ON_THE_MAC + " (Réglages › Présence).", "ev-note");
 }
 
 function renderSomfyDevices(body, view) {
@@ -2038,7 +2021,7 @@ function renderExtensions() {
   if (page.id === "weather") renderWeatherPage(body, page);
   if (page.id === "somfy") renderSomfyPage(body, page);
   if (page.id === "bbox") renderBboxPage(body, page);
-  const secrets = secretFields(page);
+  const secrets = page.id === "bbox" ? null : secretFields(page); // jamais de champ de mot de passe pour la box
   if (secrets) body.appendChild(secrets);
   if (page.id === "somfy") renderSomfyDevices(body, page);
 }

@@ -242,6 +242,19 @@ fn internal(context: &str, error: &anyhow::Error) -> ApiError {
 
 impl Hub {
     pub fn new(config: HubConfig) -> Self {
+        let demo = config.demo;
+        Self::with_apis(config, move || {
+            if demo {
+                crate::extensions::Apis::demo()
+            } else {
+                crate::extensions::Apis::real()
+            }
+        })
+    }
+
+    /// Comme [`Hub::new`], avec les clients réseau des extensions donnés (les essais n'ont jamais
+    /// de vrai `curl`).
+    pub(crate) fn with_apis(config: HubConfig, apis: impl Fn() -> crate::extensions::Apis) -> Self {
         let (tx, _) = broadcast::channel(config.broadcast_capacity.max(2));
         let (plan, rules, cameras, mode) = if config.demo {
             (
@@ -278,36 +291,45 @@ impl Hub {
         // Open-Meteo et le cloud Somfy sont les seules sorties vers Internet des extensions (la
         // Bbox, elle, est sur le réseau local) : la démonstration n'appelle jamais rien, sa « box »
         // est fictive.
-        let apis = || {
-            if config.demo {
-                crate::extensions::Apis::demo()
-            } else {
-                crate::extensions::Apis::real()
-            }
-        };
         let extensions = match &server_dir {
             Ok(dir) => crate::extensions::Extensions::open(dir, apis()),
             Err(_) => crate::extensions::Extensions::in_memory(apis()),
         };
         // La box de la maison est une extension (Bbox) : les anciens réglages de `box.json` (adresse,
         // mot de passe) y sont repris, avant que `Wifi` n'ouvre `box.json`. Voir `wifi/migration.rs`.
+        // (La démonstration n'a pas d'ancienne box à reprendre : elle ne touche à aucun fichier.)
         let migration = match &server_dir {
-            Ok(dir) => Some(crate::wifi::migration::run(dir, &extensions)),
-            Err(_) => None,
+            Ok(dir) if !config.demo => Some(crate::wifi::migration::run(dir, &extensions)),
+            _ => None,
         };
         let wifi = match &server_dir {
             Ok(dir) => crate::wifi::Wifi::open(dir, extensions.box_connectors()),
             Err(_) => crate::wifi::Wifi::in_memory(extensions.box_connectors()),
         };
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(aside) = extensions.set_aside() {
+            // `extensions.json` était illisible : mis de côté, toutes les extensions repartent éteintes.
+            log::error!(
+                "extensions.json illisible, mis de côté sous {} : les extensions sont éteintes",
+                aside.display()
+            );
+            notes.push(format!(
+                "extensions.json était illisible, il a été mis de côté sous {} dans le dossier serveur/ : les extensions sont éteintes, réactivez la Bbox dans Réglages › Extensions (ou remettez ce fichier)",
+                aside.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            ));
+        }
         if let Some(crate::wifi::migration::Outcome::Failed(why)) = &migration {
             // Jamais une maison qui perd sa présence en silence : la box reste lue comme avant, avec
             // les réglages de `box.json` (intact), et le journal le dit.
             if let Some((url, password)) = wifi.legacy_box() {
                 extensions.bbox().use_legacy(&url, &password);
             }
-            wifi.set_notice(Some(format!(
+            notes.push(format!(
                 "la reprise des réglages de la box dans l'extension Bbox a échoué ({why})"
-            )));
+            ));
+        }
+        if !notes.is_empty() {
+            wifi.set_notice(Some(notes.join(" ; ")));
         }
         let audit = match &server_dir {
             Ok(dir) => crate::audit::AuditLog::open(dir),
@@ -1817,14 +1839,18 @@ pub(crate) mod tests {
 
     pub(crate) fn hub_with(dir: &Path, capacity: usize) -> (Hub, mpsc::UnboundedReceiver<Command>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let hub = Hub::new(HubConfig {
-            data_dir: dir.to_path_buf(),
-            demo: false,
-            history_dir: dir.join("history"),
-            demo_history: None,
-            broadcast_capacity: capacity,
-            commands: tx,
-        });
+        // Les essais n'ont jamais de vrai `curl` : les extensions sont celles de la démonstration.
+        let hub = Hub::with_apis(
+            HubConfig {
+                data_dir: dir.to_path_buf(),
+                demo: false,
+                history_dir: dir.join("history"),
+                demo_history: None,
+                broadcast_capacity: capacity,
+                commands: tx,
+            },
+            crate::extensions::Apis::demo,
+        );
         (hub, rx)
     }
 

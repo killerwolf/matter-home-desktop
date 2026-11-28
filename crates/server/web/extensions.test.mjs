@@ -2,7 +2,7 @@
 // Les phrases de la météo extérieure et des extensions.
 import assert from "node:assert/strict";
 import {
-  bboxConfig, bboxStatusText, errorText, placeConfig, readingParts, searchable, somfyChoices, somfyConfig, somfyExposedAfter, somfyKindLabel,
+  BOX_ON_THE_MAC, bboxStatusText, errorText, placeConfig, readingParts, searchable, somfyChoices, somfyConfig, somfyExposedAfter, somfyKindLabel,
   somfyLastError, somfyStatusText, somfySyncedText, weatherCard, weatherStatusText,
 } from "./extensions.js";
 
@@ -97,7 +97,7 @@ console.log("extensions.test.mjs : ok");
 {
   const view = (state, extra = {}) => ({ status: { state, ...extra } });
   assert.match(bboxStatusText(view("off")), /^Désactivée/);
-  assert.match(bboxStatusText(view("unconfigured")), /mot de passe d'administration/);
+  assert.match(bboxStatusText(view("unconfigured")), /mot de passe de la box manque/);
   assert.match(bboxStatusText(view("waiting")), /Premier relevé/);
   assert.match(bboxStatusText(view("unreachable")), /figée/);
   assert.match(bboxStatusText(view("refused")), /refuse le mot de passe/);
@@ -106,6 +106,5 @@ console.log("extensions.test.mjs : ok");
   assert.match(bboxStatusText(view("ok", { devices: 1 })), /1 appareil actif sur/);
   assert.match(bboxStatusText(view("ok", { devices: 6, last_ok: at })), /6 appareils actifs sur le Wi-Fi \(relevé à \d\d:\d\d\)/);
   assert.equal(bboxStatusText(null), "");
-  assert.deepEqual(bboxConfig("  http://192.168.1.254 "), { url: "http://192.168.1.254" });
-  assert.deepEqual(bboxConfig(null), { url: "" });
+  assert.match(BOX_ON_THE_MAC, /Ostal Server, sur le Mac$/);
 }

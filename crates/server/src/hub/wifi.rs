@@ -121,6 +121,7 @@ impl Hub {
             }
         }
         report.link = Link::Ok;
+        self.wifi.confirm_takeover();
         {
             let unlisted: Vec<String> = self
                 .wifi
@@ -305,14 +306,22 @@ impl Hub {
         use crate::wifi::connector::BoxError;
         let url = bbox::check_url(url).map_err(|_| LinkError::BadUrl)?;
         if password.is_empty() || password.len() > 200 || password.chars().any(char::is_control) {
-            return Err(LinkError::Refused);
+            return Err(LinkError::BadPassword);
         }
+        self.extensions
+            .bbox()
+            .allow_attempt(crate::security::now())
+            .map_err(LinkError::TooSoon)?;
         let first = !self.wifi.status().linked;
         self.extensions
             .bbox()
             .probe(&url, password)
             .map_err(|e| match e {
-                BoxError::Refused => LinkError::Refused,
+                BoxError::Refused => {
+                    self.audit
+                        .record(Entry::new(Action::BoxSetting, who).detail("refused"));
+                    LinkError::Refused
+                }
                 BoxError::Unreachable => LinkError::Unreachable,
             })?;
         let mut update = Update {
@@ -1213,11 +1222,16 @@ mod tests {
         );
         hub.wifi = Wifi::open(&sdir, hub.extensions.box_connectors());
         let who = Who::server_app();
-        fake.fail(BoxError::Refused);
+        // Mot de passe invalide : la box n'est pas appelée, et la phrase le dit.
+        let calls = fake.calls();
         assert_eq!(
-            hub.wifi_link("http://box.test", "mauvais", &who),
-            Err(LinkError::Refused)
+            hub.wifi_link("http://box.test", &"x".repeat(300), &who),
+            Err(LinkError::BadPassword)
         );
+        assert_eq!(fake.calls(), calls);
+        assert!(LinkError::BadPassword
+            .message()
+            .contains("trop long ou invalide"));
         fake.fail(BoxError::Unreachable);
         assert_eq!(
             hub.wifi_link("http://box.test", "bon-mdp-secret", &who),
@@ -1282,6 +1296,37 @@ mod tests {
         assert!(!hub.wifi().status().linked);
         let text = std::fs::read_to_string(sdir.join("extensions.json")).unwrap();
         assert!(!text.contains("bon-mdp-secret"), "{text}");
+        // Un mot de passe refusé : une ligne au journal d'audit (sans valeur) ; un nouvel essai tout
+        // de suite est refusé sans appeler la box.
+        fake.fail(BoxError::Refused);
+        assert_eq!(
+            hub.wifi_link("http://box.test", "mauvais", &who),
+            Err(LinkError::Refused)
+        );
+        // Le premier essai qui suit un refus est libre (le nouveau mot de passe), le suivant attend.
+        assert_eq!(
+            hub.wifi_link("http://box.test", "encore-mauvais", &who),
+            Err(LinkError::Refused)
+        );
+        let calls = fake.calls();
+        assert!(matches!(
+            hub.wifi_link("http://box.test", "toujours-mauvais", &who),
+            Err(LinkError::TooSoon(_))
+        ));
+        assert_eq!(fake.calls(), calls);
+        assert!(hub
+            .extensions()
+            .bbox()
+            .allow_attempt(crate::security::now())
+            .is_err());
+        let refused = hub.audit().read(&Filter {
+            until: Some(crate::security::now() + 1_000.0),
+            ..Filter::default()
+        });
+        assert!(refused
+            .iter()
+            .any(|e| e.action == Action::BoxSetting && e.detail.as_deref() == Some("refused")));
+        assert!(!serde_json::to_string(&refused).unwrap().contains("mauvais"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1327,6 +1372,18 @@ mod tests {
             .unwrap()
             .contains(OLD_PASSWORD));
         assert_eq!(std::fs::read(sdir.join("telephones.json")).unwrap(), phones);
+        // La copie de l'ancien box.json reste jusqu'au premier relevé réussi, puis part avec le reste.
+        let copy = sdir.join(crate::wifi::migration::BACKUP_FILE);
+        assert!(std::fs::read_to_string(&copy)
+            .unwrap()
+            .contains(OLD_PASSWORD));
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            assert!(copy.exists());
+            let crew = Crew::new(&[("sam", "Sam")]);
+            hub.wifi_poll_at(crate::security::now(), &crew, true);
+            assert!(!copy.exists(), "reprise confirmée : copie supprimée");
+        }
         // Un second démarrage ne change rien.
         let extensions = std::fs::read(sdir.join("extensions.json")).unwrap();
         let box_json = std::fs::read(sdir.join("box.json")).unwrap();
@@ -1359,6 +1416,28 @@ mod tests {
             .contains("reprise des réglages de la box"));
         assert!(!hub.extensions().is_enabled("bbox"));
         assert_eq!(std::fs::read(sdir.join("box.json")).unwrap(), old);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unreadable_extensions_file_is_said_in_the_presence_message_and_the_box_is_still_taken_over(
+    ) {
+        let dir = temp("wifi-aside");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        write_old_files(&dir);
+        std::fs::write(sdir.join("extensions.json"), b"{ pas du json").unwrap();
+        let (hub, _rx) = hub_with(&dir, 16);
+        let notice = hub.wifi().notice().unwrap();
+        assert!(
+            notice.contains("mis de côté sous extensions.json.illisible-"),
+            "{notice}"
+        );
+        // L'ancien fichier est gardé à côté, la box est reprise dans un extensions.json neuf.
+        assert!(std::fs::read_dir(&sdir).unwrap().flatten().any(|e| e
+            .file_name()
+            .to_string_lossy()
+            .starts_with("extensions.json.illisible-")));
+        assert!(hub.wifi().status().linked && hub.extensions().is_enabled("bbox"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

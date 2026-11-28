@@ -6,10 +6,12 @@ jamais écrit sur la box, et aucun balayage du réseau n'est fait.
 
 ## Le connecteur de box et l'extension Bbox
 
-La box est une **extension** (Réglages › Extensions › **Bbox** de l'app web, désactivée par défaut) : son
-adresse, son mot de passe d'administration (secret, jamais renvoyé ni journalisé) et son état (« box
-reliée », « ne répond pas », « mot de passe refusé »…) y sont réglés ; l'adresse n'est vue que des
-comptes qui ont le droit « extensions ». Ce qui concerne la présence (quel téléphone est à qui, le
+La box est une **extension** (« Bbox », désactivée par défaut). Son adresse, son mot de passe
+d'administration (secret, jamais renvoyé ni journalisé) et son interrupteur se règlent **seulement
+sur le Mac, dans Ostal Server** (Réglages › Présence) : l'API refuse tout changement venant d'un
+compte, même avec le droit « extensions » (403, « La box se règle dans Ostal Server, sur le Mac »).
+La page Réglages › Extensions › Bbox de l'app web est en lecture seule : l'état (« box reliée »,
+appareils actifs, heure du dernier relevé, « ne répond pas », « mot de passe refusé »…). Ce qui concerne la présence (quel téléphone est à qui, le
 vote, le délai avant de compter un départ, l'interrupteur « Changer le mode de la maison selon la
 présence ») reste dans le cœur d'Ostal Server, qui lit la box par une interface commune
 (`wifi/connector.rs`, le trait `BoxConnector` : la liste des appareils, leur nom et leur état) et ne
@@ -18,13 +20,18 @@ toucher au cœur. **Sans extension de box activée**, aucun relevé ne part, la 
 raccourcis « Je pars » et « Je rentre », et `serveur.log` le dit (« aucune extension de box activée »).
 La Bbox reste sur le réseau de la maison : rien ne sort vers Internet. Changer l'adresse de la box
 **efface le mot de passe gardé** (il faut le redonner) : il ne part jamais vers une autre adresse.
+Après un refus du mot de passe, les essais depuis Ostal Server sont limités (un par minute, cinq par
+heure) et chaque refus est écrit au journal d'audit, sans valeur.
 
 **Reprise des anciens réglages** (première version avec les extensions) : l'adresse et le mot de
 passe qui étaient dans `serveur/box.json` sont repris, au premier démarrage, dans l'extension Bbox
 (activée si la box était reliée). Un réglage de présence ne change pas (téléphones, interrupteur,
 délai). `box.json` ne garde que l'interrupteur et le délai ; une copie de l'ancien fichier reste
 dans `serveur/box.json.avant-extension` (0600, jamais exportée : pour revenir à la version précédente,
-la remettre sous le nom `box.json`). Si la reprise échoue (extensions illisibles, disque plein), rien
+la remettre sous le nom `box.json`). Cette copie porte l'ancien mot de passe : elle est **supprimée**
+dès qu'un premier relevé réussi confirme la reprise, et quand on délie la box ou efface son mot de
+passe. Si `box.json` porte de nouveau un mot de passe différent (retour à une ancienne version, puis
+nouvelle montée), il est repris dans l'extension (copie d'abord). `--demo` ne fait aucune reprise. Si la reprise échoue (extensions illisibles, disque plein), rien
 n'est modifié, la box reste lue comme avant et le journal dit pourquoi.
 
 ## La box

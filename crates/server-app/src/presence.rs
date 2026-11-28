@@ -13,7 +13,7 @@ pub fn link_line(status: &Status) -> (bool, String) {
     match (status.linked, status.link) {
         (false, _) | (_, Link::None) => (
             false,
-            "Aucune extension de box activée (Réglages › Extensions › Bbox de l'app web)".into(),
+            "Aucune box reliée : reliez-la ci-dessous".into(),
         ),
         (true, Link::Ok) => (
             true,
@@ -143,11 +143,7 @@ mod tests {
     fn the_link_is_told_in_one_sentence() {
         assert_eq!(
             link_line(&status(false, Link::None, 0)),
-            (
-                false,
-                "Aucune extension de box activée (Réglages › Extensions › Bbox de l'app web)"
-                    .into()
-            )
+            (false, "Aucune box reliée : reliez-la ci-dessous".into())
         );
         assert_eq!(
             link_line(&status(true, Link::Ok, 6)),

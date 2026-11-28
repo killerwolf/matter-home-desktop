@@ -460,8 +460,8 @@ pub fn presence_check(wifi: &WifiStatus) -> Check {
     let (level, text, action) = match (wifi.linked, wifi.link) {
         (false, _) | (_, Link::None) => (
             Level::Info,
-            "aucune extension de box activée (facultatif)".to_string(),
-            fix("Activer l'extension Bbox…", Tab::Settings),
+            "aucune box reliée (facultatif)".to_string(),
+            fix("Relier la box…", Tab::Settings),
         ),
         (true, Link::Ok) => (
             Level::Ok,

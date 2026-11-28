@@ -300,8 +300,16 @@ struct State {
     generation: u64,
     /// La génération pour laquelle la box a refusé le mot de passe : on ne le rejoue pas.
     refused_at: Option<u64>,
+    /// Date du dernier refus du mot de passe par la box (n'importe quelle origine).
+    last_refused: Option<f64>,
+    /// Les essais faits par l'API depuis ce refus (dates), pour les limiter.
+    attempts: std::collections::VecDeque<f64>,
     health: Health,
 }
+
+/// Après un refus : un essai par minute au plus, et ce nombre d'essais par heure.
+const ATTEMPT_GAP_S: f64 = 60.0;
+const ATTEMPTS_PER_HOUR: usize = 5;
 
 impl State {
     /// L'adresse et le mot de passe à utiliser, s'il y en a.
@@ -336,6 +344,8 @@ impl Bbox {
                 legacy: None,
                 generation: 1,
                 refused_at: None,
+                last_refused: None,
+                attempts: std::collections::VecDeque::new(),
                 health: Health::Unknown,
             }),
             call: Mutex::new(()),
@@ -376,12 +386,44 @@ impl Bbox {
         st.generation += 1;
     }
 
+    /// Un nouvel essai de mot de passe par l'API est-il permis ? Chaque modification d'adresse, de
+    /// mot de passe ou d'activation fait un login chez la box : **après un refus** (dans l'heure), un
+    /// essai par minute au plus et `ATTEMPTS_PER_HOUR` par heure, pour ne pas faire bloquer l'accès à
+    /// la box (le premier essai qui suit un refus est libre : c'est le nouveau mot de passe). Sans refus
+    /// récent, aucune limite. Un essai permis après un refus est compté.
+    pub fn allow_attempt(&self, now: f64) -> Result<(), &'static str> {
+        let mut st = self.lock();
+        if !st.last_refused.is_some_and(|at| now - at < 3600.0) {
+            st.attempts.clear();
+            return Ok(());
+        }
+        while st.attempts.front().is_some_and(|at| now - at >= 3600.0) {
+            st.attempts.pop_front();
+        }
+        if st
+            .attempts
+            .back()
+            .is_some_and(|at| now - at < ATTEMPT_GAP_S)
+        {
+            return Err("La box a refusé le mot de passe : attendez une minute avant un nouvel essai (trop d'essais risquent de bloquer l'accès à la box).");
+        }
+        if st.attempts.len() >= ATTEMPTS_PER_HOUR {
+            return Err("La box a refusé le mot de passe et trop d'essais ont été faits : réessayez dans une heure (trop d'essais risquent de bloquer l'accès à la box).");
+        }
+        st.attempts.push_back(now);
+        Ok(())
+    }
+
     /// Essaie une adresse et un mot de passe **sans rien retenir** (une session neuve). Sert à
     /// contrôler un mot de passe avant de l'enregistrer.
     pub fn probe(&self, url: &str, password: &str) -> Result<Vec<Host>, BoxError> {
         let _one = self.call.lock().unwrap_or_else(|e| e.into_inner());
         self.api.reset();
-        self.api.hosts(url, password)
+        let result = self.api.hosts(url, password);
+        if result == Err(BoxError::Refused) {
+            self.lock().last_refused = Some(crate::security::now());
+        }
+        result
     }
 }
 
@@ -466,6 +508,7 @@ impl BoxConnector for Bbox {
                 }
                 Err(BoxError::Refused) => {
                     st.refused_at = Some(generation);
+                    st.last_refused = Some(crate::security::now());
                     log::warn!(
                         "bbox : mot de passe refusé, plus de nouvel essai avant d'en donner un autre"
                     );
@@ -681,6 +724,37 @@ mod tests {
         ] {
             assert!(normalize(&bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn after_a_refusal_api_attempts_are_limited_per_minute_and_per_hour() {
+        let api = Arc::new(Counting::default());
+        let bbox = Bbox::new(api.clone());
+        let config = json!({"url": "https://mabbox.bytel.fr"});
+        let t = crate::security::now();
+        // Sans refus : aucune limite.
+        for k in 0..20 {
+            assert!(bbox.allow_attempt(t + f64::from(k)).is_ok());
+        }
+        api.refuse.store(true, Ordering::SeqCst);
+        bbox.start(&settings_of(true, &config, &secrets("mauvais")));
+        assert_eq!(bbox.hosts(), Err(BoxError::Refused));
+        // Un essai, puis une minute d'attente.
+        assert!(bbox.allow_attempt(t).is_ok());
+        assert!(bbox
+            .allow_attempt(t + 10.0)
+            .unwrap_err()
+            .contains("une minute"));
+        // Cinq essais par heure au plus.
+        for k in 1..5 {
+            assert!(bbox.allow_attempt(t + 70.0 * f64::from(k)).is_ok(), "{k}");
+        }
+        assert!(bbox
+            .allow_attempt(t + 400.0)
+            .unwrap_err()
+            .contains("une heure"));
+        // Une heure après le refus, la limite tombe.
+        assert!(bbox.allow_attempt(t + 3700.0).is_ok());
     }
 
     #[test]

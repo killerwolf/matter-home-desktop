@@ -293,25 +293,29 @@ pub struct Extensions {
     bbox: Arc<bbox::Bbox>,
     /// Les extensions qui sont des boîtes internet (présence Wi-Fi), dans l'ordre du catalogue.
     boxes: Vec<Arc<dyn BoxConnector>>,
+    /// Où `extensions.json` illisible a été mis de côté au démarrage.
+    aside: Option<PathBuf>,
 }
 
 /// Lit `dir/extensions.json`. Absent : vide. Illisible : journalisé, mis de côté, vide ; si même
 /// la mise de côté échoue, `read_only`.
-fn load(dir: &std::path::Path) -> (File, bool) {
+fn load(dir: &std::path::Path) -> (File, bool, Option<PathBuf>) {
     let path = dir.join(FILE);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (File::default(), false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (File::default(), false, None)
+        }
         Err(e) => {
             log::error!(
                 "extensions : {FILE} illisible ({}), réglages en lecture seule",
                 e.kind()
             );
-            return (File::default(), true);
+            return (File::default(), true, None);
         }
     };
     match serde_json::from_slice::<File>(&bytes) {
-        Ok(file) => (file, false),
+        Ok(file) => (file, false, None),
         Err(_) => {
             let aside = dir.join(format!(
                 "{FILE}.illisible-{}",
@@ -323,14 +327,14 @@ fn load(dir: &std::path::Path) -> (File, bool) {
                         "extensions : {FILE} illisible, mis de côté ({}) ; toutes les extensions repartent éteintes",
                         aside.display()
                     );
-                    (File::default(), false)
+                    (File::default(), false, Some(aside))
                 }
                 Err(e) => {
                     log::error!(
                         "extensions : {FILE} illisible et impossible à mettre de côté ({}) : réglages en lecture seule",
                         e.kind()
                     );
-                    (File::default(), true)
+                    (File::default(), true, None)
                 }
             }
         }
@@ -341,8 +345,15 @@ impl Extensions {
     /// Ouvre `dir/extensions.json`. Absent ou illisible : tout est éteint (jamais une extension
     /// allumée par erreur).
     pub fn open(dir: &std::path::Path, apis: Apis) -> Self {
-        let (file, read_only) = load(dir);
-        Self::build(Some(dir), file, read_only, apis)
+        let (file, read_only, aside) = load(dir);
+        let mut this = Self::build(Some(dir), file, read_only, apis);
+        this.aside = aside;
+        this
+    }
+
+    /// Le fichier sous lequel un `extensions.json` illisible a été mis de côté au démarrage.
+    pub fn set_aside(&self) -> Option<&std::path::Path> {
+        self.aside.as_deref()
     }
 
     /// Sans fichier (démonstration, dossier inutilisable).
@@ -370,6 +381,7 @@ impl Extensions {
             somfy,
             bbox,
             boxes,
+            aside: None,
         };
         // Chaque extension remet son état d'accord avec la configuration gardée.
         for (d, ext) in &this.registry {
@@ -514,7 +526,15 @@ impl Extensions {
             // Une autre adresse sans le mot de passe : il est effacé, jamais envoyé ailleurs.
             bbox::guard_url_change(&mut update, &self.config(id));
         }
-        self.update_for(d, update)
+        let result = self.update_for(d, update);
+        // Mot de passe de la box effacé (ou adresse changée) : les copies de l'ancien `box.json`, qui
+        // le portent, n'ont plus de raison d'être.
+        if id == bbox::ID && result.is_ok() && self.secret(id, bbox::PASSWORD).is_none() {
+            if let Some(dir) = &self.dir {
+                crate::wifi::migration::remove_copies(dir);
+            }
+        }
+        result
     }
 
     fn update_for(
