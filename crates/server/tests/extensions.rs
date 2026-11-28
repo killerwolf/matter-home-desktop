@@ -442,6 +442,7 @@ fn the_bbox_is_read_only_for_accounts_and_its_password_is_never_shown() {
         // Aucun compte ne change l'adresse, le mot de passe ou l'interrupteur de la box : refusé,
         // avec la phrase qui renvoie vers Ostal Server, et rien ne bouge.
         for body in [
+            json!({}),
             json!({"enabled": false}),
             json!({"config": {"url": "http://autre.example"}}),
             json!({"secrets": {"password": "AUTRE-MOT-DE-PASSE"}}),

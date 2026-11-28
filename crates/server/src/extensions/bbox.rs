@@ -379,6 +379,13 @@ impl Bbox {
         st.health = Health::Unknown;
     }
 
+    /// La box est déliée : le secours des anciens réglages n'a plus cours.
+    pub fn clear_legacy(&self) {
+        let mut st = self.lock();
+        st.legacy = None;
+        st.generation += 1;
+    }
+
     /// La reprise des anciens réglages a échoué : on lit la box comme avant, sans rien écrire.
     pub fn use_legacy(&self, url: &str, password: &str) {
         let mut st = self.lock();

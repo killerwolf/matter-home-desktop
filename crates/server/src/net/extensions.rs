@@ -121,9 +121,8 @@ async fn change(
     require(&state, &session.user_id, Capability::ManageExtensions)?;
     // La box (adresse, mot de passe, interrupteur) se règle seulement sur le Mac, dans Ostal Server :
     // aucun compte, même avec le droit « extensions », ne la change par l'API.
-    if id == crate::extensions::bbox::ID
-        && (update.enabled.is_some() || update.config.is_some() || !update.secrets.is_empty())
-    {
+    // Tout PUT sur la box est refusé, même vide : aucun compte ne crée ni n'écrit son entrée.
+    if id == crate::extensions::bbox::ID {
         return Err(ApiErr(ApiError::with_detail(
             ErrorCode::Forbidden,
             BOX_ON_THE_MAC,

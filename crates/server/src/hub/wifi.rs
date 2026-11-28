@@ -355,10 +355,19 @@ impl Hub {
             ..Update::default()
         };
         update.secrets.insert(bbox::PASSWORD.to_string(), None);
-        self.extensions.update(bbox::ID, update).map_err(|e| {
-            log::error!("réglages de la box non enregistrés : {e:?}");
-            LinkError::Storage
-        })?;
+        // L'ancien réglage de `box.json` d'abord (reprise échouée ou fichier non nettoyé) : il ne doit
+        // pas rallumer la box au prochain démarrage.
+        self.wifi.clear_legacy().map_err(|_| LinkError::Storage)?;
+        self.extensions.bbox().clear_legacy();
+        match self.extensions.update(bbox::ID, update) {
+            Ok(_) => {}
+            // Extensions illisibles et sans entrée : il n'y a rien à effacer dedans.
+            Err(_) if self.extensions.is_read_only() && !self.extensions.has_entry(bbox::ID) => {}
+            Err(e) => {
+                log::error!("réglages de la box non enregistrés : {e:?}");
+                return Err(LinkError::Storage);
+            }
+        }
         self.wifi.observe(crate::security::now(), true);
         self.audit
             .record(Entry::new(Action::BoxSetting, who).detail("unlinked"));
@@ -1438,6 +1447,32 @@ mod tests {
             .to_string_lossy()
             .starts_with("extensions.json.illisible-")));
         assert!(hub.wifi().status().linked && hub.extensions().is_enabled("bbox"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unlinking_a_box_still_read_from_box_json_keeps_it_unlinked_after_a_restart() {
+        let dir = temp("wifi-unlink-legacy");
+        let sdir = crate::security::server_dir(&dir).unwrap();
+        write_old_files(&dir);
+        // La reprise échoue (extensions illisibles) : la box est lue d'après box.json.
+        std::fs::create_dir(sdir.join("extensions.json")).unwrap();
+        {
+            let (hub, _rx) = hub_with(&dir, 16);
+            assert!(hub.wifi().status().linked);
+            hub.wifi_unlink(&Who::server_app()).unwrap();
+            assert!(!hub.wifi().status().linked);
+            let after = std::fs::read_to_string(sdir.join("box.json")).unwrap();
+            assert!(
+                !after.contains(OLD_PASSWORD) && !after.contains("\"url\""),
+                "{after}"
+            );
+            assert!(after.contains("\"auto_mode\": true"), "{after}");
+        }
+        // Redémarrage, toujours sans extensions lisibles : la box reste déliée.
+        let (hub, _rx) = hub_with(&dir, 16);
+        assert!(!hub.wifi().status().linked);
+        assert!(hub.wifi().auto_mode());
         let _ = std::fs::remove_dir_all(dir);
     }
 

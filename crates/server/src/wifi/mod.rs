@@ -330,6 +330,24 @@ impl Wifi {
         self.journal.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Retire l'adresse et le mot de passe hérités de `box.json` (la box est déliée) : sans cela, au
+    /// redémarrage, la reprise (ou le secours) rallumerait la box. Le reste du fichier est gardé.
+    pub fn clear_legacy(&self) -> Result<(), &'static str> {
+        let mut st = self.lock();
+        if st.config.url.is_empty() && st.config.password.is_empty() {
+            return Ok(());
+        }
+        let mut config = st.config.clone();
+        config.url.clear();
+        config.password.clear();
+        self.save_config(&config).map_err(|e| {
+            log::error!("réglage non enregistré : {e:#}");
+            STORAGE_ERROR
+        })?;
+        st.config = config;
+        Ok(())
+    }
+
     /// L'ancienne box de `box.json` (adresse, mot de passe), quand la reprise dans l'extension n'a
     /// pas pu se faire : la box reste alors lue comme avant (`Bbox::use_legacy`).
     pub fn legacy_box(&self) -> Option<(String, String)> {
